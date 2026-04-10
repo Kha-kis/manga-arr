@@ -359,7 +359,18 @@ async def _test_client(c: dict) -> tuple[bool, str]:
 
         elif t == 'suwayomi':
             from routers import suwayomi_ as _swy
-            return await _swy.test_connection(c)
+            ok, msg = await _swy.test_connection(c)
+            if ok:
+                try:
+                    data = await _swy._gql(c, """
+                        { extensions(filter: {isInstalled: {eq: true}}) { nodes { pkgName } } }
+                    """)
+                    installed = (data.get("extensions") or {}).get("nodes") or []
+                    if not installed:
+                        msg += " | No extensions installed — visit Settings → Extensions"
+                except Exception:
+                    pass
+            return ok, msg
 
         else:
             return False, f"Unsupported client type: {t}"

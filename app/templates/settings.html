@@ -64,6 +64,9 @@
         <a href="/import-lists" class="settings-sidebar-item settings-sidebar-link">
           <i class="bi bi-cloud-download me-2"></i>Import Lists
         </a>
+        <a href="#extensions" class="settings-sidebar-item" data-tab="extensions">
+          <i class="bi bi-puzzle me-2"></i>Extensions
+        </a>
 
         <div class="settings-divider"></div>
         <div class="mb-1 px-2 mt-2" style="font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Notifications</div>
@@ -258,7 +261,7 @@
                 {% set _gm = cfg.ddl_grab_mode or 'fallback' %}
                 <option value="fallback" {% if _gm == 'fallback' %}selected{% endif %}>Smart — indexers first for volumes, DDL first for chapters</option>
                 <option value="prefer" {% if _gm == 'prefer' %}selected{% endif %}>Prefer DDL — try Suwayomi first, fall back to indexers</option>
-                <option value="only"   {% if _gm == 'only'   %}selected{% endif %}>DDL Only — skip indexers for series with MangaDex ID</option>
+                <option value="only"   {% if _gm == 'only'   %}selected{% endif %}>DDL Only — skip indexers for series with a Suwayomi source</option>
                 <option value="off"    {% if _gm == 'off'    %}selected{% endif %}>Off — never use Suwayomi DDL</option>
               </select>
               <div class="form-text">Smart mode prefers retail releases (indexers) for volumes and DDL for chapters. DDL fills gaps when no indexer result exists.</div>
@@ -280,13 +283,13 @@
                 <option value="pl"       {% if _dl == 'pl'       %}selected{% endif %}>Polish</option>
                 <option value="ru"       {% if _dl == 'ru'       %}selected{% endif %}>Russian</option>
               </select>
-              <div class="form-text">Used for MangaDex chapter sync. Can be overridden per series.</div>
+              <div class="form-text">Default language for Suwayomi sources. Can be overridden per series.</div>
             </div>
             <div class="col-12 col-sm-4">
               <label class="form-label">Monitor Check Interval <span style="color:var(--text-3)">(seconds)</span></label>
               <input type="number" name="suwayomi_check_interval" class="form-control"
                      value="{{ cfg.suwayomi_check_interval or '21600' }}" min="3600" max="604800" step="3600">
-              <div class="form-text">How often to check MangaDex for new chapters (default 6h). Min 1h.</div>
+              <div class="form-text">How often to check Suwayomi sources for new chapters (default 6h). Min 1h.</div>
             </div>
           </div>
         </div>
@@ -296,6 +299,140 @@
         <button type="submit" class="btn btn-ember px-4" hx-disabled-elt="this"><i class="bi bi-floppy me-1"></i>Save</button>
       </div>
       </form>
+    </div>
+
+    <!-- Suwayomi Extensions -->
+    <div id="panel-extensions" style="display:none" x-data="{ exts: [], loading: false, filter: 'all' }">
+      <div class="panel">
+        <div class="panel-header">
+          <i class="bi bi-puzzle"></i>Suwayomi Extensions
+          <div class="ms-auto d-flex gap-2">
+            <button class="btn btn-outline-ember btn-sm"
+                    @click="loading=true; fetch('/api/suwayomi/extensions/install-recommended', {method:'POST'}).then(r=>r.json()).then(d=>{if(d.ok){showToast('Installed: '+d.installed.join(', '),'success');loadExts()}else{showToast(d.message,'error')}}).finally(()=>loading=false)"
+                    :disabled="loading">
+              <i class="bi bi-stars me-1"></i>Install Recommended
+            </button>
+            <button class="btn btn-secondary btn-sm"
+                    @click="loading=true; fetch('/api/suwayomi/extensions/refresh', {method:'POST'}).then(r=>r.json()).then(d=>{if(d.ok){showToast('Catalog refreshed ('+d.count+' extensions)','success');loadExts()}else{showToast(d.message,'error')}}).finally(()=>loading=false)"
+                    :disabled="loading">
+              <i class="bi bi-arrow-repeat me-1"></i>Refresh Catalog
+            </button>
+          </div>
+        </div>
+        <div class="panel-body p-0">
+          <div class="d-flex gap-1 px-3 py-2" style="border-bottom:1px solid var(--edge)">
+            <button class="btn btn-sm" :class="filter==='all'?'btn-ember':'btn-secondary'" @click="filter='all'">All</button>
+            <button class="btn btn-sm" :class="filter==='installed'?'btn-ember':'btn-secondary'" @click="filter='installed'">Installed</button>
+            <button class="btn btn-sm" :class="filter==='official'?'btn-ember':'btn-secondary'" @click="filter='official'">Official</button>
+          </div>
+          <template x-if="loading">
+            <div class="p-4 text-center" style="color:var(--text-3)">
+              <span class="spinner-border spinner-border-sm me-2"></span>Loading extensions…
+            </div>
+          </template>
+          <template x-if="!loading && exts.length === 0">
+            <div class="empty-state">
+              <div class="empty-icon"><i class="bi bi-puzzle"></i></div>
+              <p class="fw-semibold">No extensions available</p>
+              <p class="text-sm" style="color:var(--text-3)">Make sure your Suwayomi server has an extension repository configured (e.g., Keiyoushi).</p>
+            </div>
+          </template>
+          <div class="table-wrap mb-0" x-show="!loading && exts.length > 0">
+            <table class="table table-sm mb-0">
+              <thead>
+                <tr>
+                  <th>Extension</th>
+                  <th style="width:80px">Lang</th>
+                  <th style="width:90px">Type</th>
+                  <th style="width:100px">Status</th>
+                  <th style="width:100px"></th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="ext in exts.filter(e => {
+                  if (filter === 'installed') return e.isInstalled;
+                  if (filter === 'official') return e.sourceType === 'official';
+                  return true;
+                })" :key="ext.pkgName">
+                  <tr>
+                    <td>
+                      <span class="fw-semibold text-sm" x-text="ext.name"></span>
+                      <span class="text-2xs ms-1" style="color:var(--text-3)" x-text="ext.pkgName" x-show="false"></span>
+                    </td>
+                    <td><span class="badge-status badge-unknown text-uppercase" x-text="ext.lang"></span></td>
+                    <td>
+                      <span class="badge-status"
+                            :class="{
+                              'badge-downloaded': ext.sourceType === 'official',
+                              'badge-grabbed': ext.sourceType === 'aggregator',
+                              'badge-unknown': ext.sourceType === 'fan'
+                            }"
+                            x-text="ext.sourceType"></span>
+                    </td>
+                    <td>
+                      <template x-if="ext.isInstalled && ext.hasUpdate">
+                        <span class="badge-status badge-grabbed">Update Available</span>
+                      </template>
+                      <template x-if="ext.isInstalled && !ext.hasUpdate">
+                        <span class="badge-status badge-downloaded">Installed</span>
+                      </template>
+                      <template x-if="!ext.isInstalled">
+                        <span class="text-xs" style="color:var(--text-3)">Not installed</span>
+                      </template>
+                    </td>
+                    <td class="text-end">
+                      <template x-if="!ext.isInstalled">
+                        <button class="btn btn-sm btn-action btn-outline-ember"
+                                @click="fetch('/api/suwayomi/extensions/'+ext.pkgName+'/install',{method:'POST'}).then(r=>r.json()).then(d=>{if(d.ok){showToast(ext.name+' installed','success');loadExts()}else{showToast(d.message,'error')}})">
+                          Install
+                        </button>
+                      </template>
+                      <template x-if="ext.isInstalled && ext.hasUpdate">
+                        <button class="btn btn-sm btn-action btn-grab"
+                                @click="fetch('/api/suwayomi/extensions/'+ext.pkgName+'/update',{method:'POST'}).then(r=>r.json()).then(d=>{if(d.ok){showToast(ext.name+' updated','success');loadExts()}else{showToast(d.message,'error')}})">
+                          Update
+                        </button>
+                      </template>
+                      <template x-if="ext.isInstalled && !ext.hasUpdate">
+                        <button class="btn btn-sm btn-action btn-danger-soft"
+                                @click="if(confirm('Uninstall '+ext.name+'?')) fetch('/api/suwayomi/extensions/'+ext.pkgName+'/uninstall',{method:'POST'}).then(r=>r.json()).then(d=>{if(d.ok){showToast(ext.name+' uninstalled','success');loadExts()}else{showToast(d.message,'error')}})">
+                          Remove
+                        </button>
+                      </template>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <script>
+        function loadExts() {
+          fetch('/api/suwayomi/extensions').then(r=>r.json()).then(d=>{
+            if(d.ok) {
+              const el = document.getElementById('panel-extensions');
+              if(el) {
+                // Alpine.js v3: use _x_dataStack to access component data
+                const data = el._x_dataStack && el._x_dataStack[0];
+                if(data) data.exts = d.extensions;
+              }
+            }
+          });
+        }
+        // Load when panel becomes visible
+        document.addEventListener('DOMContentLoaded', () => {
+          const observer = new MutationObserver(() => {
+            const panel = document.getElementById('panel-extensions');
+            if(panel && panel.style.display !== 'none') {
+              const data = panel._x_dataStack && panel._x_dataStack[0];
+              if(data && data.exts.length === 0) loadExts();
+            }
+          });
+          const panel = document.getElementById('panel-extensions');
+          if(panel) observer.observe(panel, {attributes: true, attributeFilter: ['style']});
+        });
+      </script>
     </div>
 
     <!-- General -->

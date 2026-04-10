@@ -626,6 +626,7 @@
     .badge-finished       { background: var(--jade-bg);  color: var(--jade);  border: 1px solid rgba(34,200,122,0.2); }
     .badge-releasing      { background: var(--sky-bg);   color: var(--sky);   border: 1px solid rgba(88,168,248,0.2); }
     .badge-ongoing        { background: var(--sky-bg);   color: var(--sky);   border: 1px solid rgba(88,168,248,0.2); }
+    .badge-downloading    { background: var(--sky-bg);   color: var(--sky);   border: 1px solid rgba(88,168,248,0.2); }
     .badge-not_yet_released { background: var(--ink-4);  color: var(--text-3);  border: 1px solid var(--edge-2); }
     .badge-cancelled      { background: var(--ruby-bg);  color: #d08080;       border: 1px solid rgba(240,80,80,0.15); }
     .badge-hiatus         { background: var(--iris-bg);  color: var(--iris);  border: 1px solid rgba(152,120,248,0.2); }
@@ -1672,20 +1673,8 @@
       #htmx-progress { transition: none; }
     }
 
-    /* ─── Tailwind-style text size utilities ─── */
-    .text-2xs { font-size: 0.65rem; line-height: 1; }
-    .text-xs  { font-size: 0.75rem; line-height: 1; }
-    .text-sm  { font-size: 0.82rem; line-height: 1.25; }
-    .text-base{ font-size: 0.875rem; line-height: 1.5; }
-    .text-lg  { font-size: 1.125rem; line-height: 1.5; }
-
-    /* ─── Tailwind-style width utilities ─── */
-    .w-20 { width: 5rem; }   /* 80px */
-    .w-40 { width: 10rem; }  /* 160px */
-    .w-48 { width: 12rem; }  /* 192px */
-
-    /* ─── Button action — ensures minimum touch target ─── */
-    .btn-action { min-height: 32px; }
+    /* Note: text-2xs is defined in Tailwind config above. text-xs, text-sm, etc.
+       are Tailwind built-ins. w-20, w-32, w-36, w-40, w-48, w-56 are Tailwind built-ins. */
   </style>
   {% block head %}{% endblock %}
 </head>

@@ -702,6 +702,22 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_swy_dl_series ON suwayomi_downloads(series_id);
             CREATE INDEX IF NOT EXISTS idx_swy_dl_status ON suwayomi_downloads(status);
+
+            -- Per-series Suwayomi source linkages (multi-source support)
+            CREATE TABLE IF NOT EXISTS suwayomi_sources (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                series_id         INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+                source_id         TEXT    NOT NULL,
+                source_name       TEXT,
+                source_lang       TEXT    DEFAULT 'en',
+                suwayomi_manga_id INTEGER,
+                source_manga_url  TEXT,
+                priority          INTEGER DEFAULT 0,
+                source_type       TEXT    DEFAULT 'aggregator',
+                linked_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(series_id, source_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_swy_src_series ON suwayomi_sources(series_id);
         """)
 
         # ── DDL / Suwayomi column migrations ─────────────────────────────────
@@ -712,6 +728,17 @@ def init_db():
         add_col('download_clients',    'download_path',        'TEXT')
         add_col('download_clients',    'merge_chapters',       'INTEGER DEFAULT 1')
         add_col('suwayomi_downloads',  'chapter_num',          'REAL')
+        add_col('series',              'suwayomi_source_id',   'TEXT')
+
+        # ── Backfill suwayomi_sources from existing mangadex_id linkages ──────
+        db.execute("""
+            INSERT OR IGNORE INTO suwayomi_sources
+                (series_id, source_id, source_name, source_lang, suwayomi_manga_id, source_type)
+            SELECT s.id, 'mangadex', 'MangaDex', COALESCE(s.ddl_language, 'en'),
+                   s.suwayomi_id, 'aggregator'
+            FROM series s
+            WHERE s.mangadex_id IS NOT NULL AND s.suwayomi_id IS NOT NULL
+        """)
 
         # ── Seed DDL settings defaults ────────────────────────────────────────
         db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('ddl_language','en')")
@@ -6204,9 +6231,11 @@ async def backlog_search_loop():
                     " WHERE s.monitored=1 AND v.status='wanted'"
                 ).fetchall()
             searched = 0
+            if ddl_only:
+                from routers.suwayomi_ import _get_series_source
             for s in wanted_series:
                 # In DDL-only mode, skip indexer search for series tracked via Suwayomi/MangaDex
-                if ddl_only and s['mangadex_id']:
+                if ddl_only and _get_series_source(s['id'], dict(s)):
                     continue
                 try:
                     grabbed = await grab_existing(s['id'], s['title'], s['search_pattern'])

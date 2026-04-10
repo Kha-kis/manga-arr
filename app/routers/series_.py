@@ -232,9 +232,9 @@ async def _grab_chapter_task(sid: int, s: dict, ch: dict):
     ch_num = ch['chapter_num']
     ch_int = int(ch_num) if ch_num == int(ch_num) else ch_num
 
-    # Try Suwayomi DDL first if series has a MangaDex ID and client is configured
+    # Try Suwayomi DDL first if series has a source configured and DDL is enabled
     from routers import suwayomi_ as _swy
-    if s.get('mangadex_id') and _swy._ddl_enabled():
+    if _swy._ddl_enabled() and _swy._get_series_source(sid, s):
         with get_db() as _db:
             _swy_client = _swy.get_suwayomi_client(_db)
         if _swy_client:
@@ -877,9 +877,11 @@ async def grab_volume(request: Request, series_id: int, volume_id: int):
             "SELECT * FROM volumes WHERE id=? AND series_id=?", (volume_id, series_id)
         ).fetchone()
         swy_client = None
-        if s and s['mangadex_id'] and v and v['volume_num']:
-            from routers.suwayomi_ import get_suwayomi_client
+        if s and v and v['volume_num']:
+            from routers.suwayomi_ import get_suwayomi_client, _get_series_source
             swy_client = get_suwayomi_client(db)
+            if swy_client and not _get_series_source(series_id, dict(s)):
+                swy_client = None  # no source configured for this series
 
     if s and v:
         ddl_mode = get_cfg('ddl_grab_mode', 'fallback')
@@ -1576,8 +1578,8 @@ async def search_volume_releases(series_id: int, volume_id: int):
 
     # Check Suwayomi DDL availability
     suwayomi_available = False
-    if s['mangadex_id']:
-        from routers.suwayomi_ import get_suwayomi_client
+    from routers.suwayomi_ import get_suwayomi_client, _get_series_source
+    if _get_series_source(series_id, dict(s)):
         with get_db() as _swy_db:
             suwayomi_available = bool(get_suwayomi_client(_swy_db))
 

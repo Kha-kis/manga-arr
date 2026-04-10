@@ -1,7 +1,10 @@
 """Suwayomi download client integration — GraphQL API (v2+).
 
+Multi-source support: works with any Suwayomi extension (MangaDex, Manga Plus,
+ComicWalker, etc.), not just MangaDex. Source linkages stored in suwayomi_sources table.
+
 Flow:
-  1. find_or_add_manga()     → locate/add manga in Suwayomi library by MangaDex UUID
+  1. find_or_add_manga()     → locate/add manga in Suwayomi library (any source)
   2. fetch_chapters()        → pull chapter list from source
   3. suwayomi_grab()         → resolve volume→chapters, enqueue + start downloader
   4. check_suwayomi_jobs()   → poll isDownloaded on tracked chapters, mark complete
@@ -10,9 +13,10 @@ import json
 import logging
 import os
 import re
+import unicodedata
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from shared import get_cfg, get_db
@@ -60,89 +64,215 @@ def get_suwayomi_client(db) -> dict | None:
     return dict(row) if row else None
 
 
+# ── Source classification ─────────────────────────────────────────────────────
+
+SOURCE_CLASSIFICATION: dict[str, str] = {
+    "manga plus": "official", "mangaplus": "official",
+    "manga up": "official", "mangaup": "official",
+    "comicwalker": "official", "comic walker": "official",
+    "webtoons": "official", "comikey": "official",
+    "bilibili": "official", "azuki": "official",
+    "j-manga": "official", "kodansha": "official",
+    "shonen jump": "official", "viz": "official",
+    "mangadex": "aggregator",
+}
+
+def classify_source(name: str) -> str:
+    """Classify a Suwayomi source as official/aggregator/fan."""
+    name_lower = name.lower()
+    for pattern, stype in SOURCE_CLASSIFICATION.items():
+        if pattern in name_lower:
+            return stype
+    return "fan"
+
+
 # ── Connection test ───────────────────────────────────────────────────────────
 
 async def test_connection(c: dict) -> tuple[bool, str]:
     try:
         data = await _gql(c, "{ sources { nodes { id name lang } } }")
-        nodes  = data.get("sources", {}).get("nodes", [])
-        mdx    = [s for s in nodes if "mangadex" in s.get("name", "").lower()]
-        return True, f"Connected · {len(nodes)} sources ({len(mdx)} MangaDex)"
+        nodes = data.get("sources", {}).get("nodes", [])
+        official = [s for s in nodes if classify_source(s.get("name", "")) == "official"]
+        return True, f"Connected · {len(nodes)} sources ({len(official)} official)"
     except Exception as e:
         return False, str(e)
 
 
 # ── Source resolution ─────────────────────────────────────────────────────────
 
-_SOURCE_CACHE: dict[str, str] = {}   # lang → source_id
+_SOURCE_CACHE: dict[str, str] = {}   # "base:source_name:lang" → source_id
 
-async def get_mangadex_source_id(c: dict, lang: str = "en") -> str | None:
-    """Return the Suwayomi source ID for MangaDex in the requested language."""
-    cache_key = f"{_swy_base(c)}:{lang}"
+async def get_source_id(c: dict, source_name: str, lang: str = "en") -> str | None:
+    """Return the Suwayomi source ID for a named source in the requested language."""
+    cache_key = f"{_swy_base(c)}:{source_name.lower()}:{lang}"
     if cache_key in _SOURCE_CACHE:
         return _SOURCE_CACHE[cache_key]
 
-    data   = await _gql(c, "{ sources { nodes { id name lang } } }")
-    nodes  = data.get("sources", {}).get("nodes", [])
+    data = await _gql(c, "{ sources { nodes { id name lang } } }")
+    nodes = data.get("sources", {}).get("nodes", [])
+    target = source_name.lower()
 
-    # Exact match first
+    # Exact language match first
     for s in nodes:
-        if "mangadex" in s.get("name", "").lower() and s.get("lang", "") == lang:
+        if target in s.get("name", "").lower() and s.get("lang", "") == lang:
             _SOURCE_CACHE[cache_key] = s["id"]
             return s["id"]
     # Fall back to English
     for s in nodes:
-        if "mangadex" in s.get("name", "").lower() and s.get("lang", "") == "en":
-            _SOURCE_CACHE[f"{_swy_base(c)}:en"] = s["id"]
+        if target in s.get("name", "").lower() and s.get("lang", "") == "en":
+            _SOURCE_CACHE[f"{_swy_base(c)}:{target}:en"] = s["id"]
             return s["id"]
     return None
+
+# Backward-compat alias
+async def get_mangadex_source_id(c: dict, lang: str = "en") -> str | None:
+    return await get_source_id(c, "mangadex", lang)
+
+
+# ── Series-to-source linkage ─────────────────────────────────────────────────
+
+def _get_series_source(series_id: int, series_row: dict) -> dict | None:
+    """Get the best Suwayomi source for a series.
+    Checks suwayomi_sources table first, falls back to mangadex_id for backward compat.
+    Returns dict with source_name, source_id, suwayomi_manga_id or None.
+    """
+    with get_db() as db:
+        src = db.execute(
+            "SELECT * FROM suwayomi_sources WHERE series_id=? ORDER BY priority ASC LIMIT 1",
+            (series_id,)
+        ).fetchone()
+    if src:
+        return dict(src)
+    # Backward compat: series has mangadex_id but no suwayomi_sources row yet
+    if series_row.get("mangadex_id"):
+        return {
+            "source_name": "MangaDex",
+            "source_id": "mangadex",
+            "suwayomi_manga_id": series_row.get("suwayomi_id"),
+        }
+    return None
+
+
+def _store_source_linkage(series_id: int, source_name: str, source_id_str: str,
+                           manga_id: int, url: str | None = None):
+    """Store/update the suwayomi_sources linkage."""
+    source_type = classify_source(source_name)
+    with get_db() as db:
+        db.execute("""
+            INSERT INTO suwayomi_sources
+                (series_id, source_id, source_name, suwayomi_manga_id, source_manga_url, source_type)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(series_id, source_id) DO UPDATE SET
+                suwayomi_manga_id=excluded.suwayomi_manga_id,
+                source_manga_url=COALESCE(excluded.source_manga_url, source_manga_url)
+        """, (series_id, source_id_str, source_name, manga_id, url, source_type))
+        db.execute("UPDATE series SET suwayomi_id=? WHERE id=?", (manga_id, series_id))
+
+
+def _titles_match(a: str, b: str) -> bool:
+    """Fuzzy title comparison — normalize and compare."""
+    def _norm(s):
+        s = unicodedata.normalize('NFKC', s.lower().strip())
+        s = re.sub(r'[^\w\s]', '', s)
+        s = re.sub(r'\s+', ' ', s)
+        return s
+    return _norm(a) == _norm(b)
+
+
+def _best_title_match(results: list[dict], title: str) -> int | None:
+    """Find the best matching manga from search results by title similarity."""
+    if not results:
+        return None
+    for m in results:
+        if _titles_match(title, m.get("title", "")):
+            return int(m["id"])
+    if len(results) == 1:
+        return int(results[0]["id"])
+    return None
+
+
+async def _search_source(c: dict, swy_source_id: str, query: str) -> list[dict]:
+    """Search a Suwayomi source and return manga results."""
+    data = await _gql(c, """
+        mutation($src: LongString!, $q: String!, $p: Int!) {
+            fetchSourceManga(input: {source: $src, type: SEARCH, query: $q, page: $p}) {
+                mangas { id url title thumbnailUrl }
+            }
+        }
+    """, {"src": swy_source_id, "q": query, "p": 1})
+    return (data.get("fetchSourceManga") or {}).get("mangas") or []
 
 
 # ── Manga library management ──────────────────────────────────────────────────
 
-async def find_or_add_manga(c: dict, mangadex_uuid: str,
-                             title: str, lang: str = "en") -> int:
+async def find_or_add_manga(c: dict, series_id: int, title: str,
+                             lang: str = "en",
+                             mangadex_uuid: str | None = None,
+                             source_name: str = "mangadex") -> int:
     """
-    Return Suwayomi manga ID for the given MangaDex UUID.
-    Checks library first; if not found, searches source and adds to library.
+    Return Suwayomi manga ID for a series on the specified source.
+    Strategy:
+      1. Check suwayomi_sources table for existing linkage
+      2. Check Suwayomi library (MangaDex UUID fast path or title match)
+      3. Search source by title
+      4. Add to library and store linkage
     """
-    # 1. Already in library?
-    data = await _gql(c, "{ mangas(condition: {inLibrary: true}) { nodes { id url } } }")
+    # 1. Check existing linkage
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT suwayomi_manga_id FROM suwayomi_sources"
+            " WHERE series_id=? AND LOWER(source_name)=LOWER(?) AND suwayomi_manga_id IS NOT NULL",
+            (series_id, source_name)
+        ).fetchone()
+    if existing and existing["suwayomi_manga_id"]:
+        return existing["suwayomi_manga_id"]
+
+    # 2. Check Suwayomi library
+    data = await _gql(c, "{ mangas(condition: {inLibrary: true}) { nodes { id url title } } }")
     for m in data.get("mangas", {}).get("nodes", []):
-        if mangadex_uuid in (m.get("url") or ""):
-            return int(m["id"])
+        # MangaDex fast path: match by UUID in URL
+        if mangadex_uuid and mangadex_uuid in (m.get("url") or ""):
+            manga_id = int(m["id"])
+            swy_source_id = await get_source_id(c, source_name, lang) or source_name
+            _store_source_linkage(series_id, source_name, swy_source_id, manga_id, m.get("url"))
+            return manga_id
+        # Generic path: title match in library
+        if not mangadex_uuid and _titles_match(title, m.get("title", "")):
+            manga_id = int(m["id"])
+            swy_source_id = await get_source_id(c, source_name, lang) or source_name
+            _store_source_linkage(series_id, source_name, swy_source_id, manga_id, m.get("url"))
+            return manga_id
 
-    # 2. Search source
-    source_id = await get_mangadex_source_id(c, lang)
-    if not source_id:
-        raise RuntimeError(f"No MangaDex source for lang={lang!r}")
+    # 3. Search source
+    swy_source_id = await get_source_id(c, source_name, lang)
+    if not swy_source_id:
+        raise RuntimeError(f"No {source_name} source for lang={lang!r}")
 
-    data = await _gql(c, """
-        mutation($src: LongString!, $q: String!, $p: Int!) {
-            fetchSourceManga(input: {source: $src, type: SEARCH, query: $q, page: $p}) {
-                mangas { id url }
-            }
-        }
-    """, {"src": source_id, "q": title, "p": 1})
+    search_results = await _search_source(c, swy_source_id, title)
 
     manga_id = None
-    for m in (data.get("fetchSourceManga") or {}).get("mangas") or []:
-        if mangadex_uuid in (m.get("url") or ""):
-            manga_id = int(m["id"])
-            break
+    if mangadex_uuid:
+        # MangaDex: match by UUID in URL
+        for m in search_results:
+            if mangadex_uuid in (m.get("url") or ""):
+                manga_id = int(m["id"])
+                break
+    if manga_id is None:
+        # Generic: best title match
+        manga_id = _best_title_match(search_results, title)
 
     if manga_id is None:
-        raise RuntimeError(
-            f"Manga {title!r} (uuid={mangadex_uuid}) not found in Suwayomi source"
-        )
+        raise RuntimeError(f"Manga {title!r} not found in Suwayomi source {source_name}")
 
-    # 3. Add to library
+    # 4. Add to library
     await _gql(c, """
         mutation($id: Int!) {
             updateManga(input: {id: $id, patch: {inLibrary: true}}) { clientMutationId }
         }
     """, {"id": manga_id})
 
+    url = next((m.get("url") for m in search_results if int(m["id"]) == manga_id), None)
+    _store_source_linkage(series_id, source_name, swy_source_id, manga_id, url)
     return manga_id
 
 
@@ -173,19 +303,37 @@ def _chapters_for_volume(chapters: list[dict],
                           series_id: int | None = None) -> list[dict]:
     """
     Filter chapters belonging to a given volume.
-    Primary:  parse 'Vol.X' from chapter name.
-    Fallback: look up mangadex_chapters table to get chapter_num ranges per volume.
+    1. Primary:  parse 'Vol.X' from chapter name (source-agnostic).
+    2. Fallback: use chapter_vol_map JSON from series table (source-agnostic).
+    3. Fallback: look up mangadex_chapters table (MangaDex-specific).
     """
+    # 1. Parse from chapter name
     matched = [ch for ch in chapters
                if (v := _vol_from_name(ch.get("name"))) is not None
                and abs(v - volume_num) < 0.1]
     if matched:
         return matched
 
-    # Fallback: use mangadex_chapters to know which chapter numbers belong to vol
     if series_id is None:
         return []
 
+    # 2. Use chapter_vol_map JSON (works for any source)
+    with get_db() as db:
+        s_row = db.execute("SELECT chapter_vol_map FROM series WHERE id=?",
+                           (series_id,)).fetchone()
+    if s_row and s_row["chapter_vol_map"]:
+        try:
+            cvm = json.loads(s_row["chapter_vol_map"])
+            ch_nums = {float(k) for k, v in cvm.items()
+                       if abs(float(v) - volume_num) < 0.1}
+            if ch_nums:
+                return [ch for ch in chapters
+                        if ch.get("chapterNumber") is not None
+                        and float(ch["chapterNumber"]) in ch_nums]
+        except Exception:
+            pass
+
+    # 3. MangaDex chapters table fallback
     with get_db() as db:
         rows = db.execute(
             "SELECT chapter_num FROM mangadex_chapters WHERE series_id=? AND volume_num=?",
@@ -237,11 +385,14 @@ def _ch_sort_key(path: str) -> float:
 def _vol_chapter_cbzs(manga_dir: str, volume_num: float) -> list[str]:
     """Return sorted list of chapter CBZ paths belonging to a volume."""
     vol_int = int(volume_num)
+    frac = volume_num - vol_int
+    # Use exact match for non-integer volumes (e.g. Vol.1.5), word boundary for integers
+    vol_pat = rf"Vol\.{volume_num}" if frac else rf"Vol\.{vol_int}\b"
     paths = [
         os.path.join(manga_dir, fname)
         for fname in os.listdir(manga_dir)
         if fname.lower().endswith(".cbz")
-        and re.search(rf"Vol\.{vol_int}\b", fname, re.IGNORECASE)
+        and re.search(vol_pat, fname, re.IGNORECASE)
     ]
     return sorted(paths, key=_ch_sort_key)
 
@@ -250,8 +401,8 @@ def _chapter_cbz(manga_dir: str, chapter_num: float) -> str | None:
     """Find the CBZ file for a specific chapter number in manga_dir."""
     ch_int = int(chapter_num)
     frac   = chapter_num - ch_int
-    # Match Ch.N or Ch.N.M (e.g. Ch.5, Ch.5.5)
-    pattern = rf"Ch\.{ch_int}(?:\.\d+)?\b" if frac == 0 else rf"Ch\.{chapter_num}"
+    # Match exact chapter: Ch.5 for integer, Ch.5.5 for decimal
+    pattern = rf"Ch\.{ch_int}\b" if frac == 0 else rf"Ch\.{chapter_num}"
     for fname in os.listdir(manga_dir):
         if not fname.lower().endswith(".cbz"):
             continue
@@ -321,17 +472,23 @@ async def suwayomi_grab(series_id: int, volume_num: float) -> bool:
 
     if not c or not s:
         return False
-    if not s["mangadex_id"]:
-        log.debug("Series %d has no mangadex_id — skipping DDL", series_id)
+    source_info = _get_series_source(series_id, dict(s))
+    if not source_info:
+        log.debug("Series %d has no Suwayomi source — skipping DDL", series_id)
         return False
     if existing:
         log.debug("suwayomi_grab: active job already exists for series %d vol %s", series_id, volume_num)
         return True   # already in queue, treat as success
 
     lang = s["ddl_language"] or get_cfg("ddl_language", "en")
+    src_name = source_info.get("source_name", "MangaDex")
 
     try:
-        manga_id  = await find_or_add_manga(c, s["mangadex_id"], s["title"], lang)
+        manga_id = await find_or_add_manga(
+            c, series_id, s["title"], lang,
+            mangadex_uuid=s.get("mangadex_id"),
+            source_name=src_name,
+        )
         chapters  = await fetch_chapters(c, manga_id)
         vol_chs   = _chapters_for_volume(chapters, volume_num, series_id)
 
@@ -394,8 +551,9 @@ async def suwayomi_chapter_grab(series_id: int, chapter_num: float) -> bool:
 
     if not c or not s:
         return False
-    if not s["mangadex_id"]:
-        log.debug("Series %d has no mangadex_id — skipping DDL chapter grab", series_id)
+    source_info = _get_series_source(series_id, dict(s))
+    if not source_info:
+        log.debug("Series %d has no Suwayomi source — skipping DDL chapter grab", series_id)
         return False
     if existing:
         log.debug("suwayomi_chapter_grab: active job already exists for series %d ch %s",
@@ -403,9 +561,14 @@ async def suwayomi_chapter_grab(series_id: int, chapter_num: float) -> bool:
         return True
 
     lang = s["ddl_language"] or get_cfg("ddl_language", "en")
+    src_name = source_info.get("source_name", "MangaDex")
 
     try:
-        manga_id = await find_or_add_manga(c, s["mangadex_id"], s["title"], lang)
+        manga_id = await find_or_add_manga(
+            c, series_id, s["title"], lang,
+            mangadex_uuid=s.get("mangadex_id"),
+            source_name=src_name,
+        )
         chapters = await fetch_chapters(c, manga_id)
 
         matched = [ch for ch in chapters
@@ -714,7 +877,16 @@ async def _suwayomi_sync_series(c: dict, s: dict) -> tuple[int, int]:
 
     lang = s.get("ddl_language") or get_cfg("ddl_language", "en")
 
-    manga_id = await find_or_add_manga(c, s["mangadex_id"], s["title"], lang)
+    source_info = _get_series_source(s["id"], s)
+    if not source_info:
+        return 0, 0
+    src_name = source_info.get("source_name", "MangaDex")
+
+    manga_id = await find_or_add_manga(
+        c, s["id"], s["title"], lang,
+        mangadex_uuid=s.get("mangadex_id"),
+        source_name=src_name,
+    )
     chapters = await fetch_chapters(c, manga_id)
 
     if not chapters:
@@ -849,9 +1021,13 @@ async def suwayomi_monitor_loop():
             if c:
                 with get_db() as db:
                     candidates = db.execute(
-                        "SELECT id, title, mangadex_id, ddl_language,"
-                        " chapter_vol_map, status"
-                        " FROM series WHERE monitored=1 AND mangadex_id IS NOT NULL"
+                        "SELECT s.id, s.title, s.mangadex_id, s.ddl_language,"
+                        " s.chapter_vol_map, s.status"
+                        " FROM series s"
+                        " WHERE s.monitored=1"
+                        " AND (s.mangadex_id IS NOT NULL"
+                        "      OR EXISTS (SELECT 1 FROM suwayomi_sources ss"
+                        "                 WHERE ss.series_id=s.id))"
                     ).fetchall()
 
                 vol_total = ch_total = 0
@@ -895,7 +1071,7 @@ async def list_sources():
 
 @router.post("/api/suwayomi/jobs/{job_id}/retry")
 async def retry_suwayomi_job(job_id: int):
-    """Reset a failed DDL job back to queued so it will be retried on the next poll."""
+    """Reset a failed DDL job back to queued and re-enqueue downloads in Suwayomi."""
     with get_db() as db:
         job = db.execute(
             "SELECT * FROM suwayomi_downloads WHERE id=? AND status='error'", (job_id,)
@@ -903,6 +1079,7 @@ async def retry_suwayomi_job(job_id: int):
         if not job:
             return JSONResponse({"ok": False, "message": "Job not found or not in error state"},
                                 status_code=404)
+        c = get_suwayomi_client(db)
         db.execute(
             "UPDATE suwayomi_downloads SET status='queued', error=NULL, progress=0 WHERE id=?",
             (job_id,),
@@ -920,6 +1097,21 @@ async def retry_suwayomi_job(job_id: int):
                 " AND status NOT IN ('downloaded','grabbed')",
                 (job["series_id"], job["chapter_num"]),
             )
+
+    # Re-enqueue the chapter downloads in Suwayomi so they actually retry
+    if c:
+        try:
+            chapter_ids = json.loads(job["chapter_ids"]) if job["chapter_ids"] else []
+            if chapter_ids:
+                await _gql(c, """
+                    mutation($ids: [Int!]!) {
+                        enqueueChapterDownloads(input: {ids: $ids}) { clientMutationId }
+                    }
+                """, {"ids": chapter_ids})
+                await _gql(c, "mutation { startDownloader(input: {}) { clientMutationId } }")
+        except Exception as e:
+            log.warning("retry_suwayomi_job: re-enqueue failed for job %d: %s", job_id, e)
+
     return JSONResponse({"ok": True})
 
 
@@ -958,10 +1150,14 @@ async def match_series_endpoint(series_id: int):
     if not c or not s:
         return JSONResponse({"ok": False, "message": "Not found"}, status_code=404)
     try:
-        lang     = s["ddl_language"] or get_cfg("ddl_language", "en")
-        manga_id = await find_or_add_manga(c, s["mangadex_id"], s["title"], lang)
-        with get_db() as db:
-            db.execute("UPDATE series SET suwayomi_id=? WHERE id=?", (manga_id, series_id))
+        lang = s["ddl_language"] or get_cfg("ddl_language", "en")
+        source_info = _get_series_source(series_id, dict(s))
+        src_name = source_info["source_name"] if source_info else "MangaDex"
+        manga_id = await find_or_add_manga(
+            c, series_id, s["title"], lang,
+            mangadex_uuid=s.get("mangadex_id"),
+            source_name=src_name,
+        )
         return JSONResponse({"ok": True, "suwayomi_id": manga_id})
     except Exception as e:
         return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
@@ -984,3 +1180,234 @@ async def list_downloads():
             " ORDER BY sd.created_at DESC LIMIT 100"
         ).fetchall()
     return JSONResponse({"downloads": [dict(r) for r in rows]})
+
+
+# ── Extension management ─────────────────────────────────────────────────────
+
+RECOMMENDED_EXTENSIONS = [
+    {"pattern": "mangadex", "reason": "Largest fan translation library"},
+    {"pattern": "mangaplus", "reason": "Official Shueisha (Shonen Jump, etc.)"},
+    {"pattern": "comicwalker", "reason": "Official Kadokawa publisher"},
+]
+
+
+@router.get("/api/suwayomi/extensions")
+async def list_extensions():
+    """List all available Suwayomi extensions with install status."""
+    with get_db() as db:
+        c = get_suwayomi_client(db)
+    if not c:
+        return JSONResponse({"ok": False, "message": "No Suwayomi client configured"})
+    try:
+        data = await _gql(c, """
+            { extensions { nodes { pkgName name lang isInstalled hasUpdate isNsfw isObsolete } } }
+        """)
+        extensions = data.get("extensions", {}).get("nodes", [])
+        for ext in extensions:
+            ext["sourceType"] = classify_source(ext.get("name", ""))
+        return JSONResponse({"ok": True, "extensions": extensions})
+    except Exception as e:
+        return JSONResponse({"ok": False, "message": str(e)})
+
+
+@router.post("/api/suwayomi/extensions/refresh")
+async def refresh_extensions():
+    """Refresh the extension catalog from Suwayomi's configured repository."""
+    with get_db() as db:
+        c = get_suwayomi_client(db)
+    if not c:
+        return JSONResponse({"ok": False, "message": "No Suwayomi client configured"})
+    try:
+        data = await _gql(c, """
+            mutation { fetchExtensions(input: {}) { extensions { pkgName name isInstalled } } }
+        """)
+        extensions = (data.get("fetchExtensions") or {}).get("extensions") or []
+        return JSONResponse({"ok": True, "count": len(extensions)})
+    except Exception as e:
+        return JSONResponse({"ok": False, "message": str(e)})
+
+
+@router.post("/api/suwayomi/extensions/{pkg_name}/install")
+async def install_extension(pkg_name: str):
+    """Install a Suwayomi extension by package name."""
+    with get_db() as db:
+        c = get_suwayomi_client(db)
+    if not c:
+        return JSONResponse({"ok": False, "message": "No Suwayomi client configured"})
+    try:
+        await _gql(c, """
+            mutation($pkg: String!) {
+                updateExtension(input: {id: $pkg, patch: {install: true}}) {
+                    extension { pkgName name isInstalled }
+                }
+            }
+        """, {"pkg": pkg_name})
+        _SOURCE_CACHE.clear()  # invalidate cache after extension change
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        return JSONResponse({"ok": False, "message": str(e)})
+
+
+@router.post("/api/suwayomi/extensions/{pkg_name}/update")
+async def update_extension(pkg_name: str):
+    """Update a Suwayomi extension."""
+    with get_db() as db:
+        c = get_suwayomi_client(db)
+    if not c:
+        return JSONResponse({"ok": False, "message": "No Suwayomi client configured"})
+    try:
+        await _gql(c, """
+            mutation($pkg: String!) {
+                updateExtension(input: {id: $pkg, patch: {update: true}}) {
+                    extension { pkgName name isInstalled }
+                }
+            }
+        """, {"pkg": pkg_name})
+        _SOURCE_CACHE.clear()
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        return JSONResponse({"ok": False, "message": str(e)})
+
+
+@router.post("/api/suwayomi/extensions/{pkg_name}/uninstall")
+async def uninstall_extension(pkg_name: str):
+    """Uninstall a Suwayomi extension."""
+    with get_db() as db:
+        c = get_suwayomi_client(db)
+    if not c:
+        return JSONResponse({"ok": False, "message": "No Suwayomi client configured"})
+    try:
+        await _gql(c, """
+            mutation($pkg: String!) {
+                updateExtension(input: {id: $pkg, patch: {uninstall: true}}) {
+                    extension { pkgName name isInstalled }
+                }
+            }
+        """, {"pkg": pkg_name})
+        _SOURCE_CACHE.clear()
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        return JSONResponse({"ok": False, "message": str(e)})
+
+
+@router.post("/api/suwayomi/extensions/install-recommended")
+async def install_recommended():
+    """Install core recommended extensions (MangaDex, Manga Plus, etc.)."""
+    with get_db() as db:
+        c = get_suwayomi_client(db)
+    if not c:
+        return JSONResponse({"ok": False, "message": "No Suwayomi client configured"})
+    try:
+        # Refresh catalog first
+        await _gql(c, "mutation { fetchExtensions(input: {}) { extensions { pkgName } } }")
+        # List all available extensions
+        data = await _gql(c, """
+            { extensions(filter: {isInstalled: {eq: false}}) {
+                nodes { pkgName name lang }
+            } }
+        """)
+        available = data.get("extensions", {}).get("nodes", [])
+        installed = []
+        for rec in RECOMMENDED_EXTENSIONS:
+            for ext in available:
+                if rec["pattern"] in ext.get("name", "").lower() and ext.get("lang") in ("en", "all"):
+                    try:
+                        await _gql(c, """
+                            mutation($pkg: String!) {
+                                updateExtension(input: {id: $pkg, patch: {install: true}}) {
+                                    extension { pkgName name }
+                                }
+                            }
+                        """, {"pkg": ext["pkgName"]})
+                        installed.append(ext["name"])
+                    except Exception:
+                        pass
+                    break
+        _SOURCE_CACHE.clear()
+        return JSONResponse({"ok": True, "installed": installed})
+    except Exception as e:
+        return JSONResponse({"ok": False, "message": str(e)})
+
+
+# ── Per-series source management ─────────────────────────────────────────────
+
+@router.get("/api/series/{series_id}/suwayomi/search")
+async def search_sources_for_series(series_id: int, source: str = ""):
+    """Search installed Suwayomi sources for a series title. Returns matches grouped by source."""
+    with get_db() as db:
+        s = db.execute("SELECT title, ddl_language FROM series WHERE id=?", (series_id,)).fetchone()
+        c = get_suwayomi_client(db)
+    if not c or not s:
+        return JSONResponse({"ok": False, "message": "Not found"}, status_code=404)
+
+    lang = s["ddl_language"] or get_cfg("ddl_language", "en")
+    title = s["title"]
+
+    try:
+        data = await _gql(c, "{ sources { nodes { id name lang } } }")
+        all_sources = data.get("sources", {}).get("nodes", [])
+
+        # Filter to requested source or all non-NSFW sources
+        if source:
+            sources = [src for src in all_sources if source.lower() in src.get("name", "").lower()]
+        else:
+            sources = [src for src in all_sources if src.get("lang") in (lang, "all", "en")]
+
+        results = []
+        for src in sources[:10]:  # limit to 10 sources to avoid rate limits
+            try:
+                matches = await _search_source(c, src["id"], title)
+                for m in matches[:5]:  # top 5 per source
+                    results.append({
+                        "source_id": src["id"],
+                        "source_name": src["name"],
+                        "source_lang": src["lang"],
+                        "source_type": classify_source(src["name"]),
+                        "manga_id": int(m["id"]),
+                        "title": m.get("title", ""),
+                        "url": m.get("url", ""),
+                        "thumbnail": m.get("thumbnailUrl", ""),
+                    })
+            except Exception:
+                continue
+
+        # Sort: official first, then aggregator, then fan
+        type_order = {"official": 0, "aggregator": 1, "fan": 2}
+        results.sort(key=lambda r: type_order.get(r["source_type"], 9))
+        return JSONResponse({"ok": True, "results": results})
+    except Exception as e:
+        return JSONResponse({"ok": False, "message": str(e)})
+
+
+@router.post("/api/series/{series_id}/suwayomi/link")
+async def link_series_to_source(series_id: int, request: Request):
+    """Link a series to a specific Suwayomi source + manga."""
+    body = await request.json()
+    source_id = body.get("source_id", "")
+    source_name = body.get("source_name", "")
+    manga_id = body.get("suwayomi_manga_id")
+    if not source_id or not manga_id:
+        return JSONResponse({"ok": False, "message": "source_id and suwayomi_manga_id required"},
+                            status_code=400)
+    _store_source_linkage(series_id, source_name, source_id, int(manga_id))
+    return JSONResponse({"ok": True})
+
+
+@router.delete("/api/series/{series_id}/suwayomi/link/{source_id}")
+async def unlink_source(series_id: int, source_id: str):
+    """Remove a source linkage from a series."""
+    with get_db() as db:
+        db.execute("DELETE FROM suwayomi_sources WHERE series_id=? AND source_id=?",
+                   (series_id, source_id))
+    return JSONResponse({"ok": True})
+
+
+@router.get("/api/series/{series_id}/suwayomi/sources")
+async def get_series_sources(series_id: int):
+    """Get all Suwayomi sources linked to a series."""
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT * FROM suwayomi_sources WHERE series_id=? ORDER BY priority ASC",
+            (series_id,)
+        ).fetchall()
+    return JSONResponse({"ok": True, "sources": [dict(r) for r in rows]})
