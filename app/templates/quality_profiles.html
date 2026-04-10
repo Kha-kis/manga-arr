@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}Quality Profiles — Mangarr{% endblock %}
+{% block title_short %}Quality Profiles{% endblock %}
+{% block nav_settings %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div class="page-heading mb-0"><i class="bi bi-trophy"></i>Quality Profiles</div>
+  <button class="btn btn-outline-ember btn-sm" data-bs-toggle="modal" data-bs-target="#newProfileModal">
+    <i class="bi bi-plus me-1"></i>New Profile
+  </button>
+</div>
+
+<div class="row g-3">
+{% for p in profiles %}
+<div class="col-12">
+  <div class="panel mb-0">
+    <div class="panel-header d-flex align-items-center gap-2">
+      <i class="bi bi-star-fill text-gold"></i>
+      {{ p.name }}
+      {% if p.is_default %}
+        <span class="badge-status badge-downloaded text-[0.65rem]">DEFAULT</span>
+      {% endif %}
+      <div class="ms-auto d-flex gap-2">
+        <form method="POST" action="/quality-profiles/{{ p.id }}/set-default" class="d-inline">
+          <button class="btn btn-sm btn-secondary" type="submit" title="Set as default"
+                  hx-disabled-elt="this">
+            <i class="bi bi-check-circle"></i>
+          </button>
+        </form>
+        <button class="btn btn-sm btn-outline-ember" data-bs-toggle="modal"
+                data-bs-target="#editModal{{ p.id }}"><i class="bi bi-pencil"></i></button>
+        <form method="POST" action="/quality-profiles/{{ p.id }}/delete"
+              data-confirm="Delete quality profile &quot;{{ p.name }}&quot;?"
+              data-confirm-heading="Delete profile" data-confirm-ok="Delete">
+          <button class="btn btn-sm btn-danger-soft"><i class="bi bi-trash"></i></button>
+        </form>
+      </div>
+    </div>
+    <div class="panel-body">
+      <div class="row g-3">
+        <div class="col-auto">
+          <div class="form-label">Quality Order</div>
+          <div class="d-flex gap-2 flex-wrap">
+            {% set quals = p.qualities | from_json([]) %}
+            {% for q in quals %}
+            <span class="badge-status badge-downloaded">{{ q }}</span>
+            {% endfor %}
+          </div>
+        </div>
+        <div class="col-auto">
+          <div class="form-label">Cutoff</div>
+          <span class="badge-status badge-grabbed">{{ p.cutoff or 'None' }}</span>
+        </div>
+        <div class="col-auto">
+          <div class="form-label">Upgrades</div>
+          <span class="badge-status {% if p.upgrades_allowed %}badge-downloaded{% else %}badge-wanted{% endif %}">
+            {% if p.upgrades_allowed %}Allowed{% else %}Not Allowed{% endif %}
+          </span>
+        </div>
+        <div class="col-auto">
+          <div class="form-label">Min. CF Score</div>
+          <span class="text-sm" style="color:var(--text-2)">{{ p.minimum_custom_format_score or 0 }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div class="modal fade" id="editModal{{ p.id }}" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="POST" action="/quality-profiles/{{ p.id }}">
+        <div class="modal-header">
+          <h6 class="modal-title text-ember">Edit: {{ p.name }}</h6>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Name</label>
+            <input type="text" name="name" class="form-control" value="{{ p.name }}" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Quality Order <small class="text-[color:var(--text-2)]">(best → worst)</small></label>
+            <div id="qualitySort{{ p.id }}" class="d-flex gap-2 flex-wrap mb-2">
+              {% set quals = p.qualities | from_json([]) %}
+              {% for q in quals %}
+              <span class="badge-status badge-downloaded sortable-quality cursor-grab">{{ q }}</span>
+              {% endfor %}
+            </div>
+            <input type="hidden" name="qualities" id="qualitiesInput{{ p.id }}" value="{{ p.qualities }}">
+            <small class="text-[color:var(--text-2)]">Drag to reorder. Available: {{ quality_order | join(', ') }}</small>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Cutoff Quality</label>
+            <select name="cutoff" class="form-select">
+              <option value="">None</option>
+              {% for q in quality_order %}
+              <option value="{{ q }}" {% if p.cutoff == q %}selected{% endif %}>{{ q }}</option>
+              {% endfor %}
+            </select>
+            <div class="form-text">Won't upgrade once this quality is met.</div>
+          </div>
+          <div class="mb-3">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" name="upgrades_allowed"
+                     value="1" {% if p.upgrades_allowed %}checked{% endif %} id="ua{{ p.id }}">
+              <label class="form-check-label" for="ua{{ p.id }}">Allow Upgrades</label>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Minimum Custom Format Score</label>
+            <input type="number" name="minimum_custom_format_score" class="form-control"
+                   value="{{ p.minimum_custom_format_score or 0 }}">
+            <div class="form-text">Releases scoring below this are rejected.</div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-ember btn-sm">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+{% if not profiles %}
+<div class="col-12">
+  <div class="empty-state">
+    <div class="empty-icon"><i class="bi bi-trophy"></i></div>
+    <p class="fw-semibold">No quality profiles yet</p>
+    <p class="text-sm" style="color:var(--text-3)">Create a profile to control what quality formats Mangarr grabs and upgrades.</p>
+  </div>
+</div>
+{% endif %}
+</div>
+
+<!-- New Profile Modal -->
+<div class="modal fade" id="newProfileModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="POST" action="/quality-profiles">
+        <div class="modal-header">
+          <h6 class="modal-title text-ember"><i class="bi bi-plus-circle me-2"></i>New Quality Profile</h6>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Name</label>
+            <input type="text" name="name" class="form-control" placeholder="e.g. High Quality" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Quality Order <small class="text-[color:var(--text-2)]">(comma-separated, best first)</small></label>
+            <input type="text" name="qualities" class="form-control"
+                   value='["cbz","epub","cbr","pdf"]' placeholder='["cbz","epub","cbr","pdf"]'>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Cutoff</label>
+            <select name="cutoff" class="form-select">
+              <option value="">None</option>
+              {% for q in quality_order %}
+              <option value="{{ q }}">{{ q }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" name="upgrades_allowed" value="1" checked id="ua_new">
+            <label class="form-check-label" for="ua_new">Allow Upgrades</label>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Minimum Custom Format Score</label>
+            <input type="number" name="minimum_custom_format_score" class="form-control" value="0">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-ember btn-sm">Create</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

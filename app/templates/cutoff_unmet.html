@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Cutoff Unmet — Mangarr{% endblock %}
+{% block title_short %}Cutoff Unmet{% endblock %}
+{% block nav_wanted %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
+  <div class="page-heading mb-0">
+    <i class="bi bi-arrow-up-circle text-gold"></i>Cutoff Unmet
+    {% if total %}
+    <span class="ms-1 text-xs align-middle rounded-full px-2 py-px" style="background:var(--gold-bg);color:var(--gold)">{{ total }}</span>
+    {% endif %}
+  </div>
+  <div class="d-flex align-items-center gap-2">
+    {% if cutoff_unmet %}
+    <span class="text-sm" style="color:var(--text-2)">{{ total }} volume{% if total != 1 %}s{% endif %} below quality cutoff</span>
+    <button class="btn btn-ember btn-sm"
+            x-data="{ busy: false, done: 0, n: 0 }"
+            :disabled="busy"
+            @click="
+              if (!confirm('Search for upgrades for all {{ total }} volumes below cutoff?')) return;
+              const forms = document.querySelectorAll('form[action*=\'/trigger-upgrade\']');
+              n = forms.length; done = 0; busy = true;
+              (async () => {
+                for (const f of forms) {
+                  try { await fetch(f.action, {method:'POST', headers:{'X-CSRFToken': _csrfToken()}}); } catch(e) {}
+                  done++;
+                }
+                busy = false;
+                showToast('Search triggered for ' + done + ' volumes', 'success');
+              })()
+            ">
+      <i class="bi bi-cloud-upload me-1"></i>
+      <span x-text="busy ? 'Searching… ' + done + '/' + n : 'Search All for Upgrade'">Search All for Upgrade</span>
+    </button>
+    {% endif %}
+  </div>
+</div>
+
+<div class="pill-group mb-4">
+  <a href="/wanted" class="btn btn-sm btn-secondary">
+    <i class="bi bi-bookmark-x me-1"></i>Missing
+  </a>
+  <a href="/wanted/cutoff-unmet" class="btn btn-sm btn-ember">
+    <i class="bi bi-arrow-up-circle me-1"></i>Cutoff Unmet
+  </a>
+</div>
+
+{% if cutoff_unmet %}
+<div class="table-wrap">
+  <table class="table table-sm mb-0">
+    <thead>
+      <tr>
+        <th>Series</th>
+        <th style="width:90px">Volume</th>
+        <th style="width:110px">Current Quality</th>
+        <th style="width:110px">Cutoff</th>
+        <th style="width:130px">Last Grabbed</th>
+        <th style="width:50px"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in cutoff_unmet %}
+      <tr>
+        <td>
+          <a href="/series/{{ item.series_id }}" class="fw-semibold text-ember text-sm">
+            {{ item.series_title }}
+          </a>
+        </td>
+        <td>
+          <span class="text-sm" style="color:var(--gold)">
+            {% if item.volume_num %}Vol {{ item.volume_num|vol_display }}
+            {% else %}?{% endif %}
+          </span>
+        </td>
+        <td>
+          {% set cq = item.current_quality %}
+          {% if cq == 'cbz' %}
+          <span class="badge-status badge-downloaded">CBZ</span>
+          {% elif cq in ['cbr', 'epub'] %}
+          <span class="badge-status badge-grabbed">{{ cq|upper }}</span>
+          {% elif cq in ['pdf', 'zip'] %}
+          <span class="badge-status badge-wanted">{{ cq|upper }}</span>
+          {% elif cq %}
+          <span class="badge-status badge-unknown">{{ cq|upper }}</span>
+          {% else %}
+          <span style="color:var(--text-3)">—</span>
+          {% endif %}
+        </td>
+        <td>
+          {% set ec = item.effective_cutoff %}
+          {% if ec == 'cbz' %}
+          <span class="badge-status badge-downloaded">{{ ec|upper }}</span>
+          {% elif ec in ['cbr', 'epub'] %}
+          <span class="badge-status badge-grabbed">{{ ec|upper }}</span>
+          {% elif ec in ['pdf', 'zip'] %}
+          <span class="badge-status badge-wanted">{{ ec|upper }}</span>
+          {% else %}
+          <span class="badge-status badge-unknown">{{ ec|upper }}</span>
+          {% endif %}
+        </td>
+        <td class="text-xs whitespace-nowrap" style="color:var(--text-2)">
+          {{ item.grabbed_at | format_date if item.grabbed_at else '—' }}
+        </td>
+        <td class="text-end pe-2">
+          <button class="btn btn-sm p-0 px-1 text-sm leading-none bg-transparent border-0"
+                  title="Search for upgrade"
+                  style="color:var(--ember)"
+                  hx-post="/series/{{ item.series_id }}/volumes/{{ item.id }}/trigger-upgrade"
+                  hx-swap="none"
+                  hx-disabled-elt="this"
+                  hx-on::after-request="showToast(event.detail.successful ? 'Upgrade search queued' : 'Failed', event.detail.successful ? 'success' : 'error')">
+            <i class="bi bi-arrow-up-circle"></i>
+          </button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% else %}
+<div class="empty-state">
+  <div class="empty-icon"><i class="bi bi-trophy text-jade"></i></div>
+  <p class="fw-semibold">All volumes meet quality cutoff!</p>
+  <p class="text-sm" style="color:var(--text-3)">
+    No downloaded volumes are below their series quality cutoff.
+    Set a quality cutoff on a series or quality profile to enable cutoff tracking.
+  </p>
+  <a href="/" class="btn btn-ember btn-sm mt-2"><i class="bi bi-collection me-1"></i>Back to Library</a>
+</div>
+{% endif %}
+{% endblock %}
+

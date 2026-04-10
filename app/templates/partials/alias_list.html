@@ -1,0 +1,28 @@
+{#
+  Partial: partials/alias_list.html
+  Context: series_id (int), aliases (list of alias rows)
+#}
+<div id="alias-list">
+{% if aliases %}
+<div class="panel mb-2">
+  {% for a in aliases %}
+  <div class="d-flex align-items-center justify-content-between px-3 py-2"
+       {% if not loop.last %}style="border-bottom:1px solid var(--edge)"{% endif %}>
+    <span class="text-ember text-sm">{{ a['alias'] }}</span>
+    <button class="btn-icon text-ruby"
+            aria-label="Remove alias"
+            title="Remove alias"
+            hx-post="/series/{{ series_id }}/aliases/{{ a['id'] }}/delete"
+            hx-target="#alias-list"
+            hx-swap="outerHTML"
+            hx-disabled-elt="this"
+            hx-confirm="Remove this alias?">
+      <i class="bi bi-x"></i>
+    </button>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="text-muted small">No aliases yet.</p>
+{% endif %}
+</div>

@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block title %}Calendar — Mangarr{% endblock %}
+{% block title_short %}Calendar{% endblock %}
+{% block nav_calendar %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
+  <div class="page-heading mb-0">
+    <i class="bi bi-calendar3"></i>Calendar
+  </div>
+  <span class="text-xs" style="color:var(--text-2)">
+    {{ releasing|length }} releasing · {{ upcoming|length }} upcoming · {{ hiatus|length }} hiatus
+  </span>
+</div>
+
+
+{# ── Releasing Series ─────────────────────────────────────────────────────── #}
+{% if releasing %}
+<div class="section-label mb-3">
+  <i class="bi bi-broadcast text-ember me-1"></i>Currently Releasing
+  <span class="ms-1 text-2xs" style="color:var(--text-2); text-transform:none; font-weight:400">{{ releasing|length }} series</span>
+</div>
+<div class="row g-3 mb-4">
+  {% for s in releasing %}
+  <div class="col-12 col-md-6 col-xl-4">
+    <div class="panel h-100 mb-0">
+      <div class="d-flex gap-3 p-3">
+        {% if s.cover_url %}
+        <img src="{{ s.cover_url }}" alt="" style="width:56px; height:80px; object-fit:cover; border-radius:4px; flex-shrink:0">
+        {% else %}
+        <div style="width:56px; height:80px; background:var(--ink-4); border-radius:4px; flex-shrink:0;
+                    display:flex; align-items:center; justify-content:center">
+          <i class="bi bi-book text-lg" style="color:var(--ember)"></i>
+        </div>
+        {% endif %}
+        <div class="flex-grow-1 min-width-0">
+          <a href="/series/{{ s.id }}" class="text-ember fw-bold d-block mb-1"
+             class="text-sm" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
+            {{ s.title }}
+          </a>
+          <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+            <span class="badge-status badge-releasing text-2xs">Releasing</span>
+            {% if s.total_volumes %}
+            <span class="text-xs" style="color:var(--text-2)">{{ s.have }}/{{ s.total_volumes }} vols</span>
+            {% else %}
+            <span class="text-xs" style="color:var(--text-2)">{{ s.have }} downloaded</span>
+            {% endif %}
+          </div>
+          {% if s.total_volumes %}
+          <div class="vol-bar mb-1" style="height:4px">
+            <div class="fill {% if s.have == s.total_volumes %}complete{% endif %}"
+                 style="width:{{ [100, (s.have / s.total_volumes * 100)|int]|min }}%"></div>
+          </div>
+          {% endif %}
+          {% if s.wanted %}
+          <div class="mt-1">
+            <span class="text-xs" style="color:var(--text-2)">Missing: </span>
+            {% set shown = s.wanted[:8] %}
+            {% for vn in shown %}
+            <span class="text-2xs" style="color:var(--ruby)">Vol {{ vn|vol_display }}</span>{% if not loop.last %}<span style="color:var(--text-3)">, </span>{% endif %}
+            {% endfor %}
+            {% if s.wanted|length > 8 %}
+            <span class="text-2xs" style="color:var(--text-3)"> +{{ s.wanted|length - 8 }} more</span>
+            {% endif %}
+          </div>
+          {% endif %}
+          {% if s.grabbed %}
+          <div class="mt-1">
+            <span class="text-xs" style="color:var(--text-2)">Grabbing: </span>
+            {% for vn in s.grabbed[:4] %}
+            <span class="text-2xs" style="color:var(--gold)">Vol {{ vn|vol_display }}</span>{% if not loop.last %}<span style="color:var(--text-3)">, </span>{% endif %}
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+      </div>
+      <div class="px-3 pb-3 d-flex gap-2">
+        <button class="btn btn-grab btn-sm" {% if not s.wanted %}disabled{% endif %}
+                hx-post="/series/{{ s.id }}/grab-all-wanted"
+                hx-swap="none"
+                hx-disabled-elt="this"
+                hx-on::after-request="showToast(event.detail.successful ? 'Search queued' : 'Failed', event.detail.successful ? 'success' : 'error')">
+          <i class="bi bi-cloud-download me-1"></i>Grab Missing
+        </button>
+        <a href="/series/{{ s.id }}" class="btn btn-outline-ember btn-sm">
+          <i class="bi bi-book me-1"></i>View
+        </a>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# ── Upcoming (Not Yet Released) ─────────────────────────────────────────── #}
+{% if upcoming %}
+<div class="section-label mt-2 mb-3">
+  <i class="bi bi-hourglass text-ember me-1"></i>Not Yet Released
+  <span class="ms-1 text-2xs" style="color:var(--text-2); text-transform:none; font-weight:400">{{ upcoming|length }} series</span>
+</div>
+<div class="table-wrap mb-4">
+  {% for s in upcoming %}
+  <div class="d-flex align-items-center gap-3 px-3 py-2 text-sm" style="border-bottom:1px solid var(--edge)">
+    <a href="/series/{{ s.id }}" class="text-ember fw-semibold flex-grow-1"
+       style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
+      {{ s.title }}
+    </a>
+    {% if s.pub_year %}
+    <span class="text-xs" style="color:var(--text-2); white-space:nowrap">{{ s.pub_year }}</span>
+    {% endif %}
+    {% if s.total_volumes %}
+    <span class="text-xs" style="color:var(--text-2); white-space:nowrap">{{ s.total_volumes }} vols planned</span>
+    {% endif %}
+    <span class="badge-status badge-not_yet_released" style="white-space:nowrap">Not Yet Released</span>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# ── Hiatus ──────────────────────────────────────────────────────────────── #}
+{% if hiatus %}
+<div class="section-label mt-2 mb-3">
+  <i class="bi bi-pause-circle text-ember me-1"></i>On Hiatus
+  <span class="ms-1 text-2xs" style="color:var(--text-2); text-transform:none; font-weight:400">{{ hiatus|length }} series</span>
+</div>
+<div class="table-wrap mb-4">
+  {% for s in hiatus %}
+  <div class="d-flex align-items-center gap-3 px-3 py-2 text-sm" style="border-bottom:1px solid var(--edge)">
+    <a href="/series/{{ s.id }}" class="text-ember fw-semibold flex-grow-1"
+       style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
+      {{ s.title }}
+    </a>
+    {% if s.have and s.total %}
+    <span class="text-xs" style="color:var(--text-2); white-space:nowrap">{{ s.have }}/{{ s.total }} vols</span>
+    {% endif %}
+    <span class="badge-status badge-hiatus" style="white-space:nowrap">Hiatus</span>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if not releasing and not upcoming and not hiatus %}
+<div class="empty-state">
+  <div class="empty-icon"><i class="bi bi-calendar3"></i></div>
+  <p class="fw-semibold">Nothing here yet</p>
+  <p class="text-sm" style="color:var(--text-3)">
+    Add manga series from the <a href="/search" class="text-ember">Add</a> page.
+    Releasing series with missing volumes will appear here.
+  </p>
+</div>
+{% endif %}
+{% endblock %}

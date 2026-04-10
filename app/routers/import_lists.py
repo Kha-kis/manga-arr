@@ -1,0 +1,427 @@
+"""Import Lists — auto-add series from external lists (Sonarr parity)."""
+import json
+import asyncio
+import httpx
+from datetime import datetime
+from fastapi import APIRouter, Form, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from routers._templates import templates
+
+from shared import get_db, from_json
+
+router = APIRouter()
+
+LIST_TYPES = [
+    ("anilist_user",      "AniList — User List"),
+    ("anilist_top",       "AniList — Top 100"),
+    ("anilist_popular",   "AniList — Popular"),
+    ("mal_user",          "MyAnimeList — User List"),
+    ("custom_rss",        "Custom RSS Feed"),
+]
+
+
+def _all_lists(db):
+    lists = db.execute("SELECT * FROM import_lists ORDER BY name").fetchall()
+    result = []
+    for lst in lists:
+        qp = db.execute(
+            "SELECT name FROM quality_profiles WHERE id=?", (lst['quality_profile_id'],)
+        ).fetchone() if lst['quality_profile_id'] else None
+        rf = db.execute(
+            "SELECT path FROM root_folders WHERE id=?", (lst['root_folder_id'],)
+        ).fetchone() if lst['root_folder_id'] else None
+        result.append({
+            **dict(lst),
+            'quality_profile_name': qp['name'] if qp else 'Default',
+            'root_folder_path':     rf['path'] if rf else 'Default',
+        })
+    return result
+
+
+# ── List ──────────────────────────────────────────────────────────────────────
+@router.get("/import-lists", response_class=HTMLResponse)
+async def import_lists_page(request: Request):
+    with get_db() as db:
+        lists       = _all_lists(db)
+        profiles    = db.execute("SELECT id, name FROM quality_profiles ORDER BY name").fetchall()
+        root_folders = db.execute("SELECT id, path FROM root_folders ORDER BY path").fetchall()
+    return templates.TemplateResponse(request, "import_lists.html", {
+        "lists":        lists,
+        "list_types":   LIST_TYPES,
+        "profiles":     profiles,
+        "root_folders": root_folders,
+    })
+
+
+# ── Create ────────────────────────────────────────────────────────────────────
+@router.post("/import-lists")
+async def create_import_list(
+    name: str = Form(...),
+    type: str = Form(...),
+    enabled: int = Form(1),
+    quality_profile_id: str = Form(""),
+    root_folder_id: str = Form(""),
+    monitor_mode: str = Form("all"),
+    settings: str = Form("{}"),
+):
+    try:
+        settings_dict = json.loads(settings)
+    except Exception:
+        settings_dict = {}
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO import_lists(name,type,enabled,quality_profile_id,root_folder_id,"
+            " monitor_mode,settings) VALUES(?,?,?,?,?,?,?)",
+            (name.strip(), type, enabled,
+             int(quality_profile_id) if quality_profile_id.isdigit() else None,
+             int(root_folder_id) if root_folder_id.isdigit() else None,
+             monitor_mode, json.dumps(settings_dict))
+        )
+    return RedirectResponse("/import-lists", status_code=303)
+
+
+# ── Sync (manual trigger) — defined BEFORE /{list_id} to avoid path conflict ──
+@router.post("/import-lists/sync")
+async def sync_import_lists(request: Request):
+    asyncio.create_task(_sync_all_lists())
+    if request.headers.get("HX-Request") == "true":
+        from fastapi.responses import Response as _Resp
+        return _Resp(headers={"HX-Trigger": json.dumps({
+            "showToast": {"msg": "Sync started in background", "type": "success"}
+        })})
+    return JSONResponse({"ok": True, "message": "Sync started in background"})
+
+
+# ── Edit ──────────────────────────────────────────────────────────────────────
+@router.post("/import-lists/{list_id}")
+async def edit_import_list(
+    list_id: int,
+    name: str = Form(...),
+    type: str = Form(...),
+    enabled: int = Form(1),
+    quality_profile_id: str = Form(""),
+    root_folder_id: str = Form(""),
+    monitor_mode: str = Form("all"),
+    settings: str = Form("{}"),
+):
+    try:
+        settings_dict = json.loads(settings)
+    except Exception:
+        settings_dict = {}
+    with get_db() as db:
+        db.execute(
+            "UPDATE import_lists SET name=?,type=?,enabled=?,quality_profile_id=?,"
+            " root_folder_id=?,monitor_mode=?,settings=? WHERE id=?",
+            (name.strip(), type, enabled,
+             int(quality_profile_id) if quality_profile_id.isdigit() else None,
+             int(root_folder_id) if root_folder_id.isdigit() else None,
+             monitor_mode, json.dumps(settings_dict), list_id)
+        )
+    return RedirectResponse("/import-lists", status_code=303)
+
+
+# ── Delete ────────────────────────────────────────────────────────────────────
+@router.post("/import-lists/{list_id}/delete")
+async def delete_import_list(request: Request, list_id: int):
+    with get_db() as db:
+        db.execute("DELETE FROM import_lists WHERE id=?", (list_id,))
+    if request.headers.get("HX-Request") == "true":
+        from fastapi.responses import Response as _Resp
+        return _Resp(headers={"HX-Refresh": "true"})
+    return RedirectResponse("/import-lists", status_code=303)
+
+
+@router.post("/import-lists/{list_id}/sync")
+async def sync_single_import_list(request: Request, list_id: int):
+    with get_db() as db:
+        lst = db.execute("SELECT * FROM import_lists WHERE id=?", (list_id,)).fetchone()
+    if not lst:
+        if request.headers.get("HX-Request") == "true":
+            from fastapi.responses import Response as _Resp
+            return _Resp(headers={"HX-Trigger": json.dumps({
+                "showToast": {"msg": "List not found", "type": "error"}
+            })}, status_code=404)
+        return JSONResponse({"ok": False, "message": "List not found"})
+    asyncio.create_task(_sync_list(dict(lst)))
+    if request.headers.get("HX-Request") == "true":
+        from fastapi.responses import Response as _Resp
+        return _Resp(headers={"HX-Trigger": json.dumps({
+            "showToast": {"msg": f"Sync started for {lst['name']}", "type": "success"}
+        })})
+    return RedirectResponse("/import-lists", status_code=303)
+
+
+async def _sync_all_lists():
+    """Background task: sync all enabled import lists."""
+    with get_db() as db:
+        lists = [dict(r) for r in db.execute("SELECT * FROM import_lists WHERE enabled=1").fetchall()]
+    for lst in lists:
+        try:
+            await _sync_list(lst)
+        except Exception as e:
+            print(f"[ImportList:{lst['name']}] Sync error: {e}")
+
+
+async def _sync_list(lst: dict):
+    """Fetch series from an import list and add any not already in library."""
+    t        = lst['type']
+    settings = from_json(lst.get('settings'), {})
+
+    try:
+        series_list = await _fetch_list(t, settings)
+    except Exception as e:
+        print(f"[ImportList:{lst['name']}] Fetch error: {e}")
+        return
+
+    if not series_list:
+        return
+
+    added_entries: list[tuple[int, str, str, str, int | None]] = []  # (series_id, title, search_pattern, cover_url, anilist_id)
+
+    with get_db() as db:
+        # Update last_sync
+        db.execute("UPDATE import_lists SET last_sync=? WHERE id=?",
+                   (datetime.utcnow().isoformat(), lst['id']))
+
+        # Dedup by (anilist_id, edition_type) — same series can exist in multiple editions
+        existing_ids = {(r['anilist_id'], r['edition_type'] or 'standard') for r in db.execute(
+            "SELECT anilist_id, edition_type FROM series WHERE anilist_id IS NOT NULL"
+        ).fetchall()}
+
+        # Title-based dedup for sources without anilist_id (MAL, custom RSS)
+        existing_titles = {r['title'].lower().strip() for r in db.execute(
+            "SELECT title FROM series"
+        ).fetchall()}
+
+        for entry in series_list:
+            al_id = entry.get('anilist_id')
+            title = entry.get('title', '') or ''
+            if not title.strip():
+                continue
+            # Dedup: prefer anilist_id match; fall back to title match for MAL/RSS
+            if al_id:
+                if (al_id, 'standard') in existing_ids:
+                    continue
+            else:
+                if title.lower().strip() in existing_titles:
+                    continue
+            # Add to library
+            search_pattern = entry.get('search_pattern', title)
+            cover_url      = entry.get('cover_url', '') or ''
+            status         = entry.get('status', '')
+            total_volumes  = entry.get('total_volumes')
+            cur = db.execute(
+                "INSERT OR IGNORE INTO series(title,search_pattern,anilist_id,cover_url,"
+                " status,total_volumes,enabled,monitored,monitor_mode,quality_profile_id,root_folder_id,edition_type)"
+                " VALUES(?,?,?,?,?,?,1,1,?,?,?,'standard')",
+                (title, search_pattern, al_id, cover_url, status, total_volumes,
+                 lst.get('monitor_mode', 'all'),
+                 lst.get('quality_profile_id'),
+                 lst.get('root_folder_id'))
+            )
+            new_id = cur.lastrowid
+            if new_id and total_volumes and total_volumes > 0:
+                try:
+                    from main import create_volume_stubs
+                    create_volume_stubs(db, new_id, total_volumes)
+                except Exception:
+                    pass
+            if new_id:
+                added_entries.append((new_id, title, search_pattern, cover_url, al_id))
+            if al_id:
+                existing_ids.add((al_id, 'standard'))
+            else:
+                existing_titles.add(title.lower().strip())
+
+    # Fire background tasks for each newly added series (covers, maps, aliases, grabs)
+    for series_id, title, search_pattern, cover_url, al_id in added_entries:
+        try:
+            import main as _m
+            asyncio.create_task(_m.refresh_mangadex_map(series_id))
+            if cover_url:
+                asyncio.create_task(_m.download_cover(series_id, cover_url))
+            if al_id:
+                asyncio.create_task(_m.fetch_anilist_aliases(series_id, al_id, title))
+            asyncio.create_task(_m.fetch_mu_metadata(series_id, title))
+            asyncio.create_task(_m.grab_existing(series_id, title, search_pattern))
+        except Exception as e:
+            print(f"[ImportList] Post-add tasks failed for '{title}': {e}")
+
+    added_count = len(added_entries)
+    print(f"[ImportList:{lst['name']}] Synced {len(series_list)} items, added {added_count} new")
+
+
+async def _fetch_list(list_type: str, settings: dict) -> list[dict]:
+    """Fetch series entries from a list source. Returns list of {anilist_id, title, ...}."""
+    if list_type == 'anilist_user':
+        return await _fetch_anilist_user(settings)
+    elif list_type == 'anilist_top':
+        return await _fetch_anilist_top()
+    elif list_type == 'anilist_popular':
+        return await _fetch_anilist_popular()
+    elif list_type == 'mal_user':
+        return await _fetch_mal_user(settings)
+    elif list_type == 'custom_rss':
+        return await _fetch_custom_rss(settings)
+    return []
+
+
+async def _fetch_anilist_user(settings: dict) -> list[dict]:
+    username   = settings.get('username', '')
+    list_names = settings.get('lists', ['PLANNING', 'CURRENT'])
+    if not username:
+        return []
+    if isinstance(list_names, str):
+        list_names = [s.strip() for s in list_names.split(',') if s.strip()]
+
+    query = """
+    query ($user: String, $type: MediaType) {
+      MediaListCollection(userName: $user, type: $type) {
+        lists { name entries { media {
+          id title { romaji english } coverImage { large }
+          status volumes format
+        }}}
+      }
+    }"""
+    async with httpx.AsyncClient(timeout=20) as cli:
+        r = await cli.post(
+            "https://graphql.anilist.co",
+            json={"query": query, "variables": {"user": username, "type": "MANGA"}}
+        )
+    data = r.json()
+    results = []
+    for lst in data.get('data', {}).get('MediaListCollection', {}).get('lists', []):
+        if lst['name'] not in list_names:
+            continue
+        for entry in lst.get('entries', []):
+            m = entry.get('media', {})
+            title = (m.get('title', {}).get('english') or
+                     m.get('title', {}).get('romaji') or f"AniList {m.get('id')}")
+            results.append({
+                'anilist_id':    m.get('id'),
+                'title':         title,
+                'search_pattern': title,
+                'cover_url':     (m.get('coverImage') or {}).get('large', ''),
+                'status':        (m.get('status') or '').lower(),
+                'total_volumes': m.get('volumes'),
+            })
+    return results
+
+
+async def _fetch_anilist_top() -> list[dict]:
+    query = """
+    query ($page: Int) {
+      Page(page: $page, perPage: 50) {
+        media(type: MANGA, sort: SCORE_DESC, format_in: [MANGA, ONE_SHOT]) {
+          id title { romaji english } coverImage { large } status volumes
+        }
+      }
+    }"""
+    results = []
+    for page in range(1, 3):
+        async with httpx.AsyncClient(timeout=20) as cli:
+            r = await cli.post(
+                "https://graphql.anilist.co",
+                json={"query": query, "variables": {"page": page}}
+            )
+        for m in r.json().get('data', {}).get('Page', {}).get('media', []):
+            title = (m.get('title', {}).get('english') or m.get('title', {}).get('romaji', ''))
+            results.append({
+                'anilist_id':    m.get('id'),
+                'title':         title,
+                'search_pattern': title,
+                'cover_url':     (m.get('coverImage') or {}).get('large', ''),
+                'status':        (m.get('status') or '').lower(),
+                'total_volumes': m.get('volumes'),
+            })
+    return results
+
+
+async def _fetch_anilist_popular() -> list[dict]:
+    query = """
+    query ($page: Int) {
+      Page(page: $page, perPage: 50) {
+        media(type: MANGA, sort: POPULARITY_DESC, format_in: [MANGA]) {
+          id title { romaji english } coverImage { large } status volumes
+        }
+      }
+    }"""
+    results = []
+    for page in range(1, 3):
+        async with httpx.AsyncClient(timeout=20) as cli:
+            r = await cli.post(
+                "https://graphql.anilist.co",
+                json={"query": query, "variables": {"page": page}}
+            )
+        for m in r.json().get('data', {}).get('Page', {}).get('media', []):
+            title = (m.get('title', {}).get('english') or m.get('title', {}).get('romaji', ''))
+            results.append({
+                'anilist_id':    m.get('id'),
+                'title':         title,
+                'search_pattern': title,
+                'cover_url':     (m.get('coverImage') or {}).get('large', ''),
+                'status':        (m.get('status') or '').lower(),
+                'total_volumes': m.get('volumes'),
+            })
+    return results
+
+
+async def _fetch_mal_user(settings: dict) -> list[dict]:
+    """Fetch MAL reading list. Requires MAL client_id."""
+    username  = settings.get('username', '')
+    client_id = settings.get('client_id', '')
+    if not username or not client_id:
+        return []
+    results = []
+    offset = 0
+    while True:
+        async with httpx.AsyncClient(timeout=20) as cli:
+            r = await cli.get(
+                f"https://api.myanimelist.net/v2/users/{username}/mangalist",
+                headers={'X-MAL-CLIENT-ID': client_id},
+                params={'fields': 'title,main_picture,num_volumes,status',
+                        'limit': 100, 'offset': offset,
+                        'status': settings.get('status', 'plan_to_read')}
+            )
+        data = r.json()
+        for item in data.get('data', []):
+            node = item.get('node', {})
+            results.append({
+                'anilist_id':    None,  # would need cross-ref lookup
+                'title':         node.get('title', ''),
+                'search_pattern': node.get('title', ''),
+                'cover_url':     (node.get('main_picture') or {}).get('large', ''),
+                'status':        '',
+                'total_volumes': node.get('num_volumes'),
+            })
+        if not data.get('paging', {}).get('next'):
+            break
+        offset += 100
+    return results
+
+
+async def _fetch_custom_rss(settings: dict) -> list[dict]:
+    """Parse a custom RSS/Atom feed for manga titles."""
+    import xml.etree.ElementTree as ET
+    url = settings.get('url', '')
+    if not url:
+        return []
+    async with httpx.AsyncClient(timeout=20) as cli:
+        r = await cli.get(url, headers={'User-Agent': 'mangarr/1.0'})
+    results = []
+    try:
+        root = ET.fromstring(r.text)
+        for item in root.findall('.//item'):
+            title = item.findtext('title', '').strip()
+            if title:
+                results.append({
+                    'anilist_id':    None,
+                    'title':         title,
+                    'search_pattern': title,
+                    'cover_url':     '',
+                    'status':        '',
+                    'total_volumes': None,
+                })
+    except Exception:
+        pass
+    return results

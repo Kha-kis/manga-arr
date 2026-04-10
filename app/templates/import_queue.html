@@ -1,0 +1,245 @@
+{% extends "base.html" %}
+{% block title %}Import Queue — Mangarr{% endblock %}
+{% block title_short %}Import Queue{% endblock %}
+{% block nav_queue %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
+  <div class="page-heading mb-0">
+    <i class="bi bi-box-arrow-in-down"></i>Import Queue
+  </div>
+  <div class="d-flex gap-2">
+    <a href="/import" class="btn btn-outline-ember btn-sm">
+      <i class="bi bi-arrow-repeat me-1"></i>Refresh
+    </a>
+    <button class="btn btn-danger-soft btn-sm"
+            hx-post="/import/clear-old"
+            hx-swap="none"
+            hx-disabled-elt="this"
+            hx-confirm="Delete all failed/skipped import entries?">
+      <i class="bi bi-trash me-1"></i>Clear Failed
+    </button>
+  </div>
+</div>
+
+{% if not queue_items and not recent %}
+<div class="empty-state">
+  <div class="empty-icon"><i class="bi bi-inbox"></i></div>
+  <p class="fw-semibold">No pending imports</p>
+  <p class="text-sm" style="color:var(--text-3)">
+    Downloads that complete while a Download Directory is configured will appear here
+    for review before being moved to your library.
+  </p>
+</div>
+{% endif %}
+
+{% if queue_items %}
+<div class="section-label mb-3">
+  <i class="bi bi-hourglass-split text-ember me-1"></i>Pending Review
+  <span class="ms-1 text-xs font-normal normal-case" style="color:var(--text-2)">
+    {{ queue_items|length }} item{% if queue_items|length != 1 %}s{% endif %}
+  </span>
+</div>
+
+{% for item in queue_items %}
+{% set q = item.queue %}
+{% set files = item.files %}
+<div class="panel mb-3">
+  <div class="panel-header d-flex align-items-center gap-3">
+    <div class="flex-grow-1">
+      <a href="/series/{{ q['series_id'] }}" class="text-ember fw-bold text-sm">
+        {{ q['series_title'] }}
+      </a>
+      {% if q['status'] == 'partial' %}
+      <span class="badge-status badge-iris ms-2 text-[0.68rem]">
+        <i class="bi bi-exclamation-circle me-1"></i>Partial — needs review
+      </span>
+      {% endif %}
+      <span class="text-xs ms-2" style="color:var(--text-2)">{{ q['torrent_name'] }}</span>
+    </div>
+    <div class="d-flex gap-2 align-items-center">
+      <span class="text-xs" style="color:var(--text-3)">{{ q['created_at'] | format_date if q['created_at'] else '' }}</span>
+      <button class="btn btn-sm py-0 px-2 text-xs bg-transparent" style="color:var(--text-2); border:1px solid var(--edge)"
+              hx-post="/import/{{ q['id'] }}/skip"
+              hx-swap="none"
+              hx-disabled-elt="this"
+              hx-confirm="Skip this import? Files will remain in the download directory.">
+        <i class="bi bi-x-lg me-1"></i>Skip All
+      </button>
+    </div>
+  </div>
+
+  <div class="panel-body p-0">
+    {% if not files %}
+    <div class="px-3 py-3 text-sm" style="color:var(--text-2)">
+      <i class="bi bi-exclamation-triangle me-1" style="color:var(--gold)"></i>
+      No manga files found in <code>{{ q['src_dir'] }}</code>.
+      Files may be in a subdirectory or have unsupported extensions.
+    </div>
+    {% else %}
+
+    <form method="POST" action="/import/{{ q['id'] }}/process">
+      <div style="overflow-x:auto">
+        <table class="table table-sm mb-0">
+          <thead>
+            <tr>
+              <th style="width:32px">
+                <input type="checkbox" id="checkAll_{{ q['id'] }}"
+                  onclick="toggleAll({{ q['id'] }}, this.checked)" class="form-check-input" style="margin:0">
+              </th>
+              <th>Filename</th>
+              <th style="width:110px">Volume</th>
+              <th style="width:90px">Chapter</th>
+              <th style="width:60px">Skip</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for f in files %}
+            {% set is_chapter = f['file_type'] == 'chapter' %}
+            {% set unmapped = not f['proposed_volume'] and not f['proposed_chapter'] %}
+            <tr id="frow_{{ f['id'] }}"
+                {% if unmapped %}style="background:var(--ruby-bg)"{% endif %}>
+              <td>
+                <input type="checkbox" class="form-check-input file-check-{{ q['id'] }}"
+                       style="margin:0" checked>
+              </td>
+              <td class="text-sm font-mono break-all">
+                {{ f['filename'] }}
+                {% if is_chapter %}
+                <span class="badge-status badge-sky ms-1 text-[0.65rem]">chapter</span>
+                {% endif %}
+                {% if unmapped %}
+                <span class="badge-status badge-wanted ms-1">unmapped</span>
+                {% endif %}
+              </td>
+              <td>
+                <input type="number" name="vol_{{ f['id'] }}" class="form-control form-control-sm w-[90px] text-sm"
+                       value="{{ f['proposed_volume']|int if f['proposed_volume'] else '' }}"
+                       placeholder="?" step="1" min="1"
+                       title="Volume number this file maps to">
+              </td>
+              <td>
+                {% if is_chapter %}
+                <input type="number" name="chap_{{ f['id'] }}" class="form-control form-control-sm w-[80px] text-sm"
+                       value="{{ f['proposed_chapter'] if f['proposed_chapter'] else '' }}"
+                       placeholder="?" step="0.1" min="0"
+                       title="Chapter number">
+                {% endif %}
+              </td>
+              <td>
+                <div class="form-check mb-0">
+                  <input class="form-check-input" type="checkbox" name="skip_{{ f['id'] }}" value="1"
+                         id="skip_{{ f['id'] }}" onchange="toggleRowDim({{ f['id'] }}, this.checked)">
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="px-3 py-3 d-flex gap-2 align-items-center" style="border-top:1px solid var(--edge)">
+        <div class="text-xs" style="color:var(--text-2)">
+          <i class="bi bi-folder2-open me-1"></i>
+          <code class="text-xs">{{ q['src_dir'] }}</code>
+        </div>
+        <div class="ms-auto">
+          <button type="submit" class="btn btn-grab btn-sm px-3" hx-disabled-elt="this">
+            <i class="bi bi-box-arrow-in-down me-1"></i>Import
+          </button>
+        </div>
+      </div>
+    </form>
+    {% endif %}
+  </div>
+</div>
+{% endfor %}
+{% endif %}
+
+{% if recent %}
+<div class="section-label mt-4 mb-3">
+  <i class="bi bi-clock-history text-ember me-1"></i>Recent
+</div>
+<div class="table-wrap">
+  {% for q in recent %}
+  <div class="d-flex align-items-center justify-content-between px-3 py-2 text-sm"
+       style="border-bottom:1px solid var(--edge)">
+    <div class="d-flex align-items-center gap-3">
+      <a href="/series/{{ q['series_id'] }}" class="text-ember fw-semibold">{{ q['series_title'] }}</a>
+      <span class="text-xs truncate max-w-[300px]" style="color:var(--text-2)">
+        {{ q['torrent_name'] }}
+      </span>
+    </div>
+    <div class="d-flex align-items-center gap-3">
+      <span class="text-xs" style="color:var(--text-3)">{{ q['created_at'] | format_date if q['created_at'] else '' }}</span>
+      {% if q['status'] == 'imported' %}
+        <span class="badge-status badge-downloaded">
+          <i class="bi bi-check-circle me-1"></i>Imported
+        </span>
+      {% elif q['status'] == 'skipped' %}
+        <span class="badge-status badge-unknown">Skipped</span>
+        <button class="btn btn-sm py-0 px-2 text-xs bg-transparent"
+                style="color:var(--text-2); border:1px solid var(--edge)"
+                title="Remove from Mangarr"
+                hx-post="/import/{{ q['id'] }}/dismiss"
+                hx-swap="none"
+                hx-disabled-elt="this">
+          <i class="bi bi-database-dash"></i>
+        </button>
+      {% elif q['status'] == 'failed' %}
+        <span class="badge-status badge-wanted">
+          <i class="bi bi-x-circle me-1"></i>Failed
+        </span>
+        <button class="btn btn-sm py-0 px-2 text-xs"
+                style="color:var(--gold); border:1px solid color-mix(in srgb, var(--gold) 40%, transparent); background:var(--gold-bg)"
+                hx-post="/import/{{ q['id'] }}/retry"
+                hx-swap="none"
+                hx-disabled-elt="this">
+          <i class="bi bi-arrow-repeat me-1"></i>Retry
+        </button>
+        <button class="btn btn-sm py-0 px-2 text-xs bg-transparent"
+                style="color:var(--text-2); border:1px solid var(--edge)"
+                title="Remove from Mangarr"
+                hx-post="/import/{{ q['id'] }}/dismiss"
+                hx-swap="none"
+                hx-disabled-elt="this">
+          <i class="bi bi-database-dash"></i>
+        </button>
+      {% elif q['status'] == 'partial' %}
+        <span class="badge-status badge-iris text-xs">
+          <i class="bi bi-exclamation-circle me-1"></i>Partial
+        </span>
+        <button class="btn btn-sm py-0 px-2 text-xs"
+                style="color:var(--iris); border:1px solid color-mix(in srgb, var(--iris) 40%, transparent); background:var(--iris-bg)"
+                hx-post="/import/{{ q['id'] }}/retry"
+                hx-swap="none"
+                hx-disabled-elt="this">
+          <i class="bi bi-pencil-square me-1"></i>Review
+        </button>
+        <button class="btn btn-sm py-0 px-2 text-xs bg-transparent"
+                style="color:var(--text-2); border:1px solid var(--edge)"
+                title="Remove from Mangarr"
+                hx-post="/import/{{ q['id'] }}/dismiss"
+                hx-swap="none"
+                hx-disabled-elt="this">
+          <i class="bi bi-database-dash"></i>
+        </button>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleAll(queueId, checked) {
+  document.querySelectorAll('.file-check-' + queueId).forEach(cb => cb.checked = checked);
+}
+function toggleRowDim(fileId, skipped) {
+  const row = document.getElementById('frow_' + fileId);
+  if (row) row.style.opacity = skipped ? '0.4' : '1';
+}
+</script>
+{% endblock %}

@@ -1,0 +1,270 @@
+{% extends "base.html" %}
+{% block title %}Settings — General — {{ get_instance_name() }}{% endblock %}
+{% block title_short %}General Settings{% endblock %}
+{% block nav_settings %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div class="page-heading mb-0"><i class="bi bi-gear-fill"></i>Settings</div>
+</div>
+
+<div class="row g-0" style="min-height:70vh">
+
+  <!-- Sidebar -->
+  <div class="col-12 col-md-3 col-lg-2 pe-md-3 mb-3 mb-md-0">
+    <div class="panel h-100" style="min-height:auto; margin-bottom:0">
+      <div class="panel-body p-2">
+
+        <div class="mb-1 px-2" style="font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Mangarr</div>
+        <a href="/settings#media" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-folder2-open me-2"></i>Media Management
+        </a>
+        <a href="/settings/general" class="settings-sidebar-item active">
+          <i class="bi bi-sliders me-2"></i>General
+        </a>
+
+        <div class="settings-divider"></div>
+        <div class="mb-1 px-2 mt-2" style="font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Profiles</div>
+        <a href="/quality-profiles" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-trophy me-2"></i>Quality Profiles
+        </a>
+        <a href="/release-profiles" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-funnel me-2"></i>Release Profiles
+        </a>
+        <a href="/delay-profiles" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-hourglass-split me-2"></i>Delay Profiles
+        </a>
+        <a href="/custom-formats" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-patch-check me-2"></i>Custom Formats
+        </a>
+        <a href="/quality-definitions" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-rulers me-2"></i>Quality Definitions
+        </a>
+        <a href="/language-profiles" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-translate me-2"></i>Language Profiles
+        </a>
+
+        <div class="settings-divider"></div>
+        <div class="mb-1 px-2 mt-2" style="font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Sources</div>
+        <a href="/indexers" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-search me-2"></i>Indexers
+        </a>
+        <a href="/download-clients" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-hdd-stack me-2"></i>Download Clients
+        </a>
+        <a href="/import-lists" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-cloud-download me-2"></i>Import Lists
+        </a>
+
+        <div class="settings-divider"></div>
+        <div class="mb-1 px-2 mt-2" style="font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Notifications</div>
+        <a href="/notifications" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-bell me-2"></i>Connect
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Content -->
+  <div class="col-12 col-md-9 col-lg-10">
+
+    {% if saved %}
+    <div class="d-flex align-items-center gap-2 mb-3 px-3 py-2"
+         class="text-sm rounded-lg"
+         style="background:var(--jade-bg);border:1px solid rgba(34,200,122,0.2);color:var(--jade)"
+         id="saved-toast">
+      <i class="bi bi-check-circle-fill"></i>Settings saved successfully.
+    </div>
+    <script>setTimeout(()=>{const el=document.getElementById('saved-toast');if(el)el.style.display='none';},4000);</script>
+    {% endif %}
+
+    <form method="POST" action="/settings/general" hx-post="/settings/general" hx-swap="none" data-track-changes>
+
+    <!-- Host -->
+    <div class="panel">
+      <div class="panel-header"><i class="bi bi-pc-display"></i>Host</div>
+      <div class="panel-body">
+        <div class="row g-3">
+          <div class="col-12 col-md-6">
+            <label class="form-label">Instance Name</label>
+            <input type="text" name="instance_name" class="form-control"
+                   value="{{ cfg.instance_name or 'Mangarr' }}" placeholder="Mangarr">
+            <div class="form-text">Displayed in the browser tab and nav bar.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Security -->
+    <div class="panel">
+      <div class="panel-header"><i class="bi bi-shield-lock"></i>Security</div>
+      <div class="panel-body">
+        <div class="row g-3 align-items-end">
+          <div class="col-12 col-md-6">
+            <label class="form-label">API Key</label>
+            <div class="input-group">
+              <input type="password" id="api-key-input" name="api_key" class="form-control"
+                     value="{{ cfg.api_key or '' }}" autocomplete="off">
+              <button type="button" class="btn btn-secondary" id="api-key-toggle"
+                      onclick="toggleApiKey()">
+                <i class="bi bi-eye" id="api-key-eye"></i>
+              </button>
+            </div>
+            <div class="form-text">Used to authenticate API requests. Keep this secret.</div>
+          </div>
+          <div class="col-12 col-md-3 d-flex align-items-end pb-1">
+            <button type="button" class="btn btn-outline-ember btn-sm" onclick="regenerateApiKey()">
+              <i class="bi bi-arrow-clockwise me-1"></i>Regenerate
+            </button>
+            <span id="regen-result" class="connection-status ms-2" style="display:none"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- History -->
+    <div class="panel">
+      <div class="panel-header"><i class="bi bi-slash-circle"></i>Blocklist</div>
+      <div class="panel-body">
+        <div class="row g-3">
+          <div class="col-6 col-sm-3 col-md-2">
+            <label class="form-label">Entry TTL <span style="color:var(--text-3)">(days)</span></label>
+            <input type="number" name="blocklist_ttl_days" class="form-control"
+                   value="{{ cfg.blocklist_ttl_days or '90' }}" min="0" max="3650">
+            <div class="form-text">Days before a blocked entry expires and the release can be re-grabbed. 0 = never expire.</div>
+          </div>
+        </div>
+        <div class="mt-2">
+          <a href="/blocklist" class="text-ember text-sm"><i class="bi bi-box-arrow-up-right me-1"></i>Manage blocklist</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Logging -->
+    <div class="panel">
+      <div class="panel-header"><i class="bi bi-terminal"></i>Logging</div>
+      <div class="panel-body">
+        <div class="row g-3">
+          <div class="col-12 col-sm-4">
+            <label class="form-label">Log Level</label>
+            <select name="log_level" class="form-select">
+              <option value="INFO"    {% if (cfg.log_level or 'INFO').upper() == 'INFO'    %}selected{% endif %}>Info</option>
+              <option value="DEBUG"   {% if (cfg.log_level or '').upper() == 'DEBUG'   %}selected{% endif %}>Debug</option>
+              <option value="WARNING" {% if (cfg.log_level or '').upper() == 'WARNING' %}selected{% endif %}>Warning</option>
+              <option value="ERROR"   {% if (cfg.log_level or '').upper() == 'ERROR'   %}selected{% endif %}>Error</option>
+            </select>
+            <div class="form-text">Verbosity of application logs.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Backup -->
+    <div class="panel">
+      <div class="panel-header"><i class="bi bi-archive"></i>Backup</div>
+      <div class="panel-body">
+        <div class="row g-3 mb-2">
+          <div class="col-12 col-md-5">
+            <label class="form-label">Backup Folder</label>
+            <input type="text" name="backup_folder" class="form-control"
+                   value="{{ cfg.backup_folder or '/config/backups/' }}" placeholder="/config/backups/">
+          </div>
+          <div class="col-6 col-sm-3 col-md-2">
+            <label class="form-label">Interval <span style="color:var(--text-3)">(days)</span></label>
+            <input type="number" name="backup_interval_days" class="form-control"
+                   value="{{ cfg.backup_interval_days or '7' }}" min="1" max="365">
+            <div class="form-text">How often to create a backup.</div>
+          </div>
+          <div class="col-6 col-sm-3 col-md-2">
+            <label class="form-label">Retention <span style="color:var(--text-3)">(count)</span></label>
+            <input type="number" name="backup_retention" class="form-control"
+                   value="{{ cfg.backup_retention or '10' }}" min="1" max="100">
+            <div class="form-text">Backups to keep before pruning.</div>
+          </div>
+        </div>
+        <div>
+          <a href="/system/backup" class="text-ember text-sm"><i class="bi bi-box-arrow-up-right me-1"></i>Manage backups</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- UI -->
+    <div class="panel">
+      <div class="panel-header"><i class="bi bi-palette"></i>UI</div>
+      <div class="panel-body">
+        <div class="row g-3">
+          <div class="col-12 col-sm-4">
+            <label class="form-label">Date Format</label>
+            <select name="ui_date_format" class="form-select">
+              <option value="relative" {% if (cfg.ui_date_format or 'relative') == 'relative' %}selected{% endif %}>Relative — "2 hours ago"</option>
+              <option value="absolute" {% if (cfg.ui_date_format or 'relative') == 'absolute' %}selected{% endif %}>Absolute — "2026-04-09 14:30"</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="d-flex gap-3 mt-2">
+      <button type="submit" class="btn btn-ember px-4" hx-disabled-elt="this"><i class="bi bi-floppy me-1"></i>Save</button>
+    </div>
+    </form>
+
+  </div><!-- /col content -->
+</div><!-- /row -->
+{% endblock %}
+
+{% block scripts %}
+<style>
+.settings-sidebar-item {
+  display: flex;
+  align-items: center;
+  padding: .45rem .75rem;
+  border-radius: .4rem;
+  color: var(--text-2);
+  text-decoration: none;
+  font-size: .875rem;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+  margin-bottom: 2px;
+}
+.settings-sidebar-item:hover { background: var(--ink-3); color: var(--text); }
+.settings-sidebar-item.active { background: var(--ember-lo); color: var(--ember); }
+.settings-sidebar-link.active { background: var(--ink-3); color: var(--text); }
+</style>
+<script>
+function toggleApiKey() {
+  const inp = document.getElementById('api-key-input');
+  const eye = document.getElementById('api-key-eye');
+  if (inp.type === 'password') {
+    inp.type = 'text';
+    eye.className = 'bi bi-eye-slash';
+  } else {
+    inp.type = 'password';
+    eye.className = 'bi bi-eye';
+  }
+}
+
+async function regenerateApiKey() {
+  const res = document.getElementById('regen-result');
+  res.style.display = 'inline-block';
+  res.className = 'connection-status connection-wait';
+  res.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Regenerating…';
+  try {
+    const r = await fetch('/api/system/regenerate-api-key', {method: 'POST'});
+    const d = await r.json();
+    if (d.ok) {
+      document.getElementById('api-key-input').value = d.api_key;
+      document.getElementById('api-key-input').type = 'text';
+      document.getElementById('api-key-eye').className = 'bi bi-eye-slash';
+      res.className = 'connection-status connection-ok';
+      res.innerHTML = '<i class="bi bi-check-circle me-1"></i>New key generated — save to apply';
+    } else {
+      throw new Error('not ok');
+    }
+  } catch(e) {
+    res.className = 'connection-status connection-fail';
+    res.innerHTML = '<i class="bi bi-x-circle me-1"></i>Failed';
+  }
+}
+</script>
+{% endblock %}

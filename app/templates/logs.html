@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Logs — Mangarr{% endblock %}
+{% block title_short %}Logs{% endblock %}
+{% block nav_logs %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <div class="page-heading mb-0"><i class="bi bi-terminal-fill"></i>System Logs</div>
+  {% if total %}<span class="text-muted" style="font-size:0.8rem">{{ total }} event{{ 's' if total != 1 else '' }}</span>{% endif %}
+</div>
+
+<div class="pill-group mb-4 flex-wrap">
+  <a href="/logs" class="btn btn-sm {% if not event_type %}btn-ember{% else %}btn-secondary{% endif %}">All</a>
+  {% for et in event_types %}
+  <a href="/logs?event_type={{ et }}"
+     class="btn btn-sm {% if event_type == et %}btn-ember{% else %}btn-secondary{% endif %}" style="font-size:0.75rem">
+    {% if et == 'error' %}<i class="bi bi-exclamation-triangle me-1 text-ruby"></i>
+    {% elif et == 'grab' %}<i class="bi bi-cloud-download me-1"></i>
+    {% elif et in ('imported','download_complete') %}<i class="bi bi-check-circle me-1"></i>
+    {% elif et == 'rss_poll' %}<i class="bi bi-rss me-1"></i>
+    {% elif et == 'backup' %}<i class="bi bi-archive me-1"></i>
+    {% endif %}{{ et }}
+  </a>
+  {% endfor %}
+</div>
+
+{% if events %}
+<div class="table-wrap mb-4">
+  <table class="table table-sm mb-0">
+    <thead>
+      <tr>
+        <th style="width:140px">Time</th>
+        <th style="width:115px">Event</th>
+        <th style="width:175px">Series</th>
+        <th>Message</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in events %}
+      <tr>
+        <td class="text-muted" style="font-size:0.75rem; white-space:nowrap">
+          {{ e['created_at'] | format_date if e['created_at'] else '—' }}
+        </td>
+        <td>
+          {% set et = e['event_type'] or 'unknown' %}
+          {% if et == 'grab' %}<span class="badge-status badge-grabbed"><i class="bi bi-cloud-download me-1"></i>grab</span>
+          {% elif et == 'download_complete' %}<span class="badge-status badge-downloaded"><i class="bi bi-check-circle me-1"></i>complete</span>
+          {% elif et == 'rss_poll' %}<span class="badge-status badge-sky"><i class="bi bi-rss me-1"></i>rss</span>
+          {% elif et == 'search' %}<span class="badge-status badge-hiatus"><i class="bi bi-search me-1"></i>search</span>
+          {% elif et == 'refresh' %}<span class="badge-status badge-releasing"><i class="bi bi-arrow-clockwise me-1"></i>refresh</span>
+          {% elif et == 'komga_scan' %}<span class="badge-status badge-client"><i class="bi bi-collection-play me-1"></i>komga</span>
+          {% elif et == 'error' %}<span class="badge-status badge-wanted"><i class="bi bi-exclamation-triangle me-1"></i>error</span>
+          {% else %}<span class="badge-status badge-unknown">{{ et }}</span>
+          {% endif %}
+        </td>
+        <td style="font-size:0.8rem">
+          {% if e['series_id'] and e['series_title'] %}
+          <a href="/series/{{ e['series_id'] }}" class="text-ember">{{ e['series_title'] }}</a>
+          {% else %}<span style="color:var(--text-3)">—</span>{% endif %}
+        </td>
+        <td class="text-muted" style="font-size:0.8rem">{{ e['message'] or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if pages > 1 %}
+<div class="pill-group justify-content-center mt-2 flex-wrap">
+  {% for p in range(1, pages + 1) %}
+  <a href="/logs?page={{ p }}{% if event_type %}&event_type={{ event_type }}{% endif %}"
+     class="btn btn-sm {% if p == page %}btn-ember{% else %}btn-secondary{% endif %}">{{ p }}</a>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% else %}
+<div class="empty-state">
+  <div class="empty-icon"><i class="bi bi-terminal"></i></div>
+  <p class="fw-semibold">No events logged yet.</p>
+  <p style="font-size:0.82rem; color:var(--text-3)">Grab activity, RSS polls, and download completions appear here.</p>
+</div>
+{% endif %}
+{% endblock %}

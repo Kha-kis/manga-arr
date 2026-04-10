@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Queue — Mangarr{% endblock %}
+{% block title_short %}Queue{% endblock %}
+{% block nav_queue %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
+  <div class="page-heading mb-0">
+    <i class="bi bi-arrow-down-circle-fill"></i>Queue
+  </div>
+  <div class="d-flex gap-2 align-items-center">
+    <span class="htmx-indicator text-xs" style="color:var(--jade)">
+      <i class="bi bi-arrow-repeat text-xs"></i>
+    </span>
+    <a href="/queue" class="btn btn-secondary btn-sm"><i class="bi bi-arrow-repeat me-1"></i>Refresh</a>
+  </div>
+</div>
+
+{# ── Disk usage ── #}
+{% if disk_info %}
+<div class="d-flex gap-3 flex-wrap mb-4">
+  {% for d in disk_info %}
+  <div class="panel flex-grow-1 mb-0" style="min-width:200px">
+    <div class="panel-body" style="padding:13px 16px">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <span class="fw-semibold text-sm"><i class="bi bi-hdd me-1 text-ember"></i>{{ d['label'] }}</span>
+        <span class="text-xs" style="color:var(--text-2)">{{ d['free']|format_bytes }} free</span>
+      </div>
+      <div style="height:5px; background:var(--ink-5); border-radius:3px; overflow:hidden">
+        <div style="height:100%; width:{{ d['pct'] }}%; border-radius:3px;
+                    background:{% if d['pct'] > 90 %}var(--ruby){% elif d['pct'] > 75 %}var(--gold){% else %}var(--ember){% endif %}"></div>
+      </div>
+      <div class="d-flex justify-content-between mt-1">
+        <span class="text-2xs" style="color:var(--text-3)">{{ d['used']|format_bytes }} used</span>
+        <span class="text-2xs" style="color:var(--text-3)">{{ d['total']|format_bytes }} · {{ d['pct'] }}%</span>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# ── Live-polled queue body — initial render + 8s refresh ── #}
+<div id="queue-body"
+     hx-get="/queue/table"
+     hx-trigger="every 8s"
+     hx-swap="innerHTML"
+     hx-indicator=".htmx-indicator">
+  {% include "partials/queue_table.html" %}
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function dimRow(rowId, dim) {
+  const r = document.getElementById(rowId);
+  if (r) r.style.opacity = dim ? '0.35' : '1';
+}
+function skipAll(queueId) {
+  if (!confirm('Skip this import? Files will remain in the download directory.')) return;
+  document.getElementById('skip-form-' + queueId).submit();
+}
+
+// Pause the queue HTMX poll while any modal is open so the swap
+// doesn't destroy the modal mid-interaction.
+document.addEventListener('show.bs.modal', () => {
+  const qb = document.getElementById('queue-body');
+  if (qb) qb.dataset.pausePoll = '1';
+});
+document.addEventListener('hidden.bs.modal', () => {
+  const qb = document.getElementById('queue-body');
+  if (qb) delete qb.dataset.pausePoll;
+});
+document.addEventListener('htmx:beforeRequest', (e) => {
+  if (e.target.id === 'queue-body' && e.target.dataset.pausePoll === '1') {
+    e.preventDefault();
+  }
+});
+</script>
+{% endblock %}

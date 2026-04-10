@@ -1,0 +1,657 @@
+{% extends "base.html" %}
+{% block title %}Library — Mangarr{% endblock %}
+{% block title_short %}Library{% endblock %}
+{% block topbar_title %}<strong>Library</strong>{% if total_count %}<span class="ms-2 text-muted" style="font-weight:400">{{ total_count }} series</span>{% endif %}{% endblock %}
+{% block nav_library %}active{% endblock %}
+
+{% block content %}
+<div x-data="{
+  mode: false, sel: [], saving: false,
+  be_monitored:'', be_monitor_mode:'', be_qpid:'', be_lpid:'',
+  be_rfid:'', be_strategy:'', be_src:'', be_tags_add:'', be_tags_rem:'',
+  toggle() { this.mode = !this.mode; if (!this.mode) this.sel = []; },
+  has(id)  { return this.sel.includes(String(id)); },
+  pick(id) { const s=String(id), i=this.sel.indexOf(s); i>=0 ? this.sel.splice(i,1) : this.sel.push(s); },
+  setAll(v){ const ids={{ series|map(attribute='row')|map(attribute='id')|list|tojson }}; this.sel = v ? ids.map(String) : []; },
+  async quickSave(payload) {
+    this.saving = true;
+    try {
+      const r = await fetch('/series-editor/save', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({series_ids: this.sel.map(Number), ...payload})
+      });
+      const d = await r.json();
+      if (d.ok) { showToast(d.updated + ' series updated', 'success'); setTimeout(() => location.reload(), 700); }
+      else       { showToast(d.message || 'Failed', 'error'); this.saving = false; }
+    } catch(e) { showToast('Failed', 'error'); this.saving = false; }
+  },
+  async saveEdit() {
+    const p = {};
+    if (this.be_monitored !== '')  p.monitored           = this.be_monitored === '1';
+    if (this.be_monitor_mode)      p.monitor_mode        = this.be_monitor_mode;
+    if (this.be_qpid !== '')       p.quality_profile_id  = this.be_qpid  || null;
+    if (this.be_lpid !== '')       p.language_profile_id = this.be_lpid  || null;
+    if (this.be_rfid !== '')       p.root_folder_id      = this.be_rfid  || null;
+    if (this.be_strategy)          p.update_strategy     = this.be_strategy;
+    if (this.be_src)               p.source_type         = this.be_src;
+    p.tags_add    = this.be_tags_add.split(',').map(t=>t.trim()).filter(Boolean);
+    p.tags_remove = this.be_tags_rem.split(',').map(t=>t.trim()).filter(Boolean);
+    await this.quickSave(p);
+  }
+}" :style="sel.length > 0 ? 'padding-bottom:72px' : ''">
+
+{# ══════════════════════════════════════════════════════════════════════════
+   EDITORIAL MASTHEAD — page head + oversized stats
+   Follows design-system/mangarr/MASTER.md §5 (page-head + editorial-num)
+   ══════════════════════════════════════════════════════════════════════════ #}
+<header class="page-head">
+  <div class="running-head">
+    <span>The</span>
+    <span class="divider">/</span>
+    <span>Library</span>
+    <span class="divider">/</span>
+    <span>Vol. I</span>
+    {% if q or filter_tag or filter_status or filter_monitored or filter_missing %}
+    <span class="divider">·</span>
+    <span style="color:var(--ember)">filtered view</span>
+    {% endif %}
+  </div>
+
+  <div class="d-flex flex-wrap gap-4 align-items-end justify-content-between">
+    <div style="min-width:0; flex:1 1 auto">
+      <h1 class="hero-title">Your<br>Collection.</h1>
+      <p class="page-subtitle">
+        {% if stats_bar.series_count == 0 %}
+        An empty shelf. Search and add your first manga to begin the archive.
+        {% else %}
+        {% if q %}Filtered to <strong style="color:var(--text);font-style:normal">"{{ q }}"</strong> —
+        {% endif %}currently tracking
+        <span class="font-mono tabular-num" style="color:var(--text)">{{ stats_bar.series_count }}</span>
+        series across
+        <span class="font-mono tabular-num" style="color:var(--text)">{{ stats_bar.tracked }}</span>
+        volumes. {{ stats_bar.pct }}% of the collection is complete.
+        {% endif %}
+      </p>
+    </div>
+
+    {# ── Action cluster (right side of masthead) ── #}
+    <div class="d-flex gap-2 align-items-center flex-wrap" style="flex:0 0 auto">
+      <button class="btn btn-secondary btn-sm" x-show="!mode" @click="toggle()"
+              title="Enter bulk-edit mode to select multiple series">
+        <i class="bi bi-check2-square me-1"></i>Select series
+      </button>
+      <div class="d-none gap-1" :class="{ 'd-flex': mode, 'd-none': !mode }">
+        <button class="btn btn-outline-ember btn-sm" @click="setAll(true)">
+          <i class="bi bi-check-all me-1"></i>All
+        </button>
+        <button class="btn btn-secondary btn-sm" @click="setAll(false)">None</button>
+        <button class="btn btn-secondary btn-sm" @click="toggle()">
+          <i class="bi bi-x me-1"></i>Done
+        </button>
+      </div>
+      <button class="btn btn-secondary btn-sm" title="Refresh all metadata" aria-label="Refresh all metadata"
+              hx-post="/library/refresh-all"
+              hx-swap="none"
+              hx-disabled-elt="this"
+              hx-on::after-request="showToast(event.detail.successful ? 'Metadata refresh started' : 'Failed', event.detail.successful ? 'info' : 'error')">
+        <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+      </button>
+      <a href="/stats" class="btn btn-secondary btn-sm" title="Statistics" aria-label="Statistics"><i class="bi bi-bar-chart" aria-hidden="true"></i></a>
+      <a href="/manual-import" class="btn btn-secondary btn-sm" title="Manual import" aria-label="Manual import"><i class="bi bi-folder2-open" aria-hidden="true"></i></a>
+    </div>
+  </div>
+</header>
+
+{# ── Editorial stats row — oversized mono tabular numbers ── #}
+<div class="mb-5" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:40px 32px;">
+  <div class="editorial-num">
+    <div class="num">{{ '{:,}'.format(stats_bar.series_count) }}</div>
+    <div class="lbl">Series Tracked</div>
+  </div>
+  <div class="editorial-num">
+    <div class="num">{{ '{:,}'.format(stats_bar.tracked) }}</div>
+    <div class="lbl">Total Volumes</div>
+  </div>
+  <div class="editorial-num">
+    <div class="num jade">{{ '{:,}'.format(stats_bar.have) }}</div>
+    <div class="lbl">On Disk</div>
+  </div>
+  <a class="editorial-num" href="/wanted" style="text-decoration:none" aria-label="View wanted volumes">
+    <div class="num ruby">{{ '{:,}'.format(stats_bar.wanted) }}</div>
+    <div class="lbl">Wanted</div>
+  </a>
+  <div class="editorial-num">
+    <div class="num {% if stats_bar.pct == 100 %}jade{% else %}accent{% endif %}">{{ stats_bar.pct }}<span style="font-size:0.5em;color:var(--text-3)">%</span></div>
+    <div class="lbl">Completion</div>
+  </div>
+</div>
+
+{# ── Filter Bar ───────────────────────────────────────────────────────────── #}
+<div class="filter-bar">
+
+  {# Search #}
+  <div class="filter-group">
+    <label for="library-search-input">Search</label>
+    <form method="GET" action="/" class="d-flex gap-1" id="search-form" role="search">
+      <input type="hidden" name="sort"             value="{{ sort }}">
+      <input type="hidden" name="filter_status"    value="{{ filter_status }}">
+      <input type="hidden" name="filter_tag"       value="{{ filter_tag }}">
+      <input type="hidden" name="filter_monitored" value="{{ filter_monitored }}">
+      <input type="hidden" name="filter_missing"   value="{{ filter_missing }}">
+      <input type="hidden" name="view"             value="{{ view }}">
+      <input type="text" name="q" id="library-search-input"
+             class="form-control form-control-sm"
+             placeholder="Filter…" value="{{ q or '' }}" class="w-40"
+             aria-label="Search library by title">
+      <button class="btn btn-ember btn-sm px-2" type="submit" aria-label="Search"><i class="bi bi-search" aria-hidden="true"></i></button>
+      {% if q %}
+      <a href="/?sort={{ sort }}&filter_status={{ filter_status }}&filter_tag={{ filter_tag }}&filter_monitored={{ filter_monitored }}&filter_missing={{ filter_missing }}&view={{ view }}"
+         class="btn btn-secondary btn-sm px-2" aria-label="Clear search"><i class="bi bi-x" aria-hidden="true"></i></a>
+      {% endif %}
+    </form>
+  </div>
+
+  {# Sort #}
+  <div class="filter-group">
+    <label>Sort</label>
+    <div class="pill-group">
+      {% for sv, sl in [('title','Title'),('added','Added'),('missing','Missing'),('downloaded','Downloaded')] %}
+      <a href="/?q={{ q|urlencode }}&sort={{ sv }}&filter_status={{ filter_status }}&filter_tag={{ filter_tag }}&filter_monitored={{ filter_monitored }}&filter_missing={{ filter_missing }}&view={{ view }}"
+         class="btn btn-sm {% if sort == sv %}btn-ember{% else %}btn-secondary{% endif %}"
+         style="white-space:nowrap">{{ sl }}</a>
+      {% endfor %}
+    </div>
+  </div>
+
+  {# Monitored #}
+  <div class="filter-group">
+    <label>Monitored</label>
+    <div class="pill-group">
+      <a href="/?q={{ q|urlencode }}&sort={{ sort }}&filter_status={{ filter_status }}&filter_tag={{ filter_tag }}&filter_monitored=&filter_missing={{ filter_missing }}&view={{ view }}"
+         class="btn btn-sm {% if not filter_monitored %}btn-ember{% else %}btn-secondary{% endif %}">All</a>
+      <a href="/?q={{ q|urlencode }}&sort={{ sort }}&filter_status={{ filter_status }}&filter_tag={{ filter_tag }}&filter_monitored=1&filter_missing={{ filter_missing }}&view={{ view }}"
+         class="btn btn-sm {% if filter_monitored == '1' %}btn-ember{% else %}btn-secondary{% endif %}">
+        <i class="bi bi-eye me-1"></i>Yes</a>
+      <a href="/?q={{ q|urlencode }}&sort={{ sort }}&filter_status={{ filter_status }}&filter_tag={{ filter_tag }}&filter_monitored=0&filter_missing={{ filter_missing }}&view={{ view }}"
+         class="btn btn-sm {% if filter_monitored == '0' %}btn-ember{% else %}btn-secondary{% endif %}">
+        <i class="bi bi-eye-slash me-1"></i>No</a>
+    </div>
+  </div>
+
+  {# Status #}
+  <div class="filter-group">
+    <label>Status</label>
+    <form method="GET" action="/">
+      <input type="hidden" name="q"                value="{{ q or '' }}">
+      <input type="hidden" name="sort"             value="{{ sort }}">
+      <input type="hidden" name="filter_tag"       value="{{ filter_tag }}">
+      <input type="hidden" name="filter_monitored" value="{{ filter_monitored }}">
+      <input type="hidden" name="filter_missing"   value="{{ filter_missing }}">
+      <input type="hidden" name="view"             value="{{ view }}">
+      <select name="filter_status" class="form-select form-select-sm w-36" onchange="this.form.submit()">
+        <option value="">All Statuses</option>
+        {% for st_opt in ['RELEASING','FINISHED','HIATUS','CANCELLED','NOT_YET_RELEASED'] %}
+        <option value="{{ st_opt }}" {% if filter_status == st_opt %}selected{% endif %}>{{ st_opt|title|replace('_',' ') }}</option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+
+  {# Tag #}
+  {% if all_tags %}
+  <div class="filter-group">
+    <label>Tag</label>
+    <form method="GET" action="/">
+      <input type="hidden" name="q"                value="{{ q or '' }}">
+      <input type="hidden" name="sort"             value="{{ sort }}">
+      <input type="hidden" name="filter_status"    value="{{ filter_status }}">
+      <input type="hidden" name="filter_monitored" value="{{ filter_monitored }}">
+      <input type="hidden" name="filter_missing"   value="{{ filter_missing }}">
+      <input type="hidden" name="view"             value="{{ view }}">
+      <select name="filter_tag" class="form-select form-select-sm w-32" onchange="this.form.submit()">
+        <option value="">All Tags</option>
+        {% for t in all_tags %}
+        <option value="{{ t }}" {% if filter_tag == t %}selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+  {% endif %}
+
+  {# Completion #}
+  <div class="filter-group">
+    <label>Completion</label>
+    <form method="GET" action="/">
+      <input type="hidden" name="q"                value="{{ q or '' }}">
+      <input type="hidden" name="sort"             value="{{ sort }}">
+      <input type="hidden" name="filter_tag"       value="{{ filter_tag }}">
+      <input type="hidden" name="filter_status"    value="{{ filter_status }}">
+      <input type="hidden" name="filter_monitored" value="{{ filter_monitored }}">
+      <input type="hidden" name="view"             value="{{ view }}">
+      <select name="filter_missing" class="form-select form-select-sm w-36" onchange="this.form.submit()">
+        <option value="">Any</option>
+        <option value="1" {% if filter_missing == '1' %}selected{% endif %}>Missing Volumes</option>
+        <option value="0" {% if filter_missing == '0' %}selected{% endif %}>Complete</option>
+      </select>
+    </form>
+  </div>
+
+  {# Clear #}
+  {% if q or filter_tag or filter_status or filter_monitored or filter_missing %}
+  <div class="filter-group" style="justify-content:flex-end">
+    <label>&nbsp;</label>
+    <a href="/?sort={{ sort }}&view={{ view }}" class="btn btn-secondary btn-sm">
+      <i class="bi bi-x-circle me-1"></i>Clear
+    </a>
+  </div>
+  {% endif %}
+
+  {# View toggle #}
+  <div class="filter-group ms-auto">
+    <label>View</label>
+    <div class="pill-group">
+      <a href="/?q={{ q|urlencode }}&sort={{ sort }}&filter_status={{ filter_status }}&filter_tag={{ filter_tag }}&filter_monitored={{ filter_monitored }}&filter_missing={{ filter_missing }}&view=grid"
+         class="btn btn-sm {% if view == 'grid' %}btn-ember{% else %}btn-secondary{% endif %}" title="Grid">
+        <i class="bi bi-grid-3x3-gap"></i></a>
+      <a href="/?q={{ q|urlencode }}&sort={{ sort }}&filter_status={{ filter_status }}&filter_tag={{ filter_tag }}&filter_monitored={{ filter_monitored }}&filter_missing={{ filter_missing }}&view=list"
+         class="btn btn-sm {% if view == 'list' %}btn-ember{% else %}btn-secondary{% endif %}" title="List">
+        <i class="bi bi-list-ul"></i></a>
+    </div>
+  </div>
+
+</div>
+
+{# ── Series Display ───────────────────────────────────────────────────────── #}
+{% if series %}
+
+{% if view == 'list' %}
+{# ── List View ── #}
+<div class="table-wrap mb-4">
+  <table class="table table-sm mb-0">
+    <thead>
+      <tr>
+        <th style="width:52px"></th>
+        <th>Title</th>
+        <th style="width:120px">Status</th>
+        <th style="width:90px">Monitored</th>
+        <th style="width:210px">Progress</th>
+        <th style="width:80px">Collected</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in series %}
+      {% set s  = item.row %}
+      {% set st = item.stats %}
+      <tr class="{% if not s['monitored'] %}opacity-50{% endif %}"
+          style="cursor:pointer"
+          :class="{'table-active': has('{{ s['id'] }}')}"
+          @click="mode ? pick('{{ s['id'] }}') : (location.href='/series/{{ s['id'] }}')">
+        <td class="p-1 ps-2" style="width:52px" @click.stop>
+          <div x-show="!mode">
+            {% if s['cover_url'] %}
+            <img src="/covers/{{ s['id'] }}.jpg" alt="{{ s['title'] }}"
+                 style="width:36px; height:52px; object-fit:cover; border-radius:4px; display:block"
+                 onerror="this.src='{{ s['cover_url'] }}'" loading="lazy">
+            {% else %}
+            <div style="width:36px; height:52px; background:var(--ink-4); border-radius:4px;
+                 display:flex; align-items:center; justify-content:center; color:var(--text-3)">
+              <i class="bi bi-book"></i>
+            </div>
+            {% endif %}
+          </div>
+          <div class="d-none" :class="{ 'd-flex': mode, 'd-none': !mode }"
+               style="width:36px; height:52px; align-items:center; justify-content:center">
+            <input type="checkbox" class="form-check-input" style="margin:0"
+                   :checked="has('{{ s['id'] }}')"
+                   @change="pick('{{ s['id'] }}')"
+                   aria-label="Select {{ s['title']|e }}">
+          </div>
+        </td>
+        <td>
+          <a href="/series/{{ s['id'] }}" class="text-main fw-semibold" style="font-size:0.88rem" onclick="event.stopPropagation()">
+            {{ s['title'] }}
+          </a>
+          {% if s['edition_type'] and s['edition_type'] != 'standard' %}
+          <span class="badge-status badge-edition-{{ s['edition_type'] }} ms-1 text-2xs">
+            {{ s['edition_type']|replace('_',' ')|title }}
+          </span>
+          {% endif %}
+        </td>
+        <td>
+          {% set st_lower = (s['status'] or 'unknown')|lower %}
+          <span class="badge-status badge-{{ st_lower }}">{{ s['status'] or 'Unknown' }}</span>
+        </td>
+        <td>
+          {% if s['monitored'] %}
+          <span class="text-xs text-ember"><i class="bi bi-eye me-1"></i>Yes</span>
+          {% else %}
+          <span class="text-xs" style="color:var(--text-3)"><i class="bi bi-eye-slash me-1"></i>No</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if st.total > 0 %}
+          {% set pct = (st.have / st.total * 100)|int %}
+          <div class="vol-bar">
+            <div class="fill {% if pct == 100 %}complete{% endif %}" style="width:{{ pct }}%"></div>
+          </div>
+          {% endif %}
+        </td>
+        <td class="text-sm" style="color:var(--text-2)">
+          {% if st.total > 0 %}
+            {{ st.have }}/{{ st.total }}
+            {% if st.wanted > 0 %}
+            <span class="text-ruby text-xs">({{ st.wanted }} missing)</span>
+            {% endif %}
+          {% elif s['total_volumes'] %}
+            0/{{ s['total_volumes'] }}
+          {% else %}—{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% else %}
+{# ── Grid View ── #}
+<div class="row row-cols-2 row-cols-sm-3 row-cols-md-4 row-cols-lg-5 row-cols-xl-6 g-3 mb-5">
+  {% for item in series %}
+  {% set s  = item.row %}
+  {% set st = item.stats %}
+  <div class="col series-col" data-id="{{ s['id'] }}"
+       style="position:relative; --i:{{ loop.index0 if loop.index0 < 32 else 32 }}"
+       x-data="{ mon: {{ 'true' if s['monitored'] else 'false' }} }">
+    <a href="/series/{{ s['id'] }}" class="d-block card-link"
+       :class="{ 'monitored-off': !mon }"
+       :style="mode ? 'pointer-events:none' : ''">
+      <div class="manga-card">
+        <div class="cover-wrap">
+          <img src="/covers/{{ s['id'] }}.jpg" class="cover" alt="{{ s['title'] }}" loading="lazy"
+               onerror="this.onerror=null; this.src='{{ s['cover_url'] or '' }}';
+               if(!this.src||this.src.endsWith('undefined'))
+               this.replaceWith(Object.assign(document.createElement('div'),
+               {className:'no-cover',innerHTML:'<i class=\'bi bi-book\'></i>'}))">
+          <div class="cover-overlay"></div>
+        </div>
+        <div class="card-body">
+          <div class="card-title">{{ s['title'] }}</div>
+
+          <div class="d-flex flex-wrap align-items-center gap-1 mb-1">
+            {% set st_lower = (s['status'] or 'unknown')|lower %}
+            <span class="badge-status badge-{{ st_lower }}">{{ s['status'] or 'Unknown' }}</span>
+            {% if s['edition_type'] and s['edition_type'] != 'standard' %}
+            <span class="badge-status badge-edition-{{ s['edition_type'] }} text-2xs">
+              {{ s['edition_type']|replace('_',' ')|title }}
+            </span>
+            {% endif %}
+          </div>
+
+          {% if st.total > 0 %}
+          {% set pct = (st.have / st.total * 100)|int %}
+          <div class="vol-bar">
+            <div class="fill {% if pct == 100 %}complete{% endif %}" style="width:{{ pct }}%"></div>
+          </div>
+          <div class="vol-count">
+            {{ st.have }}/{{ st.total }} vol{% if st.total != 1 %}s{% endif %}
+            {% if pct == 100 %}&nbsp;<i class="bi bi-check-circle-fill text-jade" style="font-size:0.62rem"></i>{% endif %}
+          </div>
+          {% elif s['total_volumes'] %}
+          <div class="vol-count">{{ s['total_volumes'] }} volumes</div>
+          {% endif %}
+
+          <div class="vol-count text-ruby mt-1" x-show="!mon" style="{% if s['monitored'] %}display:none{% endif %}"><i class="bi bi-eye-slash me-1"></i>Unmonitored</div>
+        </div>
+      </div>
+    </a>
+
+    {# Monitored toggle — top-right corner #}
+    <button class="monitored-toggle"
+            style="position:absolute; top:6px; right:6px; background:rgba(8,8,16,0.75); backdrop-filter:blur(4px);
+                   border:1px solid rgba(255,255,255,0.08); border-radius:5px; width:26px; height:26px;
+                   display:flex; align-items:center; justify-content:center; cursor:pointer; transition:all 0.15s"
+            x-show="!mode"
+            @click.stop="mon=!mon; fetch('/series/{{ s['id'] }}/toggle', {method:'POST', headers:{'X-CSRFToken':_csrfToken()}})"
+            :title="mon ? 'Monitored — click to unmonitor' : 'Unmonitored — click to monitor'">
+      <i :class="mon ? 'bi bi-bookmark-fill' : 'bi bi-bookmark'"
+         :style="'font-size:0.75rem; color:' + (mon ? 'var(--ember)' : 'var(--text-3)')"></i>
+    </button>
+
+    {# Selection overlay — Alpine-managed: shown only in select mode #}
+    <div class="select-overlay"
+         x-show="mode"
+         role="checkbox"
+         tabindex="0"
+         :aria-checked="has({{ s['id'] }}) ? 'true' : 'false'"
+         aria-label="Select {{ s['title']|e }}"
+         style="display:none; position:absolute; inset:0; border-radius:10px;
+                border:2px solid transparent; cursor:pointer; transition:all 0.15s"
+         :style="has({{ s['id'] }}) ?
+           { borderColor: 'var(--ember)', background: 'rgba(240,132,40,0.15)' } :
+           { borderColor: 'transparent', background: 'rgba(240,132,40,0.08)' }"
+         @click="pick({{ s['id'] }})"
+         @keydown.space.prevent="pick({{ s['id'] }})"
+         @keydown.enter.prevent="pick({{ s['id'] }})">
+      <div class="select-check"
+           style="position:absolute; top:7px; left:7px; width:22px; height:22px; border-radius:5px;
+                  border:2px solid var(--text-3); display:flex; align-items:center; justify-content:center"
+           :style="has({{ s['id'] }}) ?
+             { background: 'var(--ember)', borderColor: 'var(--ember)' } :
+             { background: 'rgba(8,8,16,0.8)', borderColor: 'var(--text-3)' }">
+        <i class="bi bi-check" x-show="has({{ s['id'] }})" style="font-size:0.85rem; color:white" aria-hidden="true"></i>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% else %}
+{# ── Empty state ── #}
+<div class="empty-state">
+  <div class="empty-icon"><i class="bi bi-book-half"></i></div>
+  {% if q or filter_status or filter_tag or filter_monitored or filter_missing %}
+  <p>No series match the current filters.</p>
+  <a href="/?sort={{ sort }}&view={{ view }}" class="btn btn-secondary btn-sm mt-2">
+    <i class="bi bi-x-circle me-1"></i>Clear filters
+  </a>
+  {% else %}
+  <p class="fw-semibold">No manga tracked yet.</p>
+  <p class="text-sm" style="color:var(--text-3)">Search for manga to start building your library.</p>
+  <a href="/search" class="btn btn-ember mt-2"><i class="bi bi-plus-circle me-1"></i>Add Manga</a>
+  {% endif %}
+</div>
+{% endif %}
+</div>{# /Alpine select-mode scope #}
+
+{# ── Pagination ───────────────────────────────────────────────────────────── #}
+{% if total_pages > 1 %}
+{% set _base = 'q=' ~ (q|urlencode) ~ '&sort=' ~ sort ~ '&filter_status=' ~ filter_status ~ '&filter_tag=' ~ (filter_tag|urlencode) ~ '&filter_monitored=' ~ filter_monitored ~ '&filter_missing=' ~ filter_missing ~ '&view=' ~ view %}
+<div class="d-flex align-items-center justify-content-between mt-2 mb-5">
+  <span style="font-size:0.8rem; color:var(--text-3)">{{ total_count }} series · Page {{ page }} of {{ total_pages }}</span>
+  <div class="pill-group">
+    {% if page > 1 %}
+    <a href="/?{{ _base }}&page={{ page - 1 }}" class="btn btn-sm btn-secondary">
+      <i class="bi bi-chevron-left"></i> Prev
+    </a>
+    {% endif %}
+    {% if page < total_pages %}
+    <a href="/?{{ _base }}&page={{ page + 1 }}" class="btn btn-sm btn-secondary">
+      Next <i class="bi bi-chevron-right"></i>
+    </a>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{# ── Recent Activity ──────────────────────────────────────────────────────── #}
+{% if activity %}
+<div class="section-rule">
+  <span class="sec-label">
+    <span class="ornament">§</span>
+    Chronicle
+  </span>
+</div>
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <p class="font-serif" style="font-style:italic; color:var(--text-2); font-size:0.95rem; margin:0">
+    The most recent additions to the archive.
+  </p>
+  <a href="/activity" class="font-ui" style="font-size:0.75rem; color:var(--text-2); text-decoration:none; border-bottom:1px solid var(--edge-3); padding-bottom:2px">
+    View full chronicle <i class="bi bi-arrow-right ms-1"></i>
+  </a>
+</div>
+<div class="panel-editorial" style="margin-bottom:0">
+  {% for a in activity %}
+  <div class="activity-item">
+    <div class="activity-icon {% if a['event_type'] == 'imported' %}import{% else %}grab{% endif %}">
+      <i class="bi bi-{% if a['event_type'] == 'imported' %}check-circle-fill{% else %}cloud-download-fill{% endif %}"></i>
+    </div>
+    <div style="flex:1; min-width:0">
+      <div style="display:flex; align-items:baseline; gap:6px; min-width:0">
+        <a href="/series/{{ a['series_id'] }}" class="activity-series">{{ a['series_title'] }}</a>
+        {% if a['volume_label'] %}
+        <span class="activity-vol">{{ a['volume_label'] }}</span>
+        {% endif %}
+      </div>
+      <div class="activity-name" style="font-size:0.7rem">{{ a['source_title'] }}</div>
+    </div>
+    <div class="pill-badges">
+      {% if a['indexer'] %}<span class="badge-status badge-indexer">{{ a['indexer'] }}</span>{% endif %}
+      {% if a['protocol'] %}<span class="badge-status badge-{{ a['protocol'] }}">{{ a['protocol']|format_protocol }}</span>{% endif %}
+    </div>
+    <span class="activity-date">{{ a['created_at'] | format_date if a['created_at'] else '' }}</span>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# ── Sticky selection action bar ─────────────────────────────────────────── #}
+<div x-show="sel.length > 0" x-cloak x-transition
+     style="position:fixed; bottom:0; left:0; right:0; z-index:200;
+            background:var(--ink-1); border-top:1px solid var(--edge-2);
+            padding:12px 24px; display:flex; align-items:center; gap:12px;
+            backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px)">
+  <span style="font-size:0.85rem; font-weight:600; color:var(--ember)"
+        x-text="sel.length + ' series selected'"></span>
+  <div class="ms-auto d-flex gap-2 flex-wrap">
+    <button class="btn btn-secondary btn-sm" :disabled="saving"
+            @click="quickSave({monitored: true})">
+      <i class="bi bi-eye me-1"></i>Monitor
+    </button>
+    <button class="btn btn-secondary btn-sm" :disabled="saving"
+            @click="quickSave({monitored: false})">
+      <i class="bi bi-eye-slash me-1"></i>Unmonitor
+    </button>
+    <button class="btn btn-ember btn-sm" :disabled="saving"
+            data-bs-toggle="modal" data-bs-target="#bulkEditModal">
+      <i class="bi bi-sliders2 me-1"></i>Edit...
+    </button>
+    <button class="btn btn-secondary btn-sm" @click="sel = []; mode = false" title="Clear selection">
+      <i class="bi bi-x"></i>
+    </button>
+  </div>
+</div>
+
+{# ── Bulk Edit Modal ───────────────────────────────────────────────────────── #}
+<div class="modal fade" id="bulkEditModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title text-ember">
+          <i class="bi bi-pencil-square me-2"></i>Edit Selected
+          <span x-text="'(' + sel.length + ' series)'" class="ms-1" style="font-size:0.8rem; color:var(--text-2)"></span>
+        </h6>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted" style="font-size:0.8rem">Only fields you change will be applied. Leave <em>— no change —</em> to skip a field.</p>
+        <div class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label">Monitored</label>
+            <select x-model="be_monitored" class="form-select form-select-sm">
+              <option value="">— no change —</option>
+              <option value="1">Yes — Monitor</option>
+              <option value="0">No — Unmonitor</option>
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Monitor Mode</label>
+            <select x-model="be_monitor_mode" class="form-select form-select-sm">
+              <option value="">— no change —</option>
+              {% for m in monitor_modes %}
+              <option value="{{ m }}">{{ m|title }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Quality Profile</label>
+            <select x-model="be_qpid" class="form-select form-select-sm">
+              <option value="">— no change —</option>
+              <option value="0">— Clear (use global) —</option>
+              {% for p in profiles %}
+              <option value="{{ p['id'] }}">{{ p['name'] }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Language Profile</label>
+            <select x-model="be_lpid" class="form-select form-select-sm">
+              <option value="">— no change —</option>
+              <option value="0">— Clear (use global) —</option>
+              {% for p in lang_profiles %}
+              <option value="{{ p['id'] }}">{{ p['name'] }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          {% if root_folders %}
+          <div class="col-md-6">
+            <label class="form-label">Root Folder</label>
+            <select x-model="be_rfid" class="form-select form-select-sm">
+              <option value="">— no change —</option>
+              {% for rf in root_folders %}
+              <option value="{{ rf['id'] }}">{{ rf['path'] }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          {% endif %}
+          <div class="col-md-6">
+            <label class="form-label">Update Strategy</label>
+            <select x-model="be_strategy" class="form-select form-select-sm">
+              <option value="">— no change —</option>
+              <option value="always">Always (default)</option>
+              <option value="throttled">Throttled (weekly)</option>
+              <option value="once">Manual only</option>
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Source Type</label>
+            <select x-model="be_src" class="form-select form-select-sm">
+              <option value="">— no change —</option>
+              <option value="any">Any</option>
+              <option value="official_only">Official only</option>
+              <option value="fan_only">Fan only</option>
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Add Tags <span class="text-muted fw-normal" style="font-size:0.78rem">(comma-separated)</span></label>
+            <input type="text" x-model="be_tags_add" class="form-control form-control-sm" placeholder="e.g. shonen, completed">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Remove Tags <span class="text-muted fw-normal" style="font-size:0.78rem">(comma-separated)</span></label>
+            <input type="text" x-model="be_tags_rem" class="form-control form-control-sm" placeholder="e.g. old-tag">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-ember btn-sm" :disabled="saving"
+                @click="saveEdit(); bootstrap.Modal.getInstance(document.getElementById('bulkEditModal'))?.hide()">
+          <i class="bi bi-check-circle me-1"></i>
+          <span x-text="saving ? 'Saving…' : 'Apply to ' + sel.length + ' series'">Apply</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+

@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}Chapter Map — {{ s['title'] }} — Mangarr{% endblock %}
+{% block title_short %}Chapter Map{% endblock %}
+{% block nav_library %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center gap-3 mb-3 flex-wrap">
+  <a href="/series/{{ s['id'] }}" class="btn btn-secondary btn-sm">
+    <i class="bi bi-arrow-left me-1"></i>Back to Series
+  </a>
+  <div class="page-heading mb-0 text-ember">
+    <i class="bi bi-diagram-3"></i>Chapter Map — {{ s['title'] }}
+  </div>
+</div>
+
+<div class="d-flex gap-2 mb-4 flex-wrap align-items-center">
+  <button class="btn btn-ember btn-sm" onclick="saveOverrides()">
+    <i class="bi bi-floppy me-1"></i>Save Overrides
+  </button>
+  <form method="POST" action="/series/{{ s['id'] }}/chapter-map/reset"
+        data-confirm="Reset all chapter map overrides to MangaDex data? Your manual edits will be lost."
+        data-confirm-heading="Reset chapter map" data-confirm-ok="Reset">
+    <button type="submit" class="btn btn-secondary btn-sm">
+      <i class="bi bi-arrow-counterclockwise me-1"></i>Reset to MangaDex
+    </button>
+  </form>
+  <span class="text-muted align-self-center ms-2" style="font-size:0.8rem">
+    <i class="bi bi-info-circle me-1"></i>
+    Overridden rows are highlighted. Changes apply immediately to future scoring and imports.
+  </span>
+</div>
+
+{% if not ch_map %}
+<div class="panel">
+  <div class="panel-body text-muted" style="font-size:0.85rem">
+    No chapter map loaded yet — use <strong>Refresh Chapter Map</strong> on the series page to fetch data from MangaDex.
+  </div>
+</div>
+{% else %}
+
+<div class="table-wrap">
+  <table class="table table-sm" id="chmap-table">
+    <thead>
+      <tr>
+        <th style="width:120px">Chapter</th>
+        <th style="width:160px">Volume Assignment</th>
+        <th style="width:80px">Override?</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for ch_str, vol in ch_map_items %}
+      {% set is_overridden = ch_str in overrides %}
+      <tr class="chmap-row {% if is_overridden %}overridden-row{% endif %}"
+          data-chapter="{{ ch_str }}"
+          {% if is_overridden %}style="background:var(--gold-bg); border-left:3px solid var(--gold)"{% endif %}>
+        <td class="fw-semibold" style="font-size:0.85rem">
+          Ch&nbsp;{% if ch_str.replace('.','',1).isdigit() and '.' not in ch_str %}{{ ch_str|int }}{% else %}{{ ch_str }}{% endif %}
+        </td>
+        <td>
+          <select class="form-select form-select-sm vol-select" data-chapter="{{ ch_str }}">
+            <option value="">Unassigned</option>
+            {% if total_volumes %}
+            {% for v in range(1, total_volumes + 1) %}
+            <option value="{{ v }}"
+                    {% if vol is not none and vol|string == v|string %}selected{% endif %}>
+              Vol {{ v }}
+            </option>
+            {% endfor %}
+            {% else %}
+            {% if vol is not none %}
+            <option value="{{ vol }}" selected>Vol {{ vol }}</option>
+            {% endif %}
+            {% endif %}
+          </select>
+        </td>
+        <td>
+          {% if is_overridden %}
+          <span class="badge-status" style="background:var(--gold-bg); color:var(--gold); font-size:0.7rem">
+            <i class="bi bi-pencil me-1"></i>Overridden
+          </span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<div id="save-status" class="mt-2" style="display:none; font-size:0.82rem;"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function saveOverrides() {
+  const rows = document.querySelectorAll('.vol-select');
+  const overrides = {};
+  rows.forEach(sel => {
+    const ch  = sel.dataset.chapter;
+    const val = sel.value;
+    overrides[ch] = val !== '' ? val : null;
+  });
+
+  const btn    = document.querySelector('button[onclick="saveOverrides()"]');
+  const status = document.getElementById('save-status');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving…';
+
+  fetch('/series/{{ s['id'] }}/chapter-map', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({overrides}),
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      btn.innerHTML = '<i class="bi bi-check-circle me-1"></i>Saved';
+      status.style.display = 'block';
+      status.className = 'mt-2 text-jade';
+      status.textContent = 'Overrides saved successfully.';
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-floppy me-1"></i>Save Overrides';
+        status.style.display = 'none';
+      }, 2500);
+    } else {
+      throw new Error(d.error || 'Unknown error');
+    }
+  })
+  .catch(e => {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-floppy me-1"></i>Save Overrides';
+    status.style.display = 'block';
+    status.className = 'mt-2 text-ruby';
+    status.textContent = 'Save failed: ' + e;
+  });
+}
+
+// Highlight rows when user changes dropdown
+document.querySelectorAll('.vol-select').forEach(sel => {
+  sel.addEventListener('change', function() {
+    const row = this.closest('tr');
+    if (row) {
+      row.style.background = 'var(--gold-bg)';
+      row.style.borderLeft = '3px solid var(--gold)';
+    }
+  });
+});
+</script>
+{% endblock %}

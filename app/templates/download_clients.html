@@ -1,0 +1,634 @@
+{% extends "base.html" %}
+{% block title %}Download Clients — Mangarr{% endblock %}
+{% block title_short %}Download Clients{% endblock %}
+{% block nav_settings %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div class="page-heading mb-0"><i class="bi bi-hdd-stack"></i>Download Clients</div>
+  <button class="btn btn-outline-ember btn-sm" data-bs-toggle="modal" data-bs-target="#newModal">
+    <i class="bi bi-plus me-1"></i>Add Client
+  </button>
+</div>
+
+<div class="row g-3">
+{% for c in clients %}
+<div class="col-12">
+  <div class="panel mb-0" style="{% if not c.enabled %}opacity:.5{% endif %}">
+    <div class="panel-header d-flex align-items-center gap-2">
+      <i class="bi bi-{% if c.type == 'qbittorrent' %}hdd-fill{% elif c.type == 'sabnzbd' %}archive-fill{% else %}download{% endif %}"></i>
+      {{ c.name }}
+      <span class="badge-status badge-unknown" style="font-size:.65rem">{{ c.type }}</span>
+      {% if not c.enabled %}
+      <span class="badge-status badge-wanted" style="font-size:.65rem">DISABLED</span>
+      {% endif %}
+      <span style="font-size:.78rem;color:var(--text-2)">Priority: {{ c.priority }}</span>
+      {% for t in c.tags %}
+      <span class="badge-status badge-indexer" style="font-size:.65rem">{{ t }}</span>
+      {% endfor %}
+      <div class="ms-auto d-flex gap-2">
+        <button class="btn btn-sm btn-secondary"
+                onclick="testClient({{ c.id }}, this)" title="Test connection" aria-label="Test connection">
+          <i class="bi bi-plug"></i>
+        </button>
+        <button class="btn btn-sm btn-outline-ember" data-bs-toggle="modal"
+                data-bs-target="#editModal{{ c.id }}" aria-label="Edit"><i class="bi bi-pencil"></i></button>
+        <form method="POST" action="/download-clients/{{ c.id }}/delete"
+              data-confirm="Delete download client &quot;{{ c.name }}&quot;?"
+              data-confirm-heading="Delete client" data-confirm-ok="Delete">
+          <button class="btn btn-sm btn-danger-soft" aria-label="Delete"><i class="bi bi-trash"></i></button>
+        </form>
+      </div>
+    </div>
+    <div class="panel-body">
+      <div class="row g-3" style="font-size:.82rem">
+        <div class="col-auto">
+          <span style="color:var(--text-2)">Host: </span><span class="text-ember">{{ c.host or '—' }}</span>
+        </div>
+        <div class="col-auto">
+          <span style="color:var(--text-2)">Category: </span><span>{{ c.category or 'manga' }}</span>
+        </div>
+        {% if c.post_import_category %}
+        <div class="col-auto">
+          <span style="color:var(--text-2)">Post-Import: </span><span style="color:var(--sky)">{{ c.post_import_category }}</span>
+        </div>
+        {% endif %}
+        {% if c.type == 'qbittorrent' %}
+        <div class="col-auto">
+          <span style="color:var(--text-2)">Initial State: </span>
+          <span style="color:{% if c.initial_state == 'paused' %}var(--gold){% elif c.initial_state == 'forced' %}var(--ruby){% else %}var(--text){% endif %}">
+            {{ {'normal':'Start','paused':'Paused','forced':'Force Start'}.get(c.initial_state or 'normal','Start') }}
+          </span>
+        </div>
+        {% endif %}
+        <div class="col-auto">
+          <span style="color:var(--text-2)">Remove on Import: </span>
+          <span style="color:{% if c.remove_completed %}var(--jade){% else %}var(--text-2){% endif %}">
+            {% if c.remove_completed %}Yes{% else %}No{% endif %}
+          </span>
+        </div>
+        <div class="col-auto" id="test-result-{{ c.id }}"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div class="modal fade" id="editModal{{ c.id }}" tabindex="-1">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content" x-data="{ ct: '{{ c.type }}', isSuwayomi() { return this.ct === 'suwayomi'; } }">
+      <form method="POST" action="/download-clients/{{ c.id }}">
+        <div class="modal-header">
+          <h6 class="modal-title text-ember"><i class="bi bi-pencil me-2"></i>Edit: {{ c.name }}</h6>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body" style="max-height:75vh;overflow-y:auto">
+
+          <!-- Identity -->
+          <div class="dc-section-label">Identity</div>
+          <div class="row g-3 mb-3">
+            <div class="col-6">
+              <label class="form-label">Name</label>
+              <input type="text" name="name" class="form-control" value="{{ c.name }}" required>
+            </div>
+            <div class="col-4">
+              <label class="form-label">Type</label>
+              <select name="type" class="form-select" x-model="ct">
+                {% for t in client_types %}
+                <option value="{{ t }}" {% if c.type == t %}selected{% endif %}>{{ t }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-2 d-flex align-items-end pb-1">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="enabled" value="1"
+                       {% if c.enabled %}checked{% endif %} id="en{{ c.id }}">
+                <label class="form-check-label" for="en{{ c.id }}">Enabled</label>
+              </div>
+            </div>
+          </div>
+
+          <!-- Connection — host label adapts for Suwayomi -->
+          <div class="dc-section-label">Connection</div>
+          <div class="row g-3 mb-3">
+            <div :class="isSuwayomi() ? 'col-12' : 'col-8'">
+              <label class="form-label" x-text="isSuwayomi() ? 'URL' : 'Host'"></label>
+              <input type="text" name="host" class="form-control" value="{{ c.host or '' }}"
+                     :placeholder="isSuwayomi() ? 'http://suwayomi:4567' : 'http://hostname'">
+              <div class="form-text" x-show="isSuwayomi()">Base URL of your Suwayomi server.</div>
+            </div>
+            <div class="col-12 mt-2" x-show="isSuwayomi()" x-cloak>
+              <label class="form-label">Library Path <small style="color:var(--text-2)">— path visible to Mangarr that matches Suwayomi's download root</small></label>
+              <input type="text" name="download_path" class="form-control" value="{{ c.download_path or '' }}"
+                     placeholder="/data/media/manga">
+              <div class="form-text">Suwayomi reports its download path (e.g. <code>/manga</code>). Enter the equivalent path on this server as Mangarr sees it.</div>
+            </div>
+            <div class="col-12 mt-2" x-show="isSuwayomi()" x-cloak>
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="merge_chapters" value="1"
+                       {% if c.merge_chapters != 0 %}checked{% endif %} id="mc{{ c.id }}">
+                <label class="form-check-label" for="mc{{ c.id }}">Merge chapters into volume CBZ</label>
+              </div>
+              <div class="form-text">When enabled (default), downloaded chapter CBZs are combined into a single volume file on import. Disable to keep individual chapter files in a subdirectory.</div>
+            </div>
+            <div class="col-2" x-show="!isSuwayomi()" x-cloak>
+              <label class="form-label">Port</label>
+              <input type="number" name="port" class="form-control" value="{{ c.port or '' }}" placeholder="8080">
+            </div>
+            <div class="col-2 d-flex align-items-end pb-1" x-show="!isSuwayomi()" x-cloak>
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="use_ssl" value="1"
+                       {% if c.use_ssl %}checked{% endif %} id="ssl{{ c.id }}">
+                <label class="form-check-label" for="ssl{{ c.id }}">Use SSL</label>
+              </div>
+            </div>
+            <div class="col-12" x-show="!isSuwayomi()" x-cloak>
+              <label class="form-label">URL Base <small style="color:var(--text-2)">— optional prefix for reverse-proxy setups</small></label>
+              <input type="text" name="url_base" class="form-control" value="{{ c.url_base or '' }}"
+                     placeholder="/qbittorrent">
+            </div>
+            <div class="col-6" x-show="!isSuwayomi()" x-cloak>
+              <label class="form-label">Username</label>
+              <input type="text" name="username" class="form-control" value="{{ c.username or '' }}"
+                     autocomplete="off">
+            </div>
+            <div class="col-6" x-show="!isSuwayomi()" x-cloak>
+              <label class="form-label">Password / API Key</label>
+              <input type="password" name="password" class="form-control"
+                     placeholder="leave blank to keep current" autocomplete="new-password">
+              <input type="hidden" name="keep_password" value="0">
+            </div>
+          </div>
+
+          <!-- Categories (non-Suwayomi) -->
+          <div x-show="!isSuwayomi()" x-cloak>
+            <div class="dc-section-label">Categories</div>
+            <div class="row g-3 mb-3">
+              <div class="col-6">
+                <label class="form-label">Category</label>
+                <input type="text" name="category" class="form-control" value="{{ c.category or 'manga' }}">
+                <div class="form-text">Adding a category specific to Mangarr avoids conflicts with other apps using the same client.</div>
+              </div>
+              <div class="col-6">
+                <label class="form-label">Post-Import Category</label>
+                <input type="text" name="post_import_category" class="form-control"
+                       value="{{ c.post_import_category or '' }}" placeholder="e.g. manga-seeding">
+                <div class="form-text">Set after import. Mangarr won't remove torrents in this category even if seeding finished. Leave blank to keep original category.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Torrent Options — qBittorrent only -->
+          <div x-show="ct === 'qbittorrent'" x-cloak>
+            <div class="dc-section-label">Torrent Options</div>
+            <div class="row g-3 mb-3">
+              <div class="col-4">
+                <label class="form-label">Recent Priority
+                  <span class="dc-field-hint" title="Priority for releases grabbed in the last 14 days">?</span>
+                </label>
+                <select name="recent_priority" class="form-select">
+                  {% for opt, lbl in [('last','Last'),('first','First'),('normal','Normal')] %}
+                  <option value="{{ opt }}" {% if (c.recent_priority or 'last') == opt %}selected{% endif %}>{{ lbl }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-4">
+                <label class="form-label">Older Priority
+                  <span class="dc-field-hint" title="Priority for releases older than 14 days">?</span>
+                </label>
+                <select name="older_priority" class="form-select">
+                  {% for opt, lbl in [('last','Last'),('first','First'),('normal','Normal')] %}
+                  <option value="{{ opt }}" {% if (c.older_priority or 'last') == opt %}selected{% endif %}>{{ lbl }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-4">
+                <label class="form-label">Initial State</label>
+                <select name="initial_state" class="form-select">
+                  {% for opt, lbl in [('normal','Start'),('paused','Paused'),('forced','Force Start')] %}
+                  <option value="{{ opt }}" {% if (c.initial_state or 'normal') == opt %}selected{% endif %}>{{ lbl }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-4">
+                <label class="form-label">Content Layout</label>
+                <select name="content_layout" class="form-select">
+                  {% for opt, lbl in [('original','Original'),('subfolder','Create Subfolder'),('none','No Subfolder')] %}
+                  <option value="{{ opt }}" {% if (c.content_layout or 'original') == opt %}selected{% endif %}>{{ lbl }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-4 d-flex align-items-end pb-1">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="sequential_order" value="1"
+                         {% if c.sequential_order %}checked{% endif %} id="seq{{ c.id }}">
+                  <label class="form-check-label" for="seq{{ c.id }}">Sequential Order
+                    <small style="display:block;color:var(--text-2);font-size:.75rem">Download first piece first</small>
+                  </label>
+                </div>
+              </div>
+              <div class="col-4 d-flex align-items-end pb-1">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="first_last_first" value="1"
+                         {% if c.first_last_first %}checked{% endif %} id="flf{{ c.id }}">
+                  <label class="form-check-label" for="flf{{ c.id }}">First and Last First
+                    <small style="display:block;color:var(--text-2);font-size:.75rem">Prioritize first and last pieces</small>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Client Settings -->
+          <div class="dc-section-label">Client Settings</div>
+          <div class="row g-3">
+            <div class="col-3">
+              <label class="form-label">Client Priority</label>
+              <input type="number" name="priority" class="form-control" value="{{ c.priority }}" min="1">
+            </div>
+            <div class="col-9 d-flex align-items-end gap-4 pb-1" x-show="!isSuwayomi()" x-cloak>
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="remove_completed" value="1"
+                       {% if c.remove_completed %}checked{% endif %} id="rc{{ c.id }}">
+                <label class="form-check-label" for="rc{{ c.id }}">Remove Completed
+                  <small style="display:block;color:var(--text-2);font-size:.75rem">Remove from client after import when seeding is finished</small>
+                </label>
+              </div>
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="remove_failed" value="1"
+                       {% if c.remove_failed %}checked{% endif %} id="rf{{ c.id }}">
+                <label class="form-check-label" for="rf{{ c.id }}">Remove Failed
+                  <small style="display:block;color:var(--text-2);font-size:.75rem">Delete stalled or failed downloads from this client</small>
+                </label>
+              </div>
+            </div>
+            <div class="col-12">
+              <label class="form-label">Tags <small style="color:var(--text-2)">(comma-separated — match series tags to route downloads to this client)</small></label>
+              <input type="text" name="tags" class="form-control" value="{{ c.tags | join(', ') }}">
+            </div>
+          </div>
+
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-ember btn-sm">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+{% if not clients %}
+<div class="col-12">
+  <div class="empty-state">
+    <div class="empty-icon"><i class="bi bi-hdd-stack"></i></div>
+    <p class="fw-semibold">No download clients configured</p>
+    <p style="font-size:0.82rem;color:var(--text-3)">Add qBittorrent, SABnzbd, Deluge, or other clients to enable automatic downloading.</p>
+  </div>
+</div>
+{% endif %}
+</div>
+
+<!-- New Client Modal -->
+<div class="modal fade" id="newModal" tabindex="-1">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content" x-data="{
+      ct: 'qbittorrent',
+      autoName: true,
+      isSuwayomi() { return this.ct === 'suwayomi'; },
+      onTypeChange(t) {
+        this.ct = t;
+        if (this.autoName) {
+          const labels = { suwayomi:'Suwayomi', qbittorrent:'qBittorrent', sabnzbd:'SABnzbd',
+                           blackhole:'Blackhole', deluge:'Deluge', transmission:'Transmission', nzbget:'NZBGet' };
+          this.$refs.nameInput.value = labels[t] || '';
+        }
+        if (t === 'suwayomi' && !this.$refs.hostInput.value) {
+          this.$refs.hostInput.value = 'http://suwayomi:4567';
+        }
+      }
+    }">
+      <form method="POST" action="/download-clients">
+        <div class="modal-header">
+          <h6 class="modal-title text-ember"><i class="bi bi-plus-circle me-2"></i>Add Download Client</h6>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body" style="max-height:75vh;overflow-y:auto">
+
+          <!-- Identity -->
+          <div class="dc-section-label">Identity</div>
+          <div class="row g-3 mb-3">
+            <div class="col-6">
+              <label class="form-label">Name</label>
+              <input type="text" name="name" class="form-control" placeholder="e.g. qBittorrent" required
+                     x-ref="nameInput" @input="autoName = false">
+            </div>
+            <div class="col-4">
+              <label class="form-label">Type</label>
+              <select name="type" class="form-select" x-model="ct" @change="onTypeChange($event.target.value)">
+                {% for t in client_types %}
+                <option value="{{ t }}">{{ t }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-2 d-flex align-items-end pb-1">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="enabled" value="1" checked id="en_new">
+                <label class="form-check-label" for="en_new">Enabled</label>
+              </div>
+            </div>
+          </div>
+
+          <!-- Connection — host field used by all types; label adapts for Suwayomi -->
+          <div class="dc-section-label">Connection</div>
+          <div class="row g-3 mb-3">
+            <div :class="isSuwayomi() ? 'col-12' : 'col-8'">
+              <label class="form-label" x-text="isSuwayomi() ? 'URL' : 'Host'"></label>
+              <input type="text" name="host" class="form-control" x-ref="hostInput"
+                     :placeholder="isSuwayomi() ? 'http://suwayomi:4567' : 'http://hostname'">
+              <div class="form-text" x-show="isSuwayomi()">
+                Base URL of your Suwayomi server. On this server: <code>http://suwayomi:4567</code>
+              </div>
+            </div>
+            <div class="col-12 mt-2" x-show="isSuwayomi()" x-cloak>
+              <label class="form-label">Library Path <small style="color:var(--text-2)">— path visible to Mangarr that matches Suwayomi's download root</small></label>
+              <input type="text" name="download_path" class="form-control"
+                     placeholder="/data/media/manga">
+              <div class="form-text">Suwayomi reports its download path (e.g. <code>/manga</code>). Enter the equivalent path on this server as Mangarr sees it.</div>
+            </div>
+            <div class="col-12 mt-2" x-show="isSuwayomi()" x-cloak>
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="merge_chapters" value="1"
+                       checked id="mc_new">
+                <label class="form-check-label" for="mc_new">Merge chapters into volume CBZ</label>
+              </div>
+              <div class="form-text">When enabled (default), downloaded chapter CBZs are combined into a single volume file on import. Disable to keep individual chapter files in a subdirectory.</div>
+            </div>
+            <div class="col-2" x-show="!isSuwayomi()" x-cloak>
+              <label class="form-label">Port</label>
+              <input type="number" name="port" class="form-control" placeholder="8080">
+            </div>
+            <div class="col-2 d-flex align-items-end pb-1" x-show="!isSuwayomi()" x-cloak>
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="use_ssl" value="1" id="ssl_new">
+                <label class="form-check-label" for="ssl_new">Use SSL</label>
+              </div>
+            </div>
+            <div class="col-12" x-show="!isSuwayomi()" x-cloak>
+              <label class="form-label">URL Base <small style="color:var(--text-2)">— optional prefix for reverse-proxy setups</small></label>
+              <input type="text" name="url_base" class="form-control" placeholder="/qbittorrent">
+            </div>
+            <div class="col-6" x-show="!isSuwayomi()" x-cloak>
+              <label class="form-label">Username</label>
+              <input type="text" name="username" class="form-control" autocomplete="off">
+            </div>
+            <div class="col-6" x-show="!isSuwayomi()" x-cloak>
+              <label class="form-label">Password / API Key</label>
+              <input type="password" name="password" class="form-control" autocomplete="new-password">
+            </div>
+          </div>
+
+          <!-- Categories (non-Suwayomi) -->
+          <div x-show="!isSuwayomi()" x-cloak>
+            <div class="dc-section-label">Categories</div>
+            <div class="row g-3 mb-3">
+              <div class="col-6">
+                <label class="form-label">Category</label>
+                <input type="text" name="category" class="form-control" value="manga">
+                <div class="form-text">Adding a category specific to Mangarr avoids conflicts with other apps.</div>
+              </div>
+              <div class="col-6">
+                <label class="form-label">Post-Import Category</label>
+                <input type="text" name="post_import_category" class="form-control" placeholder="e.g. manga-seeding">
+                <div class="form-text">Set after import. Leave blank to keep original category.</div>
+              </div>
+            </div>
+
+            <!-- Torrent Options — qBittorrent only -->
+            <div x-show="ct === 'qbittorrent'" x-cloak>
+              <div class="dc-section-label">Torrent Options</div>
+              <div class="row g-3 mb-3">
+                <div class="col-4">
+                  <label class="form-label">Recent Priority</label>
+                  <select name="recent_priority" class="form-select">
+                    <option value="last" selected>Last</option>
+                    <option value="first">First</option>
+                    <option value="normal">Normal</option>
+                  </select>
+                </div>
+                <div class="col-4">
+                  <label class="form-label">Older Priority</label>
+                  <select name="older_priority" class="form-select">
+                    <option value="last" selected>Last</option>
+                    <option value="first">First</option>
+                    <option value="normal">Normal</option>
+                  </select>
+                </div>
+                <div class="col-4">
+                  <label class="form-label">Initial State</label>
+                  <select name="initial_state" class="form-select">
+                    <option value="normal" selected>Start</option>
+                    <option value="paused">Paused</option>
+                    <option value="forced">Force Start</option>
+                  </select>
+                </div>
+                <div class="col-4">
+                  <label class="form-label">Content Layout</label>
+                  <select name="content_layout" class="form-select">
+                    <option value="original" selected>Original</option>
+                    <option value="subfolder">Create Subfolder</option>
+                    <option value="none">No Subfolder</option>
+                  </select>
+                </div>
+                <div class="col-4 d-flex align-items-end pb-1">
+                  <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" name="sequential_order" value="1" id="seq_new">
+                    <label class="form-check-label" for="seq_new">Sequential Order
+                      <small style="display:block;color:var(--text-2);font-size:.75rem">Download first piece first</small>
+                    </label>
+                  </div>
+                </div>
+                <div class="col-4 d-flex align-items-end pb-1">
+                  <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" name="first_last_first" value="1" id="flf_new">
+                    <label class="form-check-label" for="flf_new">First and Last First
+                      <small style="display:block;color:var(--text-2);font-size:.75rem">Prioritize first and last pieces</small>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Client Settings (always shown) -->
+          <div class="dc-section-label">Client Settings</div>
+          <div class="row g-3">
+            <div class="col-3">
+              <label class="form-label">Client Priority</label>
+              <input type="number" name="priority" class="form-control" value="1" min="1">
+            </div>
+            <div class="col-9 d-flex align-items-end gap-4 pb-1" x-show="!isSuwayomi()" x-cloak>
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="remove_completed" value="1" id="rc_new">
+                <label class="form-check-label" for="rc_new">Remove Completed
+                  <small style="display:block;color:var(--text-2);font-size:.75rem">Remove from client after import when seeding is finished</small>
+                </label>
+              </div>
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="remove_failed" value="1" id="rf_new">
+                <label class="form-check-label" for="rf_new">Remove Failed
+                  <small style="display:block;color:var(--text-2);font-size:.75rem">Delete stalled or failed downloads from this client</small>
+                </label>
+              </div>
+            </div>
+          </div>
+
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-ember btn-sm">Add Client</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Remote Path Mappings card -->
+<div class="panel mt-4">
+  <div class="panel-header d-flex align-items-center gap-2">
+    <i class="bi bi-arrow-left-right"></i>
+    Remote Path Mappings
+  </div>
+  <div class="panel-body">
+    <p style="font-size:.82rem;color:var(--text-2)" class="mb-3">
+      Used when the download client and Mangarr use different paths for the same folder.<br>
+      <em>Example: qBittorrent saves to <code>/downloads/</code> but Mangarr sees it as <code>/data/downloads/</code></em>
+    </p>
+
+    {% if mappings %}
+    <div class="table-wrap mb-3">
+    <table class="table table-sm mb-0" style="font-size:.85rem">
+      <thead>
+        <tr>
+          <th>Host</th>
+          <th>Remote Path</th>
+          <th></th>
+          <th>Local Path</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in mappings %}
+        <tr>
+          <td style="color:var(--text-2)">{{ m.host or '<em>any</em>' }}</td>
+          <td class="text-ember">{{ m.remote_path }}</td>
+          <td style="color:var(--text-2)" class="px-1">→</td>
+          <td>{{ m.local_path }}</td>
+          <td>
+            <form method="POST" action="/download-clients/remote-path-mappings/{{ m.id }}/delete"
+                  data-confirm="Delete remote path mapping {{ m.remote_path }} → {{ m.local_path }}?"
+                  data-confirm-heading="Delete mapping" data-confirm-ok="Delete"
+                  class="d-inline">
+              <button class="btn btn-sm btn-danger-soft py-0 px-1"><i class="bi bi-trash"></i></button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+    <p style="font-size:.82rem;color:var(--text-2)" class="mb-3">No mappings configured.</p>
+    {% endif %}
+
+    <form method="POST" action="/download-clients/remote-path-mappings" class="row g-2 align-items-end">
+      <div class="col-3">
+        <label class="form-label small mb-1">Host <span style="color:var(--text-3)">(optional)</span></label>
+        <input type="text" name="host" class="form-control form-control-sm"
+               placeholder="http://qbittorrent:8090">
+      </div>
+      <div class="col-4">
+        <label class="form-label small mb-1">Remote Path</label>
+        <input type="text" name="remote_path" class="form-control form-control-sm"
+               placeholder="/downloads" required>
+      </div>
+      <div class="col-4">
+        <label class="form-label small mb-1">Local Path</label>
+        <input type="text" name="local_path" class="form-control form-control-sm"
+               placeholder="/data/downloads" required>
+      </div>
+      <div class="col-1">
+        <button type="submit" class="btn btn-outline-ember btn-sm w-100">Add</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Download Client Options card -->
+<div class="panel mt-4">
+  <div class="panel-header d-flex align-items-center gap-2">
+    <i class="bi bi-sliders"></i>
+    Completed Download Handling
+    {% if saved %}<span class="badge-status badge-downloaded ms-auto" style="font-size:.65rem">Saved</span>{% endif %}
+  </div>
+  <div class="panel-body">
+    <form method="POST" action="/download-clients/options">
+      <div class="row g-3">
+        <div class="col-12">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" name="completed_download_handling"
+                   value="1" id="opt_cdh" {% if options.completed_download_handling %}checked{% endif %}>
+            <label class="form-check-label" for="opt_cdh">
+              Enable
+              <small style="display:block;color:var(--text-2);font-size:.8rem">Mangarr monitors for completed downloads and imports them automatically.</small>
+            </label>
+          </div>
+        </div>
+        <div class="col-12">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" name="failed_download_handling"
+                   value="1" id="opt_fdh" {% if options.failed_download_handling %}checked{% endif %}>
+            <label class="form-check-label" for="opt_fdh">
+              Redownload Failed
+              <small style="display:block;color:var(--text-2);font-size:.8rem">Blocklist and automatically re-search when a download enters a failed state. Whether to remove the file from the client is configured per-client.</small>
+            </label>
+          </div>
+        </div>
+        <div class="col-12">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" name="redownload_failed_interactive"
+                   value="1" id="opt_rfi" {% if options.redownload_failed_interactive %}checked{% endif %}>
+            <label class="form-check-label" for="opt_rfi">
+              Redownload Failed from Interactive Search
+              <small style="display:block;color:var(--text-2);font-size:.8rem">When a download fails, skip the automatic re-grab and leave the series for manual selection via interactive search.</small>
+            </label>
+          </div>
+        </div>
+        <div class="col-12">
+          <button type="submit" class="btn btn-ember btn-sm">Save</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function testClient(id, btn) {
+  btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+  const r = await fetch(`/api/download-clients/${id}/test`, {method:'POST'});
+  const d = await r.json();
+  const el = document.getElementById(`test-result-${id}`);
+  if (el) {
+    el.className = `connection-status ${d.ok ? 'connection-ok' : 'connection-fail'}`;
+    el.textContent = d.message;
+    el.style.display = 'inline-block';
+  }
+  btn.disabled = false;
+  btn.innerHTML = '<i class="bi bi-plug"></i>';
+}
+</script>
+{% endblock %}

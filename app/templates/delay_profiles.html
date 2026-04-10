@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block title %}Delay Profiles — Mangarr{% endblock %}
+{% block title_short %}Delay Profiles{% endblock %}
+{% block nav_settings %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div class="page-heading mb-0"><i class="bi bi-hourglass-split"></i>Delay Profiles</div>
+  <button class="btn btn-outline-ember btn-sm" data-bs-toggle="modal" data-bs-target="#newModal">
+    <i class="bi bi-plus me-1"></i>New Profile
+  </button>
+</div>
+<p class="text-sm mb-4" style="color:var(--text-2)">
+  Delay profiles make Mangarr wait before grabbing. The default profile (no tags) applies to all series.
+  Tagged profiles override the default for matching series.
+</p>
+
+<div class="row g-3" id="delay-list">
+{% for p in profiles %}
+<div class="col-12" data-id="{{ p.id }}">
+  <div class="panel mb-0">
+    <div class="panel-header d-flex align-items-center gap-2">
+      <i class="bi bi-hourglass cursor-grab" title="Drag to reorder"></i>
+      {{ p.name }}
+      {% if p.is_default %}<span class="badge-status badge-downloaded ms-1 text-[0.65rem]">DEFAULT</span>{% endif %}
+      {% for t in p.tags %}
+      <span class="badge-status badge-indexer text-[0.65rem]">{{ t }}</span>
+      {% endfor %}
+      <div class="ms-auto d-flex gap-2">
+        <button class="btn btn-sm btn-outline-ember" data-bs-toggle="modal"
+                data-bs-target="#editModal{{ p.id }}"><i class="bi bi-pencil"></i></button>
+        {% if not p.is_default %}
+        <form method="POST" action="/delay-profiles/{{ p.id }}/delete"
+              data-confirm="Delete this delay profile?"
+              data-confirm-heading="Delete profile" data-confirm-ok="Delete">
+          <button class="btn btn-sm btn-danger-soft"><i class="bi bi-trash"></i></button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+    <div class="panel-body">
+      <div class="row g-3 text-sm">
+        <div class="col-auto text-center">
+          <div class="form-label">Usenet</div>
+          <span class="badge-status {% if p.enable_usenet %}badge-downloaded{% else %}badge-wanted{% endif %}">
+            {% if p.enable_usenet %}{{ p.usenet_delay }}m{% else %}Disabled{% endif %}
+          </span>
+        </div>
+        <div class="col-auto text-center">
+          <div class="form-label">Torrent</div>
+          <span class="badge-status {% if p.enable_torrent %}badge-downloaded{% else %}badge-wanted{% endif %}">
+            {% if p.enable_torrent %}{{ p.torrent_delay }}m{% else %}Disabled{% endif %}
+          </span>
+        </div>
+        <div class="col-auto text-center">
+          <div class="form-label">Bypass on Best</div>
+          <span class="badge-status {% if p.bypass_if_highest_quality %}badge-downloaded{% else %}badge-grabbed{% endif %}">
+            {% if p.bypass_if_highest_quality %}Yes{% else %}No{% endif %}
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div class="modal fade" id="editModal{{ p.id }}" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="POST" action="/delay-profiles/{{ p.id }}">
+        <div class="modal-header">
+          <h6 class="modal-title text-ember">Edit: {{ p.name }}</h6>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Name</label>
+            <input type="text" name="name" class="form-control" value="{{ p.name }}" required>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-6">
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" name="enable_usenet"
+                       value="1" {% if p.enable_usenet %}checked{% endif %} id="eu{{ p.id }}">
+                <label class="form-check-label" for="eu{{ p.id }}">Enable Usenet</label>
+              </div>
+              <label class="form-label">Usenet Delay (minutes)</label>
+              <input type="number" name="usenet_delay" class="form-control" value="{{ p.usenet_delay }}" min="0">
+            </div>
+            <div class="col-6">
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" name="enable_torrent"
+                       value="1" {% if p.enable_torrent %}checked{% endif %} id="et{{ p.id }}">
+                <label class="form-check-label" for="et{{ p.id }}">Enable Torrent</label>
+              </div>
+              <label class="form-label">Torrent Delay (minutes)</label>
+              <input type="number" name="torrent_delay" class="form-control" value="{{ p.torrent_delay }}" min="0">
+            </div>
+          </div>
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" name="bypass_if_highest_quality"
+                   value="1" {% if p.bypass_if_highest_quality %}checked{% endif %} id="byp{{ p.id }}">
+            <label class="form-check-label" for="byp{{ p.id }}">Bypass delay if best quality available</label>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Tags <small class="text-[color:var(--text-2)]">(blank = default / all series)</small></label>
+            <input type="text" name="tags" class="form-control" value="{{ p.tags | join(', ') }}">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-ember btn-sm">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endfor %}
+</div>
+
+<!-- New Modal -->
+<div class="modal fade" id="newModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="POST" action="/delay-profiles">
+        <div class="modal-header">
+          <h6 class="modal-title text-ember"><i class="bi bi-plus-circle me-2"></i>New Delay Profile</h6>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Name</label>
+            <input type="text" name="name" class="form-control" placeholder="e.g. Usenet Only" required>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-6">
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" name="enable_usenet" value="1" checked id="eu_new">
+                <label class="form-check-label" for="eu_new">Enable Usenet</label>
+              </div>
+              <label class="form-label">Usenet Delay (min)</label>
+              <input type="number" name="usenet_delay" class="form-control" value="0" min="0">
+            </div>
+            <div class="col-6">
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" name="enable_torrent" value="1" checked id="et_new">
+                <label class="form-check-label" for="et_new">Enable Torrent</label>
+              </div>
+              <label class="form-label">Torrent Delay (min)</label>
+              <input type="number" name="torrent_delay" class="form-control" value="0" min="0">
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Tags <small class="text-[color:var(--text-2)]">(comma-separated; blank = applies to all)</small></label>
+            <input type="text" name="tags" class="form-control" placeholder="e.g. manga,doujin">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-ember btn-sm">Create</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

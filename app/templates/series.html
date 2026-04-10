@@ -1,0 +1,1386 @@
+{% extends "base.html" %}
+{% block title %}{{ s['title'] }} — Mangarr{% endblock %}
+{% block title_short %}{{ s['title'] }}{% endblock %}
+{% block topbar_title %}
+  <a href="/" style="color:var(--text-2); font-size:0.82rem">Library</a>
+  <i class="bi bi-chevron-right mx-2" style="font-size:0.65rem; color:var(--text-3)"></i>
+  <strong>{{ s['title'] }}</strong>
+{% endblock %}
+{% block nav_library %}active{% endblock %}
+
+{% block head_styles %}
+/* ── Editorial hero — blurred backdrop + large cover + Fraunces title ── */
+.series-backdrop {
+  position: relative;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 48px;
+  padding: 40px 36px 32px;
+  background: var(--ink-2);
+  border: 1px solid var(--edge);
+}
+.series-backdrop::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: var(--cover-url);
+  background-size: cover;
+  background-position: center top;
+  filter: blur(50px) saturate(1.3) brightness(0.15);
+  transform: scale(1.3);
+  z-index: 0;
+}
+.series-hero {
+  display: flex;
+  gap: 36px;
+  align-items: flex-start;
+  margin-bottom: 0;
+  position: relative;
+  z-index: 1;
+}
+.series-cover-col {
+  flex-shrink: 0;
+  width: 180px;
+}
+.series-cover-col img {
+  width: 100%;
+  border-radius: 4px;
+  border: 1px solid rgba(255,255,255,0.06);
+  display: block;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.03);
+}
+.series-cover-col .no-cover {
+  width: 100%;
+  height: 260px;
+  background: var(--ink-3);
+  border-radius: 4px;
+  border: 1px solid var(--edge-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2.5rem;
+  color: var(--text-3);
+}
+.series-main { flex: 1; min-width: 0; }
+.series-title {
+  font-family: var(--font-display);
+  font-size: clamp(1.75rem, 3.5vw, 2.5rem);
+  font-weight: 800;
+  color: var(--paper);
+  letter-spacing: -0.02em;
+  line-height: 1.08;
+  margin-bottom: 10px;
+  text-shadow: 0 3px 16px rgba(0,0,0,0.6);
+  font-optical-sizing: auto;
+}
+.series-stat-num {
+  font-family: var(--font-mono);
+  font-feature-settings: 'tnum' 1, 'lnum' 1;
+  font-size: 1.75rem;
+  font-weight: 600;
+  line-height: 1;
+}
+.series-stat-lbl {
+  font-family: var(--font-ui);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: rgba(255,255,255,0.4);
+  margin-top: 5px;
+}
+.action-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 13px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.05);
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+  text-decoration: none;
+  font-family: var(--font-ui);
+  line-height: 1;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.action-btn:hover {
+  border-color: rgba(255,255,255,0.15);
+  background: rgba(255,255,255,0.09);
+  color: var(--text);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+.action-btn.primary { background: var(--ember); border-color: var(--ember); color: #fff; }
+.action-btn.primary:hover { background: var(--ember-hi); border-color: var(--ember-hi); box-shadow: 0 4px 20px var(--ember-glow); transform: translateY(-1px); }
+.action-btn.danger { border-color: rgba(240,80,80,0.25); color: var(--ruby); background: rgba(240,80,80,0.06); }
+.action-btn.danger:hover { background: var(--ruby-bg); border-color: var(--ruby); }
+.action-btn.success { border-color: rgba(34,200,122,0.25); color: var(--jade); background: rgba(34,200,122,0.06); }
+.action-btn.success:hover { background: var(--jade-bg); border-color: var(--jade); }
+.action-btn.sky { border-color: rgba(88,168,248,0.25); color: var(--sky); background: rgba(88,168,248,0.06); }
+.action-btn.sky:hover { background: var(--sky-bg); border-color: var(--sky); }
+.meta-row { font-size: 0.8rem; color: rgba(228,228,240,0.8); display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+.meta-row i { color: rgba(228,228,240,0.4); width: 14px; text-align: center; }
+.ch-pill {
+  padding: 2px 6px; border-radius: 4px; font-size: 0.68rem; font-weight: 600; white-space: nowrap;
+}
+.ch-pill.dl  { background: rgba(34,200,122,0.15); color: var(--jade); border: 1px solid rgba(34,200,122,0.3); cursor: default; }
+.ch-pill.gr  { background: rgba(240,132,40,0.15); color: var(--ember); border: 1px solid rgba(240,132,40,0.3); cursor: pointer; }
+.ch-pill.wt  { position:relative; display:inline-flex; align-items:center; gap:2px; background: rgba(240,80,80,0.12); color: var(--ruby); border: 1px solid rgba(240,80,80,0.3); }
+.ch-pill-actions { display: none; gap: 2px; margin-left: 2px; }
+@media (max-width: 768px) {
+  .series-hero { flex-direction: column; }
+  .series-cover-col { width: 120px; }
+}
+
+/* ── Edit Series modal tabs ── */
+.edit-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--edge);
+  margin: -8px -4px 16px;
+  padding: 0 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.edit-tabs::-webkit-scrollbar { display: none; }
+.edit-tab {
+  flex: 0 0 auto;
+  padding: 9px 14px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-2);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  font-family: var(--font-ui);
+}
+.edit-tab:hover { color: var(--text); }
+.edit-tab.active {
+  color: var(--ember);
+  border-bottom-color: var(--ember);
+}
+.edit-tab-panel { display: none; }
+.edit-tab-panel.active { display: block; }
+{% endblock %}
+
+{% block content %}
+
+{# ══════════════════════════════════════════════════════════
+   HERO — cover + title + quick actions (blurred backdrop)
+══════════════════════════════════════════════════════════ #}
+<div class="series-backdrop" style="--cover-url: url('/covers/{{ s['id'] }}.jpg')">
+<div class="series-hero">
+
+  {# Cover #}
+  <div class="series-cover-col">
+    {% if s['cover_url'] or s['id'] %}
+    <img src="/covers/{{ s['id'] }}.jpg" alt="{{ s['title'] }}" class="series-cover-img"
+         onerror="this.onerror=null; this.src='{{ s['cover_url'] or '' }}'">
+    {% else %}
+    <div class="no-cover"><i class="bi bi-book"></i></div>
+    {% endif %}
+    <button onclick="refreshCover({{ s['id'] }})"
+            class="action-btn w-100 mt-2" style="justify-content:center; font-size:0.72rem">
+      <i class="bi bi-arrow-clockwise"></i>Refresh Cover
+    </button>
+  </div>
+
+  {# Main info #}
+  <div class="series-main">
+
+    {# Title + edition badge #}
+    <div class="series-title">{{ s['title'] }}</div>
+    {% set _et = s['edition_type'] or 'standard' %}
+    {% if _et != 'standard' %}
+    {% set _ed_styles = {
+      'official_color': ('Official Color', 'var(--gold)', 'var(--gold-bg)', 'bi-palette-fill'),
+      'colored':        ('Fan Colored',    'var(--iris)', 'var(--iris-bg)',     'bi-palette'),
+      'omnibus':        ('Omnibus',        'var(--ember)', 'var(--ember-lo)',   'bi-collection-fill'),
+      'deluxe':         ('Deluxe',         'var(--sky)',   'var(--sky-bg)',     'bi-gem'),
+      'digital':        ('Digital',        'var(--jade)',  'var(--jade-bg)',    'bi-tablet'),
+      'raw':            ('Raw / JP',       'var(--ruby)',  'var(--ruby-bg)',    'bi-translate'),
+      'special':        ('Special Ed.',    'var(--rose)',  'var(--rose-bg)',    'bi-star-fill'),
+      'collector':      ("Collector's",   'var(--rose)',  'var(--rose-bg)',    'bi-award-fill'),
+      'remaster':       ('Remaster',       'var(--iris)', 'var(--iris-bg)',    'bi-stars'),
+      'unlocalized':    ('Unlocalized',    'var(--text-2)', 'var(--ink-4)',    'bi-globe'),
+    } %}
+    {% set _ed = _ed_styles.get(_et, ('Edition', 'var(--text-2)', 'var(--ink-4)', 'bi-bookmark')) %}
+    <div class="d-inline-flex align-items-center gap-2 mb-3 px-3 py-1 rounded-pill"
+         style="background:{{ _ed[2] }}; border:1px solid {{ _ed[1] }}44; font-size:0.78rem">
+      <i class="bi {{ _ed[3] }}" style="color:{{ _ed[1] }}"></i>
+      <span style="color:{{ _ed[1] }}; font-weight:700">{{ _ed[0] }}</span>
+      <span style="color:var(--text-3); font-size:0.7rem">· Only {{ _et|replace('_',' ') }} releases grabbed</span>
+    </div>
+    {% endif %}
+
+    {# Description #}
+    {% if s['description'] %}
+    <p class="font-serif" style="font-size:0.95rem; color:rgba(245,240,232,0.72); max-width:680px; line-height:1.65; margin-bottom:16px; text-shadow:0 1px 4px rgba(0,0,0,0.5)">
+      {{ s['description'] }}
+    </p>
+    {% endif %}
+
+    {# Stats row #}
+    {% set denom = s['total_volumes'] if s['total_volumes'] else stats.total %}
+    {% set pct   = ([[(stats.downloaded + stats.grabbed), denom]|min / denom * 100, 0]|max)|int if denom > 0 else 0 %}
+    <div class="d-flex gap-3 mb-3 flex-wrap">
+      <div>
+        <div class="series-stat-num text-ember">
+          {{ stats.total }}{% if s['total_volumes'] and s['total_volumes'] != stats.total %}<span style="font-size:0.9rem; color:var(--text-3)"> / {{ s['total_volumes'] }}</span>{% endif %}
+        </div>
+        <div class="series-stat-lbl">Tracked</div>
+      </div>
+      <div style="width:1px; background:var(--edge-2); align-self:stretch"></div>
+      <div>
+        <div class="series-stat-num text-jade">{{ stats.downloaded }}</div>
+        <div class="series-stat-lbl">Downloaded</div>
+      </div>
+      <div style="width:1px; background:var(--edge-2); align-self:stretch"></div>
+      <div>
+        <div class="series-stat-num text-gold">{{ stats.grabbed }}</div>
+        <div class="series-stat-lbl">Grabbed</div>
+      </div>
+      <div style="width:1px; background:var(--edge-2); align-self:stretch"></div>
+      <div>
+        <div class="series-stat-num text-ruby">{{ stats.wanted }}</div>
+        <div class="series-stat-lbl">Wanted</div>
+      </div>
+      {% if denom > 0 %}
+      <div style="width:1px; background:var(--edge-2); align-self:stretch"></div>
+      <div>
+        <div class="series-stat-num {% if pct == 100 %}text-jade{% else %}text-ember{% endif %}">{{ pct }}%</div>
+        <div class="series-stat-lbl">Complete</div>
+      </div>
+      {% endif %}
+    </div>
+
+    {% if denom > 0 %}
+    <div class="vol-bar mb-4" style="height:6px; max-width:520px">
+      <div class="fill {% if pct == 100 %}complete{% endif %}" style="width:{{ pct }}%"></div>
+    </div>
+    {% endif %}
+
+    {# Action buttons #}
+    <div class="d-flex flex-wrap gap-2 mb-4">
+      {# Primary actions #}
+      <button class="action-btn primary"
+              hx-post="/series/{{ s['id'] }}/grab"
+              hx-swap="none"
+              hx-disabled-elt="this"
+              hx-on::after-request="showToast(event.detail.successful ? 'Search queued' : 'Failed', event.detail.successful ? 'success' : 'error')">
+        <i class="bi bi-cloud-download-fill"></i>Search & Grab All
+      </button>
+      <button class="action-btn"
+              hx-post="/series/{{ s['id'] }}/refresh"
+              hx-swap="none"
+              hx-disabled-elt="this"
+              hx-on::after-request="showToast(event.detail.successful ? 'Refreshed' : 'Failed', event.detail.successful ? 'success' : 'error')">
+        <i class="bi bi-arrow-clockwise"></i>Refresh
+      </button>
+      <button class="action-btn"
+              hx-post="/series/{{ s['id'] }}/rescan"
+              hx-swap="none"
+              hx-disabled-elt="this"
+              hx-on::after-request="showToast(event.detail.successful ? 'Rescan complete' : 'Rescan failed', event.detail.successful ? 'success' : 'error')">
+        <i class="bi bi-folder2-open"></i>Rescan Files
+      </button>
+      <button class="action-btn" data-bs-toggle="modal" data-bs-target="#editModal">
+        <i class="bi bi-sliders2"></i>Edit
+      </button>
+
+      {# Advanced / maintenance actions in overflow dropdown #}
+      <div class="dropdown">
+        <button class="action-btn" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+          <i class="bi bi-three-dots"></i>More
+        </button>
+        <ul class="dropdown-menu dropdown-menu-dark" style="font-size:0.82rem; min-width:200px">
+          <li>
+            <button class="dropdown-item d-flex align-items-center gap-2" id="complete-pack-btn"
+                    onclick="searchCompletePack({{ s['id'] }})">
+              <i class="bi bi-collection-fill" style="width:14px; text-align:center"></i>Search Series Pack
+              {% if s['status'] == 'FINISHED' %}<span class="badge-status badge-downloaded ms-auto" style="font-size:0.55rem">FINISHED</span>{% endif %}
+            </button>
+          </li>
+          {% if s['edition_type'] in ('omnibus','deluxe','special','collector','remaster') %}
+          <li>
+            <button class="dropdown-item d-flex align-items-center gap-2" onclick="refreshEditionMeta({{ s['id'] }}, this)">
+              <i class="bi bi-book" style="width:14px; text-align:center"></i>Refresh Edition Meta
+            </button>
+          </li>
+          {% endif %}
+          <li>
+            <button class="dropdown-item d-flex align-items-center gap-2" onclick="reinjectMetadata({{ s['id'] }}, this)">
+              <i class="bi bi-file-earmark-code" style="width:14px; text-align:center"></i>Re-inject Metadata
+            </button>
+          </li>
+          <li><hr class="dropdown-divider"></li>
+          <li>
+            <a href="/series/{{ s['id'] }}/chapter-map" class="dropdown-item d-flex align-items-center gap-2">
+              <i class="bi bi-pencil" style="width:14px; text-align:center"></i>Edit Chapter Map
+            </a>
+          </li>
+          <li>
+            <a href="/history?series_id={{ s['id'] }}" class="dropdown-item d-flex align-items-center gap-2">
+              <i class="bi bi-clock-history" style="width:14px; text-align:center"></i>History
+            </a>
+          </li>
+          {% if s['mangadex_id'] %}
+          <li><hr class="dropdown-divider"></li>
+          <li>
+            <button class="dropdown-item d-flex align-items-center gap-2"
+                    hx-post="/api/series/{{ s['id'] }}/mangadex/sync"
+                    hx-swap="none"
+                    hx-disabled-elt="this"
+                    hx-on::after-request="showToast(event.detail.successful ? 'MangaDex chapters synced' : 'Sync failed', event.detail.successful ? 'success' : 'error')">
+              <i class="bi bi-cloud-arrow-down" style="width:14px; text-align:center"></i>Sync MangaDex Chapters
+            </button>
+          </li>
+          {% endif %}
+          {% if suwayomi_enabled %}
+          <li>
+            <button class="dropdown-item d-flex align-items-center gap-2"
+                    hx-post="/api/series/{{ s['id'] }}/suwayomi/match"
+                    hx-swap="none"
+                    hx-disabled-elt="this"
+                    hx-on::after-request="showToast(event.detail.successful ? 'Linked to Suwayomi' : 'Link failed', event.detail.successful ? 'success' : 'error')">
+              <i class="bi bi-link-45deg" style="width:14px; text-align:center"></i>Link to Suwayomi
+            </button>
+          </li>
+          {% endif %}
+        </ul>
+      </div>
+
+      {# Monitor toggle — reversible, NOT destructive. Remove is the only destructive action. #}
+      <div x-data="{ mon: {{ 'true' if s['monitored'] else 'false' }} }" class="d-inline">
+        <button :class="mon ? 'action-btn' : 'action-btn success'"
+                hx-post="/series/{{ s['id'] }}/toggle"
+                hx-swap="none"
+                hx-disabled-elt="this"
+                @click="mon = !mon"
+                hx-on::after-request="showToast(mon ? 'Series monitored' : 'Series unmonitored', 'success')">
+          <i :class="mon ? 'bi bi-eye-slash' : 'bi bi-eye'"></i>
+          <span x-text="mon ? 'Unmonitor' : 'Monitor'"></span>
+        </button>
+      </div>
+      <button class="action-btn danger"
+              hx-post="/series/{{ s['id'] }}/delete"
+              hx-swap="none"
+              hx-disabled-elt="this"
+              hx-confirm="Remove {{ s['title']|replace('"', '\"') }} and all tracked data?">
+        <i class="bi bi-trash"></i>Remove
+      </button>
+    </div>
+
+  </div>
+</div>
+</div>{# /series-backdrop #}
+
+{# ══════════════════════════════════════════════════════════
+   SIDE-BY-SIDE: metadata panel + content
+══════════════════════════════════════════════════════════ #}
+<div class="row g-4">
+
+  {# ── Left: Metadata sidebar (marginalia) ── #}
+  <div class="col-12 col-lg-3" style="max-width:260px">
+
+    <div class="panel-editorial">
+      <div class="panel-editorial-head"><i class="bi bi-info-circle-fill"></i>Details</div>
+      <div class="panel-editorial-body" style="padding:16px">
+
+        {% if s['status'] %}
+        {% set st_lower = s['status']|lower %}
+        <div class="mb-2">
+          <span class="badge-status badge-{{ st_lower }}">{{ s['status'] }}</span>
+          {% if s['edition_type'] and s['edition_type'] != 'standard' %}
+          <span class="badge-status badge-edition-{{ s['edition_type'] }} ms-1">{{ s['edition_type']|replace('_',' ')|title }}</span>
+          {% endif %}
+        </div>
+        {% endif %}
+
+        {% if not s['monitored'] %}
+        <div class="meta-row text-ruby mb-2"><i class="bi bi-eye-slash"></i>Unmonitored</div>
+        {% endif %}
+
+        {% if s['anilist_id'] %}
+        <div class="meta-row">
+          <i class="bi bi-link-45deg"></i>
+          AniList <a href="https://anilist.co/manga/{{ s['anilist_id'] }}" target="_blank"
+                     class="text-ember ms-1">{{ s['anilist_id'] }} <i class="bi bi-box-arrow-up-right" style="font-size:0.6rem"></i></a>
+        </div>
+        {% endif %}
+
+        {% if s['total_volumes'] %}
+        {% set _vsrc = s['vol_count_source'] or 'anilist' %}
+        <div class="meta-row">
+          <i class="bi bi-collection"></i>
+          {{ s['total_volumes'] }} volumes
+          <span class="badge-status badge-src-{{ _vsrc }}" title="Volume count source: {{ _vsrc|replace('_',' ')|title }}">
+            {% if _vsrc == 'manual' %}<i class="bi bi-pencil" style="font-size:0.55rem"></i> {% endif %}{{ _vsrc|replace('_',' ')|title }}
+          </span>
+        </div>
+        {% endif %}
+
+        {% if s['total_chapters'] %}
+        <div class="meta-row"><i class="bi bi-file-text"></i>{{ s['total_chapters'] }} chapters</div>
+        {% endif %}
+
+        <div class="meta-row">
+          <i class="bi bi-diagram-3"></i>
+          {% if ch_map_count > 0 %}
+          <span class="text-jade">{{ ch_map_count }} chapters mapped</span>
+          {% elif s['mangadex_id'] %}
+          <span class="text-gold">Map pending</span>
+          {% else %}
+          <span style="color:var(--text-3)">No chapter map</span>
+          {% endif %}
+        </div>
+
+        <div class="meta-row"><i class="bi bi-calendar-plus"></i>Added {{ s['added_at'] | format_date if s['added_at'] else '—' }}</div>
+        {% if s['last_metadata_refresh'] %}
+        <div class="meta-row" style="font-size:0.73rem"><i class="bi bi-arrow-repeat"></i>Refreshed {{ s['last_metadata_refresh'] | format_date }}</div>
+        {% endif %}
+
+        {% set _strat = s['update_strategy'] or 'always' %}
+        {% if _strat != 'always' %}
+        <div class="meta-row mt-1">
+          <span class="badge-status {% if _strat == 'once' %}badge-wanted{% else %}badge-grabbed{% endif %}">
+            {{ 'Manual only' if _strat == 'once' else 'Throttled' }}
+          </span>
+        </div>
+        {% endif %}
+
+        {% set _srctype = s['source_type'] or 'any' %}
+        {% if _srctype != 'any' %}
+        <div class="meta-row mt-1">
+          <span class="badge-status {% if _srctype == 'official_only' %}badge-downloaded{% else %}badge-grabbed{% endif %}">
+            {{ 'Official only' if _srctype == 'official_only' else 'Fan only' }}
+          </span>
+        </div>
+        {% endif %}
+
+        {% if s['required_scanlator'] %}
+        <div class="meta-row mt-1"><i class="bi bi-shield-check text-ember"></i><span class="text-ember">{{ s['required_scanlator'] }}</span> only</div>
+        {% endif %}
+
+        <hr class="panel-divider">
+
+        {# Monitor mode #}
+        <form method="POST" action="/series/{{ s['id'] }}/set-monitor-mode" class="mb-3"
+              hx-post="/series/{{ s['id'] }}/set-monitor-mode"
+              hx-trigger="change from:select"
+              hx-swap="none"
+              hx-on::after-request="showToast(event.detail.successful ? 'Monitor mode updated' : 'Failed', event.detail.successful ? 'success' : 'error')">
+          <label class="form-label"><i class="bi bi-eye me-1 text-ember"></i>Monitor Mode</label>
+          <select name="mode" class="form-select form-select-sm">
+            {% for m, lbl in [('all','All'),('future','Future'),('missing','Missing'),('existing','Existing'),('none','None')] %}
+            <option value="{{ m }}" {% if (s['monitor_mode'] or 'all') == m %}selected{% endif %}>{{ lbl }}</option>
+            {% endfor %}
+          </select>
+        </form>
+
+        {# Tags #}
+        <div class="form-label mb-1"><i class="bi bi-tags me-1 text-ember"></i>Tags</div>
+        <div class="pill-badges mb-2">
+          {% for t in series_tags %}
+          <a href="/?filter_tag={{ t }}" class="badge-status badge-indexer" style="text-decoration:none">{{ t }}</a>
+          {% else %}
+          <span style="font-size:0.72rem; color:var(--text-3)">None</span>
+          {% endfor %}
+        </div>
+        <button class="action-btn w-100" style="justify-content:center; font-size:0.72rem"
+                data-bs-toggle="modal" data-bs-target="#tagsModal">
+          <i class="bi bi-tags"></i>Edit Tags
+        </button>
+
+        {% if root_folders %}
+        <hr class="panel-divider">
+        <form method="POST" action="/series/{{ s['id'] }}/set-root-folder"
+              hx-post="/series/{{ s['id'] }}/set-root-folder"
+              hx-trigger="change from:select"
+              hx-swap="none"
+              hx-on::after-request="showToast(event.detail.successful ? 'Root folder updated' : 'Failed', event.detail.successful ? 'success' : 'error')">
+          <label class="form-label"><i class="bi bi-folder2-open me-1 text-ember"></i>Root Folder</label>
+          <select name="root_folder_id" class="form-select form-select-sm">
+            {% for rf in root_folders %}
+            <option value="{{ rf['id'] }}"
+              {% if s['root_folder_id'] == rf['id'] %}selected
+              {% elif not s['root_folder_id'] and rf['is_default'] %}selected{% endif %}>
+              {{ rf['label'] or rf['path'] }}
+            </option>
+            {% endfor %}
+          </select>
+        </form>
+        {% endif %}
+
+        {% set _qp = quality_profiles | selectattr('id', 'equalto', s['quality_profile_id']) | first | default(none) %}
+        {% set _lp = language_profiles | selectattr('id', 'equalto', s['language_profile_id']) | first | default(none) %}
+        {% if _qp or s['quality_cutoff'] or _lp %}
+        <hr class="panel-divider">
+        {% if _qp %}
+        <div class="meta-row"><i class="bi bi-trophy text-gold"></i>{{ _qp.name }}</div>
+        {% endif %}
+        {% if s['quality_cutoff'] %}
+        <div class="meta-row"><i class="bi bi-arrow-up-circle text-gold"></i>Cutoff: <span class="text-gold">{{ s['quality_cutoff']|upper }}</span></div>
+        {% endif %}
+        {% if _lp %}
+        <div class="meta-row"><i class="bi bi-translate"></i>{{ _lp.name }}</div>
+        {% endif %}
+        {% endif %}
+
+      </div>
+    </div>{# /panel-editorial #}
+
+  </div>
+
+  {# ── Right: Volumes + alerts ── #}
+  <div class="col">
+
+    {# Alerts #}
+    {% if not s['total_volumes'] and not volumes %}
+    <div class="alert alert-warning d-flex align-items-center gap-2 mb-3" style="font-size:0.82rem">
+      <i class="bi bi-exclamation-triangle-fill"></i>
+      Volume count unknown — click <strong>Refresh</strong> to load metadata.
+    </div>
+    {% endif %}
+
+    {% if s['edition_type'] in ('omnibus','deluxe','special','collector','remaster')
+       and (s['vol_count_source'] or 'anilist') == 'anilist' and s['total_volumes'] %}
+    <div class="alert alert-info d-flex align-items-start gap-2 mb-3" style="font-size:0.82rem">
+      <i class="bi bi-info-circle-fill mt-1 flex-shrink-0"></i>
+      <div>Volume count (<strong>{{ s['total_volumes'] }}</strong>) from AniList reflects the <em>standard</em> edition.
+      Use <strong>More → Refresh Edition Meta</strong> for the correct <strong>{{ s['edition_type'] }}</strong> count,
+      or set it manually via <strong>Edit → Total Volumes</strong>.</div>
+    </div>
+    {% endif %}
+
+    {# ── Volumes ── #}
+    {% if volumes %}
+    {% set grabbed_count = volumes | selectattr('status', 'equalto', 'grabbed') | list | length %}
+    <div class="section-label mb-3">
+      <i class="bi bi-list-ol text-ember me-1"></i>Volumes
+      <span style="font-size:0.7rem; font-weight:400; text-transform:none; letter-spacing:0; color:var(--text-3)">
+        {{ volumes|length }}{% if s['total_volumes'] %} of {{ s['total_volumes'] }}{% endif %}
+      </span>
+      {% if grabbed_count > 0 %}
+      <button class="action-btn btn-action success ms-auto"
+              hx-post="/series/{{ s['id'] }}/mark-all-downloaded"
+              hx-swap="none"
+              hx-disabled-elt="this"
+              hx-confirm="Mark {{ grabbed_count }} grabbed volume(s) as downloaded?"
+              hx-on::after-request="showToast(event.detail.successful ? 'Marked as downloaded' : 'Failed', event.detail.successful ? 'success' : 'error')">
+        <i class="bi bi-check-all"></i>Mark {{ grabbed_count }} downloaded
+      </button>
+      {% endif %}
+    </div>
+
+    <div class="table-wrap mb-4">
+      <table class="table table-sm mb-0">
+        <thead>
+          <tr>
+            <th style="width:32px"></th>
+            <th style="width:90px">Vol #</th>
+            <th style="width:140px">Status</th>
+            <th style="width:120px">Grabbed</th>
+            <th style="width:75px">Size</th>
+            <th>File / Info</th>
+            <th style="width:80px"></th>
+          </tr>
+        </thead>
+          {% for v in volumes %}
+          {% set vchs = chapters_by_vol.get(v['id'], []) %}
+          {% set vct  = ch_counts.get(v['id'], {}) %}
+          {% include "partials/volume_row.html" %}
+          {% endfor %}
+      </table>
+    </div>
+
+    {% else %}
+    <div class="empty-state">
+      <div class="empty-icon"><i class="bi bi-layers"></i></div>
+      <p class="fw-semibold">No volumes tracked yet.</p>
+      <p style="font-size:0.82rem; color:var(--text-3)">Click <strong>Search & Grab All</strong> to find releases.</p>
+    </div>
+    {% endif %}
+
+    {# Uncollected chapters #}
+    {% if unlinked_chapters %}
+    {% set uc_total      = unlinked_chapters|length %}
+    {% set uc_downloaded = unlinked_chapters|selectattr('status','equalto','downloaded')|list|length %}
+    {% set uc_grabbed    = unlinked_chapters|selectattr('status','equalto','grabbed')|list|length %}
+    {% set uc_wanted     = unlinked_chapters|selectattr('status','equalto','wanted')|list|length %}
+    {% set uc_monitored  = unlinked_chapters|selectattr('monitored')|list|length %}
+    <div class="table-wrap mb-4">
+      <table class="table table-sm mb-0">
+        <tbody>
+          <tr id="vol-row-uncollected" onclick="toggleChapters('uncollected')" style="cursor:pointer">
+            <td onclick="event.stopPropagation()" style="width:32px; padding-left:10px!important">
+              <button class="btn p-0" style="border:none; background:transparent; line-height:1"
+                      hx-post="/series/{{ s['id'] }}/uncollected/toggle-monitor"
+                      hx-swap="none"
+                      hx-disabled-elt="this"
+                      hx-on::after-request="showToast(event.detail.successful ? 'Updated' : 'Failed', event.detail.successful ? 'success' : 'error')">
+                <i class="bi bi-eye{% if not uc_monitored %}-slash{% endif %}"
+                   style="font-size:0.88rem; color:{% if uc_monitored %}var(--ember){% else %}var(--text-3){% endif %}"></i>
+              </button>
+            </td>
+            <td style="width:90px">
+              <div class="d-flex align-items-center gap-1">
+                <i class="bi bi-chevron-right" id="exp-icon-uncollected" style="font-size:0.65rem; color:var(--text-3)"></i>
+                <span class="fw-semibold" style="color:var(--text-2)">Uncollected</span>
+              </div>
+              <div style="margin-top:4px; padding-left:14px">
+                <div style="display:flex; height:3px; border-radius:2px; overflow:hidden; background:var(--ink-5); width:70px">
+                  {% if uc_total > 0 %}
+                  <div style="width:{{ (uc_downloaded / uc_total * 100)|int }}%; background:var(--jade)"></div>
+                  <div style="width:{{ (uc_grabbed / uc_total * 100)|int }}%; background:var(--ember)"></div>
+                  {% endif %}
+                </div>
+                <div style="font-size:0.58rem; color:var(--text-3); margin-top:2px">
+                  {% if uc_downloaded == uc_total %}<span class="text-jade"><i class="bi bi-check-lg"></i> {{ uc_total }} ch</span>
+                  {% else %}<span class="text-jade">{{ uc_downloaded }}</span>/{{ uc_total }} ch{% if uc_wanted %}<span class="text-ruby"> · {{ uc_wanted }}w</span>{% endif %}
+                  {% endif %}
+                </div>
+              </div>
+            </td>
+            <td><span class="badge-status badge-unknown">serialized only</span></td>
+            <td colspan="2" style="color:var(--text-3); font-size:0.75rem">Chapters not yet collected into volumes</td>
+            <td></td>
+            <td onclick="event.stopPropagation()">
+              {% if uc_wanted > 0 %}
+              <div class="d-flex gap-1 justify-content-end flex-wrap">
+                <button class="btn-grab btn btn-sm btn-action"
+                        hx-post="/series/{{ s['id'] }}/uncollected/grab-all"
+                        hx-swap="none"
+                        hx-disabled-elt="this"
+                        hx-on::after-request="showToast(event.detail.successful ? 'Search queued' : 'Failed', event.detail.successful ? 'success' : 'error')">
+                  <i class="bi bi-cloud-download me-1"></i>Grab All
+                </button>
+                <button class="btn btn-sm py-0 px-2 text-jade" style="border:1px solid rgba(34,200,122,0.3); background:transparent; font-size:0.7rem"
+                        hx-post="/series/{{ s['id'] }}/uncollected/mark-downloaded"
+                        hx-swap="none"
+                        hx-disabled-elt="this"
+                        hx-confirm="Mark all {{ uc_wanted }} wanted chapters as downloaded?"
+                        hx-on::after-request="showToast(event.detail.successful ? 'Marked as downloaded' : 'Failed', event.detail.successful ? 'success' : 'error')">
+                  <i class="bi bi-check-all me-1"></i>Mark All
+                </button>
+              </div>
+              {% endif %}
+            </td>
+          </tr>
+          <tr id="ch-rows-uncollected" style="display:none">
+            <td colspan="7" style="padding:8px 14px 10px 42px; background:rgba(8,8,16,0.4)">
+              <div style="display:flex; flex-wrap:wrap; gap:4px">
+                {% for ch in unlinked_chapters %}
+                {% set ch_num = ch['chapter_num']|int if ch['chapter_num'] == ch['chapter_num']|int else ch['chapter_num'] %}
+                {% if ch['status'] == 'downloaded' %}
+                {% set _uch_tip %}Ch {{ ch_num }}{% if ch['title'] %} · {{ ch['title'] }}{% endif %}{% if ch['quality'] %} · {{ ch['quality']|upper }}{% endif %}{% if ch['size_bytes'] %} · {{ ch['size_bytes']|format_bytes }}{% endif %}{% if ch['import_path'] %} · {{ ch['import_path'].split('/')[-1] }}{% endif %}{% endset %}
+                <div class="ch-pill dl {% if not ch['monitored'] %}opacity-50{% endif %}" title="{{ _uch_tip }}">{{ ch_num }}</div>
+                {% elif ch['status'] == 'grabbed' %}
+                <button class="ch-pill gr" title="Ch {{ ch_num }} · grabbed{% if ch['grabbed_at'] %} {{ ch['grabbed_at'] | format_date }}{% endif %}{% if ch['indexer'] %} via {{ ch['indexer'] }}{% endif %}"
+                        hx-post="/series/{{ s['id'] }}/chapters/{{ ch['id'] }}/mark-downloaded"
+                        hx-swap="none"
+                        hx-disabled-elt="this"
+                        hx-on::after-request="showToast(event.detail.successful ? 'Marked downloaded' : 'Failed', event.detail.successful ? 'success' : 'error')">{{ ch_num }}</button>
+                {% else %}
+                <div class="ch-pill wt ch-pill-wanted {% if not ch['monitored'] %}opacity-50{% endif %}" title="Ch {{ ch_num }} · wanted">
+                  {{ ch_num }}
+                  <span class="ch-pill-actions">
+                    <button style="background:none;border:none;padding:0;color:var(--ember);font-size:0.7rem;cursor:pointer;line-height:1"
+                            hx-post="/series/{{ s['id'] }}/chapters/{{ ch['id'] }}/grab"
+                            hx-swap="none"
+                            hx-disabled-elt="this"
+                            hx-on::after-request="showToast(event.detail.successful ? 'Search queued' : 'Failed', event.detail.successful ? 'success' : 'error')"><i class="bi bi-cloud-download"></i></button>
+                    <button style="background:none;border:none;padding:0;color:var(--jade);font-size:0.7rem;cursor:pointer;line-height:1"
+                            hx-post="/series/{{ s['id'] }}/chapters/{{ ch['id'] }}/mark-downloaded"
+                            hx-swap="none"
+                            hx-disabled-elt="this"
+                            hx-on::after-request="showToast(event.detail.successful ? 'Marked downloaded' : 'Failed', event.detail.successful ? 'success' : 'error')"><i class="bi bi-check-circle"></i></button>
+                  </span>
+                </div>
+                {% endif %}
+                {% endfor %}
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {# Omnibus & Packs #}
+    {% if packs %}
+    {% set superseded_count = packs | selectattr('superseded') | list | length %}
+    <div class="section-label mt-2 mb-3">
+      <i class="bi bi-collection text-ember me-1"></i>Omnibus &amp; Packs
+      <span style="font-size:0.7rem; font-weight:400; text-transform:none; letter-spacing:0; color:var(--text-3)">
+        {{ packs|length }}{% if superseded_count %} · {{ superseded_count }} superseded{% endif %}
+      </span>
+      <button class="ms-auto action-btn btn-action"
+              data-bs-toggle="collapse" data-bs-target="#packsTable">
+        <i class="bi bi-chevron-expand"></i>Toggle
+      </button>
+    </div>
+    <div class="collapse show" id="packsTable">
+    <div class="table-wrap mb-4">
+      <table class="table table-sm mb-0" style="font-size:0.82rem">
+        <thead>
+          <tr>
+            <th style="width:160px">Contents</th>
+            <th style="width:140px">Volumes</th>
+            <th style="width:70px">Copies</th>
+            <th style="width:90px">Date</th>
+            <th>Release</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in packs %}
+          <tr {% if p['superseded'] %}style="opacity:0.4"{% endif %}>
+            <td class="fw-semibold">
+              {% if p['pack_type'] == 'complete' %}
+              <span class="badge-status badge-downloaded"><i class="bi bi-collection-fill me-1"></i>Complete</span>
+              {% elif p['ch_label'] %}
+              <span class="text-ember">{{ p['ch_label'] }}</span>
+              {% elif p['vol_label'] %}
+              <span class="text-ember">{{ p['vol_label'] }}</span>
+              {% else %}
+              {% set tn = p['torrent_name'] or '' %}
+              <span style="color:var(--text-2)" title="{{ tn }}">{{ tn[:40] }}{% if tn|length > 40 %}…{% endif %}</span>
+              {% endif %}
+              {% if p['superseded'] %}
+              <div style="font-size:0.62rem; color:var(--text-3)">covered by complete</div>
+              {% endif %}
+            </td>
+            <td style="font-size:0.75rem; color:var(--text-2)">
+              {% if p['pack_type'] == 'complete' %}All
+              {% elif p['vol_label'] and p['ch_label'] %}
+              <span class="{% if not p['superseded'] %}text-ember{% endif %}">{{ p['vol_label'] }}</span>{% if not p['covers'] %}<span style="color:var(--text-3)"> (approx)</span>{% endif %}
+              {% else %}—{% endif %}
+            </td>
+            <td style="font-size:0.75rem">
+              {% if p['dup_count'] > 1 %}<span class="badge-status badge-wanted">×{{ p['dup_count'] }}</span>
+              {% else %}<span style="color:var(--text-3)">1</span>{% endif %}
+            </td>
+            <td style="font-size:0.75rem; color:var(--text-2); white-space:nowrap">{{ p['grabbed_at'] | format_date if p['grabbed_at'] else '—' }}</td>
+            <td>
+              <div class="pill-badges mb-1">
+                {% if p['indexer'] %}<span class="badge-status badge-indexer">{{ p['indexer'] }}</span>{% endif %}
+                {% if p['protocol'] %}<span class="badge-status badge-{{ p['protocol'] }}">{{ p['protocol']|format_protocol }}</span>{% endif %}
+              </div>
+              <div style="font-size:0.68rem; color:var(--text-2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:260px"
+                   title="{{ p['torrent_name'] or '' }}">{{ p['torrent_name'] or '—' }}</div>
+              {%- set pack_dl = (p['download_id'] or '')|lower -%}
+              {% if pack_dl and pack_dl in review_dl_ids %}
+              <a href="/import" class="badge-status badge-hiatus mt-1 d-inline-block" style="text-decoration:none">
+                <i class="bi bi-exclamation-circle me-1"></i>Needs Review
+              </a>
+              {% elif pack_dl and pack_dl in pending_dl_ids %}
+              <span class="badge-status badge-sky mt-1 d-inline-block">
+                <span class="spinner-border spinner-border-sm me-1" style="width:0.5rem;height:0.5rem;border-width:2px"></span>Importing
+              </span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    </div>
+    {% endif %}
+
+  </div>
+</div>
+
+{% block scripts %}
+<script>
+async function searchCompletePack(seriesId) {
+  const btn = document.getElementById('complete-pack-btn');
+  const orig = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Searching…';
+  try {
+    const resp = await fetch(`/api/series/${seriesId}/search-complete`, {method: 'POST'});
+    const data = await resp.json();
+    if (data.grabbed > 0) {
+      btn.innerHTML = `<i class="bi bi-check-circle-fill me-1"></i>Grabbed ${data.grabbed}!`;
+      btn.classList.add('success');
+      setTimeout(() => location.reload(), 2000);
+    } else {
+      btn.innerHTML = '<i class="bi bi-x-circle me-1"></i>None found';
+      setTimeout(() => { btn.disabled = false; btn.innerHTML = orig; }, 3000);
+    }
+  } catch(e) {
+    btn.innerHTML = '<i class="bi bi-exclamation-circle me-1"></i>Failed';
+    setTimeout(() => { btn.disabled = false; btn.innerHTML = orig; }, 3000);
+  }
+}
+
+function toggleChapters(volId) {
+  const row  = document.getElementById('ch-rows-' + volId);
+  const icon = document.getElementById('exp-icon-' + volId);
+  if (!row) return;
+  const isOpen = row.style.display !== 'none';
+  row.style.display = isOpen ? 'none' : 'table-row';
+  if (icon) icon.className = isOpen ? 'bi bi-chevron-right' : 'bi bi-chevron-down';
+}
+
+document.addEventListener('mouseover', e => {
+  const pill = e.target.closest('.ch-pill-wanted');
+  if (pill) { const a = pill.querySelector('.ch-pill-actions'); if (a) a.style.display = 'inline-flex'; }
+});
+document.addEventListener('mouseout', e => {
+  const pill = e.target.closest('.ch-pill-wanted');
+  if (pill && !pill.contains(e.relatedTarget)) {
+    const a = pill.querySelector('.ch-pill-actions');
+    if (a) a.style.display = 'none';
+  }
+});
+
+// Use var so the declaration is idempotent — the full-page <script> can be
+// re-parsed if HTMX ever injects a partial that references it, and `let` would
+// throw "Identifier '_searchSeriesId' has already been declared".
+var _searchSeriesId = null, _searchVolumeId = null, _searchResults = [];
+
+function openSearch(seriesId, volumeId, volLabel) {
+  _searchSeriesId = seriesId;
+  _searchVolumeId = volumeId;
+  _searchResults  = [];
+  document.getElementById('srch-vol-label').textContent = volLabel;
+  document.getElementById('srch-body').innerHTML =
+    '<div class="text-center py-5" style="color:var(--text-2); font-size:0.85rem">' +
+    '<i class="bi bi-arrow-repeat me-2"></i>Searching…</div>';
+  document.getElementById('srch-query').textContent = '';
+  new bootstrap.Modal(document.getElementById('searchModal')).show();
+  fetch(`/api/series/${seriesId}/volumes/${volumeId}/search`)
+    .then(r => r.json()).then(renderSearchResults)
+    .catch(e => { document.getElementById('srch-body').innerHTML =
+      `<div class="text-center py-5 text-ruby">${e}</div>`; });
+}
+
+var _srchSortCol = null, _srchSortAsc = false;
+
+function renderSearchResults(data) {
+  document.getElementById('srch-query').textContent = data.query || '';
+  _searchResults = data.results || [];
+  _srchSortCol = null;
+
+  let prefix = '';
+  if (data.suwayomi_available) {
+    prefix = `<div style="padding:10px 16px 8px; border-bottom:1px solid var(--edge-2); background:rgba(0,170,255,0.04)">
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+        <div>
+          <div style="font-size:0.8rem; font-weight:600; color:var(--sky, #38bdf8)"><i class="bi bi-cloud-arrow-down me-1"></i>Suwayomi DDL</div>
+          <div style="font-size:0.68rem; color:var(--text-3); margin-top:1px">Direct download via MangaDex source — no indexer needed</div>
+        </div>
+        <button class="btn btn-sm px-3" id="ddl-grab-btn"
+                style="font-size:0.72rem; color:var(--sky,#38bdf8); border:1px solid rgba(56,189,248,0.35); background:rgba(56,189,248,0.08); white-space:nowrap; margin-left:auto"
+                onclick="grabDDL(this)">
+          <i class="bi bi-cloud-download me-1"></i>Grab via DDL
+        </button>
+      </div>
+    </div>`;
+  }
+
+  if (!_searchResults.length) {
+    document.getElementById('srch-body').innerHTML = prefix +
+      '<div class="text-center py-5" style="color:var(--text-2); font-size:0.85rem"><i class="bi bi-search me-2"></i>No indexer results found</div>';
+    return;
+  }
+  document.getElementById('srch-body').innerHTML = prefix;
+  _renderSrchTable(_searchResults);
+}
+
+function _srchSortBy(col) {
+  _srchSortCol === col ? (_srchSortAsc = !_srchSortAsc) : (_srchSortCol = col, _srchSortAsc = col === 'title');
+  const sorted = [..._searchResults].sort((a, b) => {
+    let va = a[col], vb = b[col];
+    if (col === 'status') { const o = {would_grab:0, low_score:1, rejected:2}; va = o[va]??9; vb = o[vb]??9; }
+    if (typeof va === 'string') va = va.toLowerCase();
+    if (typeof vb === 'string') vb = vb.toLowerCase();
+    return va < vb ? (_srchSortAsc ? -1 : 1) : va > vb ? (_srchSortAsc ? 1 : -1) : 0;
+  });
+  _renderSrchTable(sorted);
+}
+
+function _srchTh(label, col) {
+  const arrow = _srchSortCol === col ? (_srchSortAsc ? ' ▲' : ' ▼') : '';
+  return `<th style="cursor:pointer;user-select:none;white-space:nowrap" onclick="_srchSortBy('${col}')">${label}${arrow}</th>`;
+}
+
+function _renderSrchTable(results) {
+  // Target inner container so DDL banner (if present) is not clobbered on re-sort
+  let container = document.getElementById('srch-table-wrap');
+  if (!container) {
+    const body = document.getElementById('srch-body');
+    const wrap = document.createElement('div');
+    wrap.id = 'srch-table-wrap';
+    body.appendChild(wrap);
+    container = wrap;
+  }
+  let html = '<div style="overflow-x:auto"><table class="table table-sm mb-0"><thead><tr>' +
+    _srchTh('Release','title') + _srchTh('Status','status') +
+    _srchTh('Indexer','indexer') + _srchTh('Seeds','seeders') +
+    _srchTh('Size','size_mb') + _srchTh('Score','score') + '<th></th></tr></thead><tbody>';
+  results.forEach((r, idx) => {
+    const seen    = r.seen    ? '<span class="badge-status badge-downloaded ms-1" title="Already grabbed">seen</span>' : '';
+    const blocked = r.blocked ? '<span class="badge-status badge-wanted ms-1">blocked</span>' : '';
+    const proto   = r.protocol === 'nzb'
+      ? '<span class="badge-status badge-nzb">NZB</span>'
+      : '<span class="badge-status badge-torrent">Torrent</span>';
+    const seeds = r.seeders > 0
+      ? `<span style="font-size:0.78rem; color:${r.seeders>=5?'var(--jade)':'var(--gold)'}">${r.seeders}</span>`
+      : '<span style="font-size:0.78rem; color:var(--ruby)">0</span>';
+    const noSeeders = r.protocol !== 'nzb' && r.seeders === 0;
+    const disabled  = r.seen || r.blocked || noSeeders;
+    const btnStyle  = disabled
+      ? 'color:var(--text-3); border:1px solid var(--edge-2); background:transparent'
+      : 'color:var(--jade); border:1px solid rgba(34,200,122,0.3); background:rgba(34,200,122,0.08)';
+    const btnLabel  = r.seen ? 'Seen' : r.blocked ? 'Blocked' : noSeeders ? 'No seeds' : '<i class="bi bi-cloud-download me-1"></i>Grab';
+    const origIdx   = _searchResults.indexOf(r);
+    const grabIdx   = origIdx >= 0 ? origIdx : idx;
+    let statusBadge;
+    if (r.status === 'would_grab')      statusBadge = '<span class="badge-status badge-downloading">Would Grab</span>';
+    else if (r.status === 'low_score')  statusBadge = '<span class="badge-status badge-grabbed" style="color:var(--gold);background:rgba(240,184,40,0.1)">Low Score</span>';
+    else                                statusBadge = '<span class="badge-status badge-wanted">Rejected</span>';
+    const sc = r.score > 0 ? 'var(--jade)' : r.score < 0 ? 'var(--ruby)' : 'var(--text-3)';
+    const ss = r.score > 0 ? `+${r.score}` : `${r.score}`;
+    let rejectHtml = '';
+    if (r.rejections?.length) {
+      const rid   = `rej-${grabIdx}`;
+      const items = r.rejections.map(s => `<li style="font-size:0.72rem">${escHtml(s)}</li>`).join('');
+      rejectHtml = `<div class="mt-1">
+        <button class="btn btn-sm p-0 px-1 text-ruby" style="border:none;background:transparent;font-size:0.65rem"
+                onclick="document.getElementById('${rid}').style.display==='none'?document.getElementById('${rid}').style.display='block':document.getElementById('${rid}').style.display='none'">
+          <i class="bi bi-exclamation-triangle me-1"></i>${r.rejections.length} rejection${r.rejections.length>1?'s':''}
+        </button>
+        <div id="${rid}" style="display:none;margin-top:2px"><ul class="mb-0 ps-3 text-ruby">${items}</ul></div>
+      </div>`;
+    }
+    let cfHtml = '';
+    if (r.custom_format_matches?.length) {
+      cfHtml = '<div class="mt-1">' + r.custom_format_matches.map(cf => {
+        const s = cf.score >= 0 ? `+${cf.score}` : `${cf.score}`;
+        const c = cf.score >= 0 ? 'var(--jade)' : 'var(--ruby)';
+        return `<span class="badge-status badge-unknown me-1" style="color:${c}">${escHtml(cf.name)} ${s}</span>`;
+      }).join('') + '</div>';
+    }
+    html += `<tr style="${r.status==='rejected'?'opacity:0.55':''}">
+      <td style="max-width:320px">
+        <div style="font-size:0.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(r.title)}">${escHtml(r.title)}</div>
+        <div class="mt-1">${proto}${seen}${blocked}${r.quality&&r.quality!=='unknown'?`<span class="badge-status badge-indexer ms-1" style="font-size:0.58rem">${escHtml(r.quality.toUpperCase())}</span>`:''}</div>
+        ${rejectHtml}${cfHtml}
+      </td>
+      <td>${statusBadge}</td>
+      <td><span class="badge-status badge-indexer">${escHtml(r.indexer)}</span></td>
+      <td class="text-center">${r.protocol==='nzb'?'<span style="color:var(--text-3)">—</span>':seeds}</td>
+      <td style="color:var(--text-2);font-size:0.75rem;white-space:nowrap">${r.size||'—'}</td>
+      <td><span style="font-size:0.78rem;color:${sc};font-weight:600">${ss}</span></td>
+      <td class="text-end pe-2">
+        <button class="btn btn-sm px-2 py-0" style="font-size:0.72rem;white-space:nowrap;${btnStyle}" ${disabled?'disabled':''}
+                onclick="grabRelease(${grabIdx}, this)">${btnLabel}</button>
+      </td>
+    </tr>`;
+  });
+  container.innerHTML = html + '</tbody></table></div>';
+}
+
+function escHtml(s) {
+  return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function refreshCover(sid) {
+  const btn = event.target.closest('button');
+  btn.disabled = true;
+  const r = await fetch(`/api/series/${sid}/cover-refresh`);
+  const d = await r.json();
+  if (d.ok) {
+    const img = document.querySelector('.series-cover-img');
+    if (img) img.src = d.cover_url + '?t=' + Date.now();
+  }
+  btn.disabled = false;
+}
+
+async function grabRelease(idx, btn) {
+  const r = _searchResults[idx];
+  if (!r) return;
+  btn.disabled = true; btn.textContent = 'Grabbing…';
+  try {
+    const resp = await fetch(`/api/series/${_searchSeriesId}/volumes/${_searchVolumeId}/grab-release`, {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(r)
+    });
+    const d = await resp.json();
+    if (d.ok) { btn.style.color = 'var(--jade)'; btn.innerHTML = '<i class="bi bi-check-lg"></i> Grabbed'; setTimeout(() => location.reload(), 1200); }
+    else { btn.style.color = 'var(--ruby)'; btn.textContent = d.message||'Failed'; btn.disabled = false; }
+  } catch(e) { btn.style.color = 'var(--ruby)'; btn.textContent = 'Error'; btn.disabled = false; }
+}
+
+async function grabDDL(btn) {
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" style="width:0.6rem;height:0.6rem;border-width:2px"></span>Grabbing…';
+  try {
+    const resp = await fetch(`/api/series/${_searchSeriesId}/volumes/${_searchVolumeId}/grab-ddl`, {method: 'POST'});
+    const d = await resp.json();
+    if (d.ok) {
+      btn.style.color = 'var(--jade)'; btn.style.borderColor = 'rgba(34,200,122,0.4)'; btn.style.background = 'rgba(34,200,122,0.08)';
+      btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Queued';
+      setTimeout(() => { bootstrap.Modal.getInstance(document.getElementById('searchModal'))?.hide(); location.reload(); }, 1200);
+    } else {
+      btn.style.color = 'var(--ruby)'; btn.innerHTML = d.message || 'Failed'; btn.disabled = false;
+    }
+  } catch(e) { btn.style.color = 'var(--ruby)'; btn.innerHTML = 'Error'; btn.disabled = false; }
+}
+
+async function reinjectMetadata(sid, btn) {
+  const orig = btn.innerHTML; btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Injecting…';
+  try {
+    const r = await fetch(`/api/series/${sid}/reinject-metadata`, {method:'POST'});
+    const d = await r.json();
+    if (d.ok) { btn.innerHTML = `<i class="bi bi-check-lg me-1"></i>${d.updated} updated`; btn.style.color = 'var(--jade)'; }
+    else      { btn.innerHTML = '<i class="bi bi-x-lg me-1"></i>Error'; btn.style.color = 'var(--ruby)'; }
+    setTimeout(() => { btn.innerHTML = orig; btn.style.color = ''; btn.disabled = false; }, 3000);
+  } catch(e) { btn.innerHTML = orig; btn.disabled = false; }
+}
+
+async function refreshEditionMeta(sid, btn) {
+  const orig = btn.innerHTML; btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Querying…';
+  try {
+    const r = await fetch(`/series/${sid}/refresh-edition-metadata`, {method:'POST'});
+    const d = await r.json();
+    if (d.ok) { btn.innerHTML = `<i class="bi bi-check-lg me-1"></i>${d.total_volumes} volumes`; btn.style.color = 'var(--jade)'; setTimeout(() => location.reload(), 1500); }
+    else { btn.innerHTML = `<i class="bi bi-x-lg me-1"></i>${d.message||d.error||'Not found'}`; btn.style.color = 'var(--ruby)'; setTimeout(() => { btn.innerHTML = orig; btn.style.color = ''; btn.disabled = false; }, 4000); }
+  } catch(e) { btn.innerHTML = orig; btn.style.color = ''; btn.disabled = false; }
+}
+
+var EDITION_IMPLIED_SOURCE = { official_color: 'official_only', colored: 'fan_only', unlocalized: 'fan_only' };
+var EDITION_IMPLIED_LABEL  = {
+  official_only: 'Official Color editions always come from licensed publishers — source type locked to <em>Official only</em>.',
+  fan_only:      'This edition type always comes from fan groups — source type locked to <em>Fan only</em>.',
+};
+function onEditionChange(edition) {
+  const implied = EDITION_IMPLIED_SOURCE[edition];
+  const row = document.getElementById('source_type_row');
+  const sel = document.getElementById('source_type_select');
+  if (!row || !sel) return;
+  const label = row.querySelector('label');
+  const hint  = row.querySelector('.small.text-muted');
+  const badge = label?.querySelector('.badge');
+  const prev  = row.querySelector('input[type=hidden][name=source_type]');
+  if (prev) prev.remove();
+  if (implied) {
+    sel.disabled = true;
+    if (badge) { badge.textContent = 'auto — set by edition'; badge.style.display = ''; }
+    else if (label) {
+      const b = document.createElement('span');
+      b.className = 'badge text-bg-secondary ms-2'; b.style.fontSize = '0.65rem'; b.style.fontWeight = '400';
+      b.textContent = 'auto — set by edition'; label.appendChild(b);
+    }
+    if (hint) hint.innerHTML = '<i class="bi bi-info-circle me-1"></i>' + EDITION_IMPLIED_LABEL[implied];
+    const h = document.createElement('input'); h.type = 'hidden'; h.name = 'source_type'; h.value = implied; row.appendChild(h);
+  } else {
+    sel.disabled = false;
+    if (badge) badge.style.display = 'none';
+    if (hint) hint.innerHTML = 'Filters grabs by source. <em>Official only</em> rejects fan scans; <em>Fan only</em> rejects publisher releases.';
+  }
+}
+</script>
+{% endblock %}
+
+{# ══════════════════════════════ MODALS ══════════════════════════════════ #}
+
+<!-- Tags Modal -->
+<div class="modal fade" id="tagsModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title"><i class="bi bi-tags me-2 text-ember"></i>Tags — {{ s['title'] }}</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="POST" action="/series/{{ s['id'] }}/set-tags"
+            hx-post="/series/{{ s['id'] }}/set-tags"
+            hx-swap="none"
+            hx-on::after-request="if(event.detail.successful){ bootstrap.Modal.getInstance(document.getElementById('tagsModal'))?.hide(); showToast('Tags saved', 'success'); } else { showToast('Failed to save tags', 'error'); }">
+        <div class="modal-body">
+          <label class="form-label">Tags (comma-separated)</label>
+          <input type="text" name="tags" class="form-control" value="{{ series_tags | join(', ') }}"
+                 placeholder="e.g. shonen, action, completed" list="tags-suggestions">
+          <datalist id="tags-suggestions">{% for t in all_tags %}<option value="{{ t }}">{% endfor %}</datalist>
+          <div class="small text-muted mt-1">Used to organize and filter your library.</div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-ember btn-sm"><i class="bi bi-floppy me-1"></i>Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Interactive Search Modal -->
+<div class="modal fade" id="searchModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <div class="fw-bold text-ember"><i class="bi bi-search me-2"></i>Interactive Search — <span id="srch-vol-label"></span></div>
+          <div class="text-muted" style="font-size:0.72rem; margin-top:2px">Query: <span id="srch-query" class="text-main"></span></div>
+        </div>
+        <button type="button" class="btn-close ms-3" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body p-0" id="srch-body"></div>
+      <div class="modal-footer">
+        <span class="text-muted" style="font-size:0.72rem">Scored and filtered by your search pattern.</span>
+        <button type="button" class="btn btn-secondary btn-sm ms-auto" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Series Modal -->
+<div class="modal fade" id="editModal" tabindex="-1" aria-labelledby="editModalTitle">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title" id="editModalTitle"><i class="bi bi-sliders2 me-2 text-ember"></i>Edit Series</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form method="POST" action="/series/{{ s['id'] }}/edit" data-track-changes x-data="{ tab: 'identity' }">
+        <div class="modal-body">
+
+          {# ── Tab strip ── #}
+          <div class="edit-tabs" role="tablist" aria-label="Edit series sections">
+            <button type="button" class="edit-tab" :class="{'active': tab==='identity'}" @click="tab='identity'" role="tab" :aria-selected="tab==='identity'">
+              <i class="bi bi-bookmark" aria-hidden="true"></i>Identity
+            </button>
+            <button type="button" class="edit-tab" :class="{'active': tab==='sources'}" @click="tab='sources'" role="tab" :aria-selected="tab==='sources'">
+              <i class="bi bi-funnel" aria-hidden="true"></i>Sources
+            </button>
+            <button type="button" class="edit-tab" :class="{'active': tab==='profiles'}" @click="tab='profiles'" role="tab" :aria-selected="tab==='profiles'">
+              <i class="bi bi-sliders" aria-hidden="true"></i>Profiles
+            </button>
+            <button type="button" class="edit-tab" :class="{'active': tab==='volumes'}" @click="tab='volumes'" role="tab" :aria-selected="tab==='volumes'">
+              <i class="bi bi-journals" aria-hidden="true"></i>Volumes
+            </button>
+            <button type="button" class="edit-tab" :class="{'active': tab==='advanced'}" @click="tab='advanced'" role="tab" :aria-selected="tab==='advanced'">
+              <i class="bi bi-gear" aria-hidden="true"></i>Advanced
+            </button>
+          </div>
+
+          {# ── Tab: Identity (title, search pattern, aliases) ── #}
+          <div class="edit-tab-panel" :class="{'active': tab==='identity'}" role="tabpanel">
+            <div class="mb-3">
+              <label class="form-label">Title</label>
+              <input type="text" name="title" class="form-control" value="{{ s['title'] }}">
+              <div class="small text-muted mt-1">Used for display and AniList refresh queries</div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Search Pattern</label>
+              <input type="text" name="search_pattern" class="form-control" value="{{ s['search_pattern'] }}">
+              <div class="small text-muted mt-1">Used to match torrent/release titles — edit if nothing is being found</div>
+            </div>
+            <hr class="panel-divider">
+            <div class="mb-1">
+              <label class="form-label d-flex align-items-center gap-2">
+                <i class="bi bi-translate text-ember"></i>Search Aliases
+                {% if aliases %}<span class="badge-status badge-indexer">{{ aliases|length }}</span>{% endif %}
+              </label>
+              <div class="small text-muted mb-2">Additional search patterns for RSS matching and auto-grabs.</div>
+              {% include "partials/alias_list.html" %}
+              <div class="d-flex gap-2 mt-2">
+                <input type="text" id="alias-add-input" name="alias" class="form-control form-control-sm" placeholder="Alternative search pattern…">
+                <button type="button" class="btn-grab btn btn-sm px-3 flex-shrink-0"
+                        hx-post="/series/{{ s['id'] }}/aliases/add"
+                        hx-target="#alias-list"
+                        hx-swap="outerHTML"
+                        hx-include="#alias-add-input"
+                        hx-on::after-request="if(event.detail.successful){ document.getElementById('alias-add-input').value=''; } else { showToast('Failed to add alias', 'error'); }">
+                  <i class="bi bi-plus me-1"></i>Add
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {# ── Tab: Sources (source type, required scanlator, groups, omnibus) ── #}
+          <div class="edit-tab-panel" :class="{'active': tab==='sources'}" role="tabpanel">
+            {% set _implied = {'official_color': 'official_only', 'colored': 'fan_only', 'unlocalized': 'fan_only'} %}
+            {% set _implied_src = _implied.get(s['edition_type'] or 'standard') %}
+            <div class="mb-3" id="source_type_row">
+              <label class="form-label d-flex align-items-center gap-2">
+                Source Type
+                {% if _implied_src %}<span class="badge text-bg-secondary" style="font-size:0.65rem; font-weight:400">auto — set by edition</span>{% endif %}
+              </label>
+              <select name="source_type" class="form-select form-select-sm" id="source_type_select" {% if _implied_src %}disabled{% endif %}>
+                <option value="any"           {% if (s['source_type'] or 'any') == 'any'           %}selected{% endif %}>Any — official and fan releases (default)</option>
+                <option value="official_only" {% if (s['source_type'] or '') == 'official_only'    %}selected{% endif %}>Official only — licensed publishers</option>
+                <option value="fan_only"      {% if (s['source_type'] or '') == 'fan_only'         %}selected{% endif %}>Fan only — scanlations only</option>
+              </select>
+              {% if _implied_src %}
+              <input type="hidden" name="source_type" value="{{ _implied_src }}">
+              <div class="small text-muted mt-1"><i class="bi bi-info-circle me-1"></i>
+                <strong>{{ s['edition_type']|replace('_',' ')|title }}</strong> editions always come from
+                {% if _implied_src == 'official_only' %}licensed publishers — locked to <em>Official only</em>.
+                {% else %}fan groups — locked to <em>Fan only</em>.{% endif %}
+              </div>
+              {% else %}
+              <div class="small text-muted mt-1">Filters grabs by source. <em>Official only</em> rejects fan scans; <em>Fan only</em> rejects publisher releases.</div>
+              {% endif %}
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Required Source <span class="text-muted fw-normal" style="font-size:0.8rem">(strict name match)</span></label>
+              <input type="text" name="required_scanlator" class="form-control form-control-sm"
+                     value="{{ s['required_scanlator'] or '' }}" placeholder="e.g. Viz Media, LuCaZ, Seven Seas">
+              <div class="small text-muted mt-1">If set, only releases containing this exact string are grabbed.</div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Preferred Groups <span class="text-muted fw-normal" style="font-size:0.8rem">(comma-separated)</span></label>
+              <input type="text" name="preferred_groups_input" class="form-control form-control-sm"
+                     value="{{ (s['preferred_groups'] or '[]')|from_json|join(', ') }}" placeholder="e.g. LuCaZ, 1r0n, danke">
+              <div class="small text-muted mt-1">Releases from these groups get a score bonus (+15 each).</div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Blocked Groups <span class="text-muted fw-normal" style="font-size:0.8rem">(comma-separated)</span></label>
+              <input type="text" name="blocked_groups_input" class="form-control form-control-sm"
+                     value="{{ (s['blocked_groups'] or '[]')|from_json|join(', ') }}" placeholder="e.g. SomeGroup">
+              <div class="small text-muted mt-1">Releases from these groups are always skipped.</div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Omnibus / Pack Preference</label>
+              <select name="omnibus_preference" class="form-select form-select-sm">
+                <option value="prefer_individual" {% if (s['omnibus_preference'] or 'prefer_individual') == 'prefer_individual' %}selected{% endif %}>Prefer Individual Volumes (default)</option>
+                <option value="prefer_omnibus"    {% if (s['omnibus_preference'] or '') == 'prefer_omnibus'    %}selected{% endif %}>Prefer Omnibus / Multi-Volume Packs</option>
+                <option value="only_individual"   {% if (s['omnibus_preference'] or '') == 'only_individual'  %}selected{% endif %}>Individual Only</option>
+                <option value="only_omnibus"      {% if (s['omnibus_preference'] or '') == 'only_omnibus'     %}selected{% endif %}>Omnibus Only</option>
+              </select>
+            </div>
+          </div>
+
+          {# ── Tab: Profiles (edition, quality/language profile, cutoff, ddl lang) ── #}
+          <div class="edit-tab-panel" :class="{'active': tab==='profiles'}" role="tabpanel">
+            <div class="mb-3">
+              <label class="form-label">Edition Type</label>
+              <select name="edition_type" class="form-select form-select-sm" onchange="onEditionChange(this.value)">
+                <option value="standard"      {% if (s['edition_type'] or 'standard') == 'standard'      %}selected{% endif %}>Standard (B&amp;W / default)</option>
+                <option value="official_color"{% if (s['edition_type'] or '') == 'official_color'        %}selected{% endif %}>Official Color</option>
+                <option value="colored"       {% if (s['edition_type'] or '') == 'colored'               %}selected{% endif %}>Fan Colored</option>
+                <option value="omnibus"       {% if (s['edition_type'] or '') == 'omnibus'               %}selected{% endif %}>Omnibus / Collected Edition</option>
+                <option value="deluxe"        {% if (s['edition_type'] or '') == 'deluxe'                %}selected{% endif %}>Deluxe / Hardcover</option>
+                <option value="digital"       {% if (s['edition_type'] or '') == 'digital'               %}selected{% endif %}>Digital (Webtoon / Web)</option>
+                <option value="raw"           {% if (s['edition_type'] or '') == 'raw'                   %}selected{% endif %}>Raw / Japanese</option>
+                <option value="special"       {% if (s['edition_type'] or '') == 'special'               %}selected{% endif %}>Special / Limited Edition</option>
+                <option value="collector"     {% if (s['edition_type'] or '') == 'collector'             %}selected{% endif %}>Collector's Edition</option>
+                <option value="remaster"      {% if (s['edition_type'] or '') == 'remaster'              %}selected{% endif %}>Remaster / HD Edition</option>
+                <option value="unlocalized"   {% if (s['edition_type'] or '') == 'unlocalized'           %}selected{% endif %}>Unlocalized</option>
+              </select>
+              <div class="small text-muted mt-1">Each edition is tracked independently — add the same series multiple times with different editions.</div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Quality Profile</label>
+              <select name="quality_profile_id" class="form-select form-select-sm">
+                <option value="0">— Use global default —</option>
+                {% for qp in quality_profiles %}
+                <option value="{{ qp['id'] }}" {% if s['quality_profile_id'] == qp['id'] %}selected{% endif %}>{{ qp['name'] }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Language Profile</label>
+              <select name="language_profile_id" class="form-select form-select-sm">
+                <option value="0">— Use global default —</option>
+                {% for lp in language_profiles %}
+                <option value="{{ lp['id'] }}" {% if s['language_profile_id'] == lp['id'] %}selected{% endif %}>{{ lp['name'] }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Quality Cutoff Override</label>
+              <select name="quality_cutoff" class="form-select form-select-sm">
+                <option value="">— Use profile / global cutoff —</option>
+                {% for q_opt, q_label in [('cbz','CBZ (best)'),('cbr','CBR'),('epub','EPUB'),('pdf','PDF'),('zip','ZIP'),('mobi','MOBI')] %}
+                <option value="{{ q_opt }}" {% if s['quality_cutoff'] == q_opt %}selected{% endif %}>{{ q_label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            {% if suwayomi_enabled %}
+            <div class="mb-3">
+              <label class="form-label">DDL Language <span class="text-muted fw-normal" style="font-size:0.8rem">(ISO 639-1 code)</span></label>
+              <input type="text" name="ddl_language" class="form-control form-control-sm"
+                     value="{{ s['ddl_language'] or '' }}" placeholder="Leave blank to use global default">
+              <div class="small text-muted mt-1">Overrides the global DDL preferred language for this series only. Examples: <code>en</code>, <code>ja</code>, <code>fr</code>, <code>es</code>.</div>
+            </div>
+            {% endif %}
+          </div>
+
+          {# ── Tab: Volumes (chapter map, total volumes) ── #}
+          <div class="edit-tab-panel" :class="{'active': tab==='volumes'}" role="tabpanel">
+            <div class="mb-3">
+              {% set _vsrc = s['vol_count_source'] or 'anilist' %}
+              <label class="form-label d-flex align-items-center gap-2">
+                Total Volumes
+                <span class="badge-status badge-src-{{ _vsrc }}">
+                  {% if _vsrc == 'manual' %}<i class="bi bi-pencil" style="font-size:0.55rem"></i> {% endif %}{{ _vsrc|replace('_',' ')|title }}
+                </span>
+              </label>
+              <input type="number" name="total_volumes" class="form-control form-control-sm"
+                     value="{{ s['total_volumes'] or '' }}" min="1" step="1" placeholder="Leave blank to keep current">
+              <div class="small text-muted mt-1">
+                Increasing creates new stubs; decreasing removes <em>wanted</em> stubs (downloaded stubs are kept).
+                Saves with source set to <em>Manual</em>.
+                {% if s['edition_type'] in ('omnibus','deluxe','special','collector','remaster') %}
+                <br><span class="text-sky"><i class="bi bi-info-circle me-1"></i>For Google Books lookup, use <strong>More → Refresh Edition Meta</strong> instead.</span>
+                {% endif %}
+              </div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label d-flex align-items-center gap-2">
+                Chapter→Volume Map
+                {% if ch_map_count %}<span class="badge-status badge-downloaded">{{ ch_map_count }} mapped</span>
+                {% else %}<span class="badge-status badge-wanted">not set</span>{% endif %}
+              </label>
+              <textarea name="chapter_map_text" class="form-control" rows="8"
+                        style="font-family:var(--font-mono); font-size:0.78rem"
+                        placeholder="One volume per line, e.g.:&#10;1-7&#10;8-16&#10;17-24&#10;&#10;Leave blank to keep existing map.">{{ chapter_map_text }}</textarea>
+              <div class="small text-muted mt-1">
+                Each line = one volume. Format: <code>start-end</code> or single chapter. Leave blank to keep existing.
+              </div>
+            </div>
+          </div>
+
+          {# ── Tab: Advanced (update strategy) ── #}
+          <div class="edit-tab-panel" :class="{'active': tab==='advanced'}" role="tabpanel">
+            <div class="mb-3">
+              <label class="form-label">Update Strategy</label>
+              <select name="update_strategy" class="form-select form-select-sm">
+                <option value="always"    {% if (s['update_strategy'] or 'always') == 'always'    %}selected{% endif %}>Always — refresh every cycle (default)</option>
+                <option value="throttled" {% if (s['update_strategy'] or '') == 'throttled'       %}selected{% endif %}>Throttled — refresh at most once per week</option>
+                <option value="once"      {% if (s['update_strategy'] or '') == 'once'            %}selected{% endif %}>Manual only — skip auto-refresh</option>
+              </select>
+              <div class="small text-muted mt-1">
+                Controls how often AniList metadata is auto-refreshed.
+                {% if s['last_metadata_refresh'] %} Last refreshed: <span class="text-ember">{{ s['last_metadata_refresh'] | format_date }}</span>.{% endif %}
+                Finished/cancelled series automatically switch to <em>Manual only</em>.
+              </div>
+            </div>
+          </div>
+
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-ember btn-sm"><i class="bi bi-floppy me-1"></i>Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

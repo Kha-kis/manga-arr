@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+{% block title %}Add Series — Mangarr{% endblock %}
+{% block title_short %}Add Series{% endblock %}
+{% block nav_search %}active{% endblock %}
+
+{% block content %}
+<div class="page-heading"><i class="bi bi-plus-circle-fill"></i>Add Series</div>
+
+<form class="d-flex gap-2 mb-4" method="GET" action="/search" style="max-width:600px">
+  <input type="text" name="q" class="form-control"
+         placeholder="Search by title or paste AniList URL / ID…"
+         value="{{ query or '' }}" autofocus>
+  <button class="btn btn-ember px-4"><i class="bi bi-search me-1"></i>Search</button>
+  {% if query %}
+  <a href="/search" class="btn btn-secondary px-3"><i class="bi bi-x-lg"></i></a>
+  {% endif %}
+</form>
+
+{% if search_results %}
+<div class="section-label mb-3">
+  Results for "{{ query }}" — {{ search_results|length }} found
+  {% if source_used == 'mangaupdates' %}
+  <span class="badge-status badge-src-mangaupdates ms-2" style="text-transform:none; letter-spacing:0; font-size:0.7rem">
+    <i class="bi bi-database me-1"></i>MangaUpdates fallback
+  </span>
+  {% else %}
+  <span class="badge-status badge-src-anilist ms-2" style="text-transform:none; letter-spacing:0; font-size:0.7rem">
+    <i class="bi bi-database me-1"></i>AniList
+  </span>
+  {% endif %}
+</div>
+
+<div class="row row-cols-2 row-cols-sm-3 row-cols-md-4 row-cols-lg-5 row-cols-xl-6 g-3">
+  {% for r in search_results %}
+  {% set tracked_editions = (r.anilist_id and existing_anilist.get(r.anilist_id)) or [] %}
+  {% set already = (r.mu_id and r.mu_id in existing_mu)
+                or (not r.anilist_id and not r.mu_id and r.title and r.title|lower in existing_titles) %}
+  <div class="col">
+    <div class="manga-card h-100 {% if already %}opacity-50{% endif %}">
+      {% if r.cover_url %}
+      <div class="cover-wrap">
+        <img src="{{ r.cover_url }}" class="cover" alt="{{ r.title }}" loading="lazy">
+        <div class="cover-overlay"></div>
+      </div>
+      {% else %}
+      <div class="no-cover"><i class="bi bi-book"></i></div>
+      {% endif %}
+      <div class="card-body">
+        <div class="card-title">{{ r.title }}</div>
+
+        <div class="d-flex flex-wrap align-items-center gap-1 mb-1">
+          {% set st_lower = (r.status or '')|lower %}
+          <span class="badge-status badge-{{ st_lower }}">
+            {{ r.status or 'Unknown' }}{% if r.volumes %} · {{ r.volumes }}v{% endif %}
+          </span>
+          {% if r.source == 'mangaupdates' %}
+          <span class="badge-status badge-src-mangaupdates" style="font-size:0.58rem">MU</span>
+          {% endif %}
+        </div>
+
+        {% if r.description %}
+        <p class="text-muted" style="font-size:0.68rem; margin:0.3rem 0 0.4rem;
+                  overflow:hidden; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; line-height:1.4">
+          {{ r.description }}
+        </p>
+        {% endif %}
+
+        {% if tracked_editions %}
+        <div style="font-size:0.62rem; color:var(--text-3); margin-top:4px; margin-bottom:2px">Already tracked:</div>
+        <div class="d-flex flex-wrap gap-1 mb-1">
+          {% for ed in tracked_editions %}
+          <span class="badge-status badge-edition-{{ ed }}" style="font-size:0.58rem">
+            <i class="bi bi-check me-1"></i>{{ ed|replace('_',' ')|title if ed != 'standard' else 'B&W' }}
+          </span>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if already %}
+        <div class="mt-2 text-center text-jade" style="font-size:0.75rem">
+          <i class="bi bi-check-circle me-1"></i>In library
+        </div>
+        {% else %}
+        <form method="POST" action="/series/add" class="mt-2">
+          <input type="hidden" name="title"          value="{{ r.title }}">
+          <input type="hidden" name="search_pattern" value="{{ r.title }}">
+          <input type="hidden" name="anilist_id"     value="{{ r.anilist_id or 0 }}">
+          <input type="hidden" name="mal_id"         value="{{ r.mal_id or 0 }}">
+          <input type="hidden" name="mu_id"          value="{{ r.mu_id or '' }}">
+          <input type="hidden" name="cover_url"      value="{{ r.cover_url or '' }}">
+          <input type="hidden" name="status"         value="{{ r.status or '' }}">
+          <input type="hidden" name="description"    value="{{ r.description or '' }}">
+          <input type="hidden" name="total_volumes"  value="{{ r.volumes or 0 }}">
+          <input type="hidden" name="total_chapters" value="{{ r.chapters or 0 }}">
+          <input type="hidden" name="pub_year"       value="{{ r.pub_year or 0 }}">
+          {% if root_folders|length > 1 %}
+          <select name="root_folder_id" class="form-select form-select-sm mb-1" style="font-size:0.72rem">
+            {% for rf in root_folders %}
+            <option value="{{ rf['id'] }}" {% if rf['is_default'] %}selected{% endif %}>
+              {{ rf['label'] or rf['path'] }}
+            </option>
+            {% endfor %}
+          </select>
+          {% elif root_folders %}
+          <input type="hidden" name="root_folder_id" value="{{ root_folders[0]['id'] }}">
+          {% endif %}
+
+          {% set card_idx = loop.index %}
+          <input type="hidden" name="edition_type" id="ed_{{ card_idx }}" value="standard">
+          <div id="tracked_{{ card_idx }}" data-tracked="{{ tracked_editions | tojson }}" style="display:none"></div>
+
+          <div style="font-size:0.6rem; color:var(--text-3); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:3px">Edition</div>
+          <div class="d-flex flex-wrap gap-1 mb-1" id="edbtns_{{ card_idx }}">
+            {% set _eds = [
+              ('standard',      'B&W'),
+              ('official_color','Official Color'),
+              ('colored',       'Fan Color'),
+              ('omnibus',       'Omnibus'),
+              ('deluxe',        'Deluxe'),
+            ] %}
+            {% for ed_val, ed_label in _eds %}
+            {% set _tracked = ed_val in tracked_editions %}
+            <button type="button" class="btn btn-xs ed-btn {% if loop.first %}active{% endif %}" data-ed="{{ ed_val }}"
+                    style="font-size:0.6rem; padding:2px 5px; border-radius:4px;
+                           {% if loop.first %}background:var(--ember-lo); border:1px solid var(--ember); color:var(--ember)
+                           {% else %}background:transparent; border:1px solid var(--edge-2); color:var(--text-2){% endif %}"
+                    onclick="setEd({{ card_idx }}, '{{ ed_val }}', this)">
+              {% if _tracked %}<i class="bi bi-check-circle-fill me-1" style="font-size:0.58rem"></i>{% endif %}{{ ed_label }}
+            </button>
+            {% endfor %}
+          </div>
+
+          <button class="btn btn-grab btn-sm w-100" id="addbtn_{{ card_idx }}"
+                  {% if 'standard' in tracked_editions %}disabled{% endif %}>
+            {% if 'standard' in tracked_editions %}
+            <i class="bi bi-check-circle me-1"></i>Already in Library
+            {% else %}
+            <i class="bi bi-plus-lg me-1"></i>Add to Library
+            {% endif %}
+          </button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% elif query %}
+<div class="empty-state">
+  <div class="empty-icon"><i class="bi bi-search"></i></div>
+  <p>No results for "{{ query }}" on AniList or MangaUpdates.</p>
+</div>
+
+{% else %}
+<div class="empty-state">
+  <div class="empty-icon"><i class="bi bi-plus-circle"></i></div>
+  <p class="fw-semibold">Search for manga to add to your library.</p>
+  <p style="font-size:0.82rem; color:var(--text-3); max-width:480px; text-align:center">
+    Search by title, or paste an AniList URL (<code style="font-size:0.75rem">anilist.co/manga/123</code>) or bare numeric ID.<br>
+    Falls back to MangaUpdates when AniList returns no results.
+  </p>
+</div>
+{% endif %}
+
+{% block scripts %}
+<script>
+var ED_COLORS = {
+  standard:       ['var(--ember)',    'var(--ember-lo)',            '1px solid var(--ember)'],
+  official_color: ['var(--gold)',     'var(--gold-bg)',               '1px solid var(--gold)'],
+  colored:        ['var(--iris)',     'var(--iris-bg)',              '1px solid var(--iris)'],
+  omnibus:        ['var(--ember-hi)', 'rgba(255,171,94,0.12)',       '1px solid var(--ember-hi)'],
+  deluxe:         ['var(--sky)',      'var(--sky-bg)',               '1px solid var(--sky)'],
+};
+function setEd(idx, ed, btn) {
+  document.getElementById('ed_' + idx).value = ed;
+  const group   = document.getElementById('edbtns_' + idx);
+  const addBtn  = document.getElementById('addbtn_' + idx);
+  const tracked = JSON.parse(document.getElementById('tracked_' + idx).dataset.tracked || '[]');
+  group.querySelectorAll('.ed-btn').forEach(b => {
+    b.style.background = 'transparent';
+    b.style.border     = '1px solid var(--edge-2)';
+    b.style.color      = 'var(--text-2)';
+  });
+  const c = ED_COLORS[ed] || ED_COLORS.standard;
+  btn.style.background = c[1];
+  btn.style.border     = c[2];
+  btn.style.color      = c[0];
+  if (tracked.includes(ed)) {
+    addBtn.disabled  = true;
+    addBtn.innerHTML = '<i class="bi bi-check-circle me-1"></i>Already in Library';
+  } else {
+    addBtn.disabled  = false;
+    addBtn.innerHTML = '<i class="bi bi-plus-lg me-1"></i>Add to Library';
+  }
+}
+</script>
+{% endblock %}
+{% endblock %}

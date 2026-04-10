@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+{% block title %}Notifications — Mangarr{% endblock %}
+{% block title_short %}Notifications{% endblock %}
+{% block nav_settings %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div class="page-heading mb-0"><i class="bi bi-bell-fill"></i>Notification Connections</div>
+  <button class="btn btn-outline-ember btn-sm" data-bs-toggle="modal" data-bs-target="#newModal">
+    <i class="bi bi-plus me-1"></i>Add Connection
+  </button>
+</div>
+
+<div class="row g-3">
+{% for conn in connections %}
+{% set settings = conn.settings | from_json({}) %}
+<div class="col-12">
+  <div class="panel mb-0" style="{% if not conn.enabled %}opacity:.5{% endif %}">
+    <div class="panel-header d-flex align-items-center gap-2">
+      <i class="bi bi-{% if conn.type == 'discord' %}discord{% elif conn.type == 'telegram' %}telegram{% elif conn.type == 'slack' %}slack{% elif conn.type == 'email' %}envelope-fill{% else %}bell-fill{% endif %}"></i>
+      {{ conn.name }}
+      <span class="badge-status badge-unknown" style="font-size:.65rem">{{ conn.type }}</span>
+      {% if not conn.enabled %}<span class="badge-status badge-wanted" style="font-size:.65rem">DISABLED</span>{% endif %}
+      <div class="ms-auto d-flex gap-2">
+        <button class="btn btn-sm btn-secondary"
+                onclick="testConn({{ conn.id }}, this)" title="Send test notification" aria-label="Test notification">
+          <i class="bi bi-bell"></i>
+        </button>
+        <button class="btn btn-sm btn-outline-ember" data-bs-toggle="modal"
+                data-bs-target="#editModal{{ conn.id }}" aria-label="Edit"><i class="bi bi-pencil"></i></button>
+        <form method="POST" action="/notifications/{{ conn.id }}/delete"
+              data-confirm="Delete notification connection &quot;{{ conn.name }}&quot;?"
+              data-confirm-heading="Delete connection" data-confirm-ok="Delete">
+          <button class="btn btn-sm btn-danger-soft" aria-label="Delete"><i class="bi bi-trash"></i></button>
+        </form>
+      </div>
+    </div>
+    <div class="panel-body">
+      <div class="d-flex flex-wrap gap-2 mb-2">
+        {% for flag, label in event_flags %}
+        <span class="badge-status {% if conn[flag] %}badge-downloaded{% else %}badge-unknown{% endif %}">
+          {{ label }}
+        </span>
+        {% endfor %}
+      </div>
+      <div id="test-result-{{ conn.id }}"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div class="modal fade" id="editModal{{ conn.id }}" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="POST" action="/notifications/{{ conn.id }}">
+        <div class="modal-header">
+          <h6 class="modal-title text-ember">Edit: {{ conn.name }}</h6>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="row g-3 mb-3">
+            <div class="col-8">
+              <label class="form-label">Name</label>
+              <input type="text" name="name" class="form-control" value="{{ conn.name }}" required>
+            </div>
+            <div class="col-4">
+              <label class="form-label">Type</label>
+              <select name="type" class="form-select">
+                {% for t in connection_types %}
+                <option value="{{ t }}" {% if conn.type == t %}selected{% endif %}>{{ t }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" name="enabled" value="1"
+                   {% if conn.enabled %}checked{% endif %} id="en{{ conn.id }}">
+            <label class="form-check-label" for="en{{ conn.id }}">Enabled</label>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Settings (JSON)</label>
+            <textarea name="settings" class="form-control font-monospace" rows="6"
+                      >{{ conn.settings }}</textarea>
+            <div class="form-text mt-1" style="font-size:.78rem">
+              Discord: <code>{"webhook_url":"..."}</code><br>
+              Telegram: <code>{"bot_token":"...","chat_id":"..."}</code><br>
+              Ntfy: <code>{"server":"https://ntfy.sh","topic":"...","token":"..."}</code><br>
+              Gotify: <code>{"server":"http://...","app_token":"..."}</code><br>
+              Pushover: <code>{"user_key":"...","api_token":"..."}</code><br>
+              Webhook: <code>{"url":"https://...","method":"POST"}</code><br>
+              Email: <code>{"host":"localhost","port":25,"to":"user@example.com","from":"mangarr@localhost"}</code>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Notification Events</label>
+            <div class="d-flex flex-wrap gap-3">
+              {% for flag, label in event_flags %}
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="{{ flag }}" value="1"
+                       {% if conn[flag] %}checked{% endif %} id="{{ flag }}_{{ conn.id }}">
+                <label class="form-check-label" for="{{ flag }}_{{ conn.id }}" style="font-size:.85rem">
+                  {{ label }}
+                </label>
+              </div>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-ember btn-sm">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+{% if not connections %}
+<div class="empty-state">
+  <div class="empty-icon"><i class="bi bi-bell"></i></div>
+  <p class="fw-semibold">No notification connections</p>
+  <p style="font-size:0.82rem;color:var(--text-3)">Add Discord, Telegram, Ntfy, Gotify, email, or webhook connections.</p>
+</div>
+{% endif %}
+</div>
+
+<!-- New Modal -->
+<div class="modal fade" id="newModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="POST" action="/notifications">
+        <div class="modal-header">
+          <h6 class="modal-title text-ember"><i class="bi bi-plus-circle me-2"></i>Add Notification</h6>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="row g-3 mb-3">
+            <div class="col-8">
+              <label class="form-label">Name</label>
+              <input type="text" name="name" class="form-control" placeholder="e.g. My Discord" required>
+            </div>
+            <div class="col-4">
+              <label class="form-label">Type</label>
+              <select name="type" class="form-select" id="newTypeSelect"
+                      onchange="updateSettingsPlaceholder()">
+                {% for t in connection_types %}
+                <option value="{{ t }}">{{ t }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" name="enabled" value="1" checked id="en_new">
+            <label class="form-check-label" for="en_new">Enabled</label>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Settings (JSON)</label>
+            <textarea name="settings" id="newSettings" class="form-control font-monospace" rows="4"
+                      >{"webhook_url": ""}</textarea>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Notification Events</label>
+            <div class="d-flex flex-wrap gap-3">
+              {% for flag, label in event_flags %}
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="{{ flag }}" value="1"
+                       {% if 'health' not in flag %}checked{% endif %}
+                       id="{{ flag }}_new">
+                <label class="form-check-label" for="{{ flag }}_new" style="font-size:.85rem">{{ label }}</label>
+              </div>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-ember btn-sm">Add</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SETTINGS_TEMPLATES = {
+  discord:    '{"webhook_url": ""}',
+  telegram:   '{"bot_token": "", "chat_id": ""}',
+  slack:      '{"webhook_url": ""}',
+  ntfy:       '{"server": "https://ntfy.sh", "topic": "", "token": ""}',
+  gotify:     '{"server": "http://gotify:80", "app_token": ""}',
+  pushover:   '{"user_key": "", "api_token": ""}',
+  email:      '{"host": "mailserver", "port": 25, "to": "", "from": "mangarr@localhost"}',
+  webhook:    '{"url": "", "method": "POST"}',
+  apprise:    '{"url": "http://apprise:8000", "config_key": ""}',
+  pushbullet: '{"access_token": ""}',
+};
+function updateSettingsPlaceholder() {
+  const t = document.getElementById('newTypeSelect').value;
+  document.getElementById('newSettings').value = SETTINGS_TEMPLATES[t] || '{}';
+}
+async function testConn(id, btn) {
+  btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+  const r = await fetch(`/api/notifications/${id}/test`, {method:'POST'});
+  const d = await r.json();
+  const el = document.getElementById(`test-result-${id}`);
+  if (el) {
+    el.className = `connection-status ${d.ok ? 'connection-ok' : 'connection-fail'}`;
+    el.textContent = d.message;
+    el.style.display = 'inline-block';
+  }
+  btn.disabled = false;
+  btn.innerHTML = '<i class="bi bi-bell"></i>';
+}
+</script>
+{% endblock %}

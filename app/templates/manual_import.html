@@ -1,0 +1,285 @@
+{% extends "base.html" %}
+{% block title %}Manual Import — Mangarr{% endblock %}
+{% block title_short %}Manual Import{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div class="page-heading mb-0">
+    <i class="bi bi-folder2-open"></i>Manual Import
+  </div>
+  <a href="/" class="btn btn-secondary btn-sm">
+    <i class="bi bi-arrow-left me-1"></i>Library
+  </a>
+</div>
+
+<div class="panel mb-4">
+  <div class="panel-header"><i class="bi bi-search"></i>Scan Directory</div>
+  <div class="panel-body">
+    <p class="text-muted mb-3" style="font-size:0.83rem">
+      Scan a folder for manga files (.cbz, .cbr, .zip, .epub, .pdf, .mobi).
+      Mangarr will attempt to match files to series in your library and detect volume numbers.
+    </p>
+    <div class="d-flex gap-2 flex-wrap align-items-end">
+      <div style="flex:1; min-width:260px">
+        <label class="form-label">Directory Path</label>
+        <input type="text" id="scan-path" class="form-control"
+               placeholder="/downloads/manga or /data/imports" autocomplete="off">
+      </div>
+      <button class="btn btn-ember" id="scan-btn" onclick="scanDir()">
+        <i class="bi bi-search me-1"></i>Scan
+      </button>
+    </div>
+    <div id="scan-error" class="text-ruby mt-2" style="display:none; font-size:0.82rem"></div>
+  </div>
+</div>
+
+<!-- Results -->
+<div id="results-section" style="display:none">
+  <div class="d-flex align-items-center justify-content-between mb-2">
+    <div class="section-label mb-0">
+      <i class="bi bi-list-ul text-ember me-1"></i>
+      <span id="results-count">0 files found</span>
+    </div>
+    <div class="d-flex gap-2">
+      <button class="btn btn-secondary btn-sm" onclick="selectAll(true)">
+        <i class="bi bi-check-all me-1"></i>Select All
+      </button>
+      <button class="btn btn-secondary btn-sm" onclick="selectAll(false)">
+        <i class="bi bi-dash-circle me-1"></i>None
+      </button>
+      <button class="btn btn-ember btn-sm" id="import-btn" onclick="doImport()" disabled>
+        <i class="bi bi-box-arrow-in-down me-1"></i>Import Selected
+      </button>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table class="table table-sm mb-0" id="files-table">
+      <thead>
+        <tr>
+          <th style="width:36px">
+            <input type="checkbox" id="chk-all" onchange="toggleAll(this)">
+          </th>
+          <th>Filename</th>
+          <th style="width:200px">Series</th>
+          <th style="width:95px">Volume #</th>
+          <th style="width:72px">Size</th>
+          <th style="width:80px">Status</th>
+        </tr>
+      </thead>
+      <tbody id="files-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Import progress -->
+<div id="import-progress" style="display:none" class="mt-3">
+  <div class="panel">
+    <div class="panel-header"><i class="bi bi-arrow-repeat"></i>Import Progress</div>
+    <div class="panel-body">
+      <div id="import-results"></div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SERIES_LIST = {{ series_list | tojson }};
+
+function seriesOptions(selectedId) {
+  let html = '<option value="">— unassigned —</option>';
+  for (const s of SERIES_LIST) {
+    const sel = (s.id == selectedId) ? ' selected' : '';
+    html += `<option value="${s.id}"${sel}>${escHtml(s.title)}</option>`;
+  }
+  return html;
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+var scanResults = [];
+
+async function scanDir() {
+  const path = document.getElementById('scan-path').value.trim();
+  if (!path) return;
+  const btn = document.getElementById('scan-btn');
+  const errEl = document.getElementById('scan-error');
+  errEl.style.display = 'none';
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Scanning…';
+
+  try {
+    const resp = await fetch('/api/manual-import/scan', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path})
+    });
+    const data = await resp.json();
+    if (data.error) {
+      errEl.textContent = data.error;
+      errEl.style.display = 'block';
+      document.getElementById('results-section').style.display = 'none';
+    } else {
+      scanResults = data.files;
+      renderResults(data.files);
+    }
+  } catch(e) {
+    errEl.textContent = 'Scan failed: ' + e;
+    errEl.style.display = 'block';
+  }
+  btn.disabled = false;
+  btn.innerHTML = '<i class="bi bi-search me-1"></i>Scan';
+}
+
+function renderResults(files) {
+  const section = document.getElementById('results-section');
+  const tbody   = document.getElementById('files-tbody');
+  const countEl = document.getElementById('results-count');
+  document.getElementById('import-progress').style.display = 'none';
+
+  countEl.textContent = `${files.length} file${files.length !== 1 ? 's' : ''} found`;
+  section.style.display = files.length ? 'block' : 'none';
+  if (!files.length) return;
+
+  tbody.innerHTML = '';
+  files.forEach((f, idx) => {
+    const matchedId = f.matched_series ? f.matched_series.id : '';
+    const row = document.createElement('tr');
+    row.id = `row-${idx}`;
+    row.innerHTML = `
+      <td><input type="checkbox" class="file-chk" data-idx="${idx}"
+                 ${matchedId ? 'checked' : ''} onchange="updateImportBtn()"></td>
+      <td>
+        <span style="font-size:0.8rem; font-family:var(--font-mono); word-break:break-all">${escHtml(f.filename)}</span>
+        <div style="font-size:0.68rem; color:var(--text-3)">${escHtml(f.path)}</div>
+      </td>
+      <td>
+        <select class="form-select form-select-sm series-sel" data-idx="${idx}" onchange="updateImportBtn()">
+          ${seriesOptions(matchedId)}
+        </select>
+      </td>
+      <td>
+        <input type="number" class="form-control form-control-sm vol-input" data-idx="${idx}"
+               value="${f.proposed_volume !== null && f.proposed_volume !== undefined ? f.proposed_volume : ''}"
+               placeholder="e.g. 3" min="0" step="0.5" style="width:80px">
+      </td>
+      <td style="font-size:0.75rem; color:var(--text-2)">${escHtml(f.size)}</td>
+      <td id="status-${idx}">
+        ${matchedId
+          ? '<span class="badge-status badge-downloaded">Matched</span>'
+          : '<span class="badge-status badge-unknown">Unmatched</span>'}
+      </td>
+    `;
+    tbody.appendChild(row);
+  });
+
+  updateImportBtn();
+}
+
+function updateImportBtn() {
+  const checked = document.querySelectorAll('.file-chk:checked');
+  const valid   = Array.from(checked).filter(c => {
+    const idx = c.dataset.idx;
+    const sel = document.querySelector(`.series-sel[data-idx="${idx}"]`);
+    return sel && sel.value;
+  });
+  document.getElementById('import-btn').disabled = (valid.length === 0);
+}
+
+function toggleAll(masterChk) {
+  document.querySelectorAll('.file-chk').forEach(c => c.checked = masterChk.checked);
+  updateImportBtn();
+}
+
+function selectAll(state) {
+  document.querySelectorAll('.file-chk').forEach(c => c.checked = state);
+  document.getElementById('chk-all').checked = state;
+  updateImportBtn();
+}
+
+async function doImport() {
+  const entries = [];
+  document.querySelectorAll('.file-chk:checked').forEach(c => {
+    const idx       = c.dataset.idx;
+    const seriesSel = document.querySelector(`.series-sel[data-idx="${idx}"]`);
+    const volInput  = document.querySelector(`.vol-input[data-idx="${idx}"]`);
+    if (!seriesSel || !seriesSel.value) return;
+    entries.push({
+      path:       scanResults[idx].path,
+      series_id:  parseInt(seriesSel.value),
+      volume_num: volInput && volInput.value !== '' ? parseFloat(volInput.value) : null,
+    });
+  });
+
+  if (!entries.length) return;
+
+  const btn = document.getElementById('import-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Importing…';
+
+  const progSection = document.getElementById('import-progress');
+  const progEl      = document.getElementById('import-results');
+  progSection.style.display = 'block';
+  progEl.innerHTML = '<div class="text-muted" style="font-size:0.82rem">Importing…</div>';
+
+  try {
+    const resp = await fetch('/api/manual-import/import', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({entries})
+    });
+    const data = await resp.json();
+
+    let html = `<div class="mb-2 fw-semibold" style="font-size:0.85rem">
+      Imported ${data.imported} / ${data.total} file${data.total !== 1 ? 's' : ''}
+    </div>`;
+    for (const r of (data.results || [])) {
+      const fname = r.path.split('/').pop();
+      if (r.ok) {
+        html += `<div class="d-flex align-items-center gap-2 mb-1">
+          <span class="badge-status badge-downloaded"><i class="bi bi-check"></i></span>
+          <span style="font-size:0.78rem">${escHtml(fname)}</span>
+          <span style="font-size:0.72rem; color:var(--text-3)">→ ${escHtml(r.dst || '')}</span>
+        </div>`;
+      } else {
+        html += `<div class="d-flex align-items-center gap-2 mb-1">
+          <span class="badge-status badge-wanted"><i class="bi bi-x"></i></span>
+          <span style="font-size:0.78rem">${escHtml(fname)}</span>
+          <span style="font-size:0.72rem; color:var(--ruby)">${escHtml(r.message || 'Failed')}</span>
+        </div>`;
+      }
+    }
+    progEl.innerHTML = html;
+
+    if (data.results) {
+      data.results.forEach((r, i) => {
+        document.querySelectorAll('.file-chk:checked').forEach((c, ci) => {
+          if (ci === i) {
+            const idx = c.dataset.idx;
+            const statusEl = document.getElementById(`status-${idx}`);
+            if (statusEl) {
+              statusEl.innerHTML = r.ok
+                ? '<span class="badge-status badge-downloaded">Imported</span>'
+                : '<span class="badge-status badge-wanted">Failed</span>';
+            }
+          }
+        });
+      });
+    }
+  } catch(e) {
+    progEl.innerHTML = `<div class="text-ruby">Import failed: ${e}</div>`;
+  }
+
+  btn.disabled = false;
+  btn.innerHTML = '<i class="bi bi-box-arrow-in-down me-1"></i>Import Selected';
+}
+
+document.getElementById('scan-path').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); scanDir(); }
+});
+</script>
+{% endblock %}

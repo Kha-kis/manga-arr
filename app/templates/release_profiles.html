@@ -1,0 +1,315 @@
+{% extends "base.html" %}
+{% block title %}Release Profiles — Mangarr{% endblock %}
+{% block title_short %}Release Profiles{% endblock %}
+{% block nav_settings %}active{% endblock %}
+
+{% block content %}
+
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div class="page-heading mb-0"><i class="bi bi-funnel-fill"></i>Release Profiles</div>
+  <button class="btn btn-outline-ember btn-sm" data-bs-toggle="modal" data-bs-target="#newProfileModal">
+    <i class="bi bi-plus me-1"></i>New Profile
+  </button>
+</div>
+
+<p class="text-sm mb-4" style="color:var(--text-2)">
+  Release profiles filter and score releases. A profile with no tags applies to all series.
+  Must Contain terms use OR logic; any ignored word causes a hard reject.
+  Preferred terms add score — higher score = higher priority.
+</p>
+
+<div class="row g-3">
+{% for p in profiles %}
+<div class="col-12">
+  <div class="panel mb-0" style="{% if not p.enabled %}opacity:.5{% endif %}">
+    <div class="panel-header d-flex align-items-center gap-2">
+      <i class="bi bi-funnel-fill"></i>
+      {{ p.name }}
+      {% if not p.enabled %}<span class="badge-status badge-wanted ms-1 text-[0.65rem]">DISABLED</span>{% endif %}
+      {% for t in p.tags %}
+      <span class="badge-status badge-indexer text-[0.65rem]">{{ t }}</span>
+      {% endfor %}
+      <div class="ms-auto d-flex gap-2">
+        <button class="btn btn-sm btn-outline-ember" data-bs-toggle="modal"
+                data-bs-target="#editModal{{ p.id }}"><i class="bi bi-pencil"></i></button>
+        <form method="POST" action="/release-profiles/{{ p.id }}/delete"
+              data-confirm="Delete release profile &quot;{{ p.name }}&quot;?"
+              data-confirm-heading="Delete profile" data-confirm-ok="Delete">
+          <button class="btn btn-sm btn-danger-soft" hx-disabled-elt="this"><i class="bi bi-trash"></i></button>
+        </form>
+      </div>
+    </div>
+    <div class="panel-body">
+      <div class="row g-3 text-sm">
+        {% if p.required %}
+        <div class="col-auto">
+          <div class="form-label">Must Contain</div>
+          <div class="d-flex gap-1 flex-wrap"
+               x-data="termDisplay({{ (p.required or '') | tojson }}, 'var(--jade-bg)', 'var(--jade)')">
+            <template x-for="t in terms" :key="t.term">
+              <span class="badge-status" :style="`background:${bg};color:${fg}`">
+                <span x-text="t.term"></span>
+                <span x-show="t.is_regex" class="text-[0.65em] font-bold" style="color:var(--ember)"> R</span>
+              </span>
+            </template>
+          </div>
+        </div>
+        {% endif %}
+        {% if p.ignored %}
+        <div class="col-auto">
+          <div class="form-label">Must Not Contain</div>
+          <div class="d-flex gap-1 flex-wrap"
+               x-data="termDisplay({{ (p.ignored or '') | tojson }}, 'var(--ruby-bg)', 'var(--ruby)')">
+            <template x-for="t in terms" :key="t.term">
+              <span class="badge-status" :style="`background:${bg};color:${fg}`">
+                <span x-text="t.term"></span>
+                <span x-show="t.is_regex" class="text-[0.65em] font-bold" style="color:var(--ember)"> R</span>
+              </span>
+            </template>
+          </div>
+        </div>
+        {% endif %}
+        {% set prefs = p.preferred | from_json([]) %}
+        {% if prefs %}
+        <div class="col-auto">
+          <div class="form-label">Preferred Terms</div>
+          <div class="d-flex gap-1 flex-wrap">
+            {% for pref in prefs %}
+            <span class="badge-status" style="background:var(--gold-bg);color:var(--gold)">
+              {{ pref.term }} (+{{ pref.score }})
+            </span>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div class="modal fade" id="editModal{{ p.id }}" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="POST" action="/release-profiles/{{ p.id }}">
+        <div class="modal-header">
+          <h6 class="modal-title text-ember">Edit: {{ p.name }}</h6>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Name</label>
+            <input type="text" name="name" class="form-control" value="{{ p.name }}" required>
+          </div>
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" name="enabled" value="1"
+                   {% if p.enabled %}checked{% endif %} id="en{{ p.id }}">
+            <label class="form-check-label" for="en{{ p.id }}">Enabled</label>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Must Contain <small class="text-[color:var(--text-2)]">(OR logic — any match passes)</small></label>
+            <div x-data="termBuilder({{ (p.required or '') | tojson }})">
+              <input type="hidden" name="required" :value="serialize()">
+              <template x-for="(t, i) in terms" :key="i">
+                <div class="d-flex align-items-center gap-2 mb-1">
+                  <input type="text" x-model="t.term" placeholder="term"
+                         class="form-control form-control-sm flex-1 text-sm">
+                  <button type="button" @click="t.is_regex = !t.is_regex"
+                          class="btn btn-sm px-2 py-0"
+                          :style="t.is_regex ? 'border:1px solid var(--ember);color:var(--ember);background:transparent;font-size:.75rem;font-weight:700;min-width:28px' : 'border:1px solid var(--edge);color:var(--text-2);background:transparent;font-size:.75rem;font-weight:700;min-width:28px'"
+                          :title="t.is_regex ? 'Regex ON — click to disable' : 'Enable regex matching'">R</button>
+                  <button type="button" @click="terms.splice(i, 1)"
+                          class="btn btn-sm px-1 py-0 text-base leading-none bg-transparent border-0"
+                          style="color:var(--ruby)">&times;</button>
+                </div>
+              </template>
+              <button type="button" @click="add()"
+                      class="btn btn-sm btn-secondary mt-1 text-xs">
+                <i class="bi bi-plus me-1"></i>Add term
+              </button>
+            </div>
+            <div class="form-text text-xs">
+              Click <strong class="text-ember">R</strong> next to a term to enable regex matching.
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Must Not Contain <small class="text-[color:var(--text-2)]">(any match hard-rejects)</small></label>
+            <div x-data="termBuilder({{ (p.ignored or '') | tojson }})">
+              <input type="hidden" name="ignored" :value="serialize()">
+              <template x-for="(t, i) in terms" :key="i">
+                <div class="d-flex align-items-center gap-2 mb-1">
+                  <input type="text" x-model="t.term" placeholder="term"
+                         class="form-control form-control-sm flex-1 text-sm">
+                  <button type="button" @click="t.is_regex = !t.is_regex"
+                          class="btn btn-sm px-2 py-0"
+                          :style="t.is_regex ? 'border:1px solid var(--ember);color:var(--ember);background:transparent;font-size:.75rem;font-weight:700;min-width:28px' : 'border:1px solid var(--edge);color:var(--text-2);background:transparent;font-size:.75rem;font-weight:700;min-width:28px'"
+                          :title="t.is_regex ? 'Regex ON — click to disable' : 'Enable regex matching'">R</button>
+                  <button type="button" @click="terms.splice(i, 1)"
+                          class="btn btn-sm px-1 py-0 text-base leading-none bg-transparent border-0"
+                          style="color:var(--ruby)">&times;</button>
+                </div>
+              </template>
+              <button type="button" @click="add()"
+                      class="btn btn-sm btn-secondary mt-1 text-xs">
+                <i class="bi bi-plus me-1"></i>Add term
+              </button>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Preferred Terms <small class="text-[color:var(--text-2)]">(JSON array of {term,score[,is_regex]})</small></label>
+            <textarea name="preferred" class="form-control font-monospace text-sm" rows="4">{{ p.preferred or '[]' }}</textarea>
+            <div class="form-text">e.g. [{"term":"digital","score":15},{"term":"viz","score":20}]</div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Tags <small class="text-[color:var(--text-2)]">(comma-separated; blank = apply to all series)</small></label>
+            <input type="text" name="tags" class="form-control" value="{{ p.tags | join(', ') }}"
+                   placeholder="e.g. shonen,seinen">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-ember btn-sm">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+{% if not profiles %}
+<div class="empty-state">
+  <div class="empty-icon"><i class="bi bi-funnel"></i></div>
+  <p class="fw-semibold">No release profiles yet</p>
+  <p class="text-sm" style="color:var(--text-3)">Release profiles control which releases are allowed and how they're scored.</p>
+</div>
+{% endif %}
+</div>
+
+<!-- New Profile Modal -->
+<div class="modal fade" id="newProfileModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="POST" action="/release-profiles">
+        <div class="modal-header">
+          <h6 class="modal-title text-ember"><i class="bi bi-plus-circle me-2"></i>New Release Profile</h6>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Name</label>
+            <input type="text" name="name" class="form-control" placeholder="e.g. Digital Only" required>
+          </div>
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" name="enabled" value="1" checked id="en_new">
+            <label class="form-check-label" for="en_new">Enabled</label>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Must Contain <small class="text-[color:var(--text-2)]">(OR logic)</small></label>
+            <div x-data="termBuilder('')">
+              <input type="hidden" name="required" :value="serialize()">
+              <template x-for="(t, i) in terms" :key="i">
+                <div class="d-flex align-items-center gap-2 mb-1">
+                  <input type="text" x-model="t.term" placeholder="term"
+                         class="form-control form-control-sm flex-1 text-sm">
+                  <button type="button" @click="t.is_regex = !t.is_regex"
+                          class="btn btn-sm px-2 py-0"
+                          :style="t.is_regex ? 'border:1px solid var(--ember);color:var(--ember);background:transparent;font-size:.75rem;font-weight:700;min-width:28px' : 'border:1px solid var(--edge);color:var(--text-2);background:transparent;font-size:.75rem;font-weight:700;min-width:28px'"
+                          :title="t.is_regex ? 'Regex ON — click to disable' : 'Enable regex matching'">R</button>
+                  <button type="button" @click="terms.splice(i, 1)"
+                          class="btn btn-sm px-1 py-0 text-base leading-none bg-transparent border-0"
+                          style="color:var(--ruby)">&times;</button>
+                </div>
+              </template>
+              <button type="button" @click="add()"
+                      class="btn btn-sm btn-secondary mt-1 text-xs">
+                <i class="bi bi-plus me-1"></i>Add term
+              </button>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Must Not Contain</label>
+            <div x-data="termBuilder('')">
+              <input type="hidden" name="ignored" :value="serialize()">
+              <template x-for="(t, i) in terms" :key="i">
+                <div class="d-flex align-items-center gap-2 mb-1">
+                  <input type="text" x-model="t.term" placeholder="term"
+                         class="form-control form-control-sm flex-1 text-sm">
+                  <button type="button" @click="t.is_regex = !t.is_regex"
+                          class="btn btn-sm px-2 py-0"
+                          :style="t.is_regex ? 'border:1px solid var(--ember);color:var(--ember);background:transparent;font-size:.75rem;font-weight:700;min-width:28px' : 'border:1px solid var(--edge);color:var(--text-2);background:transparent;font-size:.75rem;font-weight:700;min-width:28px'"
+                          :title="t.is_regex ? 'Regex ON — click to disable' : 'Enable regex matching'">R</button>
+                  <button type="button" @click="terms.splice(i, 1)"
+                          class="btn btn-sm px-1 py-0 text-base leading-none bg-transparent border-0"
+                          style="color:var(--ruby)">&times;</button>
+                </div>
+              </template>
+              <button type="button" @click="add()"
+                      class="btn btn-sm btn-secondary mt-1 text-xs">
+                <i class="bi bi-plus me-1"></i>Add term
+              </button>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Preferred Terms (JSON)</label>
+            <textarea name="preferred" class="form-control font-monospace text-sm" rows="3">[]</textarea>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Tags</label>
+            <input type="text" name="tags" class="form-control" placeholder="Leave blank for all series">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-ember btn-sm">Create</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('alpine:init', () => {
+  Alpine.data('termBuilder', (raw) => ({
+    terms: [],
+    init() {
+      if (!raw || !raw.trim()) { this.terms = []; return; }
+      this.terms = raw.split(',').map(s => s.trim()).filter(Boolean).map(s => {
+        if (s.startsWith('{')) {
+          try { const o = JSON.parse(s); return {term: o.term||'', is_regex: !!o.is_regex}; } catch(e){}
+        }
+        return {term: s, is_regex: false};
+      });
+    },
+    serialize() {
+      return this.terms.map(t =>
+        t.is_regex ? JSON.stringify({term: t.term, is_regex: true}) : t.term
+      ).join(',');
+    },
+    add() {
+      this.terms.push({term: '', is_regex: false});
+      this.$nextTick(() => {
+        const inputs = this.$root.querySelectorAll('input[type=text]');
+        if (inputs.length) inputs[inputs.length - 1].focus();
+      });
+    }
+  }));
+
+  Alpine.data('termDisplay', (raw, bg, fg) => ({
+    terms: [],
+    bg,
+    fg,
+    init() {
+      if (!raw || !raw.trim()) { this.terms = []; return; }
+      this.terms = raw.split(',').map(s => s.trim()).filter(Boolean).map(s => {
+        if (s.startsWith('{')) {
+          try { const o = JSON.parse(s); return {term: o.term||'', is_regex: !!o.is_regex}; } catch(e){}
+        }
+        return {term: s, is_regex: false};
+      });
+    }
+  }));
+});
+</script>
+{% endblock %}

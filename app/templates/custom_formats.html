@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% block title %}Custom Formats — Mangarr{% endblock %}
+{% block title_short %}Custom Formats{% endblock %}
+{% block nav_settings %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div class="page-heading mb-0"><i class="bi bi-patch-check-fill"></i>Custom Formats</div>
+  <button class="btn btn-outline-ember btn-sm" data-bs-toggle="modal" data-bs-target="#newModal">
+    <i class="bi bi-plus me-1"></i>New Format
+  </button>
+</div>
+<p class="text-sm mb-4" style="color:var(--text-2)">
+  Custom formats score releases based on regex patterns. Assign scores per format in each quality profile.
+  Positive scores boost priority; negative scores penalize releases.
+</p>
+
+<div class="row g-3">
+{% for f in formats %}
+<div class="col-12">
+  <div class="panel mb-0">
+    <div class="panel-header d-flex align-items-center gap-2">
+      <i class="bi bi-sliders"></i>
+      {{ f.name }}
+      {% if f.id in profile_scores %}
+      <span class="badge-status text-[0.65rem] {% if profile_scores[f.id] >= 0 %}badge-downloaded{% else %}badge-wanted{% endif %}">
+        Score: {% if profile_scores[f.id] >= 0 %}+{% endif %}{{ profile_scores[f.id] }}
+      </span>
+      {% endif %}
+      <div class="ms-auto d-flex gap-2">
+        <button class="btn btn-sm btn-secondary"
+                onclick="previewFormat({{ f.id }})" title="Test format">
+          <i class="bi bi-play-circle"></i>
+        </button>
+        <button class="btn btn-sm btn-outline-ember" data-bs-toggle="modal"
+                data-bs-target="#editModal{{ f.id }}"><i class="bi bi-pencil"></i></button>
+        <form method="POST" action="/custom-formats/{{ f.id }}/delete"
+              data-confirm="Delete custom format &quot;{{ f.name }}&quot;?"
+              data-confirm-heading="Delete format" data-confirm-ok="Delete">
+          <button class="btn btn-sm btn-danger-soft"><i class="bi bi-trash"></i></button>
+        </form>
+      </div>
+    </div>
+    <div class="panel-body">
+      {% set specs = f.specifications | from_json([]) %}
+      {% if specs %}
+      <div class="text-sm">
+        {% for spec in specs %}
+        <div class="d-flex align-items-center gap-2 mb-1">
+          <span class="badge-status badge-indexer text-[0.65rem]">
+            {{ spec.type | replace('_', ' ') | title }}
+          </span>
+          {% if spec.negate %}
+          <span class="badge-status badge-wanted text-[0.6rem]">NEGATE</span>
+          {% endif %}
+          <code class="text-sm" style="color:var(--gold)">{{ spec.value }}</code>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <span class="text-sm" style="color:var(--text-2)">No specifications</span>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div class="modal fade" id="editModal{{ f.id }}" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="POST" action="/custom-formats/{{ f.id }}">
+        <div class="modal-header">
+          <h6 class="modal-title text-ember">Edit: {{ f.name }}</h6>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Name</label>
+            <input type="text" name="name" class="form-control" value="{{ f.name }}" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Specifications <small class="text-[color:var(--text-2)]">(JSON array)</small></label>
+            <textarea name="specifications" class="form-control font-monospace text-sm"
+                      rows="8">{{ f.specifications }}</textarea>
+            <div class="form-text text-xs">
+              Each spec: <code>{"type":"release_title_contains","value":"regex","negate":false}</code><br>
+              Types: <code>release_title_contains</code>, <code>release_title_not_contains</code>,
+              <code>release_group_contains</code>, <code>release_group_not_contains</code>,
+              <code>indexer_is</code>, <code>indexer_contains</code>, <code>language_is</code>,
+              <code>size_minimum</code>, <code>size_maximum</code>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-ember btn-sm">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+{% if not formats %}
+<div class="empty-state">
+  <div class="empty-icon"><i class="bi bi-sliders"></i></div>
+  <p class="fw-semibold">No custom formats yet</p>
+  <p class="text-sm" style="color:var(--text-3)">Custom formats let you score releases based on regex patterns in the title.</p>
+</div>
+{% endif %}
+</div>
+
+<!-- New Modal -->
+<div class="modal fade" id="newModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="POST" action="/custom-formats">
+        <div class="modal-header">
+          <h6 class="modal-title text-ember"><i class="bi bi-plus-circle me-2"></i>New Custom Format</h6>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Name</label>
+            <input type="text" name="name" class="form-control" placeholder="e.g. Official Digital" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Specifications (JSON)</label>
+            <textarea name="specifications" class="form-control font-monospace text-sm" rows="6">[
+  {"type": "release_title_contains", "value": "digital|viz|kodansha", "negate": false}
+]</textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-ember btn-sm">Create</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Preview modal -->
+<div class="modal fade" id="previewModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title text-ember">Test Format</h6>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="form-label">Release Title</label>
+          <input type="text" id="previewTitle" class="form-control"
+                 placeholder="e.g. [LuCaZ] One Piece Vol.1 [Digital]">
+        </div>
+        <div id="previewResult" style="display:none" class="p-2 rounded"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline-ember btn-sm" onclick="runPreview()">Test</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var previewFormatId = null;
+function previewFormat(id) {
+  previewFormatId = id;
+  document.getElementById('previewResult').style.display = 'none';
+  new bootstrap.Modal(document.getElementById('previewModal')).show();
+}
+async function runPreview() {
+  const title = document.getElementById('previewTitle').value;
+  const r = await fetch('/api/custom-formats/preview', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({format_id: previewFormatId, title})
+  });
+  const d = await r.json();
+  const el = document.getElementById('previewResult');
+  el.style.display = 'block';
+  el.style.background = d.matched ? 'var(--jade-bg)' : 'var(--ruby-bg)';
+  el.style.color = d.matched ? 'var(--jade)' : 'var(--ruby)';
+  el.innerHTML = d.matched ? '<i class="bi bi-check-lg"></i> MATCHED' : '<i class="bi bi-x-lg"></i> No match';
+}
+</script>
+{% endblock %}

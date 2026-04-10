@@ -1,0 +1,262 @@
+{#
+  Partial: partials/volume_row.html
+  Context variables required:
+    s            — series row
+    v            — volume row (single volume)
+    vchs         — list of chapter rows for this volume
+    vct          — dict: {total, downloaded, grabbed, wanted}
+    quality_cutoff — effective cutoff string
+    cutoff_rank  — int rank of cutoff
+    pending_dl_ids, review_dl_ids, active_dl_ids — sets of download ID strings
+    dl_stages    — dict hash→stage string
+    swy_vol_jobs — dict volume_num→{progress,total,status,error} for active DDL jobs
+#}
+{% set _hx_target = "#vol-tbody-" ~ v['id'] %}
+
+<tbody id="vol-tbody-{{ v['id'] }}">
+  <tr id="vol-row-{{ v['id'] }}"
+      {% if vchs %}onclick="toggleChapters({{ v['id'] }})" style="cursor:pointer;{% if not v['monitored'] %} opacity:0.45;{% endif %}"
+      {% elif not v['monitored'] %}style="opacity:0.45"{% endif %}>
+    <td onclick="event.stopPropagation()" class="ps-2">
+      <form method="POST" action="/series/{{ s['id'] }}/volumes/{{ v['id'] }}/toggle-monitor"
+            hx-post="/series/{{ s['id'] }}/volumes/{{ v['id'] }}/toggle-monitor"
+            hx-target="{{ _hx_target }}"
+            hx-swap="outerHTML">
+        <button class="btn-icon"
+                style="color:{% if v['monitored'] %}var(--ember){% else %}var(--text-3){% endif %}"
+                aria-label="{% if v['monitored'] %}Unmonitor{% else %}Monitor{% endif %}"
+                title="{% if v['monitored'] %}Unmonitor{% else %}Monitor{% endif %}"
+                hx-disabled-elt="this">
+          <i class="bi bi-eye{% if not v['monitored'] %}-slash{% endif %}"></i>
+        </button>
+      </form>
+    </td>
+    <td>
+      <div class="d-flex align-items-center gap-1">
+        {% if vchs %}
+        <i class="bi bi-chevron-right text-xs" style="color:var(--text-3)" id="exp-icon-{{ v['id'] }}"></i>
+        {% endif %}
+        <span class="fw-semibold text-ember">Vol {{ v['volume_num']|vol_display }}</span>
+      </div>
+      {% if vchs %}
+      {% set ch_total = vct.get('total', 0) %}
+      {% set ch_done  = vct.get('downloaded', 0) %}
+      {% set ch_grab  = vct.get('grabbed', 0) %}
+      {% set ch_want  = vct.get('wanted', 0) %}
+      <div class="mt-1 ps-3">
+        <div class="d-flex overflow-hidden" style="height:3px; border-radius:2px; background:var(--ink-5); width:70px; gap:1px">
+          {% if ch_total > 0 %}
+          <div style="width:{{ (ch_done / ch_total * 100)|int }}%; background:var(--jade)"></div>
+          <div style="width:{{ (ch_grab / ch_total * 100)|int }}%; background:var(--ember)"></div>
+          {% endif %}
+        </div>
+        <div class="text-2xs mt-0" style="color:var(--text-3); white-space:nowrap">
+          {% if ch_done == ch_total and ch_total > 0 %}
+          <span class="text-jade"><i class="bi bi-check-lg"></i> {{ ch_total }} ch</span>
+          {% else %}
+          <span class="text-jade">{{ ch_done }}</span>/{{ ch_total }} ch
+          {% if ch_want %}<span class="text-ruby"> · {{ ch_want }}w</span>{% endif %}
+          {% endif %}
+        </div>
+      </div>
+      {% endif %}
+    </td>
+    <td>
+      <span class="badge-status badge-{{ v['status'] }}">{{ v['status'] }}</span>
+      {% if v['quality'] %}
+      <span class="badge-status badge-indexer ms-1 text-2xs text-uppercase">{{ v['quality'] }}</span>
+      {% endif %}
+      {% if v['edition_type'] %}
+      <span class="badge-status badge-edition-{{ v['edition_type'] }} ms-1 text-2xs text-capitalize">{{ v['edition_type']|replace('_',' ') }}</span>
+      {% endif %}
+      {% if v['language'] and v['language'] != 'en' %}
+      <span class="badge-status badge-grabbed ms-1 text-2xs text-uppercase">{{ v['language'] }}</span>
+      {% endif %}
+    </td>
+    <td class="text-xs" style="white-space:nowrap">
+      {% if v['grabbed_at'] %}
+      <div style="color:var(--text-2)"><i class="bi bi-arrow-down-short"></i> {{ v['grabbed_at'] | format_date }}</div>
+      {% endif %}
+      {% if v['imported_at'] %}
+      <div class="text-jade"><i class="bi bi-check-lg"></i> {{ v['imported_at'] | format_date }}</div>
+      {% elif not v['grabbed_at'] %}
+      <span style="color:var(--text-3)">—</span>
+      {% endif %}
+    </td>
+    <td class="text-xs col-num" style="color:var(--text-2); white-space:nowrap">
+      {{ v['size_bytes']|format_bytes or '—' }}
+    </td>
+    <td>
+      {%- set dl_id = (v['download_id'] or '')|lower -%}
+      {% if v['status'] == 'downloaded' %}
+        {% if v['import_path'] %}
+        <div class="text-2xs text-jade text-truncate" style="max-width:220px"
+             title="{{ v['import_path'] }}"><i class="bi bi-file-earmark-zip me-1"></i>{{ v['import_path'].split('/')[-1] }}</div>
+        {% endif %}
+        {% if v['release_group'] or v['indexer'] or v['client'] %}
+        <div class="pill-badges mt-1">
+          {% if v['indexer'] %}<span class="badge-status badge-indexer">{{ v['indexer'] }}</span>{% endif %}
+          {% if v['protocol'] %}<span class="badge-status badge-{{ v['protocol'] }}">{{ v['protocol']|format_protocol }}</span>{% endif %}
+          {% if v['release_group'] %}<span class="badge-status badge-unknown">{{ v['release_group'] }}</span>{% endif %}
+          {% if v['client'] %}<span class="badge-status badge-unknown">{{ v['client']|format_client }}</span>{% endif %}
+        </div>
+        {% endif %}
+      {% elif v['status'] == 'grabbed' %}
+        {% if dl_id and dl_id in review_dl_ids %}
+        <a href="/import" class="badge-status badge-hiatus" style="text-decoration:none"><i class="bi bi-exclamation-circle me-1"></i>Needs Review</a>
+        {% elif dl_id and dl_id in pending_dl_ids %}
+        <span class="badge-status badge-sky">
+          <span class="spinner-border spinner-border-sm me-1" style="width:0.5rem;height:0.5rem;border-width:2px"></span>Awaiting Import
+        </span>
+        {% elif dl_id and dl_id in active_dl_ids %}
+          {%- set _stage = dl_stages.get(dl_id, 'downloading') -%}
+          {% if _stage == 'stalled' %}<span class="badge-status badge-stalled"><i class="bi bi-exclamation-triangle me-1"></i>Stalled</span>
+          {% elif _stage == 'paused' %}<span class="badge-status badge-unknown"><i class="bi bi-pause-circle me-1"></i>Paused</span>
+          {% elif _stage == 'queued_dl' %}<span class="badge-status badge-not_yet_released"><i class="bi bi-hourglass me-1"></i>Queued</span>
+          {% elif _stage == 'error' %}<span class="badge-status badge-wanted"><i class="bi bi-x-circle me-1"></i>Error</span>
+          {% else %}<span class="badge-status badge-releasing"><i class="bi bi-arrow-down-circle me-1"></i>Downloading</span>
+          {% endif %}
+        {% elif v['client'] == 'suwayomi' %}
+          {%- set _swy = (swy_vol_jobs or {}).get(v['volume_num']) -%}
+          {% if _swy and _swy['status'] == 'error' %}
+          <span class="badge-status badge-wanted" title="{{ _swy['error'] or 'Import failed' }}"><i class="bi bi-x-circle me-1"></i>DDL Error</span>
+          {% elif _swy and _swy['total'] > 0 %}
+          <span class="badge-status badge-releasing" title="{{ _swy['progress'] }}/{{ _swy['total'] }} chapters downloaded"><i class="bi bi-cloud-arrow-down me-1"></i>{{ _swy['progress'] }}/{{ _swy['total'] }} ch</span>
+          {% else %}
+          <span class="badge-status badge-downloading"><i class="bi bi-cloud-arrow-down me-1"></i>DDL in progress</span>
+          {% endif %}
+        {% else %}
+        <span class="badge-status badge-stalled"><i class="bi bi-exclamation-diamond me-1"></i>Missing from client</span>
+        {% endif %}
+      {% else %}
+      <span class="text-xs" style="color:var(--text-3)">—</span>
+      {% endif %}
+    </td>
+    <td onclick="event.stopPropagation()">
+      <div class="d-flex gap-1 align-items-center justify-content-end">
+      {% if v['status'] == 'wanted' %}
+      <form method="POST" action="/series/{{ s['id'] }}/volumes/{{ v['id'] }}/grab"
+            hx-post="/series/{{ s['id'] }}/volumes/{{ v['id'] }}/grab"
+            hx-target="{{ _hx_target }}"
+            hx-swap="outerHTML">
+        <button class="btn-grab btn btn-sm" title="Auto-grab" aria-label="Auto-grab" hx-disabled-elt="this"><i class="bi bi-cloud-download"></i></button>
+      </form>
+      <button class="btn-icon text-ember"
+              onclick="openSearch({{ s['id'] }}, {{ v['id'] }}, 'Vol {{ v['volume_num']|vol_display }}')"
+              title="Interactive search" aria-label="Interactive search">
+        <i class="bi bi-search"></i>
+      </button>
+      <form method="POST" action="/series/{{ s['id'] }}/volumes/{{ v['id'] }}/mark-downloaded"
+            hx-post="/series/{{ s['id'] }}/volumes/{{ v['id'] }}/mark-downloaded"
+            hx-target="{{ _hx_target }}"
+            hx-swap="outerHTML">
+        <button class="btn-icon text-jade" title="Mark downloaded" aria-label="Mark downloaded" hx-disabled-elt="this">
+          <i class="bi bi-check-circle"></i>
+        </button>
+      </form>
+      {% elif v['status'] in ('grabbed', 'downloaded') %}
+      <button class="btn-icon" style="color:var(--text-3)"
+              onclick="openSearch({{ s['id'] }}, {{ v['id'] }}, 'Vol {{ v['volume_num']|vol_display }}')"
+              title="Search / upgrade" aria-label="Search / upgrade">
+        <i class="bi bi-search"></i>
+      </button>
+      {% if v['status'] == 'downloaded' and quality_cutoff and v['volume_num'] %}
+        {% set vol_rank = v['quality']|quality_rank if v['quality'] else 0 %}
+        {% if vol_rank < cutoff_rank %}
+        <form method="POST" action="/series/{{ s['id'] }}/volumes/{{ v['id'] }}/trigger-upgrade" class="d-inline"
+              hx-post="/series/{{ s['id'] }}/volumes/{{ v['id'] }}/trigger-upgrade"
+              hx-target="{{ _hx_target }}"
+              hx-swap="outerHTML">
+          <input type="hidden" name="redirect_to" value="/series/{{ s['id'] }}">
+          <button class="btn-icon text-gold"
+                  title="Upgrade ({{ v['quality']|upper if v['quality'] else '?' }} → {{ quality_cutoff|upper }})"
+                  aria-label="Upgrade quality" hx-disabled-elt="this">
+            <i class="bi bi-arrow-up-circle"></i>
+          </button>
+        </form>
+        {% endif %}
+      {% endif %}
+      <form method="POST" action="/series/{{ s['id'] }}/volumes/{{ v['id'] }}/mark-wanted"
+            hx-post="/series/{{ s['id'] }}/volumes/{{ v['id'] }}/mark-wanted"
+            hx-target="{{ _hx_target }}"
+            hx-swap="outerHTML"
+            hx-confirm="Reset to Wanted?">
+        <button class="btn-icon" style="color:var(--text-3)" title="Reset to wanted" aria-label="Reset to wanted" hx-disabled-elt="this">
+          <i class="bi bi-arrow-counterclockwise"></i>
+        </button>
+      </form>
+      {% if v['status'] == 'grabbed' %}
+      <form method="POST" action="/series/{{ s['id'] }}/volumes/{{ v['id'] }}/mark-downloaded"
+            hx-post="/series/{{ s['id'] }}/volumes/{{ v['id'] }}/mark-downloaded"
+            hx-target="{{ _hx_target }}"
+            hx-swap="outerHTML">
+        <button class="btn-icon text-jade" title="Mark downloaded" aria-label="Mark downloaded" hx-disabled-elt="this">
+          <i class="bi bi-check-circle"></i>
+        </button>
+      </form>
+      {% endif %}
+      {% if v['status'] == 'downloaded' and v['import_path'] %}
+      <form method="POST" action="/series/{{ s['id'] }}/volumes/{{ v['id'] }}/delete-file"
+            hx-post="/series/{{ s['id'] }}/volumes/{{ v['id'] }}/delete-file"
+            hx-target="{{ _hx_target }}"
+            hx-swap="outerHTML"
+            hx-confirm="Delete file and reset to Wanted?">
+        <button class="btn-icon text-ruby" title="Delete file" aria-label="Delete file" hx-disabled-elt="this">
+          <i class="bi bi-trash"></i>
+        </button>
+      </form>
+      {% endif %}
+      {% endif %}
+      </div>
+    </td>
+  </tr>
+
+  {# Chapter pill grid — hidden by default, toggled by toggleChapters() JS #}
+  {% if vchs %}
+  <tr id="ch-rows-{{ v['id'] }}" style="display:none">
+    <td colspan="7" style="padding:8px 14px 10px 42px; background:rgba(8,8,16,0.4)">
+      <div class="d-flex flex-wrap gap-1">
+        {% for ch in vchs %}
+        {% set ch_num = ch['chapter_num']|int if ch['chapter_num'] == ch['chapter_num']|int else ch['chapter_num'] %}
+        {% if ch['status'] == 'downloaded' %}
+        {% set _ch_tip %}Ch {{ ch_num }}{% if ch['title'] %} · {{ ch['title'] }}{% endif %}{% if ch['quality'] %} · {{ ch['quality']|upper }}{% endif %}{% if ch['size_bytes'] %} · {{ ch['size_bytes']|format_bytes }}{% endif %}{% if ch['import_path'] %} · {{ ch['import_path'].split('/')[-1] }}{% endif %}{% endset %}
+        <div class="ch-pill dl {% if not ch['monitored'] %}opacity-50{% endif %}"
+             title="{{ _ch_tip }}">{{ ch_num }}</div>
+        {% elif ch['status'] == 'grabbed' %}
+        {% set _ch_tip %}Ch {{ ch_num }}{% if ch['title'] %} · {{ ch['title'] }}{% endif %} · grabbed{% if ch['grabbed_at'] %} {{ ch['grabbed_at'] | format_date }}{% endif %}{% if ch['indexer'] %} via {{ ch['indexer'] }}{% endif %}{% endset %}
+        <button class="ch-pill gr {% if not ch['monitored'] %}opacity-50{% endif %}"
+                title="{{ _ch_tip }} — click to mark downloaded"
+                hx-post="/series/{{ s['id'] }}/chapters/{{ ch['id'] }}/mark-downloaded"
+                hx-target="{{ _hx_target }}"
+                hx-swap="outerHTML"
+                hx-disabled-elt="this">{{ ch_num }}</button>
+        {% else %}
+        <div class="ch-pill wt ch-pill-wanted {% if not ch['monitored'] %}opacity-50{% endif %}"
+             title="Ch {{ ch_num }}{% if ch['title'] %} · {{ ch['title'] }}{% endif %} · wanted">
+          {{ ch_num }}
+          <span class="ch-pill-actions">
+            <button class="btn-icon" style="width:18px;height:18px;color:var(--ember);font-size:0.7rem" title="Grab" aria-label="Grab chapter {{ ch_num }}"
+                    hx-post="/series/{{ s['id'] }}/chapters/{{ ch['id'] }}/grab"
+                    hx-target="{{ _hx_target }}"
+                    hx-swap="outerHTML"
+                    hx-disabled-elt="this"><i class="bi bi-cloud-download"></i></button>
+            <button class="btn-icon" style="width:18px;height:18px;color:var(--jade);font-size:0.7rem" title="Mark downloaded" aria-label="Mark chapter {{ ch_num }} downloaded"
+                    hx-post="/series/{{ s['id'] }}/chapters/{{ ch['id'] }}/mark-downloaded"
+                    hx-target="{{ _hx_target }}"
+                    hx-swap="outerHTML"
+                    hx-disabled-elt="this"><i class="bi bi-check-circle"></i></button>
+          </span>
+        </div>
+        {% endif %}
+        {% endfor %}
+      </div>
+      <div class="mt-1 d-flex gap-3 text-2xs" style="color:var(--text-3)">
+        <span><span class="d-inline-block rounded" style="width:10px;height:10px;background:rgba(34,200,122,0.2);border:1px solid rgba(34,200,122,0.4);vertical-align:middle;margin-right:3px"></span>downloaded</span>
+        <span><span class="d-inline-block rounded" style="width:10px;height:10px;background:rgba(240,132,40,0.2);border:1px solid rgba(240,132,40,0.4);vertical-align:middle;margin-right:3px"></span>grabbed</span>
+        <span><span class="d-inline-block rounded" style="width:10px;height:10px;background:rgba(240,80,80,0.15);border:1px solid rgba(240,80,80,0.35);vertical-align:middle;margin-right:3px"></span>wanted</span>
+      </div>
+    </td>
+  </tr>
+  {% endif %}
+
+</tbody>

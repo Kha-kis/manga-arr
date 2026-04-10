@@ -1,0 +1,36 @@
+services:
+  mangarr:
+    build: .
+    container_name: mangarr
+    env_file:
+      - /opt/manga-arr/.env
+    environment:
+      - TZ=America/Chicago
+      - QBIT_HOST=http://10.200.200.2:10048
+      - QBIT_USER=khak1s
+      - SAB_HOST=http://sabnzbd:65080/sabnzbd
+      - PROWLARR_URL=http://prowlarr:9696/prowlarr
+      - MANGA_SAVE_PATH=/data/media/manga
+      - MANGA_CATEGORY=manga
+      - RSS_INTERVAL=900
+    volumes:
+      - /home/khak1s/.config/mangarr:/config
+      - /opt/manga-arr/app:/app
+      - /data:/data
+    ports:
+      - "127.0.0.1:6789:8000"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges=true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - media-net
+
+networks:
+  media-net:
+    external: true

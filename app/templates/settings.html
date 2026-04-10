@@ -1,0 +1,564 @@
+{% extends "base.html" %}
+{% block title %}Settings — Mangarr{% endblock %}
+{% block title_short %}Settings{% endblock %}
+{% block nav_settings %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div class="page-heading mb-0"><i class="bi bi-gear-fill"></i>Settings</div>
+  {% if saved %}
+  <div class="connection-status connection-ok"><i class="bi bi-check-circle me-1"></i>Saved</div>
+  {% endif %}
+</div>
+
+<div class="row g-0" style="min-height:70vh">
+
+  <!-- Sidebar -->
+  <div class="col-12 col-md-3 col-lg-2 pe-md-3 mb-3 mb-md-0">
+    <div class="panel h-100" style="min-height:auto; margin-bottom:0">
+      <div class="panel-body p-2">
+
+        <div class="mb-1 px-2" style="font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Mangarr</div>
+        <a href="#media" class="settings-sidebar-item active" data-tab="media">
+          <i class="bi bi-folder2-open me-2"></i>Media Management
+        </a>
+        <a href="#general" class="settings-sidebar-item" data-tab="general">
+          <i class="bi bi-sliders me-2"></i>General
+        </a>
+        <a href="/settings/general" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-gear me-2"></i>General Settings
+        </a>
+        <a href="#metadata" class="settings-sidebar-item" data-tab="metadata">
+          <i class="bi bi-collection-play me-2"></i>Metadata
+        </a>
+
+        <div class="settings-divider"></div>
+        <div class="mb-1 px-2 mt-2" style="font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Profiles</div>
+        <a href="/quality-profiles" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-trophy me-2"></i>Quality Profiles
+        </a>
+        <a href="/release-profiles" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-funnel me-2"></i>Release Profiles
+        </a>
+        <a href="/delay-profiles" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-hourglass-split me-2"></i>Delay Profiles
+        </a>
+        <a href="/custom-formats" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-patch-check me-2"></i>Custom Formats
+        </a>
+        <a href="/quality-definitions" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-rulers me-2"></i>Quality Definitions
+        </a>
+        <a href="/language-profiles" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-translate me-2"></i>Language Profiles
+        </a>
+
+        <div class="settings-divider"></div>
+        <div class="mb-1 px-2 mt-2" style="font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Sources</div>
+        <a href="/indexers" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-search me-2"></i>Indexers
+        </a>
+        <a href="/download-clients" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-hdd-stack me-2"></i>Download Clients
+        </a>
+        <a href="/import-lists" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-cloud-download me-2"></i>Import Lists
+        </a>
+
+        <div class="settings-divider"></div>
+        <div class="mb-1 px-2 mt-2" style="font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Notifications</div>
+        <a href="/notifications" class="settings-sidebar-item settings-sidebar-link">
+          <i class="bi bi-bell me-2"></i>Connect
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Content panels -->
+  <div class="col-12 col-md-9 col-lg-10">
+
+    <!-- Media Management -->
+    <div id="panel-media">
+      <form method="POST" action="/settings" id="settings-form"
+            hx-post="/settings" hx-swap="none" data-track-changes>
+
+      <!-- Root Folders -->
+      <div class="panel">
+        <div class="panel-header"><i class="bi bi-folder2-open"></i>Root Folders</div>
+        <div class="panel-body">
+          {% if root_folders %}
+          <div class="table-wrap mb-3">
+          <table class="table table-sm mb-0">
+            <thead><tr>
+              <th>Path</th><th>Label</th><th style="width:80px">Default</th><th style="width:60px"></th>
+            </tr></thead>
+            <tbody>
+              {% for rf in root_folders %}
+              <tr>
+                <td style="font-size:0.82rem;font-family:var(--font-mono)">{{ rf['path'] }}</td>
+                <td style="font-size:0.82rem">{{ rf['label'] or '—' }}</td>
+                <td>
+                  {% if rf['is_default'] %}
+                  <span class="badge-status badge-downloaded"><i class="bi bi-star-fill me-1"></i>Default</span>
+                  {% else %}
+                  <form method="POST" action="/settings/root-folders/{{ rf['id'] }}/default" class="d-inline">
+                    <button class="btn-icon" title="Set as default" aria-label="Set as default">
+                      <i class="bi bi-star"></i>
+                    </button>
+                  </form>
+                  {% endif %}
+                </td>
+                <td>
+                  <form method="POST" action="/settings/root-folders/{{ rf['id'] }}/delete"
+                        data-confirm="Remove root folder &quot;{{ rf['path'] }}&quot;? Series assigned to this folder will become orphaned."
+                        data-confirm-heading="Remove root folder" data-confirm-ok="Remove">
+                    <button class="btn-icon text-ruby" aria-label="Remove root folder">
+                      <i class="bi bi-trash"></i>
+                    </button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          </div>
+          {% else %}
+          <p style="font-size:.82rem;color:var(--text-2)" class="mb-3"><i class="bi bi-info-circle me-1"></i>No root folders — downloads fall back to the path in File Management below.</p>
+          {% endif %}
+
+          <form method="POST" action="/settings/root-folders/add" class="d-flex gap-2 flex-wrap align-items-end">
+            <div>
+              <label class="form-label">Path</label>
+              <input type="text" name="path" class="form-control w-56" placeholder="/data/manga" required>
+            </div>
+            <div>
+              <label class="form-label">Label <span style="color:var(--text-3)">(optional)</span></label>
+              <input type="text" name="label" class="form-control w-32" placeholder="Manga">
+            </div>
+            <div class="d-flex align-items-end pb-1">
+              <div class="form-check mb-0">
+                <input class="form-check-input" type="checkbox" name="is_default" id="rf_default" value="1">
+                <label class="form-check-label small" for="rf_default">Default</label>
+              </div>
+            </div>
+            <button type="submit" class="btn btn-outline-ember btn-sm"><i class="bi bi-plus-lg me-1"></i>Add</button>
+          </form>
+        </div>
+      </div>
+
+      <!-- File Management -->
+      <div class="panel">
+        <div class="panel-header"><i class="bi bi-file-earmark-text"></i>File Management</div>
+        <div class="panel-body">
+          <div class="row g-3 mb-3">
+            <div class="col-12 col-sm-6">
+              <label class="form-label">Default Library Path</label>
+              <input type="text" name="save_path" class="form-control"
+                     value="{{ cfg.save_path or '' }}" placeholder="/manga">
+              <div class="form-text">Fallback when no Root Folder is assigned.</div>
+            </div>
+            <div class="col-12 col-sm-3">
+              <label class="form-label">Category Label</label>
+              <input type="text" name="category" class="form-control" value="{{ cfg.category or 'manga' }}" placeholder="manga">
+              <div class="form-text">qBit / SABnzbd category</div>
+            </div>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-12 col-sm-4">
+              <label class="form-label">Import Mode</label>
+              <select name="import_mode" class="form-select">
+                <option value="hardlink" {% if (cfg.import_mode or 'hardlink') == 'hardlink' %}selected{% endif %}>Hardlink (recommended)</option>
+                <option value="move"     {% if cfg.import_mode == 'move' %}selected{% endif %}>Move</option>
+                <option value="copy"     {% if cfg.import_mode == 'copy' %}selected{% endif %}>Copy</option>
+              </select>
+            </div>
+            <div class="col-12 col-sm-4">
+              <label class="form-label">Remove from Client After Import</label>
+              <select name="remove_completed" class="form-select">
+                <option value="false" {% if (cfg.remove_completed or 'false') == 'false' %}selected{% endif %}>No — keep in download client</option>
+                <option value="true"  {% if cfg.remove_completed == 'true' %}selected{% endif %}>Yes — remove after import</option>
+              </select>
+            </div>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-12 col-sm-6">
+              <label class="form-label">Propers &amp; Repacks</label>
+              <select name="propers_and_repacks" class="form-select">
+                <option value="prefer_and_upgrade" {% if (cfg.propers_and_repacks or 'prefer_and_upgrade') == 'prefer_and_upgrade' %}selected{% endif %}>Prefer and Upgrade — grab repacks from same group</option>
+                <option value="do_not_upgrade"     {% if cfg.propers_and_repacks == 'do_not_upgrade' %}selected{% endif %}>Do Not Upgrade — never auto-grab repacks</option>
+                <option value="do_not_prefer"      {% if cfg.propers_and_repacks == 'do_not_prefer' %}selected{% endif %}>Do Not Prefer — treat repacks as any release</option>
+              </select>
+              <div class="form-text">How to handle REPACK/PROPER/v2/v3 releases.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- File Naming -->
+      <div class="panel">
+        <div class="panel-header"><i class="bi bi-input-cursor-text"></i>File Naming</div>
+        <div class="panel-body">
+          <p style="font-size:.82rem;color:var(--text-2)" class="mb-2">
+            Tokens: <code>{Series Title}</code>&nbsp;<code>{Series.Title}</code>&nbsp;<code>{Volume}</code>&nbsp;<code>{Volume:02d}</code>&nbsp;<code>{Chapter}</code>&nbsp;<code>{Chapter:04d}</code>&nbsp;<code>{Year}</code>
+          </p>
+          <div class="d-flex gap-2 mb-3 flex-wrap">
+            <span style="font-size:.82rem;color:var(--text-2);line-height:2">Presets:</span>
+            <button type="button" class="btn btn-secondary btn-sm"
+              onclick="applyPreset('{Series Title} v{Volume:02d}','{Series Title} c{Chapter:04d}','{Series Title}')">
+              Default
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm"
+              onclick="applyPreset('{Series Title} v{Volume:02d}','{Series Title} c{Chapter:04d}','{Series Title}')">
+              Kavita
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm"
+              onclick="applyPreset('{Series Title} Vol.{Volume:02d}','{Series Title} Ch.{Chapter:04d}','{Series Title}')">
+              Komga
+            </button>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-12 col-md-4">
+              <label class="form-label">Volume File Format</label>
+              <input type="text" name="file_format" class="form-control" id="file_format"
+                     value="{{ cfg.file_format or '' }}" placeholder="{Series Title} v{Volume:02d}">
+              <div class="form-text">Preview: <span id="file-preview" class="text-ember" style="font-family:var(--font-mono)">—</span></div>
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label">Chapter File Format</label>
+              <input type="text" name="chapter_format" class="form-control" id="chapter_format"
+                     value="{{ cfg.chapter_format or '' }}" placeholder="{Series Title} c{Chapter:04d}">
+              <div class="form-text">Leave blank to use volume format</div>
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label">Series Folder Format</label>
+              <input type="text" name="folder_format" class="form-control" id="folder_format"
+                     value="{{ cfg.folder_format or '' }}" placeholder="{Series Title}">
+            </div>
+          </div>
+          <button type="button" class="btn btn-outline-ember btn-sm" onclick="previewNaming()">
+            <i class="bi bi-eye me-1"></i>Preview
+          </button>
+        </div>
+      </div>
+
+      <!-- DDL / Suwayomi -->
+      <div class="panel">
+        <div class="panel-header"><i class="bi bi-cloud-arrow-down"></i>Direct Downloads (DDL)</div>
+        <div class="panel-body">
+          <div class="alert py-2 mb-3" style="font-size:.82rem;background:var(--ink-4);border:1px solid var(--edge-2);color:var(--text-2);border-radius:8px">
+            <i class="bi bi-info-circle me-1"></i>
+            DDL downloads chapters directly from MangaDex or via a configured
+            <a href="/download-clients" class="text-ember">Suwayomi client</a>.
+            Suwayomi must be added as a Download Client with type <strong>suwayomi</strong>.
+          </div>
+          <div class="row g-3">
+            <div class="col-12 col-sm-4">
+              <label class="form-label">DDL Grab Mode</label>
+              <select name="ddl_grab_mode" class="form-select">
+                {% set _gm = cfg.ddl_grab_mode or 'fallback' %}
+                <option value="fallback" {% if _gm == 'fallback' %}selected{% endif %}>Smart — indexers first for volumes, DDL first for chapters</option>
+                <option value="prefer" {% if _gm == 'prefer' %}selected{% endif %}>Prefer DDL — try Suwayomi first, fall back to indexers</option>
+                <option value="only"   {% if _gm == 'only'   %}selected{% endif %}>DDL Only — skip indexers for series with MangaDex ID</option>
+                <option value="off"    {% if _gm == 'off'    %}selected{% endif %}>Off — never use Suwayomi DDL</option>
+              </select>
+              <div class="form-text">Smart mode prefers retail releases (indexers) for volumes and DDL for chapters. DDL fills gaps when no indexer result exists.</div>
+            </div>
+            <div class="col-12 col-sm-4">
+              <label class="form-label">Preferred Language</label>
+              <select name="ddl_language" class="form-select">
+                {% set _dl = cfg.ddl_language or 'en' %}
+                <option value="en"       {% if _dl == 'en'       %}selected{% endif %}>English</option>
+                <option value="ja"       {% if _dl == 'ja'       %}selected{% endif %}>Japanese (Raw)</option>
+                <option value="zh-hant"  {% if _dl == 'zh-hant'  %}selected{% endif %}>Chinese Traditional</option>
+                <option value="zh-hans"  {% if _dl == 'zh-hans'  %}selected{% endif %}>Chinese Simplified</option>
+                <option value="ko"       {% if _dl == 'ko'       %}selected{% endif %}>Korean</option>
+                <option value="fr"       {% if _dl == 'fr'       %}selected{% endif %}>French</option>
+                <option value="de"       {% if _dl == 'de'       %}selected{% endif %}>German</option>
+                <option value="es"       {% if _dl == 'es'       %}selected{% endif %}>Spanish</option>
+                <option value="pt-br"    {% if _dl == 'pt-br'    %}selected{% endif %}>Portuguese (Brazil)</option>
+                <option value="it"       {% if _dl == 'it'       %}selected{% endif %}>Italian</option>
+                <option value="pl"       {% if _dl == 'pl'       %}selected{% endif %}>Polish</option>
+                <option value="ru"       {% if _dl == 'ru'       %}selected{% endif %}>Russian</option>
+              </select>
+              <div class="form-text">Used for MangaDex chapter sync. Can be overridden per series.</div>
+            </div>
+            <div class="col-12 col-sm-4">
+              <label class="form-label">Monitor Check Interval <span style="color:var(--text-3)">(seconds)</span></label>
+              <input type="number" name="suwayomi_check_interval" class="form-control"
+                     value="{{ cfg.suwayomi_check_interval or '21600' }}" min="3600" max="604800" step="3600">
+              <div class="form-text">How often to check MangaDex for new chapters (default 6h). Min 1h.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="d-flex gap-3 mt-2">
+        <button type="submit" class="btn btn-ember px-4" hx-disabled-elt="this"><i class="bi bi-floppy me-1"></i>Save</button>
+      </div>
+      </form>
+    </div>
+
+    <!-- General -->
+    <div id="panel-general" style="display:none">
+      <form method="POST" action="/settings" hx-post="/settings" hx-swap="none" data-track-changes>
+
+      <!-- Scheduling -->
+      <div class="panel">
+        <div class="panel-header"><i class="bi bi-clock"></i>Scheduling</div>
+        <div class="panel-body">
+          <div class="row g-3">
+            <div class="col-12 col-sm-4">
+              <label class="form-label">RSS Check Interval <span style="color:var(--text-3)">(seconds)</span></label>
+              <input type="number" name="rss_interval" class="form-control"
+                     value="{{ cfg.rss_interval or '900' }}" min="60" max="86400" step="60">
+              <div class="form-text">How often to poll indexer RSS feeds. Also in <a href="/indexers" class="text-ember">Indexers → Options</a>.</div>
+            </div>
+            <div class="col-12 col-sm-4">
+              <label class="form-label">Global Grab Delay <span style="color:var(--text-3)">(minutes)</span></label>
+              <input type="number" name="grab_delay_minutes" class="form-control"
+                     value="{{ cfg.grab_delay_minutes or '0' }}" min="0" max="10080">
+              <div class="form-text">Fallback when no <a href="/delay-profiles" class="text-ember">Delay Profile</a> matches.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quality fallback -->
+      <div class="panel">
+        <div class="panel-header"><i class="bi bi-trophy"></i>Quality Fallback</div>
+        <div class="panel-body">
+          <div class="row g-3">
+            <div class="col-12 col-sm-5">
+              <label class="form-label">Default Quality Cutoff</label>
+              <select name="quality_cutoff" class="form-select">
+                <option value="">No cutoff</option>
+                <option value="pdf"  {% if cfg.quality_cutoff == 'pdf'  %}selected{% endif %}>PDF</option>
+                <option value="epub" {% if cfg.quality_cutoff == 'epub' %}selected{% endif %}>EPUB</option>
+                <option value="cbr"  {% if cfg.quality_cutoff == 'cbr'  %}selected{% endif %}>CBR</option>
+                <option value="cbz"  {% if cfg.quality_cutoff == 'cbz'  %}selected{% endif %}>CBZ (best)</option>
+              </select>
+              <div class="form-text">Global fallback. Prefer <a href="/quality-profiles" class="text-ember">Quality Profiles</a> for per-series control.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Global Release Filters -->
+      <div class="panel">
+        <div class="panel-header"><i class="bi bi-funnel"></i>Global Release Filters</div>
+        <div class="panel-body">
+          <div class="alert py-2 mb-3" style="font-size:.82rem;background:var(--ink-4);border:1px solid var(--edge-2);color:var(--text-2);border-radius:8px">
+            <i class="bi bi-info-circle me-1"></i>
+            These are global fallbacks. For per-series filtering, use <a href="/release-profiles" class="text-ember">Release Profiles</a>.
+          </div>
+          <div class="row g-3">
+            <div class="col-12 col-md-4">
+              <label class="form-label">Ignored Words</label>
+              <input type="text" name="ignored_words" class="form-control"
+                     value="{{ cfg.ignored_words or '' }}" placeholder="raw,korean,manhwa">
+              <div class="form-text">Comma-separated. Releases containing any are skipped.</div>
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label">Preferred Words</label>
+              <input type="text" name="preferred_words" class="form-control"
+                     value="{{ cfg.preferred_words or '' }}" placeholder="[yen press],[viz media]">
+              <div class="form-text">Comma-separated. Score boost.</div>
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label">Required Words</label>
+              <input type="text" name="required_words" class="form-control"
+                     value="{{ cfg.required_words or '' }}" placeholder="english">
+              <div class="form-text">Leave blank for all.</div>
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label">Preferred Groups</label>
+              <input type="text" name="preferred_groups" class="form-control"
+                     value="{{ cfg.preferred_groups or '' }}" placeholder="[LuCaZ],[danke]">
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label">Blocked Groups</label>
+              <input type="text" name="blocked_groups" class="form-control"
+                     value="{{ cfg.blocked_groups or '' }}" placeholder="[BadGroup]">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="d-flex gap-3 mt-2">
+        <button type="submit" class="btn btn-ember px-4" hx-disabled-elt="this"><i class="bi bi-floppy me-1"></i>Save</button>
+      </div>
+      </form>
+    </div>
+
+    <!-- Metadata -->
+    <div id="panel-metadata" style="display:none">
+      <form method="POST" action="/settings" hx-post="/settings" hx-swap="none" data-track-changes>
+
+      <!-- Metadata Sources -->
+      <div class="panel">
+        <div class="panel-header"><i class="bi bi-database"></i>Metadata Sources</div>
+        <div class="panel-body">
+          <div class="row g-3">
+            <div class="col-12 col-sm-7">
+              <label class="form-label">
+                Google Books API Key
+                <span class="ms-1" style="background:var(--sky-bg);color:var(--sky);border-radius:4px;font-size:0.65rem;padding:1px 6px">optional</span>
+              </label>
+              <input type="text" name="google_books_api_key" class="form-control"
+                     value="{{ cfg.google_books_api_key or '' }}"
+                     placeholder="AIza… — leave blank for unauthenticated (1,000 req/day)">
+              <div class="form-text">
+                Used by <strong>Refresh Edition Metadata</strong> to look up volume counts for omnibus/deluxe editions.
+                Without a key, limited to 1,000 requests/day shared across the same IP.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Komga -->
+      <div class="panel" id="komga-panel">
+        <div class="panel-header"><i class="bi bi-collection-play"></i>Komga Integration</div>
+        <div class="panel-body">
+          <div class="row g-3 mb-3">
+            <div class="col-12 col-sm-5">
+              <label class="form-label">URL</label>
+              <input type="text" name="komga_url" id="komga_url" class="form-control"
+                     value="{{ cfg.komga_url or '' }}" placeholder="http://komga:25600">
+            </div>
+            <div class="col-6 col-sm-3">
+              <label class="form-label">Username</label>
+              <input type="text" name="komga_user" id="komga_user" class="form-control"
+                     value="{{ cfg.komga_user or '' }}" placeholder="user@example.com">
+            </div>
+            <div class="col-6 col-sm-3">
+              <label class="form-label">Password</label>
+              <input type="password" name="komga_pass" id="komga_pass" class="form-control" placeholder="leave blank to keep">
+            </div>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-12 col-sm-5">
+              <label class="form-label">Library ID</label>
+              <input type="text" name="komga_library_id" id="komga_library_id" class="form-control"
+                     value="{{ cfg.komga_library_id or '' }}" placeholder="leave blank to skip scan">
+              <div class="form-text">Find in Komga → Admin → Libraries → edit URL</div>
+            </div>
+            <div class="col-12 col-sm-5 d-flex align-items-end pb-1">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="komga_scan_enabled"
+                       id="komga_scan_enabled" value="1"
+                       {% if cfg.komga_scan_enabled == 'true' %}checked{% endif %}>
+                <label class="form-check-label" for="komga_scan_enabled" style="font-size:.85rem">Trigger scan on download complete</label>
+              </div>
+            </div>
+          </div>
+          <div class="d-flex align-items-center gap-2">
+            <button type="button" class="btn btn-outline-ember btn-sm" onclick="testKomga()">
+              <i class="bi bi-plug me-1"></i>Test Connection
+            </button>
+            <span id="komga-result" class="connection-status" style="display:none"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="d-flex gap-3 mt-2">
+        <button type="submit" class="btn btn-ember px-4" hx-disabled-elt="this"><i class="bi bi-floppy me-1"></i>Save</button>
+      </div>
+      </form>
+    </div>
+
+  </div><!-- /col content -->
+</div><!-- /row -->
+
+{% endblock %}
+
+{% block scripts %}
+<style>
+.settings-sidebar-item {
+  display: flex;
+  align-items: center;
+  padding: .45rem .75rem;
+  border-radius: .4rem;
+  color: var(--text-2);
+  text-decoration: none;
+  font-size: .875rem;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+  margin-bottom: 2px;
+}
+.settings-sidebar-item:hover { background: var(--ink-3); color: var(--text); }
+.settings-sidebar-item.active { background: var(--ember-lo); color: var(--ember); }
+.settings-sidebar-link.active { background: var(--ink-3); color: var(--text); }
+</style>
+<script>
+// ── Sidebar tab switching ─────────────────────────────────────────────────────
+const tabItems = document.querySelectorAll('[data-tab]');
+const panels   = {media: document.getElementById('panel-media'), general: document.getElementById('panel-general'), metadata: document.getElementById('panel-metadata')};
+
+function showTab(name) {
+  Object.entries(panels).forEach(([k, el]) => el.style.display = k === name ? '' : 'none');
+  tabItems.forEach(el => el.classList.toggle('active', el.dataset.tab === name));
+  history.replaceState(null, '', '#' + name);
+}
+
+tabItems.forEach(el => el.addEventListener('click', e => {
+  e.preventDefault();
+  showTab(el.dataset.tab);
+}));
+
+// Restore from hash
+const hash = location.hash.replace('#', '');
+if (panels[hash]) showTab(hash);
+
+// ── File naming preview ───────────────────────────────────────────────────────
+async function previewNaming() {
+  const fmt = document.getElementById('file_format').value.trim();
+  const el  = document.getElementById('file-preview');
+  if (!fmt) { el.textContent = '—'; return; }
+  try {
+    const r = await fetch(`/api/naming-preview?fmt=${encodeURIComponent(fmt)}`);
+    const d = await r.json();
+    el.textContent = d.preview || '—';
+  } catch(e) { el.textContent = 'Error'; }
+}
+
+function applyPreset(volFmt, chapFmt, folderFmt) {
+  const vEl = document.getElementById('file_format');
+  const cEl = document.getElementById('chapter_format');
+  const fEl = document.getElementById('folder_format');
+  if (vEl) vEl.value = volFmt;
+  if (cEl) cEl.value = chapFmt;
+  if (fEl) fEl.value = folderFmt;
+  previewNaming();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const fmtEl = document.getElementById('file_format');
+  if (fmtEl) {
+    if (fmtEl.value) previewNaming();
+    fmtEl.addEventListener('input', previewNaming);
+  }
+});
+
+// ── Komga test ────────────────────────────────────────────────────────────────
+async function testKomga() {
+  const res = document.getElementById('komga-result');
+  res.style.display = 'inline-block';
+  res.className = 'connection-status connection-wait';
+  res.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Testing…';
+  const fd = new FormData();
+  fd.append('url',  document.getElementById('komga_url').value);
+  fd.append('user', document.getElementById('komga_user').value);
+  fd.append('pw',   document.getElementById('komga_pass').value);
+  try {
+    const r = await fetch('/api/test/komga', {method: 'POST', body: fd});
+    const d = await r.json();
+    res.className = `connection-status ${d.ok ? 'connection-ok' : 'connection-fail'}`;
+    res.innerHTML = `<i class="bi bi-${d.ok ? 'check-circle' : 'x-circle'} me-1"></i>${d.message}`;
+  } catch(e) {
+    res.className = 'connection-status connection-fail';
+    res.innerHTML = '<i class="bi bi-x-circle me-1"></i>Request failed';
+  }
+}
+</script>
+{% endblock %}

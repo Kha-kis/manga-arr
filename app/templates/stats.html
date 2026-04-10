@@ -1,0 +1,245 @@
+{% extends "base.html" %}
+{% block title %}Statistics — Mangarr{% endblock %}
+{% block title_short %}Statistics{% endblock %}
+
+{% block head_styles %}
+.stats-mini-lbl {
+  font-size: 0.72rem;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+.stats-chart-label {
+  font-size: 0.72rem;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div class="page-heading mb-0"><i class="bi bi-bar-chart-fill"></i>Statistics</div>
+  <a href="/" class="btn btn-secondary btn-sm"><i class="bi bi-arrow-left me-1"></i>Library</a>
+</div>
+
+<!-- Overview stats bar -->
+<div class="stats-bar mb-4">
+  <div class="stats-cluster">
+    <div class="stat-item">
+      <div class="val">{{ overview.total_series or 0 }}</div>
+      <div class="lbl">Total Series</div>
+    </div>
+    <div class="stat-divider"></div>
+    <div class="stat-item">
+      <div class="val text-ember">{{ overview.monitored or 0 }}</div>
+      <div class="lbl">Monitored</div>
+    </div>
+    <div class="stat-divider"></div>
+    <div class="stat-item">
+      <div class="val text-ember">{{ overview.releasing or 0 }}</div>
+      <div class="lbl">Releasing</div>
+    </div>
+    <div class="stat-divider"></div>
+    <div class="stat-item">
+      <div class="val text-jade">{{ overview.finished or 0 }}</div>
+      <div class="lbl">Finished</div>
+    </div>
+  </div>
+</div>
+
+<!-- Volumes + History row -->
+<div class="row g-3 mb-4">
+
+  <!-- Volumes breakdown -->
+  <div class="col-12 col-md-6">
+    <div class="panel h-100 mb-0">
+      <div class="panel-header"><i class="bi bi-journals"></i>Volumes</div>
+      <div class="panel-body">
+        <div class="row g-2 text-center mb-3">
+          <div class="col-3">
+            <div class="font-mono tabular-num fw-bold text-ember" style="font-size:1.4rem">{{ volumes_stats.total or 0 }}</div>
+            <div class="stats-mini-lbl">Tracked</div>
+          </div>
+          <div class="col-3">
+            <div class="font-mono tabular-num fw-bold text-jade" style="font-size:1.4rem">{{ volumes_stats.downloaded or 0 }}</div>
+            <div class="stats-mini-lbl">Have</div>
+          </div>
+          <div class="col-3">
+            <div class="font-mono tabular-num fw-bold text-gold" style="font-size:1.4rem">{{ volumes_stats.grabbed or 0 }}</div>
+            <div class="stats-mini-lbl">Grabbed</div>
+          </div>
+          <div class="col-3">
+            <div class="font-mono tabular-num fw-bold text-ruby" style="font-size:1.4rem">{{ volumes_stats.wanted or 0 }}</div>
+            <div class="stats-mini-lbl">Wanted</div>
+          </div>
+        </div>
+        {% if volumes_stats.total and volumes_stats.total > 0 %}
+        {% set pct = ((volumes_stats.downloaded or 0) / volumes_stats.total * 100)|int %}
+        <div style="height:8px;background:var(--ink-5);border-radius:4px;overflow:hidden">
+          <div style="width:{{ pct }}%;height:100%;border-radius:4px;background:{% if pct == 100 %}var(--jade){% else %}var(--ember){% endif %};transition:width .3s"></div>
+        </div>
+        <div class="text-center mt-1" style="font-size:0.75rem; color:var(--text-2)">
+          {{ pct }}% complete
+        </div>
+        {% endif %}
+        {% if volumes_stats.total_bytes %}
+        <div class="text-center mt-2" style="font-size:0.8rem; color:var(--text-2)">
+          <i class="bi bi-hdd me-1"></i>{{ volumes_stats.total_bytes|format_bytes }} on disk
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- History breakdown -->
+  <div class="col-12 col-md-6">
+    <div class="panel h-100 mb-0">
+      <div class="panel-header"><i class="bi bi-clock-history"></i>History Events</div>
+      <div class="panel-body">
+        <div class="d-flex flex-column gap-2">
+          {% set event_styles = {
+            'grabbed':       ('badge-grabbed',    'bi-arrow-down-circle'),
+            'imported':      ('badge-downloaded', 'bi-check-circle'),
+            'grab_failed':   ('badge-wanted',     'bi-x-circle'),
+            'import_failed': ('badge-wanted',     'bi-exclamation-circle'),
+            'deleted':       ('badge-unknown',    'bi-trash'),
+            'file_deleted':  ('badge-unknown',    'bi-trash'),
+          } %}
+          {% for etype, (badge, icon) in event_styles.items() %}
+          {% set cnt = hist_map.get(etype, 0) %}
+          <div class="d-flex align-items-center gap-2">
+            <span class="badge-status {{ badge }}" style="width:95px; text-align:center">
+              <i class="bi {{ icon }} me-1"></i>{{ etype|replace('_', ' ')|title }}
+            </span>
+            <div style="flex:1; height:6px; background:var(--ink-5); border-radius:3px; overflow:hidden">
+              {% if hist_map and hist_map.values()|list|sum > 0 %}
+              {% set max_val = hist_map.values()|list|max %}
+              {% set bar_pct = (cnt / max_val * 100)|int if max_val > 0 else 0 %}
+              <div style="width:{{ bar_pct }}%; height:100%; background:var(--ember); border-radius:3px"></div>
+              {% endif %}
+            </div>
+            <span style="font-size:0.8rem; color:var(--text-2); min-width:30px; text-align:right">{{ cnt }}</span>
+          </div>
+          {% endfor %}
+        </div>
+        <div class="mt-3">
+          <a href="/history" class="btn btn-outline-ember btn-sm"><i class="bi bi-clock-history me-1"></i>View Full History</a>
+          <span class="ms-3" style="font-size:0.75rem;color:var(--text-2)">
+            <i class="bi bi-hourglass me-1"></i>{{ pending_count }} pending
+            &nbsp;·&nbsp;
+            <i class="bi bi-x-octagon me-1"></i>{{ bl_count }} blocklisted
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Daily grabs chart -->
+{% if daily_grabs %}
+{% set _total_grabs = daily_grabs|map(attribute='cnt')|sum %}
+{% set _peak_day = (daily_grabs|sort(attribute='cnt', reverse=true)|first) %}
+<div class="panel mb-4">
+  <div class="panel-header"><i class="bi bi-graph-up"></i>Grabs per Day (last 30 days)</div>
+  <div class="panel-body">
+    <div id="grab-chart"
+         role="img"
+         aria-label="Bar chart of daily grabs over the last 30 days. Total {{ _total_grabs }} grabs. Peak {{ _peak_day.cnt }} on {{ _peak_day.day }}."
+         style="height:120px; display:flex; align-items:flex-end; gap:3px; padding:4px 0">
+      {% set max_cnt = daily_grabs|map(attribute='cnt')|list|max if daily_grabs else 1 %}
+      {% for day in daily_grabs %}
+      {% set bar_h = ((day['cnt'] / max_cnt) * 100)|int %}
+      <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; cursor:default"
+           title="{{ day['day'] }}: {{ day['cnt'] }} grab{% if day['cnt'] != 1 %}s{% endif %}">
+        <div class="bar-hover" style="width:100%; background:var(--ember); border-radius:2px 2px 0 0; height:{{ bar_h }}%; min-height:2px"></div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="d-flex justify-content-between mt-1 stats-chart-label">
+      <span>{{ daily_grabs[0]['day'] if daily_grabs else '' }}</span>
+      <span>{{ daily_grabs[-1]['day'] if daily_grabs else '' }}</span>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- Top indexers + top series -->
+<div class="row g-3 mb-4">
+
+  {% if top_indexers %}
+  <div class="col-12 col-md-5">
+    <div class="panel h-100 mb-0">
+      <div class="panel-header"><i class="bi bi-search"></i>Top Indexers</div>
+      <div class="panel-body">
+        {% set max_idx = top_indexers[0]['cnt'] if top_indexers else 1 %}
+        {% for row in top_indexers %}
+        <div class="d-flex align-items-center gap-2 mb-2">
+          <span class="badge-status badge-indexer" style="min-width:80px; text-align:center">{{ row['indexer'] }}</span>
+          <div style="flex:1; height:6px; background:var(--ink-5); border-radius:3px; overflow:hidden">
+            <div style="width:{{ ((row['cnt'] / max_idx) * 100)|int }}%; height:100%; background:var(--jade); border-radius:3px"></div>
+          </div>
+          <span style="font-size:0.78rem; color:var(--text-2); min-width:28px; text-align:right">{{ row['cnt'] }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if top_series %}
+  <div class="col-12 col-md-7">
+    <div class="panel h-100 mb-0">
+      <div class="panel-header"><i class="bi bi-trophy"></i>Most Active Series</div>
+      <div class="panel-body">
+        {% set max_sc = top_series[0]['cnt'] if top_series else 1 %}
+        {% for row in top_series %}
+        <div class="d-flex align-items-center gap-2 mb-2">
+          <a href="/series/{{ row['id'] }}" class="text-ember"
+             style="font-size:0.8rem; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1"
+             title="{{ row['title'] }}">{{ row['title'] }}</a>
+          <div style="width:80px; height:6px; background:var(--ink-5); border-radius:3px; overflow:hidden; flex-shrink:0">
+            <div style="width:{{ ((row['cnt'] / max_sc) * 100)|int }}%; height:100%; background:var(--gold); border-radius:3px"></div>
+          </div>
+          <span style="font-size:0.75rem; color:var(--text-2); min-width:50px; text-align:right; flex-shrink:0">
+            {{ row['cnt'] }} grab{% if row['cnt'] != 1 %}s{% endif %}
+          </span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+
+<!-- Disk usage -->
+{% if disk_info %}
+<div class="panel mb-4">
+  <div class="panel-header"><i class="bi bi-hdd-stack"></i>Disk Usage</div>
+  <div class="panel-body">
+    <div class="row g-3">
+      {% for d in disk_info %}
+      <div class="col-12 col-md-6">
+        <div class="d-flex justify-content-between mb-1">
+          <span style="font-size:0.82rem; font-weight:600">{{ d['label'] }}</span>
+          <span style="font-size:0.75rem; color:var(--text-2)">
+            {{ d['used']|format_bytes }} / {{ d['total']|format_bytes }} ({{ d['pct'] }}%)
+          </span>
+        </div>
+        <div style="height:10px; background:var(--ink-5); border-radius:5px; overflow:hidden">
+          <div style="width:{{ d['pct'] }}%; height:100%; border-radius:5px;
+                background:{% if d['pct'] > 90 %}var(--ruby){% elif d['pct'] > 75 %}var(--gold){% else %}var(--ember){% endif %}">
+          </div>
+        </div>
+        <div style="font-size:0.7rem; color:var(--text-2); margin-top:2px">
+          {{ d['free']|format_bytes }} free
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

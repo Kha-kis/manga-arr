@@ -1,0 +1,354 @@
+{% extends "base.html" %}
+{% block title %}Series Editor — Mangarr{% endblock %}
+{% block title_short %}Series Editor{% endblock %}
+{% block nav_library %}active{% endblock %}
+
+{% block head_styles %}
+.se-row { cursor: pointer; }
+.se-row:hover td { background: rgba(255,255,255,0.03); }
+.se-row.selected td { background: rgba(240,132,40,0.07); }
+{% endblock %}
+
+{% block content %}
+<div x-data="{
+  titleF: '',
+  statusF: '',
+  monF: '',
+  sel: [],
+  saving: false,
+  saveMsg: '',
+  init() {
+    const ids = {{ preselected|tojson }};
+    this.sel = ids.map(String);
+  },
+  toggle(id) {
+    const s = String(id), i = this.sel.indexOf(s);
+    i >= 0 ? this.sel.splice(i, 1) : this.sel.push(s);
+  },
+  has(id) { return this.sel.includes(String(id)); },
+  allVisible() {
+    return Array.from(document.querySelectorAll('tr[data-sid]'))
+      .filter(r => r.style.display !== 'none')
+      .map(r => r.dataset.sid);
+  },
+  allChecked() {
+    const vis = this.allVisible();
+    return vis.length > 0 && vis.every(id => this.sel.includes(id));
+  },
+  someChecked() {
+    const vis = this.allVisible();
+    return vis.some(id => this.sel.includes(id)) && !this.allChecked();
+  },
+  setAll(v) {
+    const vis = this.allVisible();
+    if (v) { vis.forEach(id => { if (!this.sel.includes(id)) this.sel.push(id); }); }
+    else    { this.sel = this.sel.filter(id => !vis.includes(id)); }
+  },
+  vis(el) {
+    return (!this.titleF  || el.dataset.title.includes(this.titleF.toLowerCase()))
+        && (!this.statusF || el.dataset.status === this.statusF)
+        && (!this.monF    || el.dataset.monitored === this.monF);
+  },
+  clearFilters() { this.titleF = ''; this.statusF = ''; this.monF = ''; },
+  async save(payload) {
+    this.saving = true; this.saveMsg = '';
+    try {
+      const r = await fetch('/series-editor/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ series_ids: this.sel.map(Number), ...payload })
+      });
+      const d = await r.json();
+      if (d.ok) {
+        this.saveMsg = d.updated + ' series updated';
+        showToast(d.updated + ' series updated', 'success');
+        setTimeout(() => location.reload(), 800);
+      } else {
+        showToast(d.message || 'Save failed', 'error');
+      }
+    } catch(e) { showToast('Save failed', 'error'); }
+    this.saving = false;
+  }
+}">
+
+<div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
+  <div class="page-heading mb-0">
+    <i class="bi bi-pencil-square"></i>Series Editor
+    {% if series %}
+    <span class="ms-1" style="font-size:0.75rem;vertical-align:middle;background:var(--ember-lo);color:var(--ember);border-radius:10px;padding:1px 8px">{{ series|length }}</span>
+    {% endif %}
+  </div>
+  <div class="d-flex gap-2 flex-wrap align-items-center">
+    <span x-show="sel.length > 0" class="text-muted" style="font-size:0.8rem" x-text="sel.length + ' selected'"></span>
+    <button class="btn btn-outline-ember btn-sm" @click="setAll(true)">
+      <i class="bi bi-check-all me-1"></i>Select All
+    </button>
+    <button class="btn btn-secondary btn-sm" @click="setAll(false)">
+      <i class="bi bi-x me-1"></i>None
+    </button>
+    <button class="btn btn-ember btn-sm"
+            :disabled="sel.length === 0"
+            data-bs-toggle="modal" data-bs-target="#bulkEditModal">
+      <i class="bi bi-pencil me-1"></i>Edit Selected
+      <span x-show="sel.length > 0" x-text="'(' + sel.length + ')'" class="ms-1"></span>
+    </button>
+  </div>
+</div>
+
+{# ── Filter Bar ────────────────────────────────────────────────────────────── #}
+<div class="panel mb-4">
+  <div class="panel-header"><i class="bi bi-funnel"></i>Filter</div>
+  <div class="panel-body">
+    <div class="d-flex gap-3 flex-wrap align-items-end">
+      <div>
+        <label class="form-label">Title</label>
+        <input type="text" x-model="titleF" class="form-control form-control-sm"
+               placeholder="Filter by title…" style="width:220px">
+      </div>
+      <div>
+        <label class="form-label">Status</label>
+        <select x-model="statusF" class="form-select form-select-sm" style="width:170px">
+          <option value="">All Statuses</option>
+          {% for st in ['RELEASING','FINISHED','HIATUS','CANCELLED','NOT_YET_RELEASED'] %}
+          <option value="{{ st }}">{{ st|replace('_',' ')|title }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="form-label">Monitored</label>
+        <select x-model="monF" class="form-select form-select-sm" style="width:130px">
+          <option value="">All</option>
+          <option value="1">Monitored</option>
+          <option value="0">Unmonitored</option>
+        </select>
+      </div>
+      <button class="btn btn-secondary btn-sm" @click="clearFilters()">
+        <i class="bi bi-x-circle me-1"></i>Clear
+      </button>
+    </div>
+  </div>
+</div>
+
+{# ── Series Table ─────────────────────────────────────────────────────────── #}
+{% if series %}
+<div class="table-wrap">
+  <table class="table table-sm mb-0">
+    <thead>
+      <tr>
+        <th style="width:36px">
+          <input type="checkbox" class="form-check-input" style="margin:0"
+                 :checked="allChecked()"
+                 x-effect="$el.indeterminate = someChecked()"
+                 @change="setAll($event.target.checked)">
+        </th>
+        <th>Title</th>
+        <th style="width:130px">Status</th>
+        <th style="width:90px">Monitored</th>
+        <th style="width:100px">Mode</th>
+        <th style="width:115px">Progress</th>
+        <th style="width:140px">Quality Profile</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in series %}
+      <tr class="se-row"
+          :class="{ selected: has('{{ s['id'] }}') }"
+          data-sid="{{ s['id'] }}"
+          data-title="{{ s['title']|lower }}"
+          data-status="{{ s['status'] or '' }}"
+          data-monitored="{{ '1' if s['monitored'] else '0' }}"
+          x-show="vis($el)"
+          @click="toggle('{{ s['id'] }}')">
+        <td @click.stop>
+          <input type="checkbox" class="form-check-input" style="margin:0"
+                 :checked="has('{{ s['id'] }}')"
+                 @change="toggle('{{ s['id'] }}')">
+        </td>
+        <td>
+          <a href="/series/{{ s['id'] }}" class="text-ember fw-semibold"
+             style="font-size:0.85rem" @click.stop>{{ s['title'] }}</a>
+          {% if s['edition_type'] and s['edition_type'] != 'standard' %}
+          <span class="badge-status badge-edition-{{ s['edition_type'] }} ms-1" style="font-size:0.6rem">
+            {{ s['edition_type']|replace('_',' ')|title }}
+          </span>
+          {% endif %}
+        </td>
+        <td>
+          {% set st = (s['status'] or 'unknown')|lower %}
+          <span class="badge-status badge-{{ st }}">{{ s['status'] or 'Unknown' }}</span>
+        </td>
+        <td>
+          {% if s['monitored'] %}
+          <span class="text-ember" style="font-size:0.78rem"><i class="bi bi-eye me-1"></i>Yes</span>
+          {% else %}
+          <span style="font-size:0.78rem; color:var(--text-3)"><i class="bi bi-eye-slash me-1"></i>No</span>
+          {% endif %}
+        </td>
+        <td>
+          <span class="text-muted" style="font-size:0.75rem">{{ s['monitor_mode'] or 'all' }}</span>
+        </td>
+        <td>
+          {% set have  = s['downloaded_count'] or 0 %}
+          {% set total = s['total_volumes'] or 0 %}
+          {% if total > 0 %}
+          {% set pct = (have / total * 100)|int %}
+          <div class="vol-bar mb-1">
+            <div class="fill {% if pct == 100 %}complete{% endif %}" style="width:{{ pct }}%"></div>
+          </div>
+          <span style="font-size:0.72rem; color:var(--text-3)">{{ have }}/{{ total }}</span>
+          {% else %}
+          <span style="font-size:0.72rem; color:var(--text-3)">{{ have }} dl</span>
+
+          {% endif %}
+        </td>
+        <td>
+          <span class="text-muted" style="font-size:0.78rem">{{ s['quality_profile_name'] or '—' }}</span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% else %}
+<div class="empty-state">
+  <div class="empty-icon"><i class="bi bi-collection"></i></div>
+  <p class="fw-semibold">No series in your library.</p>
+  <a href="/search" class="btn btn-secondary btn-sm mt-2"><i class="bi bi-plus me-1"></i>Add Series</a>
+</div>
+{% endif %}
+
+{# ── Bulk Edit Modal ──────────────────────────────────────────────────────── #}
+<div class="modal fade" id="bulkEditModal" tabindex="-1"
+     x-data="{
+       monitored: '',
+       monitor_mode: '',
+       quality_profile_id: '',
+       language_profile_id: '',
+       root_folder_id: '',
+       update_strategy: '',
+       source_type: '',
+       tags_add: '',
+       tags_remove: '',
+       get payload() {
+         const p = {};
+         if (this.monitored !== '')          p.monitored = this.monitored === '1';
+         if (this.monitor_mode)              p.monitor_mode = this.monitor_mode;
+         if (this.quality_profile_id !== '') p.quality_profile_id = this.quality_profile_id || null;
+         if (this.language_profile_id !== '')p.language_profile_id = this.language_profile_id || null;
+         if (this.root_folder_id !== '')     p.root_folder_id = this.root_folder_id || null;
+         if (this.update_strategy)           p.update_strategy = this.update_strategy;
+         if (this.source_type)               p.source_type = this.source_type;
+         p.tags_add    = this.tags_add.split(',').map(t=>t.trim()).filter(Boolean);
+         p.tags_remove = this.tags_remove.split(',').map(t=>t.trim()).filter(Boolean);
+         return p;
+       }
+     }">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title text-ember">
+          <i class="bi bi-pencil-square me-2"></i>Bulk Edit
+          <span x-text="'(' + $store?.sel?.length + ' series)'" class="ms-1 text-muted"
+                style="font-size:0.8rem"></span>
+        </h6>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted" style="font-size:0.8rem">Only fields with a selection will be changed. Leave as <em>— no change —</em> to skip.</p>
+        <div class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label">Monitored</label>
+            <select x-model="monitored" class="form-select form-select-sm">
+              <option value="">— no change —</option>
+              <option value="1">Yes — Monitor</option>
+              <option value="0">No — Unmonitor</option>
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Monitor Mode</label>
+            <select x-model="monitor_mode" class="form-select form-select-sm">
+              <option value="">— no change —</option>
+              {% for m in monitor_modes %}
+              <option value="{{ m }}">{{ m|title }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Quality Profile</label>
+            <select x-model="quality_profile_id" class="form-select form-select-sm">
+              <option value="">— no change —</option>
+              <option value="0">— Clear (use global) —</option>
+              {% for p in profiles %}
+              <option value="{{ p['id'] }}">{{ p['name'] }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Language Profile</label>
+            <select x-model="language_profile_id" class="form-select form-select-sm">
+              <option value="">— no change —</option>
+              <option value="0">— Clear (use global) —</option>
+              {% for p in lang_profiles %}
+              <option value="{{ p['id'] }}">{{ p['name'] }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          {% if root_folders %}
+          <div class="col-md-6">
+            <label class="form-label">Root Folder</label>
+            <select x-model="root_folder_id" class="form-select form-select-sm">
+              <option value="">— no change —</option>
+              {% for rf in root_folders %}
+              <option value="{{ rf['id'] }}">{{ rf['path'] }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          {% endif %}
+          <div class="col-md-6">
+            <label class="form-label">Update Strategy</label>
+            <select x-model="update_strategy" class="form-select form-select-sm">
+              <option value="">— no change —</option>
+              <option value="always">Always (default)</option>
+              <option value="throttled">Throttled (weekly)</option>
+              <option value="once">Manual only</option>
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Source Type</label>
+            <select x-model="source_type" class="form-select form-select-sm">
+              <option value="">— no change —</option>
+              <option value="any">Any</option>
+              <option value="official_only">Official only</option>
+              <option value="fan_only">Fan only</option>
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Add Tags <span class="text-muted fw-normal">(comma-separated)</span></label>
+            <input type="text" x-model="tags_add" class="form-control form-control-sm"
+                   placeholder="e.g. shonen, completed"
+                   list="se-tags-list">
+            <datalist id="se-tags-list">{% for t in all_tags %}<option value="{{ t }}">{% endfor %}</datalist>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Remove Tags <span class="text-muted fw-normal">(comma-separated)</span></label>
+            <input type="text" x-model="tags_remove" class="form-control form-control-sm"
+                   placeholder="e.g. old-tag">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-ember btn-sm"
+                :disabled="saving"
+                @click="save(payload); bootstrap.Modal.getInstance($el.closest('.modal'))?.hide()">
+          <i class="bi bi-check-circle me-1"></i>
+          <span x-text="saving ? 'Saving…' : 'Apply to ' + sel.length + ' series'">Apply</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>{# /x-data #}
+{% endblock %}

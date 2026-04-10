@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Quality Definitions — Mangarr{% endblock %}
+{% block title_short %}Quality Definitions{% endblock %}
+{% block nav_settings %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div class="page-heading mb-0"><i class="bi bi-rulers"></i>Quality Definitions</div>
+</div>
+
+{% if saved %}
+<div class="d-flex align-items-center gap-2 mb-4 px-3 py-2"
+     class="text-sm rounded-lg" style="background:var(--jade-bg);border:1px solid rgba(34,200,122,0.2);color:var(--jade)"
+     id="saved-toast">
+  <i class="bi bi-check-circle-fill"></i>Quality definitions saved.
+</div>
+<script>setTimeout(()=>{const el=document.getElementById('saved-toast');if(el)el.style.display='none';},4000);</script>
+{% endif %}
+
+<div class="panel">
+  <div class="panel-header">
+    <i class="bi bi-rulers"></i>File Size Limits by Format
+  </div>
+  <div class="panel-body">
+    <p class="text-sm mb-3" style="color:var(--text-2)">
+      Set minimum and maximum file sizes (in MB) per volume for each format.
+      Releases that fall outside these bounds are skipped during grab.
+      Set <strong>0</strong> to disable a limit entirely.
+    </p>
+
+    <form method="POST" action="/quality-definitions">
+      <div class="table-wrap mb-3">
+        <table class="table table-sm align-middle mb-0">
+          <thead>
+            <tr>
+              <th class="w-[140px]">Format</th>
+              <th>Title</th>
+              <th class="w-[160px]">Min Size MB/vol
+                <span class="font-normal text-xs" style="color:var(--text-2)">(0 = no limit)</span>
+              </th>
+              <th class="w-[160px]">Max Size MB/vol
+                <span class="font-normal text-xs" style="color:var(--text-2)">(0 = no limit)</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for d in definitions %}
+            {% set q = d.quality %}
+            <tr>
+              <td>
+                {% if q == 'cbz' %}
+                  <span class="badge-status badge-downloaded">CBZ</span>
+                {% elif q == 'cbr' %}
+                  <span class="badge-status badge-grabbed">CBR</span>
+                {% elif q == 'epub' %}
+                  <span class="badge-status badge-releasing">EPUB</span>
+                {% elif q == 'pdf' %}
+                  <span class="badge-status badge-torrent">PDF</span>
+                {% elif q == 'zip' %}
+                  <span class="badge-status badge-client">ZIP</span>
+                {% else %}
+                  <span class="badge-status badge-unknown">{{ q | upper }}</span>
+                {% endif %}
+              </td>
+              <td>
+                <input type="text" name="q_{{ q }}_title"
+                       class="form-control form-control-sm max-w-[280px]"
+                       value="{{ d.title }}">
+              </td>
+              <td>
+                <input type="number" name="q_{{ q }}_min"
+                       class="form-control form-control-sm max-w-[120px]"
+                       value="{{ d.min_size | int if d.min_size == d.min_size | int else d.min_size }}"
+                       min="0" step="0.1">
+              </td>
+              <td>
+                <input type="number" name="q_{{ q }}_max"
+                       class="form-control form-control-sm max-w-[120px]"
+                       value="{{ d.max_size | int if d.max_size == d.max_size | int else d.max_size }}"
+                       min="0" step="0.1">
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="d-flex align-items-center gap-3">
+        <button type="submit" class="btn btn-ember btn-sm px-4">
+          <i class="bi bi-floppy me-1"></i>Save Changes
+        </button>
+        <span class="text-xs" style="color:var(--text-2)">
+          <i class="bi bi-info-circle me-1"></i>
+          Sizes apply per-volume. Packs are divided by estimated volume count before comparison.
+        </span>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="panel mt-2">
+  <div class="panel-header">
+    <i class="bi bi-question-circle"></i>How Size Limits Work
+  </div>
+  <div class="panel-body text-sm leading-7" style="color:var(--text-2)">
+    <ul class="mb-0 ps-3">
+      <li>Format is detected from the release title extension (<code>.cbz</code>, <code>.cbr</code>, <code>.epub</code>, <code>.pdf</code>, <code>.zip</code>).</li>
+      <li><strong style="color:var(--text)">Min size</strong> — releases smaller than this are rejected as likely corrupt or incomplete.</li>
+      <li><strong style="color:var(--text)">Max size</strong> — releases larger than this are rejected as oversized. Set to <code>0</code> to allow any size.</li>
+      <li>The <strong style="color:var(--text)">Unknown</strong> row applies when no extension is matched.</li>
+    </ul>
+  </div>
+</div>
+{% endblock %}

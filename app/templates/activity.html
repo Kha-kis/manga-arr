@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Activity — Mangarr{% endblock %}
+{% block title_short %}Activity{% endblock %}
+{% block nav_activity %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
+  <div class="page-heading mb-0"><i class="bi bi-lightning-fill"></i>Download Activity</div>
+  <div class="d-flex gap-2 align-items-center">
+    {% if total %}<span class="text-xs" style="color:var(--text-2)">{{ total }} total</span>{% endif %}
+    <button class="btn btn-secondary btn-sm"
+            hx-post="/api/check-downloads"
+            hx-swap="none"
+            hx-disabled-elt="this"
+            hx-on::after-request="showToast(event.detail.successful ? 'Status check queued' : 'Check failed', event.detail.successful ? 'success' : 'error'); if (event.detail.successful) setTimeout(() => location.reload(), 2000)">
+      <i class="bi bi-arrow-repeat me-1"></i>Check Status
+    </button>
+  </div>
+</div>
+
+{% if activity %}
+<div class="table-wrap mb-4">
+  <table class="table table-sm mb-0">
+    <thead>
+      <tr>
+        <th>Series</th>
+        <th style="width:80px">Volume</th>
+        <th>Release Name</th>
+        <th style="width:130px">Source</th>
+        <th style="width:110px">Client</th>
+        <th style="width:120px">Grabbed</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in activity %}
+      <tr>
+        <td>
+          <a href="/series/{{ a['series_id'] }}" class="fw-semibold text-ember text-sm">
+            {{ a['series_title'] }}
+          </a>
+        </td>
+        <td>
+          {% if a['volume_num'] %}
+          <span class="badge-status badge-grabbed">Vol {{ a['volume_num']|vol_display }}</span>
+          {% else %}
+          <span class="text-xs" style="color:var(--text-3)">Pack</span>
+          {% endif %}
+        </td>
+        <td class="text-xs" style="color:var(--text-2); max-width:280px">
+          <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block"
+                title="{{ a['torrent_name'] }}">{{ a['torrent_name'] or '—' }}</span>
+        </td>
+        <td>
+          <div class="pill-badges">
+            {% if a['indexer'] %}<span class="badge-status badge-indexer">{{ a['indexer'] }}</span>{% endif %}
+            {% if a['protocol'] %}<span class="badge-status badge-{{ a['protocol'] }}">{{ a['protocol']|format_protocol }}</span>{% endif %}
+          </div>
+        </td>
+        <td>
+          {% if a['client'] %}
+          <span class="badge-status badge-client">{{ a['client']|format_client }}</span>
+          {% else %}<span class="text-xs" style="color:var(--text-3)">—</span>{% endif %}
+        </td>
+        <td class="text-xs" style="color:var(--text-2); white-space:nowrap">
+          {{ a['grabbed_at'] | format_date }}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if pages > 1 %}
+<div class="pill-group justify-content-center mt-2">
+  {% for p in range(1, pages + 1) %}
+  <a href="/activity?page={{ p }}"
+     class="btn btn-sm {% if p == page %}btn-ember{% else %}btn-secondary{% endif %}">{{ p }}</a>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% else %}
+<div class="empty-state">
+  <div class="empty-icon"><i class="bi bi-lightning"></i></div>
+  <p class="fw-semibold">No downloads recorded yet.</p>
+  <p class="text-sm" style="color:var(--text-3)">Downloads appear here when Mangarr grabs releases.</p>
+</div>
+{% endif %}
+{% endblock %}
+

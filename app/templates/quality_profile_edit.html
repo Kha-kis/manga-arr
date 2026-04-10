@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+{% block title %}Edit Profile: {{ profile.name }} — Mangarr{% endblock %}
+{% block title_short %}Edit Profile{% endblock %}
+{% block nav_settings %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center gap-3 mb-4">
+  <a href="/quality-profiles" class="btn btn-sm btn-secondary">
+    <i class="bi bi-arrow-left me-1"></i>Back
+  </a>
+  <div class="page-heading mb-0">
+    <i class="bi bi-trophy text-gold"></i>Edit Quality Profile
+  </div>
+</div>
+
+<div class="row g-4">
+
+  <!-- Profile settings -->
+  <div class="col-lg-6">
+    <div class="panel">
+      <div class="panel-header">
+        <i class="bi bi-sliders"></i>Profile Settings
+      </div>
+      <div class="panel-body">
+        <form method="POST" action="/quality-profiles/{{ profile.id }}">
+          <div class="mb-3">
+            <label class="form-label">Name</label>
+            <input type="text" name="name" class="form-control" value="{{ profile.name }}" required>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">
+              Quality Order
+              <small class="font-normal text-[color:var(--text-2)]">(drag to reorder — best first)</small>
+            </label>
+            <div id="qualitySort" class="d-flex gap-2 flex-wrap mb-2">
+              {% set quals = profile.qualities | from_json([]) %}
+              {% for q in quals %}
+              <span class="badge-status badge-downloaded sortable-quality cursor-grab select-none"
+                    draggable="true">{{ q }}</span>
+              {% endfor %}
+              {% for q in quality_order %}
+                {% if q not in quals %}
+                <span class="badge-status badge-unknown sortable-quality cursor-grab select-none opacity-50"
+                      draggable="true">{{ q }}</span>
+                {% endif %}
+              {% endfor %}
+            </div>
+            <input type="hidden" name="qualities" id="qualitiesInput" value="{{ profile.qualities }}">
+            <div class="form-text text-[color:var(--text-3)]">
+              Green = included, grey = excluded. Click to toggle. Drag to reorder.
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">Cutoff Quality</label>
+            <select name="cutoff" class="form-select">
+              <option value="">None</option>
+              {% for q in quality_order %}
+              <option value="{{ q }}" {% if profile.cutoff == q %}selected{% endif %}>{{ q }}</option>
+              {% endfor %}
+            </select>
+            <div class="form-text text-[color:var(--text-3)]">
+              Mangarr won't upgrade once this quality is met.
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" name="upgrades_allowed"
+                     value="1" {% if profile.upgrades_allowed %}checked{% endif %} id="ua">
+              <label class="form-check-label" for="ua">Allow Upgrades</label>
+            </div>
+          </div>
+
+          <div class="mb-4">
+            <label class="form-label">Minimum Custom Format Score</label>
+            <input type="number" name="minimum_custom_format_score" class="form-control"
+                   value="{{ profile.minimum_custom_format_score or 0 }}">
+            <div class="form-text text-[color:var(--text-3)]">
+              Releases scoring below this threshold are rejected.
+            </div>
+          </div>
+
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-ember btn-sm px-4">
+              <i class="bi bi-floppy me-1"></i>Save Changes
+            </button>
+            <a href="/quality-profiles" class="btn btn-secondary btn-sm">Cancel</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Custom Format Scores -->
+  <div class="col-lg-6">
+    <div class="panel">
+      <div class="panel-header">
+        <i class="bi bi-patch-check"></i>Custom Format Scores
+      </div>
+      <div class="panel-body">
+        <p class="text-sm mb-3" style="color:var(--text-2)">
+          Assign scores to custom formats for this profile. Releases are scored and
+          compared against the minimum score threshold above.
+        </p>
+
+        <div id="formatScoreList">
+          {% for cf in all_formats %}
+          {% set linked = linked_formats | selectattr('id', 'equalto', cf.id) | list %}
+          {% set score = linked[0].score if linked else 0 %}
+          <div class="d-flex align-items-center gap-2 mb-2 format-score-row">
+            <span class="flex-grow-1 text-sm" style="color:var(--text)">{{ cf.name }}</span>
+            <input type="number" class="form-control form-control-sm format-score-input w-[90px]"
+                   data-format-id="{{ cf.id }}"
+                   value="{{ score }}">
+          </div>
+          {% endfor %}
+          {% if not all_formats %}
+          <div class="text-sm" style="color:var(--text-2)">
+            No custom formats defined yet. <a href="/custom-formats" class="text-ember">Create one</a>.
+          </div>
+          {% endif %}
+        </div>
+
+        {% if all_formats %}
+        <div class="d-flex align-items-center gap-3 mt-3">
+          <button class="btn btn-ember btn-sm" id="saveFormatScores">
+            <i class="bi bi-floppy me-1"></i>Save Format Scores
+          </button>
+          <span id="saveFormatStatus" class="text-sm hidden"></span>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Drag-to-reorder quality badges ────────────────────────────────────────────
+(function () {
+  const container = document.getElementById('qualitySort');
+  const hiddenInput = document.getElementById('qualitiesInput');
+  let dragged = null;
+
+  function updateHidden() {
+    const included = [...container.querySelectorAll('.badge-downloaded')]
+      .map(el => el.textContent.trim());
+    hiddenInput.value = JSON.stringify(included);
+  }
+
+  container.addEventListener('dragstart', e => {
+    dragged = e.target;
+    e.target.style.opacity = '.4';
+  });
+  container.addEventListener('dragend', e => {
+    e.target.style.opacity = e.target.classList.contains('badge-downloaded') ? '1' : '.5';
+    dragged = null;
+    updateHidden();
+  });
+  container.addEventListener('dragover', e => {
+    e.preventDefault();
+    const after = [...container.querySelectorAll('.sortable-quality')]
+      .filter(el => el !== dragged)
+      .find(el => {
+        const box = el.getBoundingClientRect();
+        return e.clientX < box.left + box.width / 2;
+      });
+    if (after) container.insertBefore(dragged, after);
+    else container.appendChild(dragged);
+  });
+
+  // Click to toggle include/exclude
+  container.addEventListener('click', e => {
+    const badge = e.target.closest('.sortable-quality');
+    if (!badge) return;
+    if (badge.classList.contains('badge-downloaded')) {
+      badge.classList.replace('badge-downloaded', 'badge-unknown');
+      badge.style.opacity = '.5';
+    } else {
+      badge.classList.replace('badge-unknown', 'badge-downloaded');
+      badge.style.opacity = '1';
+    }
+    updateHidden();
+  });
+
+  updateHidden();
+})();
+
+// ── Save custom format scores ─────────────────────────────────────────────────
+document.getElementById('saveFormatScores')?.addEventListener('click', async function () {
+  const payload = {};
+  document.querySelectorAll('.format-score-input').forEach(inp => {
+    const score = parseInt(inp.value, 10);
+    if (!isNaN(score)) payload[inp.dataset.formatId] = score;
+  });
+  const status = document.getElementById('saveFormatStatus');
+  status.classList.remove('hidden');
+  try {
+    const r = await fetch('/quality-profiles/{{ profile.id }}/format-scores', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const data = await r.json();
+    status.textContent = data.ok ? 'Saved!' : (data.message || 'Error');
+    status.style.color = data.ok ? 'var(--jade)' : 'var(--ruby)';
+  } catch (err) {
+    status.textContent = 'Network error';
+    status.style.color = 'var(--ruby)';
+  }
+  setTimeout(() => { status.classList.add('hidden'); status.textContent = ''; }, 3000);
+});
+</script>
+{% endblock %}

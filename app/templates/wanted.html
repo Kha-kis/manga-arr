@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+{% block title %}Wanted — Mangarr{% endblock %}
+{% block title_short %}Wanted{% endblock %}
+{% block nav_wanted %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
+  <div class="page-heading mb-0">
+    <i class="bi bi-bookmark-x-fill"></i>Wanted
+  </div>
+  <div class="d-flex align-items-center gap-2">
+    {% if active_tab == 'missing' and (total_count > 0 or wanted_ch_groups) %}
+    <button class="btn btn-ember btn-sm"
+            hx-post="/wanted/search-all"
+            hx-swap="none"
+            hx-disabled-elt="this"
+            hx-on::after-request="showToast(event.detail.successful ? 'Search started for all series' : 'Search failed', event.detail.successful ? 'success' : 'error')">
+      <i class="bi bi-cloud-download me-1"></i>Search All
+    </button>
+    {% elif active_tab == 'cutoff_unmet' and cutoff_unmet %}
+    <button class="btn btn-ember btn-sm"
+            x-data="{ busy: false, done: 0, n: 0 }"
+            :disabled="busy"
+            @click="
+              if (!confirm('Search for upgrades for all {{ cutoff_total }} volumes below cutoff?')) return;
+              const forms = document.querySelectorAll('form[action*=\'/trigger-upgrade\']');
+              n = forms.length; done = 0; busy = true;
+              (async () => {
+                for (const f of forms) {
+                  try { await fetch(f.action, {method:'POST', headers:{'X-CSRFToken': _csrfToken()}}); } catch(e) {}
+                  done++;
+                }
+                busy = false;
+                showToast('Search triggered for ' + done + ' volumes', 'success');
+              })()
+            ">
+      <i class="bi bi-cloud-upload me-1"></i>
+      <span x-text="busy ? 'Searching… ' + done + '/' + n : 'Search All for Upgrade'">Search All for Upgrade</span>
+    </button>
+    {% endif %}
+  </div>
+</div>
+
+{# ── Tabs ── #}
+<div class="wanted-tabs mb-4">
+  <a href="/wanted"
+     class="wanted-tab {% if active_tab == 'missing' %}active{% endif %}">
+    <i class="bi bi-bookmark-x me-2"></i>Missing
+    {% set missing_total = total_wanted %}
+    {% if missing_total %}
+    <span class="wanted-tab-count">{{ missing_total }}</span>
+    {% endif %}
+  </a>
+  <a href="/wanted/cutoff-unmet"
+     class="wanted-tab {% if active_tab == 'cutoff_unmet' %}active{% endif %}">
+    <i class="bi bi-arrow-up-circle me-2"></i>Cutoff Unmet
+    {% if cutoff_total %}
+    <span class="wanted-tab-count" style="background:rgba(240,184,40,0.15); color:var(--gold); border-color:rgba(240,184,40,0.25)">{{ cutoff_total }}</span>
+    {% endif %}
+  </a>
+</div>
+
+{# ══════════════════════════════════════════════════════════════
+   MISSING TAB
+══════════════════════════════════════════════════════════════ #}
+{% if active_tab == 'missing' %}
+
+{% if wanted_groups %}
+{% for group in wanted_groups %}
+<div class="panel mb-3">
+  <div class="panel-header">
+    <i class="bi bi-book-fill"></i>
+    <a href="/series/{{ group.series_id }}" class="text-ember text-decoration-none">{{ group.series_title }}</a>
+    <span class="ms-auto d-flex align-items-center gap-2">
+      {% set vcount = group.volumes|length %}
+      {% set ccount = group.chapters|length %}
+      <span class="text-xs" style="color:var(--text-3)">
+        {% if vcount %}{{ vcount }} vol{{ 's' if vcount != 1 }}{% endif %}
+        {% if vcount and ccount %} · {% endif %}
+        {% if ccount %}{{ ccount }} ch{{ 's' if ccount != 1 }}{% endif %}
+      </span>
+      {% if group.volumes %}
+      <button class="btn-grab btn btn-sm btn-action text-xs"
+              hx-post="/series/{{ group.series_id }}/grab-wanted"
+              hx-swap="none"
+              hx-disabled-elt="this"
+              hx-on::after-request="showToast(event.detail.successful ? 'Search queued' : 'Failed', event.detail.successful ? 'success' : 'error')">
+        <i class="bi bi-cloud-download me-1"></i>Grab All
+      </button>
+      {% endif %}
+    </span>
+  </div>
+  <div class="panel-body" style="padding:12px 16px">
+    <div class="d-flex flex-wrap gap-2">
+      {% for v in group.volumes %}
+      <div class="d-flex align-items-center gap-1 px-2 py-1 rounded"
+           style="background:var(--ink-4); border:1px solid var(--edge-2)">
+        <span class="fw-semibold text-ember text-xs">
+          {% if v['volume_num'] %}Vol {{ v['volume_num']|vol_display }}{% else %}?{% endif %}
+        </span>
+        <button class="btn p-0 ms-1 text-xs" style="color:var(--gold); border:none; background:transparent" title="Grab" aria-label="Grab volume"
+                hx-post="/series/{{ group.series_id }}/volumes/{{ v['id'] }}/grab"
+                hx-swap="none"
+                hx-disabled-elt="this"
+                hx-on::after-request="showToast('Grab queued', 'success')">
+          <i class="bi bi-cloud-download"></i>
+        </button>
+      </div>
+      {% endfor %}
+      {% for ch in group.chapters %}
+      <div class="d-flex align-items-center gap-1 px-2 py-1 rounded"
+           style="background:var(--ink-4); border:1px solid rgba(100,180,255,0.15)">
+        <span class="fw-semibold text-xs" style="color:var(--sky, #6ab4ff)">
+          Ch&nbsp;{% if ch['chapter_num'] == ch['chapter_num']|int %}{{ ch['chapter_num']|int }}{% else %}{{ ch['chapter_num'] }}{% endif %}
+        </span>
+        <button class="btn p-0 ms-1 text-xs" style="color:var(--gold); border:none; background:transparent" title="Grab" aria-label="Grab chapter"
+                hx-post="/series/{{ group.series_id }}/chapters/{{ ch['id'] }}/grab"
+                hx-swap="none"
+                hx-disabled-elt="this"
+                hx-on::after-request="showToast('Grab queued', 'success')">
+          <i class="bi bi-cloud-download"></i>
+        </button>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endfor %}
+{% endif %}
+
+{% if not wanted_groups %}
+<div class="empty-state">
+  <div class="empty-icon"><i class="bi bi-check-circle-fill text-jade"></i></div>
+  <p class="fw-semibold">Nothing wanted!</p>
+  <p class="text-sm" style="color:var(--text-3)">All tracked volumes and chapters are grabbed or downloaded.</p>
+  <a href="/" class="btn btn-secondary btn-sm mt-2"><i class="bi bi-collection me-1"></i>Back to Library</a>
+</div>
+{% endif %}
+
+{% if total_pages > 1 %}
+<div class="d-flex align-items-center justify-content-between mt-4">
+  <span class="text-xs" style="color:var(--text-3)">{{ total_count }} total · Page {{ page }} of {{ total_pages }}</span>
+  <div class="pill-group">
+    {% if page > 1 %}
+    <a href="?page={{ page - 1 }}" class="btn btn-sm btn-secondary"><i class="bi bi-chevron-left"></i> Prev</a>
+    {% endif %}
+    {% if page < total_pages %}
+    <a href="?page={{ page + 1 }}" class="btn btn-sm btn-secondary">Next <i class="bi bi-chevron-right"></i></a>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% endif %}{# /missing tab #}
+
+{# ══════════════════════════════════════════════════════════════
+   CUTOFF UNMET TAB
+══════════════════════════════════════════════════════════════ #}
+{% if active_tab == 'cutoff_unmet' %}
+
+{% if cutoff_unmet %}
+<div class="table-wrap">
+  <table class="table table-sm mb-0">
+    <thead>
+      <tr>
+        <th>Series</th>
+        <th style="width:90px">Volume</th>
+        <th style="width:110px">Current Quality</th>
+        <th style="width:110px">Cutoff</th>
+        <th style="width:130px">Last Grabbed</th>
+        <th style="width:50px"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in cutoff_unmet %}
+      <tr>
+        <td>
+          <a href="/series/{{ item.series_id }}" class="fw-semibold text-ember text-sm">
+            {{ item.series_title }}
+          </a>
+        </td>
+        <td>
+          <span class="text-sm" style="color:var(--gold)">
+            {% if item.volume_num %}Vol {{ item.volume_num|vol_display }}{% else %}?{% endif %}
+          </span>
+        </td>
+        <td>
+          {% set cq = item.current_quality %}
+          {% if cq == 'cbz' %}<span class="badge-status badge-downloaded">{{ cq|upper }}</span>
+          {% elif cq in ['cbr', 'epub'] %}<span class="badge-status badge-grabbed">{{ cq|upper }}</span>
+          {% elif cq in ['pdf', 'zip'] %}<span class="badge-status badge-wanted">{{ cq|upper }}</span>
+          {% else %}<span class="badge-status badge-unknown">{{ cq|upper }}</span>
+          {% endif %}
+        </td>
+        <td>
+          {% set ec = item.effective_cutoff %}
+          {% if ec == 'cbz' %}<span class="badge-status badge-downloaded">{{ ec|upper }}</span>
+          {% elif ec in ['cbr', 'epub'] %}<span class="badge-status badge-grabbed">{{ ec|upper }}</span>
+          {% elif ec in ['pdf', 'zip'] %}<span class="badge-status badge-wanted">{{ ec|upper }}</span>
+          {% else %}<span class="badge-status badge-unknown">{{ ec|upper }}</span>
+          {% endif %}
+        </td>
+        <td class="text-xs" style="color:var(--text-2); white-space:nowrap">
+          {{ item.grabbed_at | format_date }}
+        </td>
+        <td class="text-end pe-2">
+          <button class="btn btn-sm btn-action p-0 px-1"
+                  title="Search for upgrade" aria-label="Search for upgrade"
+                  style="color:var(--ember); border:none; background:transparent; line-height:1"
+                  hx-post="/series/{{ item.series_id }}/volumes/{{ item.id }}/trigger-upgrade"
+                  hx-swap="none"
+                  hx-disabled-elt="this"
+                  hx-on::after-request="showToast(event.detail.successful ? 'Upgrade search queued' : 'Failed', event.detail.successful ? 'success' : 'error')">
+            <i class="bi bi-arrow-up-circle"></i>
+          </button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% else %}
+<div class="empty-state">
+  <div class="empty-icon"><i class="bi bi-trophy text-jade"></i></div>
+  <p class="fw-semibold">All volumes meet quality cutoff!</p>
+  <p class="text-sm" style="color:var(--text-3)">
+    No downloaded volumes are below their series quality cutoff.<br>
+    Set a quality cutoff on a series or quality profile to enable cutoff tracking.
+  </p>
+</div>
+{% endif %}
+
+{% endif %}{# /cutoff_unmet tab #}
+
+{% endblock %}

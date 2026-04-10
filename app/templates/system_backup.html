@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}Backup — Mangarr{% endblock %}
+{% block title_short %}Backup{% endblock %}
+{% block nav_settings %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div class="page-heading mb-0"><i class="bi bi-archive-fill"></i>Backup</div>
+  <div class="d-flex gap-2">
+    <a href="/system/status" class="btn btn-secondary btn-sm"><i class="bi bi-activity me-1"></i>Status</a>
+    <a href="/system/tasks"  class="btn btn-secondary btn-sm"><i class="bi bi-clock me-1"></i>Tasks</a>
+  </div>
+</div>
+
+<!-- Create Backup -->
+<div class="panel">
+  <div class="panel-header">
+    <i class="bi bi-plus-circle"></i>Create Backup
+  </div>
+  <div class="panel-body d-flex align-items-center gap-3">
+    <p class="text-muted mb-0" style="font-size:0.85rem">
+      Creates a ZIP archive of the Mangarr database and downloads it to your browser.
+      A copy is also saved to <code>/config/backups/</code>.
+    </p>
+    <button class="btn btn-outline-ember btn-sm flex-shrink-0" id="createBackupBtn" onclick="createBackup()">
+      <i class="bi bi-download me-1"></i>Create &amp; Download
+    </button>
+  </div>
+</div>
+
+<!-- Existing Backups -->
+<div class="panel">
+  <div class="panel-header d-flex align-items-center">
+    <i class="bi bi-folder2-open"></i>
+    Existing Backups
+    <span class="ms-auto text-muted fw-normal" style="font-size:0.75rem">
+      {{ backups | length }} file{{ 's' if backups | length != 1 else '' }}
+    </span>
+  </div>
+  <div class="panel-body p-0">
+    {% if backups %}
+    <div class="table-wrap mb-0">
+      <table class="table table-sm mb-0">
+        <thead>
+          <tr>
+            <th>Filename</th>
+            <th style="width:160px">Date</th>
+            <th style="width:90px">Size</th>
+            <th style="width:130px">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for b in backups %}
+          <tr>
+            <td>
+              <i class="bi bi-file-zip text-gold me-1"></i>
+              <span style="font-size:.84rem">{{ b.filename }}</span>
+            </td>
+            <td>
+              <span class="text-muted" style="font-size:0.82rem">{{ b.date }}</span>
+            </td>
+            <td>
+              <span class="text-muted" style="font-size:0.82rem">{{ b.size }}</span>
+            </td>
+            <td>
+              <div class="d-flex gap-2">
+                <a href="/config/backups/{{ b.filename }}" download
+                   class="btn btn-sm btn-action btn-outline-ember"
+                   title="Download" aria-label="Download">
+                  <i class="bi bi-download"></i>
+                </a>
+                <form method="POST" action="/api/system/backup/{{ b.filename }}/delete"
+                      data-confirm="Delete backup {{ b.filename }}?"
+                      data-confirm-heading="Delete backup" data-confirm-ok="Delete"
+                      style="display:inline">
+                  <button type="submit" class="btn btn-sm btn-action btn-danger-soft"
+                          title="Delete" aria-label="Delete">
+                    <i class="bi bi-trash"></i>
+                  </button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <div class="empty-icon"><i class="bi bi-archive"></i></div>
+      <p class="fw-semibold">No backups yet</p>
+      <p style="font-size:0.82rem;color:var(--text-3)">Click "Create &amp; Download" above to create your first backup.</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="position-fixed bottom-0 end-0 p-3" style="z-index:var(--z-toast)">
+  <div id="backupToast" class="toast align-items-center border-0" role="alert" aria-live="assertive" aria-atomic="true"
+       style="background:var(--ink-3);border:1px solid var(--edge-2) !important;min-width:280px">
+    <div class="d-flex">
+      <div class="toast-body d-flex align-items-center gap-2" id="backupToastBody" style="font-size:.85rem"></div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const toastEl   = document.getElementById('backupToast');
+const toastBody = document.getElementById('backupToastBody');
+const bsToast   = new bootstrap.Toast(toastEl, {delay: 4000});
+
+function showToast(msg, success) {
+  const icon = success
+    ? '<i class="bi bi-check-circle-fill text-jade"></i>'
+    : '<i class="bi bi-x-circle-fill text-ruby"></i>';
+  toastBody.innerHTML = icon + ' ' + msg;
+  bsToast.show();
+}
+
+async function createBackup() {
+  const btn = document.getElementById('createBackupBtn');
+  const origHTML = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Creating…';
+
+  try {
+    const resp = await fetch('/api/system/backup/create', {method: 'POST'});
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      showToast(data.message || 'Backup failed', false);
+      return;
+    }
+
+    const blob = await resp.blob();
+    const cd   = resp.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="([^"]+)"/);
+    const fname = match ? match[1] : 'mangarr_backup.zip';
+
+    const url = URL.createObjectURL(blob);
+    const a   = document.createElement('a');
+    a.href = url;
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    showToast('Backup created: ' + fname, true);
+    setTimeout(() => location.reload(), 1500);
+  } catch (e) {
+    showToast('Network error — backup failed', false);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = origHTML;
+  }
+}
+</script>
+{% endblock %}

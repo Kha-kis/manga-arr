@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}Task Scheduler — {{ get_instance_name() }}{% endblock %}
+{% block title_short %}Task Scheduler{% endblock %}
+{% block nav_settings %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div class="page-heading mb-0"><i class="bi bi-clock-fill"></i>Task Scheduler</div>
+  <div class="d-flex gap-2">
+    <a href="/system/status" class="btn btn-secondary btn-sm"><i class="bi bi-activity me-1"></i>Status</a>
+    <a href="/system/backup" class="btn btn-secondary btn-sm"><i class="bi bi-archive me-1"></i>Backup</a>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <i class="bi bi-list-task"></i>Background Tasks
+  </div>
+  <div class="panel-body p-0">
+    {% if tasks %}
+    <div class="table-wrap mb-0">
+      <table class="table table-sm mb-0">
+        <thead>
+          <tr>
+            <th>Task</th>
+            <th style="width:130px">Interval</th>
+            <th style="width:160px">Last Run</th>
+            <th style="width:160px">Next Run</th>
+            <th style="width:110px">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for task in tasks %}
+          <tr id="task-row-{{ task.key }}">
+            <td>
+              <span class="fw-semibold" style="font-size:.88rem">{{ task.name }}</span>
+            </td>
+            <td>
+              <span class="badge-status badge-releasing">{{ task.interval }}</span>
+            </td>
+            <td>
+              <span class="text-muted" style="font-size:0.82rem" id="last-run-{{ task.key }}">{{ task.last_run_dt | format_date if task.last_run_dt else '—' }}</span>
+            </td>
+            <td>
+              <span class="text-muted" style="font-size:0.82rem" id="next-run-{{ task.key }}">{{ task.next_run_dt | format_date if task.next_run_dt else '—' }}</span>
+            </td>
+            <td>
+              {% if task.manual %}
+              <button
+                class="btn btn-sm btn-action btn-outline-ember run-now-btn"
+                data-key="{{ task.key }}"
+                data-name="{{ task.name }}"
+                onclick="runTask(this)"
+              >
+                <i class="bi bi-play-fill me-1"></i>Run Now
+              </button>
+              {% else %}
+              <span style="font-size:.75rem;color:var(--text-3)">auto</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <div class="empty-icon"><i class="bi bi-clock"></i></div>
+      <p class="fw-semibold">No tasks configured</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Toast container -->
+<div class="position-fixed bottom-0 end-0 p-3" style="z-index:var(--z-toast)">
+  <div id="taskToast" class="toast align-items-center border-0" role="alert" aria-live="assertive" aria-atomic="true"
+       style="background:var(--ink-3);border:1px solid var(--edge-2) !important;min-width:260px">
+    <div class="d-flex">
+      <div class="toast-body d-flex align-items-center gap-2" id="taskToastBody" style="font-size:.85rem">
+      </div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const toastEl = document.getElementById('taskToast');
+const toastBody = document.getElementById('taskToastBody');
+const bsToast = new bootstrap.Toast(toastEl, {delay: 3500});
+
+function showToast(msg, success) {
+  const icon = success
+    ? '<i class="bi bi-check-circle-fill text-jade"></i>'
+    : '<i class="bi bi-x-circle-fill text-ruby"></i>';
+  toastBody.innerHTML = icon + ' ' + msg;
+  bsToast.show();
+}
+
+async function runTask(btn) {
+  const key  = btn.dataset.key;
+  const name = btn.dataset.name;
+  const origHTML = btn.innerHTML;
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Starting…';
+
+  try {
+    const resp = await fetch('/api/command', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: key}),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      showToast(data.message || (name + ' started'), true);
+    } else {
+      showToast(data.message || 'Error starting ' + name, false);
+    }
+  } catch (e) {
+    showToast('Network error — could not start ' + name, false);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = origHTML;
+  }
+}
+</script>
+{% endblock %}

@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}System Status — Mangarr{% endblock %}
+{% block title_short %}System Status{% endblock %}
+{% block nav_settings %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div class="page-heading mb-0"><i class="bi bi-activity"></i>System Status</div>
+  <div class="d-flex gap-2">
+    <a href="/system/tasks" class="btn btn-secondary btn-sm"><i class="bi bi-clock me-1"></i>Tasks</a>
+    <a href="/system/backup" class="btn btn-secondary btn-sm"><i class="bi bi-archive me-1"></i>Backup</a>
+  </div>
+</div>
+
+<div class="row g-3">
+
+  <!-- App Info -->
+  <div class="col-12 col-md-6">
+    <div class="panel h-100 mb-0">
+      <div class="panel-header">
+        <i class="bi bi-box-seam"></i>Application
+      </div>
+      <div class="panel-body">
+        <div class="row g-2">
+          <div class="col-6">
+            <div class="form-label">Version</div>
+            <span class="badge-status badge-downloaded">v{{ app_version }}</span>
+          </div>
+          <div class="col-6">
+            <div class="form-label">Uptime</div>
+            <span class="text-ember fw-semibold" style="font-size:0.9rem">{{ uptime }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- System Info -->
+  <div class="col-12 col-md-6">
+    <div class="panel h-100 mb-0">
+      <div class="panel-header">
+        <i class="bi bi-cpu"></i>System
+      </div>
+      <div class="panel-body">
+        <div class="row g-2">
+          <div class="col-6">
+            <div class="form-label">OS</div>
+            <span class="text-muted" style="font-size:0.85rem">{{ os_system }} {{ os_release }}</span>
+          </div>
+          <div class="col-6">
+            <div class="form-label">Python</div>
+            <span class="text-muted" style="font-size:0.85rem">{{ python_version }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Database -->
+  <div class="col-12 col-md-6">
+    <div class="panel h-100 mb-0">
+      <div class="panel-header">
+        <i class="bi bi-database"></i>Database
+      </div>
+      <div class="panel-body">
+        <div class="mb-2">
+          <div class="form-label">Path</div>
+          <code class="text-gold" style="font-size:0.8rem">{{ db_path }}</code>
+        </div>
+        <div>
+          <div class="form-label">Size</div>
+          <span class="text-muted" style="font-size:0.85rem">{{ db_size }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Library Stats -->
+  <div class="col-12 col-md-6">
+    <div class="panel h-100 mb-0">
+      <div class="panel-header">
+        <i class="bi bi-book"></i>Library
+      </div>
+      <div class="panel-body">
+        <div class="row g-2 text-center">
+          <div class="col-3">
+            <div class="stat-item">
+              <div class="val">{{ series_count }}</div>
+              <div class="lbl">Series</div>
+            </div>
+          </div>
+          <div class="col-3">
+            <div class="stat-item">
+              <div class="val">{{ volumes_count }}</div>
+              <div class="lbl">Volumes</div>
+            </div>
+          </div>
+          <div class="col-3">
+            <div class="stat-item">
+              <div class="val text-jade">{{ downloaded_count }}</div>
+              <div class="lbl">Downloaded</div>
+            </div>
+          </div>
+          <div class="col-3">
+            <div class="stat-item">
+              <div class="val text-gold">{{ wanted_count }}</div>
+              <div class="lbl">Wanted</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Root Folders -->
+  <div class="col-12">
+    <div class="panel mb-0">
+      <div class="panel-header">
+        <i class="bi bi-hdd"></i>Root Folders — Disk Space
+      </div>
+      <div class="panel-body">
+        {% if root_folders %}
+        {% for rf in root_folders %}
+        <div class="{% if not loop.first %}mt-3 pt-3{% endif %}" {% if not loop.last %}style="border-bottom:1px solid var(--edge);padding-bottom:0.75rem"{% endif %}>
+          <div class="d-flex align-items-center justify-content-between mb-1">
+            <code class="text-ember" style="font-size:0.8rem">{{ rf.path }}</code>
+            <span class="text-muted" style="font-size:0.78rem">
+              {{ rf.free_fmt }} free of {{ rf.total_fmt }}
+            </span>
+          </div>
+          <div style="background:var(--ink-5);border-radius:4px;height:8px;overflow:hidden">
+            <div style="
+              width: {{ rf.used_pct }}%;
+              height: 100%;
+              border-radius: 4px;
+              background: {% if rf.used_pct > 90 %}var(--ruby){% elif rf.used_pct > 75 %}var(--gold){% else %}var(--jade){% endif %};
+              transition: width 0.3s;
+            "></div>
+          </div>
+          <div class="text-muted" style="font-size:0.72rem; margin-top:2px">{{ rf.used_pct }}% used</div>
+        </div>
+        {% endfor %}
+        {% else %}
+        <div class="empty-state" style="padding:2rem">
+          <div class="empty-icon"><i class="bi bi-hdd"></i></div>
+          <p class="fw-semibold">No root folders configured</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

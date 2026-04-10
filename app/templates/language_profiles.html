@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+{% block title %}Language Profiles — Mangarr{% endblock %}
+{% block title_short %}Language Profiles{% endblock %}
+{% block nav_settings %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div class="page-heading mb-0"><i class="bi bi-translate"></i>Language Profiles</div>
+  <button class="btn btn-outline-ember btn-sm" data-bs-toggle="modal" data-bs-target="#newProfileModal">
+    <i class="bi bi-plus me-1"></i>New Profile
+  </button>
+</div>
+
+{% if request.query_params.get('error') == 'in-use' %}
+<div class="d-flex align-items-center gap-2 mb-3 px-3 py-2"
+     class="text-sm rounded-lg" style="background:var(--ruby-bg);border:1px solid rgba(240,80,80,0.2);color:var(--ruby)">
+  <i class="bi bi-exclamation-triangle-fill"></i>Cannot delete this profile — one or more series are using it. Reassign the series first.
+</div>
+{% endif %}
+
+<div class="row g-3">
+{% for p in profiles %}
+{% set langs = p.languages | from_json([]) %}
+<div class="col-12">
+  <div class="panel mb-0">
+    <div class="panel-header d-flex align-items-center gap-2">
+      <i class="bi bi-globe2"></i>
+      {{ p.name }}
+      {% if p.id == default_id %}
+        <span class="badge-status badge-downloaded ms-1 text-[0.65rem]">DEFAULT</span>
+      {% endif %}
+      <div class="ms-auto d-flex gap-2">
+        <form method="POST" action="/language-profiles/{{ p.id }}/set-default" class="d-inline">
+          <button class="btn btn-sm btn-secondary" type="submit" title="Set as default">
+            <i class="bi bi-check-circle"></i>
+          </button>
+        </form>
+        <button class="btn btn-sm btn-outline-ember" data-bs-toggle="modal"
+                data-bs-target="#editModal{{ p.id }}"><i class="bi bi-pencil"></i></button>
+        <form method="POST" action="/language-profiles/{{ p.id }}/delete"
+              data-confirm="Delete language profile &quot;{{ p.name }}&quot;?"
+              data-confirm-heading="Delete profile" data-confirm-ok="Delete">
+          <button class="btn btn-sm btn-danger-soft"><i class="bi bi-trash"></i></button>
+        </form>
+      </div>
+    </div>
+    <div class="panel-body">
+      <div class="row g-3">
+        <div class="col-auto">
+          <div class="form-label">Languages</div>
+          <div class="d-flex gap-2 flex-wrap">
+            {% if p.allow_any %}
+              <span class="badge-status badge-downloaded">Any</span>
+            {% else %}
+              {% for code in langs %}
+              <span class="badge-status badge-grabbed">
+                {{ supported_languages.get(code, code) }}
+              </span>
+              {% endfor %}
+            {% endif %}
+          </div>
+        </div>
+        <div class="col-auto">
+          <div class="form-label">Allow Any</div>
+          <span class="badge-status {% if p.allow_any %}badge-downloaded{% else %}badge-wanted{% endif %}">
+            {% if p.allow_any %}Yes{% else %}No{% endif %}
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div class="modal fade" id="editModal{{ p.id }}" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="POST" action="/language-profiles/{{ p.id }}">
+        <div class="modal-header">
+          <h6 class="modal-title text-ember">Edit: {{ p.name }}</h6>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Name</label>
+            <input type="text" name="name" class="form-control" value="{{ p.name }}" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Languages</label>
+            <div class="row g-2">
+              {% for code, label in supported_languages.items() %}
+              {% if code != 'any' %}
+              <div class="col-auto">
+                <div class="form-check">
+                  <input class="form-check-input lang-check-{{ p.id }}" type="checkbox"
+                         name="lang_{{ code }}" value="{{ code }}"
+                         id="edit_{{ p.id }}_{{ code }}"
+                         {% if code in langs %}checked{% endif %}
+                         {% if p.allow_any %}disabled{% endif %}>
+                  <label class="form-check-label" for="edit_{{ p.id }}_{{ code }}">{{ label }}</label>
+                </div>
+              </div>
+              {% endif %}
+              {% endfor %}
+            </div>
+            <input type="hidden" name="languages" id="langVal{{ p.id }}"
+                   value="{{ langs | join(',') }}">
+            <div class="form-text mt-1">Ignored when Allow Any is enabled.</div>
+          </div>
+          <div class="mb-3">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" name="allow_any"
+                     value="1" {% if p.allow_any %}checked{% endif %}
+                     id="allowAny{{ p.id }}"
+                     onchange="toggleLangChecks({{ p.id }}, this.checked)">
+              <label class="form-check-label" for="allowAny{{ p.id }}">
+                Allow Any Language <small class="text-[color:var(--text-2)]">(disables language filtering entirely)</small>
+              </label>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-ember btn-sm"
+                  onclick="collectLangs({{ p.id }})">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+{% if not profiles %}
+<div class="col-12">
+  <div class="empty-state">
+    <div class="empty-icon"><i class="bi bi-translate"></i></div>
+    <p class="fw-semibold">No language profiles yet</p>
+    <p class="text-sm" style="color:var(--text-3)">Create a profile to filter releases by detected language.</p>
+  </div>
+</div>
+{% endif %}
+</div>
+
+<!-- New Profile Modal -->
+<div class="modal fade" id="newProfileModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="POST" action="/language-profiles">
+        <div class="modal-header">
+          <h6 class="modal-title text-ember"><i class="bi bi-plus-circle me-2"></i>New Language Profile</h6>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Name</label>
+            <input type="text" name="name" class="form-control" placeholder="e.g. English Only" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Languages</label>
+            <div class="row g-2" id="newLangChecks">
+              {% for code, label in supported_languages.items() %}
+              {% if code != 'any' %}
+              <div class="col-auto">
+                <div class="form-check">
+                  <input class="form-check-input new-lang-check" type="checkbox"
+                         name="lang_{{ code }}" value="{{ code }}"
+                         id="new_{{ code }}"
+                         {% if code == 'en' %}checked{% endif %}>
+                  <label class="form-check-label" for="new_{{ code }}">{{ label }}</label>
+                </div>
+              </div>
+              {% endif %}
+              {% endfor %}
+            </div>
+            <input type="hidden" name="languages" id="newLangVal" value="en">
+            <div class="form-text mt-1">Ignored when Allow Any is enabled.</div>
+          </div>
+          <div class="mb-3">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" name="allow_any"
+                     value="1" id="newAllowAny"
+                     onchange="toggleNewLangChecks(this.checked)">
+              <label class="form-check-label" for="newAllowAny">
+                Allow Any Language <small class="text-[color:var(--text-2)]">(disables language filtering entirely)</small>
+              </label>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-ember btn-sm" onclick="collectNewLangs()">Create</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function collectLangs(profileId) {
+  const checks = document.querySelectorAll('.lang-check-' + profileId + ':checked');
+  const codes  = Array.from(checks).map(c => c.value);
+  document.getElementById('langVal' + profileId).value = codes.join(',') || 'any';
+}
+function toggleLangChecks(profileId, disabled) {
+  document.querySelectorAll('.lang-check-' + profileId).forEach(c => { c.disabled = disabled; });
+}
+function collectNewLangs() {
+  const checks = document.querySelectorAll('.new-lang-check:checked');
+  const codes  = Array.from(checks).map(c => c.value);
+  document.getElementById('newLangVal').value = codes.join(',') || 'any';
+}
+function toggleNewLangChecks(disabled) {
+  document.querySelectorAll('.new-lang-check').forEach(c => { c.disabled = disabled; });
+}
+</script>
+{% endblock %}

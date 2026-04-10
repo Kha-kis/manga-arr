@@ -1,0 +1,488 @@
+{#
+  Partial: partials/queue_table.html
+  Context variables required:
+    queue_rows  — list of queue row dicts (from _build_queue_rows())
+#}
+
+{% if queue_rows %}
+<div class="table-wrap mb-4">
+  <table class="table table-sm mb-0">
+    <thead>
+      <tr>
+        <th>Series</th>
+        <th style="width:85px">Volume</th>
+        <th>Release</th>
+        <th style="width:65px">Size</th>
+        <th style="width:150px">Status</th>
+        <th style="width:160px">Progress</th>
+        <th style="width:90px"></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for row in queue_rows %}
+    <tr id="qrow-{{ row.hash or row.pending_id or loop.index }}" {% if row.stage == 'pending' %}style="opacity:0.7"{% endif %}>
+
+      <td>
+        {% if row.series_id %}
+        <a href="/series/{{ row.series_id }}" class="fw-semibold text-ember text-sm">{{ row.series_title }}</a>
+        {% else %}
+        <span class="text-sm" style="color:var(--text-2)">{{ row.series_title or '—' }}</span>
+        {% endif %}
+      </td>
+
+      <td>
+        {% if row.vol_label %}
+        <span class="badge-status badge-grabbed text-2xs">{{ row.vol_label }}</span>
+        {% else %}
+        <span class="text-xs" style="color:var(--text-3)">—</span>
+        {% endif %}
+      </td>
+
+      <td>
+        <span class="text-xs" style="color:var(--text-2); display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:280px"
+              title="{{ row.torrent_name }}">{{ row.torrent_name or '—' }}</span>
+        <div class="pill-badges mt-1">
+          {% if row.indexer %}<span class="badge-status badge-indexer">{{ row.indexer }}</span>{% endif %}
+          {% if row.protocol %}<span class="badge-status badge-{{ row.protocol }}">{{ row.protocol }}</span>{% endif %}
+        </div>
+      </td>
+
+      <td class="text-xs" style="color:var(--text-2); white-space:nowrap">
+        {% if row.size_bytes and row.size_bytes > 0 %}{{ row.size_bytes|format_bytes }}{% else %}—{% endif %}
+      </td>
+
+      <td>
+        {% if row.stage == 'downloading' %}<span class="badge-status badge-releasing"><i class="bi bi-arrow-down-circle me-1"></i>Downloading</span>
+        {% elif row.stage == 'queued_dl' %}<span class="badge-status badge-not_yet_released"><i class="bi bi-hourglass me-1"></i>Queued</span>
+        {% elif row.stage == 'stalled' %}<span class="badge-status badge-stalled"><i class="bi bi-exclamation-triangle me-1"></i>Stalled</span>
+        {% elif row.stage == 'paused' %}<span class="badge-status badge-unknown"><i class="bi bi-pause-circle me-1"></i>Paused</span>
+        {% elif row.stage == 'error' %}<span class="badge-status badge-wanted"><i class="bi bi-x-circle me-1"></i>Error</span>
+        {% elif row.stage == 'warning' %}<span class="badge-status badge-grabbed" style="color:var(--gold); background:var(--gold-bg)"><i class="bi bi-exclamation-diamond me-1"></i>Missing</span>
+        {% elif row.stage == 'review' %}<span class="badge-status badge-hiatus"><i class="bi bi-exclamation-circle me-1"></i>Needs Review</span>
+        {% elif row.stage == 'pending' %}<span class="badge-status badge-not_yet_released"><i class="bi bi-hourglass-split me-1"></i>Pending</span>
+        {% endif %}
+        {% if row.error_message %}
+        <div class="text-2xs" style="color:var(--ruby); margin-top:2px" title="{{ row.error_message }}">
+          {{ row.error_message[:55] }}{% if row.error_message|length > 55 %}…{% endif %}
+        </div>
+        {% endif %}
+        {% if row.stage == 'warning' %}
+        <div class="text-2xs" style="color:var(--text-3); margin-top:2px">Not found in download client</div>
+        {% endif %}
+      </td>
+
+      <td>
+        {% if row.stage in ('downloading', 'queued_dl', 'stalled', 'paused', 'error') %}
+        <div style="height:3px; background:var(--ink-5); border-radius:2px; overflow:hidden; margin-bottom:3px">
+          <div style="height:100%; width:{{ row.progress }}%; border-radius:2px;
+                      background:{% if row.stage == 'error' %}var(--ruby){% elif row.stage == 'stalled' %}var(--amber){% else %}var(--ember){% endif %}"></div>
+        </div>
+        <span class="text-2xs" style="color:var(--text-3)">
+          {{ row.progress }}%
+          {%- if row.dlspeed and row.dlspeed > 0 %} · {{ row.dlspeed|format_bytes }}/s{% endif %}
+          {%- set eta = row.eta|int %}
+          {%- if eta > 0 and eta < 8640000 %}
+            {%- set h = eta // 3600 %}{%- set m = (eta % 3600) // 60 %}
+            · {% if h > 0 %}{{ h }}h {{ m }}m{% else %}{{ m }}m{% endif %}
+          {%- endif %}
+        </span>
+        {% elif row.stage == 'review' %}
+        <div style="height:3px; background:var(--ink-5); border-radius:2px; overflow:hidden; margin-bottom:3px">
+          <div style="height:100%; width:100%; background:var(--iris); border-radius:2px"></div>
+        </div>
+        <span class="text-2xs" style="color:var(--text-3)">Download complete</span>
+        {% elif row.stage == 'pending' %}
+        <span class="text-2xs" style="color:var(--text-3)">
+          <i class="bi bi-clock me-1"></i>Since {{ row.grabbed_at | format_date if row.grabbed_at else '—' }}
+        </span>
+        {% endif %}
+      </td>
+
+      <td class="text-end pe-3">
+        {% if row.stage == 'review' %}
+        <div class="d-flex gap-1 justify-content-end">
+          <button class="btn btn-sm px-2 py-1 text-xs"
+                  style="color:var(--iris); border:1px solid rgba(152,120,248,0.3); background:var(--iris-bg)"
+                  data-bs-toggle="modal" data-bs-target="#review-{{ row.queue_id }}">
+            <i class="bi bi-box-arrow-in-down me-1"></i>Import
+          </button>
+          <button class="btn btn-sm px-2 py-1 text-xs"
+                  data-bs-toggle="modal" data-bs-target="#rm-{{ row.hash }}"
+                  aria-label="Remove from queue">
+            <i class="bi bi-x-circle"></i>
+          </button>
+        </div>
+        {% elif row.stage == 'pending' %}
+        <div class="d-flex gap-1 justify-content-end">
+          <button class="btn btn-sm px-2 py-1 text-ember text-xs"
+                  style="border:1px solid rgba(240,132,40,0.3); background:var(--ember-lo)"
+                  title="Force grab now — bypass delay profile"
+                  hx-post="/queue/pending/{{ row.pending_id }}/force-grab"
+                  hx-target="#queue-body"
+                  hx-swap="innerHTML"
+                  hx-disabled-elt="this">
+            <i class="bi bi-lightning-charge me-1"></i>Grab Now
+          </button>
+          <button class="btn btn-sm px-2 py-1 text-xs"
+                  style="color:var(--text-2); border:1px solid var(--edge-2)"
+                  title="Dismiss — remove from delay queue without grabbing"
+                  hx-post="/queue/pending/{{ row.pending_id }}/dismiss"
+                  hx-target="#queue-body"
+                  hx-swap="innerHTML"
+                  hx-confirm="Dismiss this pending release? It won't be grabbed automatically."
+                  hx-disabled-elt="this">
+            <i class="bi bi-x me-1"></i>Dismiss
+          </button>
+        </div>
+        {% elif row.stage == 'warning' %}
+        <div class="d-flex gap-1 justify-content-end">
+          <button class="btn btn-sm px-2 py-1 text-gold text-xs"
+                  style="border:1px solid rgba(240,184,40,0.3); background:var(--gold-bg)"
+                  title="Reset volumes to wanted and re-search"
+                  hx-post="/queue/grabbed/{{ row.hash }}/reset-all"
+                  hx-target="#queue-body"
+                  hx-swap="innerHTML"
+                  hx-confirm="Reset these volumes to wanted so they can be re-grabbed?"
+                  hx-disabled-elt="this">
+            <i class="bi bi-arrow-counterclockwise me-1"></i>Re-search
+          </button>
+        </div>
+        {% elif row.hash %}
+        <div class="d-flex gap-1 justify-content-end">
+          <button class="btn btn-sm px-2 py-1 text-xs"
+                  style="color:var(--ruby); border:1px solid rgba(240,80,80,0.25); background:var(--ruby-bg)"
+                  data-bs-toggle="modal" data-bs-target="#rm-{{ row.hash }}">
+            <i class="bi bi-x-circle me-1"></i>Remove
+          </button>
+        </div>
+        {% endif %}
+      </td>
+
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{# Review modals — rendered alongside the table so they stay in sync with polling updates #}
+{% for row in queue_rows %}
+{% if row.stage == 'review' and row.queue_id %}
+<div class="modal fade" id="review-{{ row.queue_id }}" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <div class="fw-bold text-ember">{{ row.series_title }}</div>
+          <div class="text-muted text-xs">{{ row.torrent_name }}</div>
+        </div>
+        <button type="button" class="btn-close ms-3" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="POST" action="/import/{{ row.queue_id }}/process">
+        <div class="modal-body p-0">
+          <table class="table table-sm mb-0">
+            <thead>
+              <tr>
+                <th>Filename</th>
+                <th style="width:110px">Volume</th>
+                <th style="width:90px">Chapter</th>
+                <th style="width:60px">Skip</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for f in row.files %}
+              {% set is_chapter = f['file_type'] == 'chapter' if 'file_type' in f.keys() else false %}
+              {% set unmapped = not f['proposed_volume'] and not f['proposed_chapter'] %}
+              <tr id="mr_{{ f['id'] }}" {% if unmapped %}style="background:rgba(240,80,80,0.06)"{% endif %}>
+                <td style="font-size:0.82rem; font-family:var(--font-mono); word-break:break-all">
+                  {{ f['filename'] }}
+                  {% if is_chapter %}<span class="badge-status badge-sky ms-1" style="font-size:0.6rem">chapter</span>{% endif %}
+                  {% if unmapped %}<span class="badge-status badge-wanted ms-1">unmapped</span>{% endif %}
+                </td>
+                <td>
+                  <input type="number" name="vol_{{ f['id'] }}" class="form-control form-control-sm"
+                         value="{{ f['proposed_volume']|int if f['proposed_volume'] else '' }}"
+                         placeholder="?" step="1" min="1" style="width:90px; font-size:0.8rem">
+                </td>
+                <td>
+                  {% if is_chapter %}
+                  <input type="number" name="chap_{{ f['id'] }}" class="form-control form-control-sm"
+                         value="{{ f['proposed_chapter'] if f['proposed_chapter'] else '' }}"
+                         placeholder="?" step="0.1" min="0" style="width:80px; font-size:0.8rem">
+                  {% endif %}
+                </td>
+                <td>
+                  <input class="form-check-input" type="checkbox" name="skip_{{ f['id'] }}" value="1"
+                         id="ms_{{ f['id'] }}" onchange="dimRow('mr_{{ f['id'] }}', this.checked)">
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="modal-footer">
+          <code class="text-2xs" style="color:var(--text-3); margin-right:auto">{{ row.src_dir }}</code>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="skipAll({{ row.queue_id }})">Skip All</button>
+          <button type="submit" class="btn-grab btn btn-sm px-3"><i class="bi bi-box-arrow-in-down me-1"></i>Import</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endfor %}
+
+{% for row in queue_rows %}
+{% if row.stage == 'review' and row.queue_id %}
+<form id="skip-form-{{ row.queue_id }}" method="POST" action="/import/{{ row.queue_id }}/skip" style="display:none"></form>
+{% endif %}
+{% endfor %}
+
+{# ── Suwayomi Downloads ── #}
+{% if suwayomi_rows %}
+<div class="panel mb-4">
+  <div class="panel-header">
+    <i class="bi bi-cloud-arrow-down me-1"></i>Suwayomi Downloads
+    <span class="ms-2 text-xs" style="color:var(--text-3);font-weight:400">{{ suwayomi_rows|length }} active</span>
+  </div>
+  <div class="table-wrap mb-0">
+    <table class="table table-sm mb-0">
+      <thead>
+        <tr>
+          <th>Series</th>
+          <th style="width:85px">Volume</th>
+          <th style="width:180px">Progress</th>
+          <th style="width:110px">Status</th>
+          <th style="width:90px"></th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for job in suwayomi_rows %}
+      <tr>
+        <td>
+          <a href="/series/{{ job.series_id }}" class="fw-semibold text-ember text-sm">{{ job.series_title }}</a>
+        </td>
+        <td>
+          <span class="badge-status badge-grabbed text-2xs">{{ job.vol_label }}</span>
+        </td>
+        <td>
+          {% if job.status == 'error' %}
+          <div style="height:3px; background:var(--ink-5); border-radius:2px; overflow:hidden; margin-bottom:3px">
+            <div style="height:100%; width:100%; background:var(--ruby); border-radius:2px"></div>
+          </div>
+          <span class="text-2xs" style="color:var(--ruby)" title="{{ job.error }}">
+            {{ (job.error or 'Import failed')[:45] }}{% if (job.error or '')|length > 45 %}…{% endif %}
+          </span>
+          {% else %}
+          <div style="height:3px; background:var(--ink-5); border-radius:2px; overflow:hidden; margin-bottom:3px">
+            <div style="height:100%; width:{{ job.progress }}%; background:var(--jade); border-radius:2px"></div>
+          </div>
+          <span class="text-2xs" style="color:var(--text-3)">{{ job.done }}/{{ job.total }} chapters</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if job.status == 'error' %}
+          <span class="badge-status badge-wanted"><i class="bi bi-x-circle me-1"></i>Error</span>
+          {% elif job.status == 'queued' %}
+          <span class="badge-status badge-not_yet_released"><i class="bi bi-hourglass me-1"></i>Queued</span>
+          {% else %}
+          <span class="badge-status badge-releasing"><i class="bi bi-cloud-arrow-down me-1"></i>Downloading</span>
+          {% endif %}
+        </td>
+        <td class="text-end pe-3">
+          <div class="d-flex gap-1 justify-content-end">
+            {% if job.status == 'error' %}
+            <button class="btn btn-sm px-2 py-1 text-xs"
+                    style="color:var(--jade); border:1px solid rgba(34,200,122,0.25); background:var(--jade-bg)"
+                    title="Retry this download"
+                    hx-post="/api/suwayomi/jobs/{{ job.job_id }}/retry"
+                    hx-swap="none"
+                    hx-on::after-request="htmx.ajax('GET', '/queue/table', {target: '#queue-body', swap: 'innerHTML'})"
+                    hx-disabled-elt="this">
+              <i class="bi bi-arrow-repeat me-1"></i>Retry
+            </button>
+            {% endif %}
+            <button class="btn btn-sm px-2 py-1 text-xs"
+                    style="color:var(--text-2); border:1px solid var(--edge-2)"
+                    title="Cancel and remove from queue" aria-label="Cancel and remove from queue"
+                    hx-post="/api/suwayomi/jobs/{{ job.job_id }}/cancel"
+                    hx-swap="none"
+                    hx-confirm="Cancel this download? The volume will be reset to Wanted."
+                    hx-on::after-request="htmx.ajax('GET', '/queue/table', {target: '#queue-body', swap: 'innerHTML'})"
+                    hx-disabled-elt="this">
+              <i class="bi bi-x"></i>
+            </button>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{# ── Remove from Queue modals — one per queue item that has a hash ── #}
+{% for row in queue_rows %}
+{% if row.hash %}
+<div class="modal fade" id="rm-{{ row.hash }}" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered" style="max-width:480px">
+    <div class="modal-content">
+      <div x-data="{ rfc: '1', df: false, bl: false, catVal: '{{ configured_category }}' }">
+        <form method="POST" action="/queue/torrent/{{ row.hash }}/remove"
+              hx-post="/queue/torrent/{{ row.hash }}/remove"
+              hx-target="#queue-body"
+              hx-swap="innerHTML"
+              hx-disabled-elt="find button[type='submit']"
+              hx-on::before-request="bootstrap.Modal.getInstance(document.getElementById('rm-{{ row.hash }}'))?.hide(); showToast('Removing from queue…', 'info'); var _r=document.getElementById('qrow-{{ row.hash }}'); if(_r) _r.style.opacity='0.3'"
+              hx-on::after-request="if(event.detail.successful) showToast('Removed from queue', 'success')">
+          <div class="modal-header">
+            <h6 class="modal-title" style="font-size:0.9rem; font-weight:700; color:var(--text)">
+              <i class="bi bi-x-circle me-2 text-ruby"></i>Remove from Queue
+            </h6>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body" style="padding:20px">
+
+            {# Release name chip #}
+            <div class="mb-4 p-3 rounded" style="background:var(--ink-3); border:1px solid var(--edge-2)">
+              <div style="font-size:0.6rem; font-weight:700; letter-spacing:0.1em; text-transform:uppercase; color:var(--text-3); margin-bottom:5px">
+                Release
+              </div>
+              <div style="font-family:var(--font-mono); font-size:0.75rem; color:var(--text); word-break:break-all; line-height:1.4">
+                {{ row.torrent_name or '—' }}
+              </div>
+              {% if row.series_title %}
+              <div class="mt-2" style="font-size:0.72rem; color:var(--ember)">{{ row.series_title }}</div>
+              {% endif %}
+            </div>
+
+            {# Removal Method — three options #}
+            <div class="mb-3">
+              <div style="font-size:0.72rem; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-3); margin-bottom:10px">
+                Removal Method
+              </div>
+              <div class="d-flex flex-column gap-2">
+
+                {# Keep in client #}
+                <label class="d-flex align-items-start gap-3 p-3 rounded"
+                       style="cursor:pointer; border:1px solid var(--edge-2); background:var(--ink-3); transition:border-color 0.15s"
+                       :style="rfc==='0' ? 'border-color:var(--ember); background:var(--ember-lo)' : ''">
+                  <input type="radio" name="remove_from_client" value="0"
+                         class="form-check-input flex-shrink-0 mt-1"
+                         @change="rfc='0'; df=false">
+                  <div>
+                    <div style="font-size:0.82rem; font-weight:600; color:var(--text)">Keep in Download Client</div>
+                    <div style="font-size:0.72rem; color:var(--text-3); line-height:1.4; margin-top:3px">
+                      Remove from Mangarr tracking only. Torrent continues unchanged in the client.
+                    </div>
+                  </div>
+                </label>
+
+                {# Change category — keep + move to new category #}
+                <label class="d-flex align-items-start gap-3 p-3 rounded"
+                       style="cursor:pointer; border:1px solid var(--edge-2); background:var(--ink-3); transition:border-color 0.15s"
+                       :style="rfc==='cat' ? 'border-color:var(--sky); background:var(--sky-bg)' : ''">
+                  <input type="radio" name="remove_from_client" value="0"
+                         class="form-check-input flex-shrink-0 mt-1"
+                         @change="rfc='cat'; df=false">
+                  <div style="flex:1">
+                    <div style="font-size:0.82rem; font-weight:600; color:var(--text)">
+                      <i class="bi bi-tag me-1" :style="rfc==='cat' ? 'color:var(--sky)' : 'color:var(--text-3)'"></i>Change Category
+                    </div>
+                    <div style="font-size:0.72rem; color:var(--text-3); line-height:1.4; margin-top:3px">
+                      Keep in client but move to a different category — e.g. a seed-only label after Mangarr is done.
+                    </div>
+                    <div x-show="rfc==='cat'" x-transition class="mt-2" @click.stop>
+                      <input type="text" name="change_category" x-model="catVal"
+                             :disabled="rfc!=='cat'"
+                             class="form-control form-control-sm"
+                             style="font-family:var(--font-mono); font-size:0.82rem"
+                             autocomplete="off" spellcheck="false">
+                    </div>
+                  </div>
+                </label>
+
+                {# Remove from client #}
+                <label class="d-flex align-items-start gap-3 p-3 rounded"
+                       style="cursor:pointer; border:1px solid var(--edge-2); background:var(--ink-3); transition:border-color 0.15s"
+                       :style="rfc==='1' ? 'border-color:var(--ember); background:var(--ember-lo)' : ''">
+                  <input type="radio" name="remove_from_client" value="1"
+                         class="form-check-input flex-shrink-0 mt-1"
+                         checked @change="rfc='1'">
+                  <div>
+                    <div style="font-size:0.82rem; font-weight:600; color:var(--text)">Remove from Download Client</div>
+                    <div style="font-size:0.72rem; color:var(--text-3); line-height:1.4; margin-top:3px">
+                      Delete the torrent from the client. Volumes reset to <span style="color:var(--ember)">Wanted</span>.
+                    </div>
+                  </div>
+                </label>
+
+              </div>
+            </div>
+
+            {# Delete Files — shown when removing from client #}
+            <div class="mb-3" x-show="rfc==='1'" x-transition>
+              <label class="d-flex align-items-start gap-3 p-3 rounded"
+                     style="cursor:pointer; border:1px solid var(--edge-2); background:var(--ink-3); transition:border-color 0.15s"
+                     :style="df ? 'border-color:var(--ruby); background:var(--ruby-bg)' : ''">
+                <input type="checkbox" name="delete_files" value="1"
+                       class="form-check-input flex-shrink-0 mt-1"
+                       :disabled="rfc!=='1'"
+                       @change="df=$event.target.checked">
+                <div>
+                  <div style="font-size:0.82rem; font-weight:600; color:var(--text)">
+                    <i class="bi bi-trash3 me-1" :style="df ? 'color:var(--ruby)' : ''"></i>Delete Files
+                  </div>
+                  <div style="font-size:0.72rem; color:var(--text-3); line-height:1.4; margin-top:3px">
+                    Also delete the downloaded file(s) from the download client.
+                  </div>
+                </div>
+              </label>
+            </div>
+
+            {# Options #}
+            <div>
+              <div style="font-size:0.72rem; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-3); margin-bottom:10px">
+                Options
+              </div>
+              <label class="d-flex align-items-start gap-3 p-3 rounded"
+                     style="cursor:pointer; border:1px solid var(--edge-2); background:var(--ink-3); transition:border-color 0.15s"
+                     :style="bl ? 'border-color:var(--gold); background:var(--gold-bg)' : ''">
+                <input type="checkbox" name="blocklist" value="1"
+                       class="form-check-input flex-shrink-0 mt-1"
+                       @change="bl=$event.target.checked">
+                <div>
+                  <div style="font-size:0.82rem; font-weight:600; color:var(--text)">
+                    <i class="bi bi-slash-circle me-1" :style="bl ? 'color:var(--gold)' : 'color:var(--text-3)'"></i>Blocklist Release
+                  </div>
+                  <div style="font-size:0.72rem; color:var(--text-3); line-height:1.4; margin-top:3px">
+                    Blocks this release from being re-downloaded via RSS or automatic search.
+                  </div>
+                </div>
+              </label>
+            </div>
+
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+            <button type="submit" class="btn btn-sm"
+                    style="background:var(--ruby-bg); border:1px solid rgba(240,80,80,0.35); color:var(--ruby); font-weight:600">
+              <i class="bi bi-x-circle me-1"></i>Remove
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endfor %}
+
+
+{% else %}
+<div class="empty-state">
+  <div class="empty-icon"><i class="bi bi-check-circle-fill text-jade"></i></div>
+  <p class="fw-semibold">Queue is empty</p>
+  <p class="text-sm" style="color:var(--text-3)">No active downloads, pending releases, or items awaiting review.</p>
+</div>
+{% endif %}

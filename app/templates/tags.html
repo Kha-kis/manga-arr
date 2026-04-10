@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Tags — Mangarr{% endblock %}
+{% block title_short %}Tags{% endblock %}
+{% block nav_settings %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div class="page-heading mb-0"><i class="bi bi-tags-fill"></i>Tags</div>
+  <span class="text-muted" style="font-size:.82rem">{{ tags | length }} tag{{ 's' if tags | length != 1 else '' }}</span>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <i class="bi bi-tag"></i>All Tags
+  </div>
+  <div class="panel-body p-0">
+    {% if tags %}
+    <div class="table-wrap mb-0">
+      <table class="table table-sm mb-0">
+        <thead>
+          <tr>
+            <th>Tag</th>
+            <th style="width:120px">Series</th>
+            <th style="width:180px">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in tags %}
+          <tr id="tag-row-{{ loop.index }}">
+            <td id="tag-display-{{ loop.index }}">
+              <span class="badge-status badge-releasing" style="font-size:.75rem">{{ t.tag }}</span>
+            </td>
+            <td id="tag-rename-{{ loop.index }}" style="display:none" colspan="1">
+              <form method="POST" action="/api/tags/rename" class="d-flex gap-2 align-items-center"
+                    style="max-width:320px">
+                <input type="hidden" name="old_name" value="{{ t.tag }}">
+                <input type="text" name="new_name" class="form-control form-control-sm"
+                       value="{{ t.tag }}" required style="font-size:.82rem">
+                <button type="submit" class="btn btn-sm btn-action btn-ember">
+                  Save
+                </button>
+                <button type="button" class="btn btn-sm btn-action btn-secondary"
+                        onclick="cancelRename({{ loop.index }})">
+                  Cancel
+                </button>
+              </form>
+            </td>
+            <td>
+              <span class="text-muted" style="font-size:.84rem">{{ t.series_count }}</span>
+            </td>
+            <td id="tag-actions-{{ loop.index }}">
+              <div class="d-flex gap-2">
+                <button class="btn btn-sm btn-action btn-outline-ember"
+                        onclick="startRename({{ loop.index }})"
+                        aria-label="Rename" title="Rename">
+                  <i class="bi bi-pencil"></i> Rename
+                </button>
+                <form method="POST" action="/api/tags/{{ t.tag | urlencode }}/delete"
+                      data-confirm="Delete tag &quot;{{ t.tag }}&quot;? This removes it from all {{ t.series_count }} series."
+                      data-confirm-heading="Delete tag" data-confirm-ok="Delete">
+                  <button type="submit" class="btn btn-sm btn-action btn-danger-soft"
+                          aria-label="Delete" title="Delete">
+                    <i class="bi bi-trash"></i>
+                  </button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <div class="empty-icon"><i class="bi bi-tags"></i></div>
+      <p class="fw-semibold">No tags yet</p>
+      <p style="font-size:0.82rem;color:var(--text-3)">Tags are added to series from the series detail page.</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function startRename(idx) {
+  document.getElementById('tag-display-' + idx).style.display = 'none';
+  document.getElementById('tag-rename-'  + idx).style.display = '';
+  document.getElementById('tag-actions-' + idx).style.display = 'none';
+  const input = document.querySelector('#tag-rename-' + idx + ' input[name="new_name"]');
+  if (input) { input.focus(); input.select(); }
+}
+
+function cancelRename(idx) {
+  document.getElementById('tag-display-' + idx).style.display = '';
+  document.getElementById('tag-rename-'  + idx).style.display = 'none';
+  document.getElementById('tag-actions-' + idx).style.display = '';
+}
+</script>
+{% endblock %}
