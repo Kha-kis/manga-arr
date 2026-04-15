@@ -1,16 +1,17 @@
 """Tests for M2: partial-import atomicity.
 
-Focus on the _ImportStaging helper primitive. The helper is what makes
-batch rollback possible: every file op lands under a per-batch staging
-directory, and commit_all / rollback decide whether the batch commits
-or disappears.
-
-We exercise the helper directly (hardlink, copy, move; success and
-failure paths). Integration with _execute_import's SAVEPOINT + commit
-decision is tested separately via its own path.
+Two layers:
+  1. _ImportStaging helper primitives (hardlink/copy/move, commit/rollback,
+     CBR→CBZ rename, staging-dir hygiene)
+  2. _execute_import integration — exercises the SAVEPOINT + staging
+     commit/rollback decision end-to-end against a real sqlite DB with
+     real source/destination files.
 """
+import asyncio
 import hashlib
 import os
+import sqlite3
+import tempfile
 
 import pytest
 
@@ -283,3 +284,365 @@ def test_staging_cleaned_up_on_both_commit_and_rollback(tmp_path, dst_dir):
     # dst_dir should have only the successful commit artifact.
     remaining = sorted(os.listdir(dst_dir))
     assert remaining == ["a.cbz"], f"unexpected leftovers: {remaining}"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Integration: drive _execute_import against a real sqlite DB + real files
+# ═══════════════════════════════════════════════════════════════════════
+
+def _run(coro):
+    """Run a coroutine in a fresh event loop; restore a default afterwards
+    so subsequent tests that use asyncio.get_event_loop() still work."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+
+@pytest.fixture
+def exec_env(tmp_path, monkeypatch):
+    """Set up a fresh DB + library root + source dir and yield everything
+    _execute_import needs to run against a real sqlite3 file."""
+    import main
+    import shared
+
+    db_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    db_tmp.close()
+    os.unlink(db_tmp.name)
+    monkeypatch.setattr(main, "DB_PATH", db_tmp.name)
+    monkeypatch.setattr(shared, "DB_PATH", db_tmp.name)
+    main.init_db()
+    main.load_config()
+
+    # Stub fire-and-forget side-effects so the integration test stays
+    # hermetic and fast. None of these are what we're testing here.
+    async def _noop_async(*a, **kw):
+        return None
+    monkeypatch.setattr(main, "notify_discord", _noop_async)
+    monkeypatch.setattr(main, "trigger_komga_scan", _noop_async)
+    monkeypatch.setattr(main, "broadcast_queue_event", _noop_async)
+    # log_event opens a SECOND sqlite connection while the outer write
+    # transaction is still open, which causes a 15-second SQLITE_BUSY
+    # timeout on every import (pre-existing slowness, not part of M2).
+    # Stub it so tests don't pay that cost.
+    monkeypatch.setattr(main, "log_event", lambda *a, **kw: None)
+
+    library_root = tmp_path / "library"
+    library_root.mkdir()
+    src_root = tmp_path / "downloads"
+    src_root.mkdir()
+
+    # Re-point save_path so _execute_import's dest_root lands in our tmp.
+    monkeypatch.setitem(main.CONFIG, "save_path", str(library_root))
+    import shared as _s
+    monkeypatch.setitem(_s.CONFIG, "save_path", str(library_root))
+
+    yield {
+        "db_path": db_tmp.name,
+        "library_root": str(library_root),
+        "src_root": str(src_root),
+        "series_title": "Test Series",
+        "dst_dir": str(library_root / "Test Series"),  # main.sanitize_filename("Test Series")
+    }
+
+    for ext in ("", "-wal", "-shm"):
+        p = db_tmp.name + ext
+        if os.path.exists(p):
+            os.unlink(p)
+
+
+def _seed_series(db_path, title="Test Series"):
+    with sqlite3.connect(db_path) as c:
+        c.execute(
+            "INSERT INTO series(title, search_pattern, monitored) VALUES(?,?,1)",
+            (title, title.lower().replace(" ", "-")),
+        )
+        c.commit()
+        return c.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+def _seed_queue(db_path, series_id, file_count, src_root, import_mode=None):
+    """Create a pending queue row plus `file_count` volume-file rows.
+    Creates real source files in src_root so the copy will actually work.
+    Returns (queue_id, [src_paths], [filenames])."""
+    src_paths = []
+    filenames = []
+    for i in range(1, file_count + 1):
+        name = f"Test Series v{i:02d}.cbz"
+        p = os.path.join(src_root, name)
+        with open(p, "wb") as f:
+            f.write(f"content-{i}".encode() * 100)   # distinct content per file
+        src_paths.append(p)
+        filenames.append(name)
+
+    with sqlite3.connect(db_path) as c:
+        c.row_factory = sqlite3.Row
+        c.execute(
+            "INSERT INTO import_queue(series_id, download_id, torrent_name,"
+            " torrent_url, volume_num, src_dir, status) VALUES(?,?,?,?,?,?,'pending')",
+            (series_id, "dl-test", "Test Series batch",
+             "magnet:test", 1.0, src_root),
+        )
+        qid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+        for i, (src, fname) in enumerate(zip(src_paths, filenames), start=1):
+            dst_placeholder = os.path.join(
+                src_root, fname,  # real dst_path is computed by _execute_import
+            )
+            c.execute(
+                "INSERT INTO import_queue_files(queue_id, filename, src_path,"
+                " dst_path, proposed_volume, file_type, status)"
+                " VALUES(?,?,?,?,?,'volume','pending')",
+                (qid, fname, src, dst_placeholder, float(i)),
+            )
+        c.commit()
+    return qid, src_paths, filenames
+
+
+def _file_rows(db_path, queue_id):
+    with sqlite3.connect(db_path) as c:
+        c.row_factory = sqlite3.Row
+        return c.execute(
+            "SELECT id, filename, status, dst_path FROM import_queue_files"
+            " WHERE queue_id=? ORDER BY id", (queue_id,)
+        ).fetchall()
+
+
+def _queue_row(db_path, queue_id):
+    with sqlite3.connect(db_path) as c:
+        c.row_factory = sqlite3.Row
+        return c.execute(
+            "SELECT * FROM import_queue WHERE id=?", (queue_id,)
+        ).fetchone()
+
+
+# ───────────── Test 1: mid-batch failure rolls back filesystem + DB ─────────────
+
+def test_execute_import_rolls_back_entire_batch_on_staging_failure(exec_env, monkeypatch):
+    """Multi-file queue, copy mode, file 3 fails during staging.
+
+    Expected:
+      - no final files at dst_dir (files 1-2 rolled back, files 4-5 never started)
+      - source files all intact (copy mode + rollback)
+      - staging dir is removed
+      - the one failing file is marked 'failed'; other files revert to 'pending'
+      - queue ends 'failed' (imported_count == 0, any_error True)
+    """
+    import main
+    monkeypatch.setitem(main.CONFIG, "import_mode", "copy")
+    monkeypatch.setitem(main.CONFIG, "save_path", exec_env["library_root"])
+
+    sid = _seed_series(exec_env["db_path"])
+    qid, srcs, fnames = _seed_queue(
+        exec_env["db_path"], sid, file_count=5,
+        src_root=exec_env["src_root"],
+    )
+
+    # Wrap _ImportStaging.stage so the 3rd call raises. This simulates a
+    # mid-staging filesystem failure (disk full, permission denied, ...).
+    real_stage = main._ImportStaging.stage
+    call_count = {"n": 0}
+    def _flaky_stage(self, src, final_path):
+        call_count["n"] += 1
+        if call_count["n"] == 3:
+            raise OSError("simulated stage failure on file 3")
+        return real_stage(self, src, final_path)
+    monkeypatch.setattr(main._ImportStaging, "stage", _flaky_stage)
+
+    result = _run(main._execute_import(qid))
+
+    # ── filesystem ──
+    assert result is not True, "execute_import should not report full success"
+    for name in fnames:
+        assert not os.path.exists(os.path.join(exec_env["dst_dir"], name)), \
+            f"{name} leaked to final dst"
+    for src in srcs:
+        assert os.path.isfile(src), f"source {src} lost after rollback"
+    # No .mangarr-staging-* directory left behind
+    if os.path.isdir(exec_env["dst_dir"]):
+        remaining = os.listdir(exec_env["dst_dir"])
+        assert all(not n.startswith(".mangarr-staging-") for n in remaining), \
+            f"staging dir left behind: {remaining}"
+
+    # ── DB ──
+    rows = _file_rows(exec_env["db_path"], qid)
+    assert len(rows) == 5
+    # File 3 (the one that failed stage()) is marked 'failed'
+    failed = [r for r in rows if r["status"] == "failed"]
+    assert len(failed) == 1, \
+        f"expected exactly 1 failed row, got: {[(r['filename'], r['status']) for r in rows]}"
+    assert failed[0]["filename"] == fnames[2]
+    # Files 1,2 were staged/DB-written but rolled back — they're pending again.
+    # Files 4,5 never reached the stage() call in the first place and stay pending.
+    pending = [r for r in rows if r["status"] == "pending"]
+    assert len(pending) == 4
+
+    # Queue row ends 'failed'
+    queue = _queue_row(exec_env["db_path"], qid)
+    assert queue["status"] == "failed", f"queue ended in {queue['status']!r}"
+
+
+# ───────────── Test 2: successful multi-file batch ─────────────
+
+def test_execute_import_happy_path_multi_file(exec_env, monkeypatch):
+    """All 3 files succeed. Final files exist with correct content;
+    sources intact (copy mode); staging dir cleaned; queue row and
+    queue_files rows deleted (current behaviour for status='imported')."""
+    import main
+    monkeypatch.setitem(main.CONFIG, "import_mode", "copy")
+    monkeypatch.setitem(main.CONFIG, "save_path", exec_env["library_root"])
+
+    sid = _seed_series(exec_env["db_path"])
+    qid, srcs, fnames = _seed_queue(
+        exec_env["db_path"], sid, file_count=3,
+        src_root=exec_env["src_root"],
+    )
+
+    result = _run(main._execute_import(qid))
+    # (_execute_import's return value is True only on full clean import.)
+    assert result is True, "multi-file happy path should return True"
+
+    # Every final file exists with the right content
+    for src, fname in zip(srcs, fnames):
+        final = os.path.join(exec_env["dst_dir"], fname)
+        assert os.path.isfile(final), f"missing final: {final}"
+        assert _digest(final) == _digest(src)
+        assert os.path.isfile(src), "copy mode must preserve source"
+
+    # Staging dir cleaned up
+    remaining = os.listdir(exec_env["dst_dir"])
+    assert all(not n.startswith(".mangarr-staging-") for n in remaining), \
+        f"staging dir left behind: {remaining}"
+
+    # On status='imported', current behaviour deletes queue + queue_files
+    # (main.py does this explicitly). Verify both rows are gone.
+    queue = _queue_row(exec_env["db_path"], qid)
+    assert queue is None, "successful import should delete import_queue row"
+    assert _file_rows(exec_env["db_path"], qid) == [], \
+        "successful import should delete import_queue_files rows"
+
+    # Volumes were written: 3 'downloaded' rows for this series
+    with sqlite3.connect(exec_env["db_path"]) as c:
+        c.row_factory = sqlite3.Row
+        vols = c.execute(
+            "SELECT volume_num, status, import_path FROM volumes"
+            " WHERE series_id=? ORDER BY volume_num", (sid,)
+        ).fetchall()
+    assert len(vols) == 3
+    for i, v in enumerate(vols, start=1):
+        assert v["status"] == "downloaded"
+        assert v["import_path"].endswith(f"v{i:02d}.cbz")
+
+
+# ───────────── Test 3: move mode — failed batch preserves sources ─────────────
+
+def test_execute_import_move_mode_failed_batch_preserves_sources(exec_env, monkeypatch):
+    """Move mode + mid-batch failure: the critical M2 guarantee.
+    Sources MUST survive the rollback — otherwise the user loses data
+    with no way to retry. No final files should leak."""
+    import main
+    monkeypatch.setitem(main.CONFIG, "import_mode", "move")
+    monkeypatch.setitem(main.CONFIG, "save_path", exec_env["library_root"])
+
+    sid = _seed_series(exec_env["db_path"])
+    qid, srcs, fnames = _seed_queue(
+        exec_env["db_path"], sid, file_count=4,
+        src_root=exec_env["src_root"],
+    )
+
+    real_stage = main._ImportStaging.stage
+    call_count = {"n": 0}
+    def _flaky_stage(self, src, final_path):
+        call_count["n"] += 1
+        if call_count["n"] == 3:
+            raise OSError("simulated move-mode stage failure on file 3")
+        return real_stage(self, src, final_path)
+    monkeypatch.setattr(main._ImportStaging, "stage", _flaky_stage)
+
+    _run(main._execute_import(qid))
+
+    # All 4 source files still exist — move deletion was deferred to
+    # commit_all, which never ran because of the rollback.
+    for src in srcs:
+        assert os.path.isfile(src), \
+            f"move mode lost source {src} during rollback (DATA LOSS)"
+    # No final files at destination
+    for name in fnames:
+        assert not os.path.exists(os.path.join(exec_env["dst_dir"], name))
+    # Queue ended 'failed'
+    assert _queue_row(exec_env["db_path"], qid)["status"] == "failed"
+
+
+# ───────────── Test 4: destination-overwrite behaviour ─────────────
+
+def test_successful_import_overwrites_existing_final_file(exec_env, monkeypatch):
+    """If the final destination already has a file (e.g. a prior import of
+    the same volume), a successful import replaces it in place."""
+    import main
+    monkeypatch.setitem(main.CONFIG, "import_mode", "copy")
+    monkeypatch.setitem(main.CONFIG, "save_path", exec_env["library_root"])
+
+    # Pre-create dst_dir with an existing file at the final path
+    os.makedirs(exec_env["dst_dir"], exist_ok=True)
+    preexisting = os.path.join(exec_env["dst_dir"], "Test Series v01.cbz")
+    with open(preexisting, "wb") as f:
+        f.write(b"OLD-CONTENT")
+    assert _digest(preexisting) == _digest(preexisting)  # sanity
+
+    sid = _seed_series(exec_env["db_path"])
+    qid, srcs, _ = _seed_queue(
+        exec_env["db_path"], sid, file_count=1,
+        src_root=exec_env["src_root"],
+    )
+
+    result = _run(main._execute_import(qid))
+    assert result is True
+
+    # File at final path is NEW content, not OLD.
+    assert os.path.isfile(preexisting)
+    with open(preexisting, "rb") as f:
+        final_bytes = f.read()
+    assert final_bytes != b"OLD-CONTENT"
+    # And it matches what was at source
+    assert _digest(preexisting) == _digest(srcs[0])
+
+
+def test_failed_batch_does_not_clobber_existing_final_file(exec_env, monkeypatch):
+    """If the batch fails, any pre-existing file at the final path must
+    survive untouched. Since the file op lands in staging first and is
+    never renamed, the final path is never opened for write."""
+    import main
+    monkeypatch.setitem(main.CONFIG, "import_mode", "copy")
+    monkeypatch.setitem(main.CONFIG, "save_path", exec_env["library_root"])
+
+    # Pre-create a file at the final path of file 1.
+    os.makedirs(exec_env["dst_dir"], exist_ok=True)
+    preexisting = os.path.join(exec_env["dst_dir"], "Test Series v01.cbz")
+    with open(preexisting, "wb") as f:
+        f.write(b"ORIGINAL-DO-NOT-CLOBBER")
+
+    sid = _seed_series(exec_env["db_path"])
+    qid, srcs, fnames = _seed_queue(
+        exec_env["db_path"], sid, file_count=3,
+        src_root=exec_env["src_root"],
+    )
+
+    # Fail on file 3 so the whole batch rolls back
+    real_stage = main._ImportStaging.stage
+    n = {"c": 0}
+    def _flaky_stage(self, src, final_path):
+        n["c"] += 1
+        if n["c"] == 3:
+            raise OSError("simulated failure")
+        return real_stage(self, src, final_path)
+    monkeypatch.setattr(main._ImportStaging, "stage", _flaky_stage)
+
+    _run(main._execute_import(qid))
+
+    # The pre-existing file at final path is UNCHANGED
+    assert os.path.isfile(preexisting)
+    with open(preexisting, "rb") as f:
+        assert f.read() == b"ORIGINAL-DO-NOT-CLOBBER", \
+            "rollback allowed a pre-existing final file to be clobbered"
