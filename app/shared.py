@@ -161,3 +161,48 @@ def get_root_folders(db) -> list:
     return db.execute(
         "SELECT * FROM root_folders ORDER BY is_default DESC, label, path"
     ).fetchall()
+
+
+# ── SQL ORDER BY allowlist helper ─────────────────────────────────────────────
+# Any endpoint that builds ORDER BY from request params MUST route through
+# build_order_by. It guarantees only values the caller hardcoded in `allowed`
+# end up in the emitted SQL — no interpolation of raw request strings.
+
+_VALID_ORDER_DIRECTIONS = frozenset({"asc", "desc"})
+
+
+def build_order_by(sort_key: str, *,
+                   allowed: "dict[str, str]",
+                   default_key: str,
+                   direction: "str | None" = None) -> str:
+    """Build a safe ORDER BY fragment from an allowlist.
+
+    Never interpolates request values into SQL. Only values present in
+    `allowed` (hardcoded by the caller) can appear in the returned string.
+
+    Args:
+      sort_key      — request-supplied sort key. Unknown / missing values
+                      fall back to `default_key`.
+      allowed       — {public_sort_key: SQL fragment}. Fragments may
+                      already include a direction (e.g. "added_at DESC")
+                      or be column-only; the `direction` parameter below
+                      can append one either way.
+      default_key   — fallback sort key; MUST be a key in `allowed`.
+      direction     — optional "asc" / "desc" (case-insensitive). When
+                      set and valid, appended as " ASC" / " DESC".
+                      Callers that bake direction into their allowed
+                      fragments should omit this.
+
+    Raises ValueError only on caller misuse (default_key not in allowed).
+    Never raises on bad request values — those silently fall back to the
+    default, mirroring existing endpoint behavior.
+    """
+    if default_key not in allowed:
+        raise ValueError(f"default_key {default_key!r} not in allowed map")
+    column = allowed[sort_key] if sort_key in allowed else allowed[default_key]
+    if direction is None:
+        return column
+    d = (direction or "").strip().lower()
+    if d not in _VALID_ORDER_DIRECTIONS:
+        return column   # invalid / empty direction: return column alone
+    return f"{column} {d.upper()}"
