@@ -33,8 +33,15 @@ def get_db():
     except Exception:
         try:
             conn.rollback()
-        except Exception:
-            pass
+        except Exception as _rb:
+            # Rollback itself failed — usually means the connection is
+            # already dead. Surface the ORIGINAL exception via `raise` below
+            # (don't mask it with the rollback error), but log the rollback
+            # failure so operators can see connection-level corruption.
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "get_db: rollback failed (connection may be corrupt): %r", _rb,
+            )
         raise
     finally:
         conn.close()
