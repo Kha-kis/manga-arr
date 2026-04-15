@@ -192,6 +192,10 @@ async def _send_slack(s: dict, message: str) -> tuple[bool, str]:
     webhook = s.get('webhook_url', '')
     if not webhook:
         return False, "No webhook URL"
+    try:
+        validate_outbound_url(webhook)
+    except UnsafeURLError as e:
+        return False, f"URL rejected: {e}"
     async with httpx.AsyncClient(timeout=10) as cli:
         r = await cli.post(webhook, json={'text': message})
     if r.text == 'ok' or r.status_code == 200:

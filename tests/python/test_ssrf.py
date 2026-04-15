@@ -74,10 +74,18 @@ def test_blocks_empty_and_malformed():
             validate_outbound_url(url)
 
 
-def test_accepts_normal_https_url():
-    """Real DNS lookup against a stable public host. If this test starts
-    flaking on offline CI, mock socket.getaddrinfo instead."""
+def test_accepts_normal_https_url(monkeypatch):
+    """A normal https URL whose hostname resolves to a public IP must pass.
+
+    Mocked rather than relying on live DNS so the test stays deterministic
+    on offline CI / sandboxed environments. 8.8.8.8 (Google Public DNS) is
+    a stable public IPv4 that ipaddress classifies as non-private,
+    non-loopback, non-link-local."""
     from security import validate_outbound_url
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda h, p: [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("8.8.8.8", 0))],
+    )
     out = validate_outbound_url("https://example.com/path?q=1")
     assert out == "https://example.com/path?q=1"
 
@@ -180,6 +188,19 @@ def test_send_discord_rejects_unsafe_url():
 
     ok, msg = asyncio.get_event_loop().run_until_complete(
         _send_discord({"webhook_url": "http://127.0.0.1/abc"}, "hi", None)
+    )
+    assert ok is False
+    assert "rejected" in msg.lower()
+
+
+def test_send_slack_rejects_unsafe_url():
+    """Slack uses the same user-supplied webhook_url pattern as Discord.
+    Must refuse loopback URLs with the same 'URL rejected' style."""
+    import asyncio
+    from routers.notification_connections import _send_slack
+
+    ok, msg = asyncio.get_event_loop().run_until_complete(
+        _send_slack({"webhook_url": "http://127.0.0.1/services/T0/B0/x"}, "hi")
     )
     assert ok is False
     assert "rejected" in msg.lower()
