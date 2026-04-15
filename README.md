@@ -53,7 +53,7 @@ summary of what each PR addressed:
 | [#6](https://github.com/Kha-kis/manga-arr/pull/6)  | **H3**         | Bounded concurrent imports + atomic queue-row claim |
 | [#7](https://github.com/Kha-kis/manga-arr/pull/7)  | **H1**         | Background task lifecycle — tracking, cancel on shutdown, log unexpected exits |
 | [#8](https://github.com/Kha-kis/manga-arr/pull/8)  | **M2**         | Batch-atomic multi-file imports (staging dir + SQLite `SAVEPOINT` rollback) |
-| [#9](https://github.com/Kha-kis/manga-arr/pull/9)  | (bonus)        | `log_event` + `add_history` accept the active connection to avoid `SQLITE_BUSY` inside write transactions |
+| [#9](https://github.com/Kha-kis/manga-arr/pull/9)  | (bonus)        | `log_event` accepts the active connection to avoid `SQLITE_BUSY` inside write transactions |
 | [#10](https://github.com/Kha-kis/manga-arr/pull/10) | **M1**         | CSRF cookie `SameSite=Strict`, `HttpOnly`, conditional `Secure`; token exposed via `<meta>` for HTMX |
 | [#11](https://github.com/Kha-kis/manga-arr/pull/11) | **M3**         | Custom-format / release-profile regex ReDoS protection (nested-quantifier rejection + input-length cap) |
 | [#12](https://github.com/Kha-kis/manga-arr/pull/12) | **M4**         | Explicit allowlists for request-controlled `ORDER BY` |
