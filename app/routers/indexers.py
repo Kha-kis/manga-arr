@@ -297,12 +297,12 @@ async def _fetch_prowlarr_rss(url, key, indexer_id, name, protocol, cats) -> lis
 
 
 def _parse_torznab_rss(xml_text: str, indexer: str, default_protocol: str = 'torrent') -> list[dict]:
-    import xml.etree.ElementTree as ET, re
+    from defusedxml.ElementTree import fromstring as _safe_fromstring
     items = []
     ns = {'torznab': 'http://torznab.com/api/2015/feed',
           'newznab': 'http://www.newznab.com/DTD/2010/feeds/attributes/'}
     try:
-        root = ET.fromstring(xml_text)
+        root = _safe_fromstring(xml_text)
     except Exception:
         return items
 

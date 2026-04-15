@@ -383,10 +383,10 @@ async def manual_import_auto(request: Request):
         dst_dir   = os.path.join(dest_root, _m.sanitize_filename(s_row['title']))
         vol_num   = f['vol_num']
         dst_fname = _m.build_filename(s_row['title'], vol_num, f['filename'])
-        dst_path  = os.path.join(dst_dir, dst_fname)
 
         try:
             os.makedirs(dst_dir, exist_ok=True)
+            dst_path = _m.safe_join_under(dst_dir, dst_fname)
             if import_mode == 'hardlink':
                 if os.path.exists(dst_path):
                     os.remove(dst_path)
@@ -481,10 +481,10 @@ async def manual_import_process(request: Request):
         fname     = os.path.basename(src_path)
         if vol_num is not None:
             fname = _m.build_filename(s['title'], float(vol_num), fname)
-        dst_path = os.path.join(dst_dir, fname)
 
         try:
             os.makedirs(dst_dir, exist_ok=True)
+            dst_path = _m.safe_join_under(dst_dir, fname)
             if import_mode == 'hardlink':
                 if os.path.exists(dst_path):
                     os.remove(dst_path)
