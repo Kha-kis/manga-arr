@@ -6846,6 +6846,22 @@ async def lifespan(app: FastAPI):
     # middleware fails closed on blank api_key, so the alternative is the
     # whole API returning 401 until an operator notices.
     ensure_api_key()
+    # Initialise the secret-encryption cipher (H4 PR #1). This loads the
+    # master key (env → file → auto-generate) and caches a Fernet
+    # instance at security._SECRET_CIPHER for subsequent PRs to use.
+    # PR #1 ships the primitives only; nothing reads/writes encrypted
+    # values yet, so this call is observability-only on existing installs.
+    try:
+        from security import load_or_create_secret_cipher, SecretCipherUnavailable
+        load_or_create_secret_cipher("/config")
+    except SecretCipherUnavailable as _e:
+        # Cipher unavailable. PR #1 has no DB-encrypted data to read,
+        # so the app can still boot. Subsequent PRs that depend on the
+        # cipher will surface integration-specific errors.
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "secret cipher unavailable at startup: %s — encryption-at-rest disabled", _e,
+        )
     backfill_pack_ranges()
     # Create qBit manga category on startup
     try:
