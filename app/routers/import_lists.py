@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from routers._templates import templates
 
 from shared import get_db, from_json
+from security import validate_outbound_url, UnsafeURLError
 
 router = APIRouter()
 
@@ -405,6 +406,10 @@ async def _fetch_custom_rss(settings: dict) -> list[dict]:
     from defusedxml.ElementTree import fromstring as _safe_fromstring
     url = settings.get('url', '')
     if not url:
+        return []
+    try:
+        validate_outbound_url(url)
+    except UnsafeURLError:
         return []
     async with httpx.AsyncClient(timeout=20) as cli:
         r = await cli.get(url, headers={'User-Agent': 'mangarr/1.0'})

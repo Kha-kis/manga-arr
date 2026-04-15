@@ -6562,8 +6562,17 @@ async def download_cover(series_id: int, cover_url: str):
     dest = f"/config/covers/{series_id}.jpg"
     if os.path.exists(dest):
         return  # already have a cover
+    from security import validate_outbound_url, UnsafeURLError
     try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        validate_outbound_url(cover_url)
+    except UnsafeURLError as e:
+        print(f"[Cover] URL rejected for series {series_id}: {e}")
+        return
+    # follow_redirects=False: a public hostname could 30x to a private IP
+    # and bypass the validation above. AniList/MangaDex serve covers from
+    # direct CDN URLs, so disabling redirects has no impact in practice.
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
             r = await client.get(cover_url)
             if r.status_code == 200:
                 with open(dest, 'wb') as f:

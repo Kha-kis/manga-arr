@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from routers._templates import templates
 
 from shared import get_db, from_json, get_cfg
+from security import validate_outbound_url, UnsafeURLError
 
 router = APIRouter()
 
@@ -156,6 +157,13 @@ async def _test_indexer(idx: dict) -> tuple[bool, str]:
     t   = idx['type']
     url = (idx['url'] or '').rstrip('/')
     key = idx['api_key'] or ''
+    if not url:
+        return False, "No URL configured"
+    try:
+        # Indexers commonly live on a LAN (docker network or local subnet).
+        validate_outbound_url(url, allow_private=True)
+    except UnsafeURLError as e:
+        return False, f"URL rejected: {e}"
     try:
         if t == 'prowlarr':
             async with httpx.AsyncClient(timeout=10) as cli:
@@ -232,6 +240,15 @@ async def _fetch_rss_for_indexer(idx: dict) -> list[dict]:
     url  = (idx['url'] or '').rstrip('/')
     key  = idx['api_key'] or ''
     name = idx['name']
+
+    if not url:
+        return []
+    try:
+        # LAN indexers permitted; loopback/link-local/etc. still blocked.
+        validate_outbound_url(url, allow_private=True)
+    except UnsafeURLError as e:
+        print(f"[Indexer:{name}] URL rejected: {e}")
+        return []
 
     try:
         if t == 'prowlarr':

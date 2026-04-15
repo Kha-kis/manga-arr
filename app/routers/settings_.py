@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 
 from routers._templates import templates
 from shared import get_cfg, get_db, is_htmx
+from security import validate_outbound_url, UnsafeURLError
 
 router = APIRouter()
 
@@ -231,6 +232,10 @@ async def test_komga(url: str = Form(""), user: str = Form(""), pw: str = Form("
     p  = pw   or get_cfg('komga_pass')
     if not u:
         return JSONResponse({"ok": False, "message": "No URL configured"})
+    try:
+        validate_outbound_url(u, allow_private=True)
+    except UnsafeURLError as e:
+        return JSONResponse({"ok": False, "message": f"URL rejected: {e}"})
     try:
         async with httpx.AsyncClient(timeout=8) as client:
             r = await client.get(f"{u}/api/v1/libraries", auth=(us, p) if us else None)
