@@ -402,7 +402,7 @@ async def _fetch_mal_user(settings: dict) -> list[dict]:
 
 async def _fetch_custom_rss(settings: dict) -> list[dict]:
     """Parse a custom RSS/Atom feed for manga titles."""
-    import xml.etree.ElementTree as ET
+    from defusedxml.ElementTree import fromstring as _safe_fromstring
     url = settings.get('url', '')
     if not url:
         return []
@@ -410,7 +410,7 @@ async def _fetch_custom_rss(settings: dict) -> list[dict]:
         r = await cli.get(url, headers={'User-Agent': 'mangarr/1.0'})
     results = []
     try:
-        root = ET.fromstring(r.text)
+        root = _safe_fromstring(r.text)
         for item in root.findall('.//item'):
             title = item.findtext('title', '').strip()
             if title:

@@ -9,7 +9,10 @@ import secrets
 import shutil
 import sqlite3
 import time
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # for build (serialize-only); parse uses defusedxml
+from defusedxml.ElementTree import parse as _safe_xml_parse, fromstring as _safe_xml_fromstring
+from defusedxml.ElementTree import ParseError as _SafeXMLParseError
+from defusedxml.common import DefusedXmlException as _DefusedXmlException
 import zipfile
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
@@ -2029,6 +2032,21 @@ def sanitize_filename(name: str) -> str:
     return safe or 'Unknown'
 
 
+def safe_join_under(dst_dir: str, filename: str) -> str:
+    """Join filename under dst_dir, refusing to escape it.
+
+    Sanitizes the basename, then verifies the resolved path is contained in
+    realpath(dst_dir). Raises ValueError on traversal attempts.
+    """
+    safe_name = sanitize_filename(os.path.basename(filename))
+    candidate = os.path.join(dst_dir, safe_name)
+    base_real = os.path.realpath(dst_dir)
+    cand_real = os.path.realpath(candidate)
+    if cand_real != base_real and not cand_real.startswith(base_real + os.sep):
+        raise ValueError(f"path traversal blocked: {filename!r}")
+    return candidate
+
+
 def parse_release_group(title: str) -> str:
     """Extract release group from a manga release title. Returns empty string if not found.
 
@@ -2228,13 +2246,15 @@ def build_filename(series_title: str, volume_num: float | None,
         fmt = get_cfg('file_format', '').strip()
 
     if not fmt:
-        return original_filename
+        # Untrusted: original_filename can come from a torrent/NZB and may
+        # contain path separators or '..'. Strip to a safe basename.
+        return sanitize_filename(os.path.basename(original_filename))
 
     try:
         name = _apply_format_tokens(fmt, series_title, volume_num, chapter_num, pub_year)
         return name + ext
     except Exception:
-        return original_filename
+        return sanitize_filename(os.path.basename(original_filename))
 
 
 def read_comic_info(cbz_path: str) -> dict:
@@ -2253,7 +2273,7 @@ def read_comic_info(cbz_path: str) -> dict:
             if not ci_name:
                 return result
             with zf.open(ci_name) as f:
-                root = ET.parse(f).getroot()
+                root = _safe_xml_parse(f).getroot()
 
         def _text(tag: str) -> str | None:
             el = root.find(tag)
@@ -2266,7 +2286,8 @@ def read_comic_info(cbz_path: str) -> dict:
                 val = _parse_vol_suffix(raw)
                 if val is not None:
                     result[key] = val
-    except (zipfile.BadZipFile, ET.ParseError, KeyError, OSError, StopIteration):
+    except (zipfile.BadZipFile, ET.ParseError, _SafeXMLParseError,
+            _DefusedXmlException, KeyError, OSError, StopIteration):
         pass
     return result
 
@@ -3210,8 +3231,7 @@ def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
                         None
                     )
                     if ci_name:
-                        import xml.etree.ElementTree as _ET
-                        root = _ET.fromstring(rf.read(ci_name))
+                        root = _safe_xml_fromstring(rf.read(ci_name))
                         def _cbr_text(tag: str):
                             el = root.find(tag)
                             return el.text.strip() if el is not None and el.text else None
@@ -3848,7 +3868,15 @@ async def _execute_import(
             # ── Chapter file: has a chapter number ────────────────────────────
             if file_type == 'chapter' and proposed_chap is not None:
                 src = f['src_path']
-                dst = os.path.join(dst_dir, f['filename'])
+                try:
+                    dst = safe_join_under(dst_dir, f['filename'])
+                except ValueError as _e:
+                    db.execute(
+                        "UPDATE import_queue_files SET status='failed' WHERE id=?", (f['id'],)
+                    )
+                    log_event('error', f"Import: unsafe destination ({f['filename']}): {_e}", queue['series_id'])
+                    any_error = True
+                    continue
 
                 if not os.path.isfile(src):
                     db.execute(
@@ -3972,7 +4000,13 @@ async def _execute_import(
                     )
                     # Re-enter chapter handling path
                     src = f['src_path']
-                    dst = os.path.join(dst_dir, f['filename'])
+                    try:
+                        dst = safe_join_under(dst_dir, f['filename'])
+                    except ValueError as _e:
+                        db.execute("UPDATE import_queue_files SET status='failed' WHERE id=?", (f['id'],))
+                        log_event('error', f"Import: unsafe destination ({f['filename']}): {_e}", queue['series_id'])
+                        any_error = True
+                        continue
                     if not os.path.isfile(src):
                         db.execute("UPDATE import_queue_files SET status='failed' WHERE id=?", (f['id'],))
                         log_event('error', f"Import: source file missing: {src}", queue['series_id'])
@@ -4057,7 +4091,13 @@ async def _execute_import(
                     continue
 
             src = f['src_path']
-            dst = os.path.join(dst_dir, f['filename'])
+            try:
+                dst = safe_join_under(dst_dir, f['filename'])
+            except ValueError as _e:
+                db.execute("UPDATE import_queue_files SET status='failed' WHERE id=?", (f['id'],))
+                log_event('error', f"Import: unsafe destination ({f['filename']}): {_e}", queue['series_id'])
+                any_error = True
+                continue
 
             if not os.path.isfile(src):
                 db.execute(
