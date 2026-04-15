@@ -84,7 +84,9 @@ async def process_import(queue_id: int, request: Request):
                 except ValueError:
                     pass
 
-    await _m._execute_import(queue_id, volume_overrides, skip_ids, chapter_overrides)
+    # Route through the guarded wrapper so two racing form submits (or a
+    # form submit racing an auto-import worker) can't both process the row.
+    await _m._guarded_execute_import(queue_id, volume_overrides, skip_ids, chapter_overrides)
     return RedirectResponse("/import", status_code=303)
 
 

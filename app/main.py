@@ -3828,6 +3828,64 @@ def _mark_downloaded(db, series_id, volume_num, torrent_url) -> bool:
             return True
     return False
 
+# ── Import concurrency guard ──────────────────────────────────────────────────
+# Bound the number of imports that can run in parallel so a backlog of pending
+# queue rows doesn't spawn one task per row and hammer SQLite + disk I/O.
+# Two feels right for a typical self-hosted install (single spinning drive or
+# a Docker volume); raise it if you have fast SSD + many cores.
+_IMPORT_SEM = asyncio.Semaphore(2)
+
+
+def claim_import_queue_row(db, queue_id: int,
+                            allowed_statuses: tuple[str, ...] = ('pending', 'partial')
+                            ) -> bool:
+    """Atomically transition the queue row into 'importing' state.
+
+    Returns True iff this caller won the race — i.e. the row was in one of
+    allowed_statuses and is now 'importing'. Returns False if another worker
+    already claimed it, or if the row has moved to a terminal state
+    (imported/failed/skipped). The caller is expected to bail out cleanly
+    when False is returned.
+
+    Safe to call from multiple concurrent coroutines / threads because
+    SQLite serialises writes and the UPDATE's rowcount is authoritative.
+    """
+    placeholders = ','.join('?' * len(allowed_statuses))
+    cur = db.execute(
+        f"UPDATE import_queue SET status='importing'"
+        f" WHERE id=? AND status IN ({placeholders})",
+        [queue_id, *allowed_statuses],
+    )
+    return cur.rowcount > 0
+
+
+async def _guarded_execute_import(
+    queue_id: int,
+    volume_overrides: dict | None = None,
+    skip_ids: set | None = None,
+    chapter_overrides: dict | None = None,
+) -> bool:
+    """Claim the queue row, then run _execute_import under the semaphore.
+
+    Wrapper used by every entry point that starts an import (auto-import
+    loop, qbit-complete discovery, stuck-retry, manual retry endpoint,
+    and the manual-submit form). Ensures:
+      1. only one worker ever runs per queue_id (atomic UPDATE claim)
+      2. at most _IMPORT_SEM._value imports run concurrently
+
+    Returns the underlying _execute_import result on success, or False
+    if the claim was lost (meaning another worker is already processing
+    this row, or the row has moved to a terminal state).
+    """
+    with get_db() as _claim_db:
+        if not claim_import_queue_row(_claim_db, queue_id):
+            print(f"[Import] queue {queue_id}: claim lost "
+                  f"(another worker owns it, or row is in a terminal state)")
+            return False
+    async with _IMPORT_SEM:
+        return await _execute_import(queue_id, volume_overrides, skip_ids, chapter_overrides)
+
+
 async def _execute_import(
     queue_id: int,
     volume_overrides: dict | None = None,
@@ -4395,10 +4453,17 @@ async def _execute_import(
 
 async def _process_auto_import(queue_id: int):
     """Auto-import a queue item where all files mapped cleanly (no review needed).
-    On unhandled exception, mark the queue as 'failed' so it doesn't stick in
-    pending/partial forever and get retried on every startup."""
+
+    Routes through _guarded_execute_import so:
+      - an atomic claim prevents two workers from processing the same row
+      - the bounded _IMPORT_SEM caps concurrent imports
+
+    On unhandled exception, mark the queue as 'failed' so it doesn't stick
+    forever and get retried on every startup. 'importing' is included in
+    the WHERE so a row whose claim we won but which raised mid-import is
+    still moved to the terminal 'failed' state."""
     try:
-        await _execute_import(queue_id)
+        await _guarded_execute_import(queue_id)
     except Exception as e:
         import traceback
         log_event('error', f"Auto-import failed for queue {queue_id}: {e}")
@@ -4406,7 +4471,8 @@ async def _process_auto_import(queue_id: int):
         try:
             with get_db() as _db_err:
                 _db_err.execute(
-                    "UPDATE import_queue SET status='failed' WHERE id=? AND status IN ('pending','partial')",
+                    "UPDATE import_queue SET status='failed'"
+                    " WHERE id=? AND status IN ('pending','partial','importing')",
                     (queue_id,)
                 )
         except Exception as _db_e:
