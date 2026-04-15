@@ -335,8 +335,6 @@ def init_db():
         add_col('volumes',            'imported_at',      'TEXT')
         add_col('volumes',            'edition_type',     'TEXT')   # standard|deluxe|omnibus|special|collector|digital
         add_col('volumes',            'language',         'TEXT')   # en|ja|fr|etc — detected from release title
-        add_col('chapters',           'quality',          'TEXT')
-        add_col('chapters',           'imported_at',      'TEXT')
         add_col('series',             'vol_count_source', 'TEXT DEFAULT "anilist"')  # anilist|mangaupdates|wikipedia|google_books|manual
 
         # ── chapters table ────────────────────────────────────────────────────
@@ -362,6 +360,12 @@ def init_db():
                 UNIQUE(series_id, chapter_num)
             );
         """)
+        # chapters add_col calls MUST come after the CREATE TABLE above —
+        # add_col runs ALTER TABLE which fails on a fresh DB if the table
+        # doesn't exist yet, and the get_db transaction would then roll
+        # back every CREATE TABLE that ran earlier in init_db.
+        add_col('chapters',           'quality',          'TEXT')
+        add_col('chapters',           'imported_at',      'TEXT')
 
         # Backfill download_id from seen → volumes for existing grabbed items
         db.execute("""
