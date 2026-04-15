@@ -111,8 +111,16 @@ def load_config():
         with get_db() as db:
             for row in db.execute("SELECT key, value FROM settings").fetchall():
                 cfg[row['key']] = row['value']  # load ALL settings keys, not just ENV_DEFAULTS
-    except Exception:
-        pass
+    except Exception as e:
+        # Swallowing is intentional — fresh-install path before init_db has
+        # created the settings table, and worker restarts that race with
+        # schema migration. But silent silence makes real DB corruption
+        # invisible (user sees default config with no clue why). Log at
+        # WARNING so it's visible without spamming hot paths.
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "load_config: could not read settings from DB, using env/defaults: %r", e,
+        )
     CONFIG = cfg
     # Sync to shared module so routers can call shared.get_cfg()
     _shared.CONFIG.clear()
@@ -165,8 +173,16 @@ def get_db():
     except Exception:
         try:
             conn.rollback()
-        except Exception:
-            pass
+        except Exception as _rb:
+            # Rollback itself failed — extremely rare (usually means the
+            # connection is already dead). We still want to surface the
+            # original exception via `raise` below, but a failed rollback
+            # is a real operational signal worth logging. Do NOT raise it
+            # here or we'd mask the original error.
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "get_db: rollback failed (connection may be corrupt): %r", _rb,
+            )
         raise
     finally:
         conn.close()
@@ -6851,8 +6867,17 @@ async def lifespan(app: FastAPI):
                         f"{_qhost}/api/v2/torrents/createCategory",
                         data={'category': _qcat, 'savePath': get_cfg('save_path')}
                     )
-    except Exception:
-        pass
+    except Exception as e:
+        # Best-effort at startup: failure here (qBit offline, bad creds,
+        # wrong host) doesn't block the app, but it used to swallow
+        # silently — users then wondered why their category never
+        # appeared. Log at INFO so it's visible in normal operation
+        # without being noisy when qBit genuinely isn't configured.
+        # Do NOT include _qpw or _quser in the log message.
+        import logging as _logging
+        _logging.getLogger(__name__).info(
+            "startup: qBit category bootstrap skipped (%r)", e,
+        )
     # All long-running background loops are registered with the tracker so
     # they can be cancelled on shutdown and their unexpected exits logged.
     # Previously seven of the nine were fire-and-forget tasks without a
