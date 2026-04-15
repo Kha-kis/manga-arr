@@ -124,6 +124,34 @@ def load_config():
 def get_cfg(key: str, default: str = '') -> str:
     return CONFIG.get(key, default)
 
+
+def ensure_api_key() -> str:
+    """Guarantee a non-empty api_key exists in settings; generate + persist
+    if missing or blank. Returns the (possibly newly-generated) key.
+
+    Called from init_db (fresh-install seeding) and from lifespan startup
+    (defense in depth: catches DB rows that were nulled by a bad import,
+    a manual edit, or a partial migration). Also re-syncs CONFIG so the
+    middleware sees the new value without a separate load_config call.
+    """
+    import secrets as _secrets
+    import logging as _logging
+    log = _logging.getLogger(__name__)
+    with get_db() as db:
+        row = db.execute("SELECT value FROM settings WHERE key='api_key'").fetchone()
+        existing = (row['value'] if row else '') or ''
+        if existing.strip():
+            return existing
+        new_key = _secrets.token_hex(32)
+        db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('api_key',?)",
+                   (new_key,))
+    # Sync caches so the very next request sees the new key.
+    CONFIG['api_key'] = new_key
+    _shared.CONFIG['api_key'] = new_key
+    log.warning("Generated a new API key (settings.api_key was missing/blank); "
+                "view it at Settings → General")
+    return new_key
+
 # ── Database ──────────────────────────────────────────────────────────────────
 @contextmanager
 def get_db():
@@ -629,6 +657,11 @@ def init_db():
             )
 
         # ── Auto-generate API key if none stored ──────────────────────────────
+        # Mirrors ensure_api_key() but runs inside the existing init_db
+        # transaction so a fresh install commits the seed atomically with
+        # the rest of the schema. ensure_api_key() runs again at lifespan
+        # startup (defense in depth: catches rows nulled by a bad import,
+        # a manual edit, or a partial migration after the app is up).
         _key_row = db.execute("SELECT value FROM settings WHERE key='api_key'").fetchone()
         if not _key_row or not (_key_row['value'] or '').strip():
             import secrets as _secrets
@@ -6448,6 +6481,11 @@ async def lifespan(app: FastAPI):
     global _rss_task, _status_task, _refresh_task
     init_db()
     load_config()
+    # Defense in depth: if api_key is still blank after init_db + load_config
+    # (DB row nulled, partial migration, etc.), generate one now. The
+    # middleware fails closed on blank api_key, so the alternative is the
+    # whole API returning 401 until an operator notices.
+    ensure_api_key()
     backfill_pack_ranges()
     # Create qBit manga category on startup
     try:
@@ -6627,15 +6665,22 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         if (request.method in ('POST', 'PUT', 'DELETE', 'PATCH')
                 and request.cookies.get('csrftoken')):
             return await call_next(request)
-        # Check API key
-        api_key = get_cfg('api_key', '')
+        # Check API key. Fail closed: if the configured key is blank/missing
+        # (e.g. a bad import nulled the row, or someone cleared the setting
+        # at runtime), refuse the request. ensure_api_key() runs at startup
+        # to seed a fresh key on a healthy boot — if we still see blank here
+        # something is wrong; do not silently expose the API.
+        api_key = (get_cfg('api_key', '') or '').strip()
         if not api_key:
-            # No key configured = open. Log a warning once per process start so
-            # operators notice. The health check already surfaces this in the UI.
             if not getattr(ApiKeyMiddleware, '_warned_no_key', False):
-                print("[WARNING] /api/ routes are OPEN — no api_key configured in settings.")
+                print("[ERROR] /api/ routes denied — settings.api_key is blank. "
+                      "Restart the app to auto-seed, or set one via Settings.")
                 ApiKeyMiddleware._warned_no_key = True
-            return await call_next(request)
+            return JSONResponse(
+                {"message": "Unauthorized",
+                 "description": "API key not configured on the server"},
+                status_code=401
+            )
         provided = (request.headers.get('X-Api-Key') or
                    request.query_params.get('apikey') or '')
         if provided != api_key:
