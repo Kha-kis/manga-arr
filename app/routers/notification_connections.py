@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from routers._templates import templates
 
 from shared import get_db, from_json, get_cfg
+from security import validate_outbound_url, UnsafeURLError
 
 router = APIRouter()
 
@@ -155,6 +156,10 @@ async def _send_discord(s: dict, message: str, embed: dict | None) -> tuple[bool
     webhook = s.get('webhook_url', '')
     if not webhook:
         return False, "No webhook URL"
+    try:
+        validate_outbound_url(webhook)
+    except UnsafeURLError as e:
+        return False, f"URL rejected: {e}"
     payload: dict = {}
     if embed:
         payload['embeds'] = [embed]
@@ -200,11 +205,16 @@ async def _send_ntfy(s: dict, message: str) -> tuple[bool, str]:
     token  = s.get('token', '')
     if not topic:
         return False, "No topic configured"
+    target = f"{server}/{topic}"
+    try:
+        validate_outbound_url(target)
+    except UnsafeURLError as e:
+        return False, f"URL rejected: {e}"
     headers = {'Title': 'Mangarr', 'Priority': 'default'}
     if token:
         headers['Authorization'] = f'Bearer {token}'
     async with httpx.AsyncClient(timeout=10) as cli:
-        r = await cli.post(f"{server}/{topic}", content=message, headers=headers)
+        r = await cli.post(target, content=message, headers=headers)
     if r.status_code == 200:
         return True, "Sent"
     return False, f"HTTP {r.status_code}"
@@ -215,9 +225,14 @@ async def _send_gotify(s: dict, message: str) -> tuple[bool, str]:
     token  = s.get('app_token', '')
     if not server or not token:
         return False, "Missing server or app_token"
+    target = f"{server}/message"
+    try:
+        validate_outbound_url(target)
+    except UnsafeURLError as e:
+        return False, f"URL rejected: {e}"
     async with httpx.AsyncClient(timeout=10) as cli:
         r = await cli.post(
-            f"{server}/message",
+            target,
             params={'token': token},
             json={'title': 'Mangarr', 'message': message, 'priority': 5}
         )
@@ -247,6 +262,10 @@ async def _send_webhook(s: dict, message: str, event: str, embed: dict | None) -
     method = s.get('method', 'POST').upper()
     if not url:
         return False, "No URL configured"
+    try:
+        validate_outbound_url(url)
+    except UnsafeURLError as e:
+        return False, f"URL rejected: {e}"
     payload = {
         "eventType": event,
         "message": message,
@@ -301,6 +320,10 @@ async def _send_apprise(s: dict, message: str) -> tuple[bool, str]:
         return False, "No Apprise URL"
     payload = {'body': message, 'title': 'Mangarr'}
     api_url = f"{url}/notify/{key}" if key else f"{url}/notify"
+    try:
+        validate_outbound_url(api_url)
+    except UnsafeURLError as e:
+        return False, f"URL rejected: {e}"
     async with httpx.AsyncClient(timeout=10) as cli:
         r = await cli.post(api_url, json=payload)
     if r.status_code == 200:
