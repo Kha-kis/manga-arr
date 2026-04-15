@@ -7035,6 +7035,28 @@ _CSRF_HEADER  = "X-CSRFToken"
 _CSRF_FIELD   = "csrf_token"
 _CSRF_SKIP_PREFIXES = ("/api/", "/static/", "/covers/")
 
+
+def _should_secure_cookie(scope) -> bool:
+    """Return True iff the inbound request arrived over HTTPS.
+
+    Checks (in order):
+      - ASGI scope scheme == "https"  (TLS-terminating uvicorn)
+      - X-Forwarded-Proto: https       (reverse proxy, standard)
+      - X-Forwarded-Ssl: on            (some older proxies)
+
+    Returning False on plain HTTP keeps local development working —
+    browsers silently drop Secure-flagged cookies on http:// origins.
+    """
+    if scope.get("scheme") == "https":
+        return True
+    for k, v in scope.get("headers", []):
+        kl = k.lower()
+        if kl == b"x-forwarded-proto" and v.strip().lower() == b"https":
+            return True
+        if kl == b"x-forwarded-ssl" and v.strip().lower() == b"on":
+            return True
+    return False
+
 class CSRFMiddleware:
     """Pure ASGI CSRF middleware.
     When the CSRF token must be read from a form body, we buffer the raw bytes
@@ -7140,11 +7162,26 @@ class CSRFMiddleware:
         # Wrap send to set the CSRF cookie on first response if not yet present
         has_cookie = bool(req.cookies.get(_CSRF_COOKIE))
 
+        secure_cookie = _should_secure_cookie(scope)
+
         async def send_with_cookie(message):
             nonlocal has_cookie
             if not has_cookie and message["type"] == "http.response.start":
                 headers = list(message.get("headers", []))
-                cookie_val = f"{_CSRF_COOKIE}={token}; Path=/; SameSite=lax"
+                # SameSite=Strict: cookie not sent on cross-site navigation.
+                #   Safe for a self-hosted admin UI; middleware regenerates a
+                #   fresh token on re-entry when needed.
+                # HttpOnly: JS cannot read document.cookie for csrftoken. The
+                #   token is exposed to the frontend via a <meta name="csrf-token">
+                #   tag instead (see base.html), so htmx and plain-form CSRF
+                #   injection continue to work without document.cookie access.
+                # Secure: only set when the request arrived over HTTPS (direct
+                #   TLS or X-Forwarded-Proto/Ssl). Omitted on plain HTTP so
+                #   local development is not blocked by browser cookie rules.
+                parts = [f"{_CSRF_COOKIE}={token}", "Path=/", "SameSite=Strict", "HttpOnly"]
+                if secure_cookie:
+                    parts.append("Secure")
+                cookie_val = "; ".join(parts)
                 headers.append((b"set-cookie", cookie_val.encode()))
                 message = {**message, "headers": headers}
                 has_cookie = True
