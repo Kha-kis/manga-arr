@@ -102,6 +102,22 @@ ENV_DEFAULTS = {
     'blocklist_ttl_days':       (None,    '90'),
 }
 
+# Settings-table keys whose values are credentials and must be encrypted
+# at rest (H4 PR #2). Values for these keys are decrypted on the way into
+# CONFIG by load_config and encrypted on the way to the DB by the
+# settings-form handlers and migrate_encrypt_settings_secrets().
+#
+# komga_user is included as a pair with komga_pass — usernames aren't
+# strictly secrets but treating credentials atomically avoids partial
+# leakage if the DB dump is exposed.
+SETTINGS_SECRET_KEYS = frozenset({
+    "api_key",
+    "komga_user",
+    "komga_pass",
+    "google_books_api_key",
+})
+
+
 def load_config():
     global CONFIG
     cfg = {}
@@ -121,13 +137,94 @@ def load_config():
         _logging.getLogger(__name__).warning(
             "load_config: could not read settings from DB, using env/defaults: %r", e,
         )
+    # Decrypt secret keys in-place. Plaintext values pass through; only
+    # enc:v1: values are decrypted. If decryption fails (wrong key,
+    # corruption), the secret becomes empty in CONFIG and a WARNING is
+    # logged naming the field — caller-side code (api-key middleware,
+    # Komga test, etc.) sees "no credential" and degrades gracefully
+    # instead of crashing the whole app.
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    from security import decrypt_secret, SecretDecryptionError, SecretCipherUnavailable
+    for k in SETTINGS_SECRET_KEYS:
+        v = cfg.get(k)
+        if not v:
+            continue
+        try:
+            cfg[k] = decrypt_secret(v)
+        except SecretDecryptionError:
+            _log.warning(
+                "load_config: settings.%s could not be decrypted — "
+                "treating as unavailable; re-enter via Settings to fix", k,
+            )
+            cfg[k] = ""
+        except SecretCipherUnavailable:
+            # Cipher not initialised yet OR cryptography missing. Leave the
+            # value as-is — it's either plaintext (back-compat) or
+            # enc:v1:... that will be readable once cipher loads. For
+            # enc:v1: values where cipher truly can't be loaded, the
+            # api-key middleware will fail closed (H2 behaviour).
+            pass
     CONFIG = cfg
     # Sync to shared module so routers can call shared.get_cfg()
     _shared.CONFIG.clear()
     _shared.CONFIG.update(cfg)
-    import logging as _logging
     _ll = cfg.get('log_level', 'INFO').upper()
     _logging.getLogger().setLevel(getattr(_logging, _ll, _logging.INFO))
+
+
+def migrate_encrypt_settings_secrets():
+    """Encrypt any plaintext values for keys in SETTINGS_SECRET_KEYS.
+
+    Idempotent: enc:v1: values are skipped, empty values are skipped.
+    Atomic: runs in a single get_db() transaction; if any UPDATE
+    raises, the whole batch rolls back and existing plaintext stays
+    plaintext (operator can investigate before retry).
+
+    No-op when the cipher is unavailable — plaintext stays plaintext;
+    a single WARNING line records the skip so operators see why
+    encryption-at-rest hasn't kicked in yet.
+
+    Returns the count of rows updated. Never raises through to the
+    caller — startup must keep going either way.
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    from security import (
+        secret_cipher_loaded, encrypt_secret, is_encrypted_secret,
+    )
+    if not secret_cipher_loaded():
+        _log.warning(
+            "settings secrets migration skipped: secret cipher unavailable; "
+            "set MANGARR_SECRET_KEY or ensure /config is writable",
+        )
+        return 0
+    placeholders = ",".join("?" * len(SETTINGS_SECRET_KEYS))
+    updated = 0
+    try:
+        with get_db() as db:
+            rows = db.execute(
+                f"SELECT key, value FROM settings WHERE key IN ({placeholders})",
+                tuple(SETTINGS_SECRET_KEYS),
+            ).fetchall()
+            for row in rows:
+                v = row['value']
+                if not v or is_encrypted_secret(v):
+                    continue
+                ct = encrypt_secret(v)
+                db.execute(
+                    "UPDATE settings SET value=? WHERE key=?", (ct, row['key']),
+                )
+                updated += 1
+        if updated:
+            _log.info("encrypted %d settings secret(s) at rest", updated)
+        return updated
+    except Exception as e:
+        _log.error(
+            "settings secrets migration failed; rolled back: %s: %s",
+            type(e).__name__, e,
+        )
+        return 0
 
 def get_cfg(key: str, default: str = '') -> str:
     return CONFIG.get(key, default)
@@ -145,15 +242,35 @@ def ensure_api_key() -> str:
     import secrets as _secrets
     import logging as _logging
     log = _logging.getLogger(__name__)
+    # Lazy import: this module-level helper runs before the security
+    # module is fully imported during init paths in some test harnesses.
+    from security import encrypt_if_cipher_available, decrypt_secret
     with get_db() as db:
         row = db.execute("SELECT value FROM settings WHERE key='api_key'").fetchone()
-        existing = (row['value'] if row else '') or ''
-        if existing.strip():
-            return existing
+        raw = (row['value'] if row else '') or ''
+        # `raw` may be plaintext (legacy / pre-migration) or enc:v1: (post-PR-#2).
+        # We need a plaintext probe to know whether the row already has a
+        # usable key — an encrypted-but-decryptable row is "set" and should
+        # NOT trigger regeneration.
+        try:
+            existing_plain = decrypt_secret(raw) if raw else ''
+        except Exception:
+            # Encrypted but undecryptable (wrong key). Don't overwrite —
+            # operator may want to recover it. Return empty so the
+            # middleware fails closed; operator sees the api-key as
+            # unavailable in the UI and can re-enter.
+            log.warning("ensure_api_key: existing api_key could not be decrypted; "
+                        "leaving in place. Re-enter via Settings if needed.")
+            return ''
+        if existing_plain.strip():
+            return existing_plain
+        # No key yet — generate, encrypt if possible, persist.
         new_key = _secrets.token_hex(32)
+        stored_value = encrypt_if_cipher_available(new_key)
         db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('api_key',?)",
-                   (new_key,))
-    # Sync caches so the very next request sees the new key.
+                   (stored_value,))
+    # CONFIG holds plaintext (decrypt happens in load_config; here we
+    # already have the plaintext in `new_key`).
     CONFIG['api_key'] = new_key
     _shared.CONFIG['api_key'] = new_key
     log.warning("Generated a new API key (settings.api_key was missing/blank); "
@@ -6840,28 +6957,41 @@ async def _cancel_background_tasks() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # Initialise the secret-encryption cipher (H4 PR #1) BEFORE load_config
+    # so load_config can transparently decrypt enc:v1: values for the
+    # SETTINGS_SECRET_KEYS allowlist on the way into CONFIG.
+    try:
+        from security import load_or_create_secret_cipher, SecretCipherUnavailable
+        load_or_create_secret_cipher("/config")
+    except SecretCipherUnavailable as _e:
+        # Cipher unavailable. The app can still boot — load_config falls
+        # back to plaintext-only and any enc:v1: values stay opaque.
+        # api-key middleware will fail closed on a blank api_key (H2),
+        # which is the right outcome if the operator's MANGARR_SECRET_KEY
+        # is missing/wrong: refuse to expose the API rather than 200 it
+        # without auth.
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "secret cipher unavailable at startup: %s — encryption-at-rest disabled", _e,
+        )
     load_config()
     # Defense in depth: if api_key is still blank after init_db + load_config
     # (DB row nulled, partial migration, etc.), generate one now. The
     # middleware fails closed on blank api_key, so the alternative is the
     # whole API returning 401 until an operator notices.
     ensure_api_key()
-    # Initialise the secret-encryption cipher (H4 PR #1). This loads the
-    # master key (env → file → auto-generate) and caches a Fernet
-    # instance at security._SECRET_CIPHER for subsequent PRs to use.
-    # PR #1 ships the primitives only; nothing reads/writes encrypted
-    # values yet, so this call is observability-only on existing installs.
-    try:
-        from security import load_or_create_secret_cipher, SecretCipherUnavailable
-        load_or_create_secret_cipher("/config")
-    except SecretCipherUnavailable as _e:
-        # Cipher unavailable. PR #1 has no DB-encrypted data to read,
-        # so the app can still boot. Subsequent PRs that depend on the
-        # cipher will surface integration-specific errors.
-        import logging as _logging
-        _logging.getLogger(__name__).warning(
-            "secret cipher unavailable at startup: %s — encryption-at-rest disabled", _e,
-        )
+    # H4 PR #2: encrypt any plaintext settings secrets at rest. Idempotent;
+    # no-op when cipher unavailable. Runs after ensure_api_key so the
+    # auto-seeded api_key (which is written plaintext by ensure_api_key)
+    # gets encrypted on the same boot it was created.
+    migrate_encrypt_settings_secrets()
+    # Re-run load_config so CONFIG reflects the just-encrypted-and-decrypted
+    # values. Without this, the in-memory CONFIG still holds whatever the
+    # first load_config produced; for the api_key auto-seed path that's
+    # already correct (ensure_api_key writes both DB and CONFIG), but
+    # other flows that read settings post-migration get the plaintext
+    # round-tripped through Fernet — same value, just paranoid consistency.
+    load_config()
     backfill_pack_ranges()
     # Create qBit manga category on startup
     try:

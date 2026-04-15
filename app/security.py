@@ -452,3 +452,30 @@ def load_or_create_secret_cipher(config_dir="/config"):
     )
     _SECRET_CIPHER = cipher
     return cipher
+
+
+def encrypt_if_cipher_available(value):
+    """Encrypt `value` if the cipher is loaded; otherwise return it
+    unchanged. Used by write paths (settings forms, secret seeds) that
+    should encrypt-when-possible but must not fail the write when the
+    cipher is unavailable (operator hasn't set MANGARR_SECRET_KEY yet,
+    /config not writable, etc.). The migration function called at
+    startup will pick up any leftover plaintext on the next boot
+    where the cipher IS available.
+
+    Empty / None pass through unchanged. Already-encrypted values pass
+    through unchanged (no double-wrap).
+    """
+    if value is None or value == "":
+        return value
+    if _SECRET_CIPHER is None:
+        return value   # plaintext fallback
+    if isinstance(value, str) and value.startswith(_ENC_PREFIX):
+        return value   # already encrypted; idempotent
+    return encrypt_secret(value)
+
+
+def secret_cipher_loaded() -> bool:
+    """True iff load_or_create_secret_cipher() has populated the module
+    cache. Used by migration code to decide whether to run."""
+    return _SECRET_CIPHER is not None
