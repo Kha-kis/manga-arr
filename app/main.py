@@ -6265,9 +6265,8 @@ async def poll_rss():
     log_event('rss_poll', f"{source} RSS: {len(items)} items checked, {grabbed} grabbed")
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
-_rss_task:     asyncio.Task | None = None
-_status_task:  asyncio.Task | None = None
-_refresh_task: asyncio.Task | None = None
+# Individual task handles are no longer module globals; every background loop
+# is tracked via _BACKGROUND_TASKS (see create_background_task above).
 
 async def rss_loop():
     from routers.system import update_task_state
@@ -6542,9 +6541,60 @@ async def _backup_loop():
         await asyncio.sleep(interval_days * 86400)
 
 
+# ── Background task lifecycle ────────────────────────────────────────────────
+# All long-running asyncio loops (rss, status, refresh, backfill, backlog,
+# suwayomi, rescan, import-list, backup, stuck-retry) are registered here so
+# lifespan shutdown can cancel them, and so an unexpected exit from one
+# surfaces in the log instead of silently dying.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def create_background_task(coro, name: str) -> asyncio.Task:
+    """Start a long-running background task and track its lifecycle.
+
+    - Names the task (visible in `asyncio.all_tasks()`).
+    - Stores a strong reference so Python's GC doesn't collect it mid-run
+      (raw asyncio.create_task() emits a "Task was destroyed but it is
+      pending" warning if the return value isn't held).
+    - Removes the reference when the task finishes.
+    - Logs (warning-level) if the task exited via an uncaught exception.
+      Clean cancellation on shutdown is silent.
+    """
+    import logging as _logging
+    log = _logging.getLogger(__name__)
+
+    task = asyncio.create_task(coro, name=name)
+    _BACKGROUND_TASKS.add(task)
+
+    def _on_done(t: asyncio.Task) -> None:
+        _BACKGROUND_TASKS.discard(t)
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            log.error("background task %r exited with exception: %r",
+                      t.get_name(), exc, exc_info=exc)
+
+    task.add_done_callback(_on_done)
+    return task
+
+
+async def _cancel_background_tasks() -> None:
+    """Cancel every registered background task and await graceful exit.
+
+    Called from lifespan shutdown. Uses return_exceptions so one slow task
+    doesn't starve the others; each task's final state is logged by its
+    own done-callback.
+    """
+    tasks = list(_BACKGROUND_TASKS)
+    for t in tasks:
+        t.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _rss_task, _status_task, _refresh_task
     init_db()
     load_config()
     # Defense in depth: if api_key is still blank after init_db + load_config
@@ -6575,15 +6625,19 @@ async def lifespan(app: FastAPI):
                     )
     except Exception:
         pass
-    _rss_task     = asyncio.create_task(rss_loop())
-    _status_task  = asyncio.create_task(status_loop())
-    _refresh_task = asyncio.create_task(refresh_ongoing_loop())
-    asyncio.create_task(_backfill_metadata_loop())
-    asyncio.create_task(backlog_search_loop())
-    asyncio.create_task(_swy_router.suwayomi_monitor_loop())
-    asyncio.create_task(rescan_loop())
-    asyncio.create_task(_import_list_loop())
-    asyncio.create_task(_backup_loop())
+    # All long-running background loops are registered with the tracker so
+    # they can be cancelled on shutdown and their unexpected exits logged.
+    # Previously seven of the nine were fire-and-forget tasks without a
+    # stored reference — see create_background_task() docstring.
+    create_background_task(rss_loop(),                         name="rss_loop")
+    create_background_task(status_loop(),                      name="status_loop")
+    create_background_task(refresh_ongoing_loop(),             name="refresh_ongoing_loop")
+    create_background_task(_backfill_metadata_loop(),          name="backfill_metadata_loop")
+    create_background_task(backlog_search_loop(),              name="backlog_search_loop")
+    create_background_task(_swy_router.suwayomi_monitor_loop(), name="suwayomi_monitor_loop")
+    create_background_task(rescan_loop(),                      name="rescan_loop")
+    create_background_task(_import_list_loop(),                name="import_list_loop")
+    create_background_task(_backup_loop(),                     name="backup_loop")
     # Re-process any import_queue entries that were left 'pending' from a previous
     # run (e.g. app restarted mid-import). Only retry entries with no needs_review files.
     with get_db() as _db:
@@ -6614,11 +6668,11 @@ async def lifespan(app: FastAPI):
         for _qid in _stuck_ids:
             await _process_auto_import(_qid)
     if _stuck_ids:
-        asyncio.create_task(_retry_stuck())
+        create_background_task(_retry_stuck(), name="retry_stuck_imports")
     yield
-    _rss_task.cancel()
-    _status_task.cancel()
-    _refresh_task.cancel()
+    # Cancel every registered background task and wait for graceful exit.
+    # Done-callbacks log unexpected exceptions; cancellations are silent.
+    await _cancel_background_tasks()
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def get_root_folders(db) -> list:
