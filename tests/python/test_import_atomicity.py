@@ -324,11 +324,10 @@ def exec_env(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "notify_discord", _noop_async)
     monkeypatch.setattr(main, "trigger_komga_scan", _noop_async)
     monkeypatch.setattr(main, "broadcast_queue_event", _noop_async)
-    # log_event opens a SECOND sqlite connection while the outer write
-    # transaction is still open, which causes a 15-second SQLITE_BUSY
-    # timeout on every import (pre-existing slowness, not part of M2).
-    # Stub it so tests don't pay that cost.
-    monkeypatch.setattr(main, "log_event", lambda *a, **kw: None)
+    # log_event is NOT stubbed any more: after the log_event write-lock
+    # fix, in-transaction call sites thread db=db through so log_event
+    # no longer opens a second contending sqlite connection. Integration
+    # tests now run in well under a second each, not ~15s.
 
     library_root = tmp_path / "library"
     library_root.mkdir()
