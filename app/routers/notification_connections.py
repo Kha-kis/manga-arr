@@ -351,12 +351,40 @@ async def _send_pushbullet(s: dict, message: str) -> tuple[bool, str]:
 
 
 # ── Public API: fire notifications for an event ───────────────────────────────
+# `event` is interpolated directly into SQL as a column name — `?`
+# placeholders can't bind identifiers. The whitelist below is the single
+# defence against a future refactor passing untrusted input into this
+# helper. Any event not in the set is a no-op with a warning log.
+_VALID_NOTIFICATION_EVENTS = frozenset({
+    "on_grab",
+    "on_download",
+    "on_upgrade",
+    "on_series_add",
+    "on_health_issue",
+    "on_health_restored",
+})
+
+
 async def fire_notifications(event: str, message: str, embed: dict | None = None):
     """
     Send notifications to all enabled connections subscribed to the given event.
     event: 'on_grab' | 'on_download' | 'on_upgrade' | 'on_series_add' |
            'on_health_issue' | 'on_health_restored'
+
+    An unknown or malformed event is a no-op (logs a warning and returns
+    without touching SQL). This prevents arbitrary column/identifier
+    strings from being interpolated into the SELECT below.
     """
+    if event not in _VALID_NOTIFICATION_EVENTS:
+        try:
+            import main as _m
+            _m.log_event(
+                'error',
+                f"fire_notifications: ignoring unknown event {event!r}",
+            )
+        except Exception:
+            pass
+        return
     with get_db() as db:
         connections = db.execute(
             f"SELECT * FROM notification_connections WHERE enabled=1 AND {event}=1"

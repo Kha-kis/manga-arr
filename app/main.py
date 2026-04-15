@@ -297,7 +297,16 @@ def init_db():
         """)
 
         # ── Migrations: add columns to existing tables ────────────────────────
+        # `table`, `col`, and `typedef` are all interpolated directly into
+        # SQL — `?` placeholders can't bind identifiers or type declarations.
+        # Validators below enforce a strict shape so a future refactor
+        # can't silently introduce injection through this helper, even if
+        # a caller started feeding in non-hardcoded values.
+        from shared import validate_sql_identifier, validate_sql_typedef
         def add_col(table, col, typedef):
+            validate_sql_identifier(table, kind="table")
+            validate_sql_identifier(col, kind="column")
+            validate_sql_typedef(typedef)
             cols = {r[1] for r in db.execute(f"PRAGMA table_info({table})").fetchall()}
             if col not in cols:
                 db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typedef}")

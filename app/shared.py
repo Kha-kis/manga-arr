@@ -4,6 +4,7 @@ Imported by both main.py and all router modules to avoid circular imports.
 """
 import json
 import os
+import re
 import sqlite3
 from contextlib import contextmanager
 
@@ -206,3 +207,66 @@ def build_order_by(sort_key: str, *,
     if d not in _VALID_ORDER_DIRECTIONS:
         return column   # invalid / empty direction: return column alone
     return f"{column} {d.upper()}"
+
+
+# ── SQL identifier / typedef validators ───────────────────────────────────────
+# Used by add_col() and any other helper that must interpolate table or
+# column names into SQL. `?` placeholders can't bind identifiers, so
+# validation is the only defence when these come from any source other
+# than a hardcoded literal. Today's callers are all hardcoded; these
+# guards prevent a future refactor from silently introducing injection.
+
+_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+
+# Matches the shape of every typedef currently passed to add_col, nothing
+# more. Explicitly:
+#   BASE_TYPE                                     (INTEGER, REAL, TEXT, …)
+#   BASE_TYPE DEFAULT <literal>                   (numeric, string, NULL, CURRENT_TIMESTAMP)
+#   BASE_TYPE REFERENCES table[(column)]          (single FK)
+#   BASE_TYPE DEFAULT <literal> REFERENCES …      (combination)
+# Quoted string defaults must NOT contain ;, ), or quote chars — no escape
+# tricks can slip through.
+_SQL_TYPEDEF_RE = re.compile(
+    r"""
+    ^
+    (INTEGER|REAL|TEXT|BLOB|NUMERIC|TIMESTAMP)              # base type
+    (
+        \s+DEFAULT\s+
+        (
+            -?\d+(\.\d+)?                                    # numeric literal
+          | '[^';\\\n\r"]*'                                   # single-quoted string
+          | "[^";\\\n\r]*"                                    # double-quoted string
+          | NULL
+          | CURRENT_TIMESTAMP
+        )
+    )?
+    (
+        \s+REFERENCES\s+
+        [A-Za-z_][A-Za-z0-9_]{0,63}                          # table name
+        (\(\s*[A-Za-z_][A-Za-z0-9_]{0,63}\s*\))?             # optional column
+    )?
+    $
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+
+def validate_sql_identifier(name: str, kind: str = "identifier") -> str:
+    """Return `name` if it matches the strict identifier pattern, else raise.
+
+    Identifiers are table/column/index names that SQL placeholders can't
+    bind. Must start with a letter or underscore, followed by up to 63
+    letters/digits/underscores.
+    """
+    if not isinstance(name, str) or not _SQL_IDENTIFIER_RE.match(name):
+        raise ValueError(f"invalid SQL {kind}: {name!r}")
+    return name
+
+
+def validate_sql_typedef(typedef: str) -> str:
+    """Return `typedef` if it matches the conservative typedef pattern,
+    else raise. Accepts the shapes used by the existing migrations:
+    base type, optional DEFAULT with a literal, optional REFERENCES."""
+    if not isinstance(typedef, str) or not _SQL_TYPEDEF_RE.match(typedef.strip()):
+        raise ValueError(f"invalid SQL typedef: {typedef!r}")
+    return typedef
