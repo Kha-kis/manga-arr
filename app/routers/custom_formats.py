@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from routers._templates import templates
 
 from shared import get_db, from_json
+from security import safe_regex_search
 
 router = APIRouter()
 
@@ -147,9 +148,10 @@ def evaluate_custom_format(
         val_lower = (value or '').lower()
 
         if spec_type == 'release_title_contains':
-            try:
-                hit = bool(re.search(value, title, re.IGNORECASE))
-            except re.error:
+            hit = safe_regex_search(value, title, re.IGNORECASE)
+            if hit is None:
+                # Unsafe / invalid regex → substring fallback so one bad
+                # spec doesn't break the rest of the format.
                 hit = val_lower in title_lower
             if negate:
                 hit = not hit
@@ -158,9 +160,8 @@ def evaluate_custom_format(
 
         elif spec_type == 'release_title_not_contains':
             # Shorthand: title must NOT contain value
-            try:
-                hit = bool(re.search(value, title, re.IGNORECASE))
-            except re.error:
+            hit = safe_regex_search(value, title, re.IGNORECASE)
+            if hit is None:
                 hit = val_lower in title_lower
             if negate:
                 hit = not hit
@@ -204,9 +205,8 @@ def evaluate_custom_format(
 
         elif spec_type == 'edition_contains':
             # Match edition keywords in the title (Deluxe, Omnibus, Collector, etc.)
-            try:
-                hit = bool(re.search(value, title, re.IGNORECASE))
-            except re.error:
+            hit = safe_regex_search(value, title, re.IGNORECASE)
+            if hit is None:
                 hit = val_lower in title_lower
             if negate:
                 hit = not hit

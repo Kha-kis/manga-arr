@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from routers._templates import templates
 
 from shared import get_db, from_json
+from security import safe_regex_search
 
 router = APIRouter()
 
@@ -123,11 +124,11 @@ def _profile_term_match(term, title_lower: str) -> bool:
     if isinstance(term, dict):
         t = (term.get('term') or '').lower()
         if term.get('is_regex'):
-            try:
-                return bool(re.search(t, title_lower, re.IGNORECASE))
-            except re.error:
-                import warnings
-                warnings.warn(f"[ReleaseProfile] Invalid regex '{t}', falling back to substring match")
+            # safe_regex_search returns None when the pattern is rejected
+            # as unsafe/invalid; fall back to substring match.
+            r = safe_regex_search(t, title_lower, re.IGNORECASE)
+            if r is not None:
+                return r
         return t in title_lower
     return str(term).lower() in title_lower
 
@@ -138,11 +139,9 @@ def _profile_pref_match(pref: dict, title_lower: str) -> bool:
     if not term:
         return False
     if pref.get('is_regex'):
-        try:
-            return bool(re.search(term, title_lower, re.IGNORECASE))
-        except re.error:
-            import warnings
-            warnings.warn(f"[ReleaseProfile] Invalid regex in preferred term '{term}', falling back to substring")
+        r = safe_regex_search(term, title_lower, re.IGNORECASE)
+        if r is not None:
+            return r
     return term in title_lower
 
 
