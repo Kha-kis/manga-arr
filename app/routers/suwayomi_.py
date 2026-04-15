@@ -360,9 +360,16 @@ def _swy_library_base(c: dict) -> str | None:
     return (c.get("download_path") or "").strip() or None
 
 
-def _find_suwayomi_manga_dir(c: dict, title: str) -> str | None:
+def _normalise_dir_name(name: str) -> str:
+    """Collapse all non-alphanumeric chars to spaces for fuzzy matching."""
+    return re.sub(r'\s+', ' ', re.sub(r'[^a-z0-9]', ' ', name.lower())).strip()
+
+
+def _find_suwayomi_manga_dir(c: dict, *titles: str) -> str | None:
     """Find the host-visible download directory for a manga title.
     Structure: {library_base}/mangas/{source_name}/{manga_title}/
+    Accepts multiple candidate titles (e.g. Suwayomi title + Mangarr title)
+    and tries exact match first, then normalised fuzzy match.
     """
     base = _swy_library_base(c)
     if not base:
@@ -370,10 +377,35 @@ def _find_suwayomi_manga_dir(c: dict, title: str) -> str | None:
     mangas_root = os.path.join(base, "mangas")
     if not os.path.isdir(mangas_root):
         return None
-    for source_dir in os.listdir(mangas_root):
-        manga_dir = os.path.join(mangas_root, source_dir, title)
-        if os.path.isdir(manga_dir):
-            return manga_dir
+
+    # Collect all candidate directories
+    source_dirs = [
+        os.path.join(mangas_root, sd)
+        for sd in os.listdir(mangas_root)
+        if os.path.isdir(os.path.join(mangas_root, sd))
+    ]
+
+    # Pass 1: exact match on any title
+    for t in titles:
+        if not t:
+            continue
+        for sd in source_dirs:
+            manga_dir = os.path.join(sd, t)
+            if os.path.isdir(manga_dir):
+                return manga_dir
+
+    # Pass 2: normalised match (handles : → _, etc.)
+    norm_titles = [_normalise_dir_name(t) for t in titles if t]
+    for sd in source_dirs:
+        for entry in os.listdir(sd):
+            entry_path = os.path.join(sd, entry)
+            if not os.path.isdir(entry_path):
+                continue
+            norm_entry = _normalise_dir_name(entry)
+            for nt in norm_titles:
+                if nt == norm_entry or nt in norm_entry or norm_entry in nt:
+                    return entry_path
+
     return None
 
 
@@ -480,13 +512,14 @@ async def suwayomi_grab(series_id: int, volume_num: float) -> bool:
         log.debug("suwayomi_grab: active job already exists for series %d vol %s", series_id, volume_num)
         return True   # already in queue, treat as success
 
-    lang = s["ddl_language"] or get_cfg("ddl_language", "en")
+    sd = dict(s)
+    lang = sd.get("ddl_language") or get_cfg("ddl_language", "en")
     src_name = source_info.get("source_name", "MangaDex")
 
     try:
         manga_id = await find_or_add_manga(
-            c, series_id, s["title"], lang,
-            mangadex_uuid=s.get("mangadex_id"),
+            c, series_id, sd["title"], lang,
+            mangadex_uuid=sd.get("mangadex_id"),
             source_name=src_name,
         )
         chapters  = await fetch_chapters(c, manga_id)
@@ -521,11 +554,15 @@ async def suwayomi_grab(series_id: int, volume_num: float) -> bool:
             )
             db.execute("UPDATE series SET suwayomi_id=? WHERE id=?", (manga_id, series_id))
 
+        vol_label = _m.build_volume_label(volume_num, None, None)
         _m.log_event(
             "grab",
-            f"DDL queued: {s['title']} vol {volume_num} ({len(chapter_ids)} chapters via Suwayomi)",
+            f"DDL queued: {sd['title']} vol {volume_num} ({len(chapter_ids)} chapters via Suwayomi)",
             series_id,
         )
+        with get_db() as db:
+            _m.add_history(db, 'grabbed', series_id, sd['title'], vol_label,
+                           client='suwayomi', protocol='ddl')
         return True
 
     except Exception as e:
@@ -551,7 +588,8 @@ async def suwayomi_chapter_grab(series_id: int, chapter_num: float) -> bool:
 
     if not c or not s:
         return False
-    source_info = _get_series_source(series_id, dict(s))
+    sd = dict(s)
+    source_info = _get_series_source(series_id, sd)
     if not source_info:
         log.debug("Series %d has no Suwayomi source — skipping DDL chapter grab", series_id)
         return False
@@ -560,13 +598,13 @@ async def suwayomi_chapter_grab(series_id: int, chapter_num: float) -> bool:
                   series_id, chapter_num)
         return True
 
-    lang = s["ddl_language"] or get_cfg("ddl_language", "en")
+    lang = sd.get("ddl_language") or get_cfg("ddl_language", "en")
     src_name = source_info.get("source_name", "MangaDex")
 
     try:
         manga_id = await find_or_add_manga(
-            c, series_id, s["title"], lang,
-            mangadex_uuid=s.get("mangadex_id"),
+            c, series_id, sd["title"], lang,
+            mangadex_uuid=sd.get("mangadex_id"),
             source_name=src_name,
         )
         chapters = await fetch_chapters(c, manga_id)
@@ -603,11 +641,15 @@ async def suwayomi_chapter_grab(series_id: int, chapter_num: float) -> bool:
             )
             db.execute("UPDATE series SET suwayomi_id=? WHERE id=?", (manga_id, series_id))
 
+        ch_label = f"Ch {int(chapter_num)}" if chapter_num == int(chapter_num) else f"Ch {chapter_num}"
         _m.log_event(
             "grab",
-            f"DDL queued: {s['title']} ch {chapter_num} via Suwayomi",
+            f"DDL queued: {sd['title']} ch {chapter_num} via Suwayomi",
             series_id,
         )
+        with get_db() as db:
+            _m.add_history(db, 'grabbed', series_id, sd['title'], ch_label,
+                           client='suwayomi', protocol='ddl')
         return True
 
     except Exception as e:
@@ -623,7 +665,8 @@ def _should_merge(c: dict) -> bool:
     return bool(c.get("merge_chapters", 1))
 
 
-async def _import_suwayomi_volume(c: dict, series_id: int, volume_num: float
+async def _import_suwayomi_volume(c: dict, series_id: int, volume_num: float,
+                                  *, swy_title: str = "",
                                   ) -> tuple[str | None, int]:
     """Import completed volume download into the managed library.
     If merge_chapters is enabled (default): merges chapter CBZs into one volume CBZ.
@@ -639,7 +682,7 @@ async def _import_suwayomi_volume(c: dict, series_id: int, volume_num: float
     if not s_row:
         return None, 0
 
-    manga_dir = _find_suwayomi_manga_dir(c, s_row["title"])
+    manga_dir = _find_suwayomi_manga_dir(c, swy_title, s_row["title"])
     if not manga_dir:
         log.warning("Suwayomi library base not configured — skipping import series %d vol %s",
                     series_id, volume_num)
@@ -682,7 +725,8 @@ async def _import_suwayomi_volume(c: dict, series_id: int, volume_num: float
         return (vol_dir, total_size) if total_size else (None, 0)
 
 
-async def _import_suwayomi_chapter(c: dict, series_id: int, chapter_num: float
+async def _import_suwayomi_chapter(c: dict, series_id: int, chapter_num: float,
+                                   *, swy_title: str = "",
                                    ) -> tuple[str | None, int]:
     """Import a single downloaded chapter CBZ into the managed library.
     Individual chapters are always kept as individual files (merge doesn't apply).
@@ -697,7 +741,7 @@ async def _import_suwayomi_chapter(c: dict, series_id: int, chapter_num: float
     if not s_row:
         return None, 0
 
-    manga_dir = _find_suwayomi_manga_dir(c, s_row["title"])
+    manga_dir = _find_suwayomi_manga_dir(c, swy_title, s_row["title"])
     if not manga_dir:
         return None, 0
 
@@ -748,14 +792,16 @@ async def check_suwayomi_jobs():
         try:
             chapter_ids = json.loads(job["chapter_ids"])
 
-            # Fetch chapters for the manga and filter to our tracked IDs
+            # Fetch manga title + chapters for the manga
             data  = await _gql(c, """
                 query($mid: Int!) {
                     manga(id: $mid) {
+                        title
                         chapters { nodes { id isDownloaded } }
                     }
                 }
             """, {"mid": job["suwayomi_manga_id"]})
+            swy_title = (data.get("manga") or {}).get("title") or ""
 
             ch_map: dict[int, bool] = {
                 int(ch["id"]): bool(ch["isDownloaded"])
@@ -773,7 +819,8 @@ async def check_suwayomi_jobs():
                 if job["chapter_num"] is not None:
                     # ── Chapter-level job ─────────────────────────────────────
                     import_path, file_bytes = await _import_suwayomi_chapter(
-                        c, job["series_id"], float(job["chapter_num"])
+                        c, job["series_id"], float(job["chapter_num"]),
+                        swy_title=swy_title,
                     )
                     if not import_path:
                         err_msg = "Import failed — chapter CBZ not found in library path"
@@ -809,10 +856,20 @@ async def check_suwayomi_jobs():
                         + (f" → {os.path.basename(import_path)}" if import_path else ""),
                         job["series_id"],
                     )
+                    ch_num = float(job["chapter_num"])
+                    ch_label = f"Ch {int(ch_num)}" if ch_num == int(ch_num) else f"Ch {ch_num}"
+                    with get_db() as db:
+                        s_title = (db.execute("SELECT title FROM series WHERE id=?",
+                                             (job["series_id"],)).fetchone() or {}).get("title", "")
+                        _m.add_history(db, 'imported', job["series_id"], s_title, ch_label,
+                                       source_title=os.path.basename(import_path) if import_path else '',
+                                       client='suwayomi', protocol='ddl',
+                                       size_bytes=file_bytes or 0)
                 else:
                     # ── Volume-level job ──────────────────────────────────────
                     import_path, file_bytes = await _import_suwayomi_volume(
-                        c, job["series_id"], job["volume_num"]
+                        c, job["series_id"], job["volume_num"],
+                        swy_title=swy_title,
                     )
                     if not import_path:
                         err_msg = "Import failed — CBZ files not found in library path"
@@ -849,6 +906,14 @@ async def check_suwayomi_jobs():
                         + (f" → {os.path.basename(import_path)}" if import_path else ""),
                         job["series_id"],
                     )
+                    vol_label = _m.build_volume_label(job["volume_num"], None, None)
+                    with get_db() as db:
+                        s_title = (db.execute("SELECT title FROM series WHERE id=?",
+                                             (job["series_id"],)).fetchone() or {}).get("title", "")
+                        _m.add_history(db, 'imported', job["series_id"], s_title, vol_label,
+                                       source_title=os.path.basename(import_path) if import_path else '',
+                                       client='suwayomi', protocol='ddl',
+                                       size_bytes=file_bytes or 0)
 
         except Exception as e:
             log.error("check_suwayomi_jobs job=%d: %s", job["id"], e)

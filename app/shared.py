@@ -23,6 +23,10 @@ def get_db():
     try:
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")   # safe with WAL, much faster
+        conn.execute("PRAGMA busy_timeout=5000")     # wait up to 5s on lock instead of failing
+        conn.execute("PRAGMA cache_size=-8000")      # 8MB cache (was 2MB)
+        conn.execute("PRAGMA mmap_size=67108864")    # 64MB memory-mapped I/O
         yield conn
         conn.commit()
     except Exception:

@@ -397,15 +397,20 @@ async def index(request: Request, q: str = "", sort: str = "title",
             except Exception:
                 pass
 
-        activity = db.execute(
-            "SELECT h.event_type, h.series_title, h.series_id, "
-            "h.source_title, h.volume_label, h.indexer, h.protocol, "
-            "h.client, h.release_group, h.size_bytes, h.created_at "
+        activity = [dict(r) for r in db.execute(
+            "SELECT MAX(h.event_type) as event_type, h.series_title, h.series_id, "
+            "MAX(h.source_title) as source_title, "
+            "MIN(h.volume_label) as first_vol, "
+            "MAX(h.volume_label) as last_vol, "
+            "COUNT(*) as vol_count, "
+            "MAX(h.indexer) as indexer, MAX(h.protocol) as protocol, "
+            "MAX(h.created_at) as created_at "
             "FROM history h "
-            "WHERE h.event_type IN ('grab', 'imported') "
+            "WHERE h.event_type IN ('grabbed', 'imported') "
             "AND h.series_id IS NOT NULL "
-            "ORDER BY h.created_at DESC LIMIT 20"
-        ).fetchall()
+            "GROUP BY h.series_id, DATE(h.created_at) "
+            "ORDER BY MAX(h.created_at) DESC LIMIT 20"
+        ).fetchall()]
         profiles      = db.execute("SELECT id, name FROM quality_profiles  ORDER BY name").fetchall()
         lang_profiles = db.execute("SELECT id, name FROM language_profiles ORDER BY name").fetchall()
         root_folders  = db.execute("SELECT id, path FROM root_folders      ORDER BY path").fetchall()
@@ -723,6 +728,8 @@ async def add_series(
     root_folder_id: int = Form(0),
     pub_year:       int = Form(0),
     edition_type:   str = Form("standard"),
+    monitored:      str = Form("0"),
+    search_now:     str = Form("0"),
 ):
     import main as _m
     _valid_editions = {
@@ -755,14 +762,16 @@ async def add_series(
             ).fetchone()
             if default_rf:
                 rf_id = default_rf['id']
+        _monitored = monitored == "1"
+        _search_now = search_now == "1"
         cur = db.execute(
             "INSERT INTO series(title, search_pattern, anilist_id, mal_id, mu_id, cover_url,"
             " status, description, total_volumes, total_chapters, root_folder_id, pub_year,"
-            " edition_type, vol_count_source)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " edition_type, vol_count_source, monitored)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (title, search_pattern, anilist_id or None, mal_id or None, mu_id or None,
              cover_url, status, description, total_volumes or None, total_chapters or None,
-             rf_id, pub_year or None, edition_type, 'anilist')
+             rf_id, pub_year or None, edition_type, 'anilist', 1 if _monitored else 0)
         )
         series_id = cur.lastrowid
         if total_volumes and total_volumes > 0 and edition_type not in _m._NON_STANDARD_STUB_EDITIONS:
@@ -770,13 +779,15 @@ async def add_series(
         _m.add_history(db, 'series_added', series_id, title, '',
                        source_title=title,
                        data={'total_volumes': total_volumes, 'status': status})
-    asyncio.create_task(_m.grab_existing(series_id, title, search_pattern))
-    await _m.refresh_mangadex_map(series_id)
+    # Fire all post-add tasks in background — don't block the response
+    asyncio.create_task(_m.refresh_mangadex_map(series_id))
     if anilist_id:
-        await _m.fetch_anilist_aliases(series_id, anilist_id, title)
+        asyncio.create_task(_m.fetch_anilist_aliases(series_id, anilist_id, title))
     if cover_url:
         asyncio.create_task(_m.download_cover(series_id, cover_url))
     asyncio.create_task(_m.fetch_mu_metadata(series_id, title))
+    if _search_now:
+        asyncio.create_task(_m.grab_existing(series_id, title, search_pattern))
     if edition_type in _m._NON_STANDARD_STUB_EDITIONS:
         asyncio.create_task(_m.fetch_edition_volume_count(series_id, title, edition_type))
     asyncio.create_task(_m.notify_discord('', event='on_series_add', embed={
@@ -785,7 +796,7 @@ async def add_series(
         'color': 0x4cc9f0,
         'thumbnail': {'url': cover_url} if cover_url else {},
     }))
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse(f"/series/{series_id}", status_code=303)
 
 
 @router.get("/api/series/{series_id}/cover-refresh")

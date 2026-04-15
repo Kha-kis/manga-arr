@@ -1015,8 +1015,10 @@ def normalize(text: str) -> str:
 _LANG_REJECT_RE = re.compile(
     r'\b(?:french|francais|fran[çc]ais|vostfr|español|espanol|spanish|'
     r'italian[eo]?|german|deutsch|portuguese|portugu[eê]s|russian|'
-    r'polish|dutch|indonesian|malay|vietnamese|thai|arabic|turkish)\b'
-    r'|\[(?:fr|es|de|it|pt|ru|pl|nl|id|ms|vi|th|ar|tr)\]'
+    r'polish|dutch|indonesian|malay|vietnamese|thai|arabic|turkish|'
+    r'japanese|unlocalized)\b'
+    r'|\[(?:fr|es|de|it|pt|ru|pl|nl|id|ms|vi|th|ar|tr|jp|jpn|raw)\]'
+    r'|\((?:jp|jpn|raw)\)'        # (Raw), (JPN), (JP) in parens
     r'|(?<!\w)vf(?!\w)',          # VF as standalone token (French)
     re.IGNORECASE,
 )
@@ -2691,7 +2693,7 @@ async def grab_url(url: str, protocol: str = '', save_path: str | None = None,
         _cb_record_success(client_id)
     else:
         _cb_record_failure(client_id)
-    return ok, client['name'], dl_id
+    return ok, (client.get('type') or client['name']).lower(), dl_id
 
 
 async def nzbget_grab(nzb_url: str, client: dict | None = None) -> tuple[bool, str | None, bool]:
@@ -2844,21 +2846,16 @@ def quality_rank(q: str | None) -> int:
 
 
 _EDITION_PATTERNS = [
-    # Digital / web releases
-    (r'\bdigital\b',                                    'digital'),
-    (r'\bweb(?:comic|toon)?\b',                         'digital'),
     # Official color (Viz Full Color, publisher color releases — highest tier)
     (r'\bofficial[\s-]?colou?r\b',                      'official_color'),
     (r'\bfull[\s-]?colou?r\b',                          'official_color'),
     (r'\bviz[\s-]?(?:full[\s-]?)?colou?r\b',           'official_color'),
+    (r'\bdigital\s+colou?red?\b',                       'official_color'),
     # Fan / scan colorizations (lower tier than official)
     (r'\bcolou?red?\s+edition\b',                       'colored'),
     (r'\bin\s+colou?r\b',                               'colored'),
     (r'\bcolou?red\b',                                   'colored'),   # bare: [ColoredManga], "Colored"
     (r'\bcoloredmanga\b',                                'colored'),
-    # Unlocalized / raw Japanese (never preferred)
-    (r'\bunlocalized\b',                                 'unlocalized'),
-    (r'\b(?:raw|jp(?:n)?)\b',                           'raw'),
     # Deluxe / hardcover
     (r'\bdeluxe\b',                                     'deluxe'),
     (r'\bhardcover\b|\bhc\b(?!\w)',                     'deluxe'),
@@ -3356,29 +3353,48 @@ async def check_download_status():
                     completed       = [t for t in all_torrents if t.get('progress', 0) >= 1.0]
                     torrent_by_hash = {t['hash'].lower(): t for t in completed}
                     completed_names = {normalize(t['name']): t for t in completed}
-                    with get_db() as db:
-                        rows = db.execute(
-                            "SELECT torrent_url, torrent_name, series_id, volume_num, download_id "
-                            "FROM seen WHERE client='qbittorrent' AND protocol='torrent'"
-                        ).fetchall()
-                        for row in rows:
-                            dl_id      = (row['download_id'] or '').lower()
-                            name_norm  = normalize(row['torrent_name'] or '')
-                            torrent    = torrent_by_hash.get(dl_id) or completed_names.get(name_norm)
-                            if not torrent:
-                                continue
-                            # content_path is the actual file/folder qBit wrote to disk
-                            content_path = torrent.get('content_path') or torrent.get('save_path', '')
-                            content_path = apply_remote_path_mapping(db, content_path, host)
-                            q_id, needs_review = _queue_import(
-                                db, row['series_id'], dl_id,
-                                row['torrent_name'] or '',
-                                row['torrent_url'] or '',
-                                row['volume_num'],
-                                content_path)
-                            if q_id and not needs_review:
-                                asyncio.create_task(_process_auto_import(q_id))
+                    log_event('info', f"qBit check: {len(completed)}/{len(all_torrents)} completed")
 
+                    def _process_qbit_completed():
+                        """Run in thread to avoid blocking the event loop."""
+                        # Phase 1: quick read to get seen entries (short lock)
+                        with get_db() as db:
+                            rows = db.execute(
+                                "SELECT torrent_url, torrent_name, series_id, volume_num, download_id "
+                                "FROM seen WHERE client='qbittorrent' AND protocol='torrent'"
+                            ).fetchall()
+
+                        # Phase 2: match against completed torrents (no DB lock)
+                        matched = []
+                        for row in rows:
+                            dl_id     = (row['download_id'] or '').lower()
+                            name_norm = normalize(row['torrent_name'] or '')
+                            torrent   = torrent_by_hash.get(dl_id) or completed_names.get(name_norm)
+                            if torrent:
+                                matched.append((row, torrent))
+
+                        # Phase 3: queue imports one at a time (short lock per item)
+                        _new_imports = []
+                        for row, torrent in matched:
+                            dl_id = (row['download_id'] or '').lower()
+                            content_path = torrent.get('content_path') or torrent.get('save_path', '')
+                            with get_db() as db:
+                                content_path = apply_remote_path_mapping(db, content_path, host)
+                                q_id, needs_review = _queue_import(
+                                    db, row['series_id'], dl_id,
+                                    row['torrent_name'] or '',
+                                    row['torrent_url'] or '',
+                                    row['volume_num'],
+                                    content_path)
+                            if q_id and not needs_review:
+                                _new_imports.append(q_id)
+                        return _new_imports
+
+                    _new_imports = await asyncio.to_thread(_process_qbit_completed)
+                    for _imp_id in _new_imports:
+                        asyncio.create_task(_process_auto_import(_imp_id))
+
+                    with get_db() as db:
                         # ── No-hash orphans: grabbed with no download_id → reset immediately ──
                         db.execute(
                             "UPDATE volumes SET status='wanted', grabbed_at=NULL, source_url=NULL,"
@@ -3390,11 +3406,7 @@ async def check_download_status():
                             "DELETE FROM volumes WHERE status='grabbed'"
                             " AND download_id IS NULL AND volume_num IS NULL"
                         )
-
-                        # ── Orphan cleanup: grabbed volumes whose torrent is gone ──
-                        # Drive from volumes.client (not a seen JOIN) so volumes with
-                        # deleted seen records are still caught. Only runs when we have
-                        # a valid all_hashes from qBit.
+                        # ── Orphan cleanup: grabbed volumes whose torrent is gone from client ──
                         orphaned = db.execute(
                             "SELECT DISTINCT v.download_id, v.series_id,"
                             " COALESCE(sv.torrent_name, v.torrent_name) as torrent_name "
@@ -3419,7 +3431,7 @@ async def check_download_status():
                                     (gs['series_id'], h)
                                 ).fetchall()
                             ]
-                            # Pack stubs (volume_num IS NULL) are deleted when lost; numbered stubs reset
+                            # Pack stubs (volume_num IS NULL) are deleted; numbered stubs reset
                             db.execute(
                                 "DELETE FROM volumes WHERE series_id=? AND download_id=?"
                                 " AND status='grabbed' AND volume_num IS NULL",
@@ -4344,6 +4356,7 @@ query ($search: String) {
       title { romaji english }
       coverImage { large }
       status
+      format
       description(asHtml: false)
       volumes
       chapters
@@ -4449,6 +4462,7 @@ async def anilist_search(query: str) -> list[dict]:
             'title':       title,
             'cover_url':   m['coverImage']['large'],
             'status':      m.get('status', ''),
+            'format':      m.get('format', ''),
             'volumes':     m.get('volumes'),
             'chapters':    m.get('chapters'),
             'pub_year':    (m.get('startDate') or {}).get('year'),
@@ -5318,6 +5332,12 @@ async def grab_item(item: dict, series_id: int, respect_monitoring: bool = True)
         _series_edition  = (s_mode_row['edition_type'] if s_mode_row else None) or 'standard'
         _release_edition = detect_edition_type(title) or 'standard'
         if _series_edition != _release_edition:
+            return False
+
+    # Minimum seeders check for torrents
+    if item.get('protocol') == 'torrent':
+        _min_seeds = int(get_cfg('min_seeders', '0') or '0')
+        if _min_seeds > 0 and (item.get('seeders') or 0) < _min_seeds:
             return False
 
     # Parse item type early so we can pass volume_num into score_release
@@ -6459,12 +6479,12 @@ def format_bytes(n) -> str:
 def format_protocol(p: str) -> str:
     if not p:
         return ''
-    return 'Torrent' if p == 'torrent' else 'NZB'
+    return {'torrent': 'Torrent', 'nzb': 'NZB', 'ddl': 'DDL'}.get(p, p)
 
 def format_client(c: str) -> str:
     if not c:
         return ''
-    return {'qbittorrent': 'qBittorrent', 'sabnzbd': 'SABnzbd'}.get(c, c)
+    return {'qbittorrent': 'qBittorrent', 'sabnzbd': 'SABnzbd', 'suwayomi': 'Suwayomi'}.get(c, c)
 
 # ── Cover image helpers ───────────────────────────────────────────────────────
 os.makedirs('/config/covers', exist_ok=True)

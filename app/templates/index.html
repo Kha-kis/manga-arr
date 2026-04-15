@@ -508,11 +508,16 @@
     <div style="flex:1; min-width:0">
       <div style="display:flex; align-items:baseline; gap:6px; min-width:0">
         <a href="/series/{{ a['series_id'] }}" class="activity-series">{{ a['series_title'] }}</a>
-        {% if a['volume_label'] %}
-        <span class="activity-vol">{{ a['volume_label'] }}</span>
+        {% if a['vol_count'] > 1 %}
+        <span class="activity-vol">{{ a['first_vol'] }} – {{ a['last_vol'] }}</span>
+        <span class="activity-vol" style="opacity:0.6">({{ a['vol_count'] }})</span>
+        {% elif a['first_vol'] %}
+        <span class="activity-vol">{{ a['first_vol'] }}</span>
         {% endif %}
       </div>
+      {% if a['vol_count'] == 1 %}
       <div class="activity-name" style="font-size:0.7rem">{{ a['source_title'] }}</div>
+      {% endif %}
     </div>
     <div class="pill-badges">
       {% if a['indexer'] %}<span class="badge-status badge-indexer">{{ a['indexer'] }}</span>{% endif %}

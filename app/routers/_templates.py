@@ -26,12 +26,12 @@ def _fmt_bytes(n):
 def _fmt_protocol(p: str) -> str:
     if not p:
         return ''
-    return 'Torrent' if p == 'torrent' else 'NZB'
+    return {'torrent': 'Torrent', 'nzb': 'NZB', 'ddl': 'DDL'}.get(p, p)
 
 def _fmt_client(c: str) -> str:
     if not c:
         return ''
-    return {'qbittorrent': 'qBittorrent', 'sabnzbd': 'SABnzbd'}.get(c, c)
+    return {'qbittorrent': 'qBittorrent', 'sabnzbd': 'SABnzbd', 'suwayomi': 'Suwayomi'}.get(c, c)
 
 def _vol_display(vol_num) -> str:
     from shared import vol_num_to_display
