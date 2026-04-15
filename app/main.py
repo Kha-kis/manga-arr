@@ -872,13 +872,34 @@ def init_db():
         """)
 
 # ── Event logging ─────────────────────────────────────────────────────────────
-def log_event(event_type: str, message: str, series_id: int | None = None):
+def log_event(event_type: str, message: str, series_id: int | None = None,
+              *, db=None):
+    """Insert a row into the events table.
+
+    If `db` is provided, the INSERT is executed on that existing connection
+    — use this when calling from inside an already-open write transaction
+    (e.g. `_execute_import`, `_queue_import`) to avoid opening a second
+    connection that would serialize behind the outer writer and burn the
+    15-second SQLITE_BUSY timeout.
+
+    If `db` is None, opens a fresh connection as before. Normal callers
+    (loops, HTTP handlers, one-shot background tasks) should not pass db.
+
+    Swallows exceptions either way — event logging is best-effort and must
+    not break the caller.
+    """
     try:
-        with get_db() as db:
+        if db is not None:
             db.execute(
                 "INSERT INTO events(event_type, series_id, message) VALUES(?,?,?)",
-                (event_type, series_id, message)
+                (event_type, series_id, message),
             )
+        else:
+            with get_db() as _db:
+                _db.execute(
+                    "INSERT INTO events(event_type, series_id, message) VALUES(?,?,?)",
+                    (event_type, series_id, message),
+                )
     except Exception:
         pass
 
@@ -3171,7 +3192,7 @@ def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
     needs_review=True means at least one file is ambiguous → requires user review.
     """
     if not content_path:
-        log_event('error', f"Import queue: no content_path for {torrent_name}", series_id)
+        log_event('error', f"Import queue: no content_path for {torrent_name}", series_id, db=db)
         return None, False
 
     s = db.execute(
@@ -3210,7 +3231,7 @@ def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
         src_dir    = os.path.dirname(content_path)  # for display / storage only
         scan_paths = [content_path]                  # only this specific file
     else:
-        log_event('error', f"Import queue: content_path not found: {content_path}", series_id)
+        log_event('error', f"Import queue: content_path not found: {content_path}", series_id, db=db)
         return None, False
 
     dest_root = rf['path'] if rf else get_cfg('save_path', '/manga')
@@ -3264,7 +3285,7 @@ def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
 
         # Skip foreign-language files
         if is_foreign_language(fname):
-            log_event('import', f"Skipped foreign-language file: {fname}", series_id)
+            log_event('import', f"Skipped foreign-language file: {fname}", series_id, db=db)
             continue
 
         proposed_vol  = extract_volume_num(fname)
@@ -3279,7 +3300,7 @@ def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
                 if ci_vol != proposed_vol:
                     log_event('import',
                         f"ComicInfo.xml: vol {proposed_vol} → {ci_vol} for {fname}",
-                        series_id)
+                        series_id, db=db)
                     proposed_vol  = ci_vol
                     proposed_chap = None   # <Volume> tag wins — treat as volume file
             elif ci.get('number') is not None and proposed_chap is None:
@@ -3306,7 +3327,7 @@ def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
                                 if ci_vol != proposed_vol:
                                     log_event('import',
                                         f"ComicInfo.xml (CBR): vol {proposed_vol} → {ci_vol} for {fname}",
-                                        series_id)
+                                        series_id, db=db)
                                 proposed_vol  = ci_vol
                                 proposed_chap = None
                         elif _raw_num and proposed_chap is None:
@@ -3351,13 +3372,13 @@ def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
     # get stuck in 'grabbed' state waiting for an import that can never complete.
     if mapped == 0 and unmapped == 0:
         db.execute("DELETE FROM import_queue WHERE id=?", (queue_id,))
-        log_event('import', f"No manga files found in {src_dir} — skipping: {torrent_name}", series_id)
+        log_event('import', f"No manga files found in {src_dir} — skipping: {torrent_name}", series_id, db=db)
         return None, False
 
     # needs_review if ANY file is unmapped — user must confirm before the whole batch imports
     needs_review = unmapped > 0
     if unmapped > 0:
-        log_event('import', f"Queued for review ({unmapped} unmapped file(s)): {torrent_name}", series_id)
+        log_event('import', f"Queued for review ({unmapped} unmapped file(s)): {torrent_name}", series_id, db=db)
     return queue_id, needs_review
 
 async def check_download_status():
@@ -3383,7 +3404,7 @@ async def check_download_status():
                 (f'-{_bl_ttl}',)
             ).rowcount
             if _bl_deleted > 0:
-                log_event('info', f"Auto-pruned {_bl_deleted} expired blocklist entr{'ies' if _bl_deleted != 1 else 'y'} (TTL: {_bl_ttl}d)")
+                log_event('info', f"Auto-pruned {_bl_deleted} expired blocklist entr{'ies' if _bl_deleted != 1 else 'y'} (TTL: {_bl_ttl}d)", db=_bldb)
 
     # Auto-reset grabbed volumes that are stuck (no activity for >2 days, not in import queue)
     with get_db() as _stuckdb:
@@ -3399,7 +3420,7 @@ async def check_download_status():
             "   )"
         ).rowcount
         if _stuck_count > 0:
-            log_event('info', f"Auto-reset {_stuck_count} stuck grabbed volume(s) back to wanted")
+            log_event('info', f"Auto-reset {_stuck_count} stuck grabbed volume(s) back to wanted", db=_stuckdb)
 
     # Auto-retry import_queue entries stuck in pending/partial > 2 hours
     with get_db() as _iq_db:
@@ -3747,7 +3768,7 @@ def _mark_downloaded(db, series_id, volume_num, torrent_url) -> bool:
             (series_id, volume_num)
         )
         if cur.rowcount > 0:
-            log_event('download_complete', f"Vol {volume_num:g} download complete", series_id)
+            log_event('download_complete', f"Vol {volume_num:g} download complete", series_id, db=db)
             s = db.execute("SELECT title, cover_url FROM series WHERE id=?", (series_id,)).fetchone()
             if s:
                 asyncio.create_task(notify_discord(
@@ -3805,7 +3826,7 @@ def _mark_downloaded(db, series_id, volume_num, torrent_url) -> bool:
 
         if cur.rowcount > 0:
             label = 'Complete Series' if pt == 'complete' else f"Vol {int(pack['vol_range_start'])}–{int(pack['vol_range_end'])}"
-            log_event('download_complete', f"{label} pack download complete", series_id)
+            log_event('download_complete', f"{label} pack download complete", series_id, db=db)
             s = db.execute("SELECT title, cover_url FROM series WHERE id=?", (series_id,)).fetchone()
             if s:
                 asyncio.create_task(notify_discord(
@@ -4071,7 +4092,7 @@ async def _execute_import(
         try:
             os.makedirs(dst_dir, exist_ok=True)
         except Exception as e:
-            log_event('error', f"Import: cannot create {dst_dir}: {e}", queue['series_id'])
+            log_event('error', f"Import: cannot create {dst_dir}: {e}", queue['series_id'], db=db)
             db.execute("UPDATE import_queue SET status='failed' WHERE id=?", (queue_id,))
             # Reset grabbed volumes back to wanted when import conclusively fails
             if queue['download_id']:
@@ -4140,7 +4161,7 @@ async def _execute_import(
                     db.execute(
                         "UPDATE import_queue_files SET status='failed' WHERE id=?", (f['id'],)
                     )
-                    log_event('error', f"Import: unsafe destination ({f['filename']}): {_e}", queue['series_id'])
+                    log_event('error', f"Import: unsafe destination ({f['filename']}): {_e}", queue['series_id'], db=db)
                     any_error = True
                     continue
 
@@ -4148,7 +4169,7 @@ async def _execute_import(
                     db.execute(
                         "UPDATE import_queue_files SET status='failed' WHERE id=?", (f['id'],)
                     )
-                    log_event('error', f"Import: source file missing: {src}", queue['series_id'])
+                    log_event('error', f"Import: source file missing: {src}", queue['series_id'], db=db)
                     any_error = True
                     continue
 
@@ -4244,7 +4265,7 @@ async def _execute_import(
                     db.execute(
                         "UPDATE import_queue_files SET status='failed' WHERE id=?", (f['id'],)
                     )
-                    log_event('error', f"Import chapter error ({f['filename']}): {e}", queue['series_id'])
+                    log_event('error', f"Import chapter error ({f['filename']}): {e}", queue['series_id'], db=db)
                     any_error = True
                     if _batch_failed_file_id is None:
                         _batch_failed_file_id = f['id']
@@ -4271,12 +4292,12 @@ async def _execute_import(
                         dst = safe_join_under(dst_dir, f['filename'])
                     except ValueError as _e:
                         db.execute("UPDATE import_queue_files SET status='failed' WHERE id=?", (f['id'],))
-                        log_event('error', f"Import: unsafe destination ({f['filename']}): {_e}", queue['series_id'])
+                        log_event('error', f"Import: unsafe destination ({f['filename']}): {_e}", queue['series_id'], db=db)
                         any_error = True
                         continue
                     if not os.path.isfile(src):
                         db.execute("UPDATE import_queue_files SET status='failed' WHERE id=?", (f['id'],))
-                        log_event('error', f"Import: source file missing: {src}", queue['series_id'])
+                        log_event('error', f"Import: source file missing: {src}", queue['series_id'], db=db)
                         any_error = True
                         continue
                     try:
@@ -4335,7 +4356,7 @@ async def _execute_import(
                             imported_vols.add(proposed_vol)
                     except Exception as e:
                         db.execute("UPDATE import_queue_files SET status='failed' WHERE id=?", (f['id'],))
-                        log_event('error', f"Import chapter error ({f['filename']}): {e}", queue['series_id'])
+                        log_event('error', f"Import chapter error ({f['filename']}): {e}", queue['series_id'], db=db)
                         any_error = True
                         if _batch_failed_file_id is None:
                             _batch_failed_file_id = f['id']
@@ -4362,7 +4383,7 @@ async def _execute_import(
                 dst = safe_join_under(dst_dir, f['filename'])
             except ValueError as _e:
                 db.execute("UPDATE import_queue_files SET status='failed' WHERE id=?", (f['id'],))
-                log_event('error', f"Import: unsafe destination ({f['filename']}): {_e}", queue['series_id'])
+                log_event('error', f"Import: unsafe destination ({f['filename']}): {_e}", queue['series_id'], db=db)
                 any_error = True
                 continue
 
@@ -4370,7 +4391,7 @@ async def _execute_import(
                 db.execute(
                     "UPDATE import_queue_files SET status='failed' WHERE id=?", (f['id'],)
                 )
-                log_event('error', f"Import: source file missing: {src}", queue['series_id'])
+                log_event('error', f"Import: source file missing: {src}", queue['series_id'], db=db)
                 any_error = True
                 continue
 
@@ -4467,7 +4488,7 @@ async def _execute_import(
                 db.execute(
                     "UPDATE import_queue_files SET status='failed' WHERE id=?", (f['id'],)
                 )
-                log_event('error', f"Import file error ({f['filename']}): {e}", queue['series_id'])
+                log_event('error', f"Import file error ({f['filename']}): {e}", queue['series_id'], db=db)
                 any_error = True
                 if _batch_failed_file_id is None:
                     _batch_failed_file_id = f['id']
@@ -4496,6 +4517,7 @@ async def _execute_import(
                 'error',
                 f"Import rolled back (batch atomicity): {_batch_failed_reason}",
                 queue['series_id'],
+                db=db,
             )
             # Force the post-loop "Determine final queue status" logic to see
             # a fully-failed batch.
@@ -4517,6 +4539,7 @@ async def _execute_import(
                     'error',
                     f"Import commit phase failed; rolled back: {e}",
                     queue['series_id'],
+                    db=db,
                 )
                 imported_count = 0
         else:
@@ -4599,13 +4622,13 @@ async def _execute_import(
                 " AND volume_num IS NULL",
                 (dst_dir, queue['series_id'], queue['download_id'])
             )
-            log_event('import', f"Imported {imported_count} file(s): {queue['torrent_name']}", queue['series_id'])
+            log_event('import', f"Imported {imported_count} file(s): {queue['torrent_name']}", queue['series_id'], db=db)
             add_history(db, 'imported', queue['series_id'], s_title, vol_label,
                         source_title=queue['torrent_name'] or '',
                         download_id=queue['download_id'] or '',
                         data={'dst_dir': dst_dir, 'count': imported_count})
         else:
-            log_event('error', f"Import failed: {queue['torrent_name']}", queue['series_id'])
+            log_event('error', f"Import failed: {queue['torrent_name']}", queue['series_id'], db=db)
             add_history(db, 'import_failed', queue['series_id'], s_title, vol_label,
                         source_title=queue['torrent_name'] or '',
                         download_id=queue['download_id'] or '')
