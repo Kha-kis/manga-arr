@@ -3,6 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  {# CSRF token exposed via meta so the page JS doesn't need document.cookie —
+     the cookie itself is HttpOnly to block XSS exfiltration. #}
+  <meta name="csrf-token" content="{{ request.state.csrf_token if request is defined and request.state is defined else '' }}">
   <title>{% block title %}{{ get_instance_name() }}{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -2047,7 +2050,13 @@ function showToast(msg, type='info', duration=3500) {
 }
 
 // ── CSRF helpers ──────────────────────────────────────────────────────────
+// Token comes from the <meta name="csrf-token"> tag in <head> — not from
+// document.cookie, because the csrftoken cookie is HttpOnly. Fallback to
+// cookie parsing only if the meta tag is absent (e.g. an older cached page
+// transitioning across the flag change).
 function _csrfToken() {
+  const m = document.querySelector('meta[name="csrf-token"]');
+  if (m && m.content) return m.content;
   const c = document.cookie.split(';').find(s => s.trim().startsWith('csrftoken='));
   return c ? decodeURIComponent(c.split('=')[1]) : '';
 }
