@@ -3828,6 +3828,139 @@ def _mark_downloaded(db, series_id, volume_num, torrent_url) -> bool:
             return True
     return False
 
+# ── Import staging (two-phase commit for multi-file imports) ─────────────────
+# Protects against partial failure mid-batch: a queue with 5 files where
+# file 3 fails used to leave files 1+2 at the final destination with files
+# 4+5 still at source. Now every file op lands in a hidden staging dir
+# under dst_dir first; only after ALL files stage successfully does the
+# helper rename them into place. Staging + DB are committed/rolled back
+# together via a SQLite SAVEPOINT.
+#
+# True atomicity caveats (documented — not claimed):
+# - `os.replace` is atomic ONLY within the same filesystem. Staging lives
+#   under dst_dir so this holds for the rename phase.
+# - For import_mode='move', the source file's ultimate deletion is
+#   deferred until the commit phase. If the batch rolls back, source is
+#   untouched. If the commit phase itself fails after some renames have
+#   happened (extremely rare — rename within a dir is near-atomic), we
+#   log and let the next import retry; partial rename is the only
+#   window we can't fully roll back.
+# - CBR→CBZ and ComicInfo.xml injection happen on the staging file so a
+#   crash mid-transform leaves the staging dir to be cleaned up on
+#   rollback; the live library tree never sees the partial file.
+import tempfile as _tempfile
+
+
+class _ImportStaging:
+    """Per-import-batch staging directory + two-phase commit.
+
+    Usage:
+        staging = _ImportStaging(dst_dir, queue_id, import_mode)
+        try:
+            for f in files:
+                stage_path = staging.stage(src, final_path)
+                # ... transforms operate on stage_path ...
+                # If a transform renamed the in-staging file:
+                final_path = staging.rename(stage_path, new_stage_path)
+            staging.commit_all()
+        except Exception:
+            staging.rollback()
+            raise
+    """
+
+    def __init__(self, dst_dir: str, queue_id: int, import_mode: str):
+        self.dst_dir = dst_dir
+        self.import_mode = import_mode
+        # Dot-prefixed so the library scanner / file browser hide it.
+        self.staging_dir = _tempfile.mkdtemp(
+            prefix=f".mangarr-staging-{queue_id}-",
+            dir=dst_dir,
+        )
+        # Each entry: {'stage_path', 'final_path', 'src_path'}
+        self._staged: list[dict] = []
+
+    def stage(self, src: str, final_path: str) -> str:
+        """Place `src` at a staging path using a per-mode strategy that
+        always preserves the source during staging. Returns the staging
+        path. Raises OSError on filesystem failure.
+        """
+        fname = os.path.basename(final_path)
+        stage_path = os.path.join(self.staging_dir, fname)
+        if self.import_mode == 'hardlink':
+            # Hardlink to staging; original source and staging share the
+            # same inode. Unlinking staging later is safe — source keeps
+            # its own directory entry. At commit, staging is renamed
+            # into dst_dir (still the same inode).
+            os.link(src, stage_path)
+        else:
+            # Both 'copy' and 'move' go through copy2 in the staging
+            # phase so that a batch rollback leaves `src` intact. For
+            # 'move', src is deleted in commit_all() after the rename
+            # succeeds. This means move-mode on the same filesystem now
+            # pays a bytes-copy cost that a bare shutil.move would avoid;
+            # the tradeoff is that batch atomicity is preserved.
+            shutil.copy2(src, stage_path)
+        self._staged.append({
+            'stage_path': stage_path,
+            'final_path': final_path,
+            'src_path': src,
+        })
+        return stage_path
+
+    def rename(self, old_stage_path: str, new_stage_path: str) -> str:
+        """Tell the helper that an in-staging transform (e.g. CBR→CBZ)
+        renamed the staged file. Updates tracking so commit_all uses
+        the post-transform basename as the final path. Returns the new
+        final_path."""
+        for rec in self._staged:
+            if rec['stage_path'] == old_stage_path:
+                rec['stage_path'] = new_stage_path
+                new_basename = os.path.basename(new_stage_path)
+                rec['final_path'] = os.path.join(
+                    os.path.dirname(rec['final_path']), new_basename,
+                )
+                return rec['final_path']
+        # Not found — the transform produced a path we didn't stage.
+        # Don't silently accept; the caller should investigate.
+        raise ValueError(f"rename on unknown stage path: {old_stage_path!r}")
+
+    def commit_all(self) -> None:
+        """Move every staged file to its final destination, then delete
+        source files for move-mode entries. Called only when every file
+        staged successfully. After this, the staging dir is removed.
+        """
+        for rec in self._staged:
+            # os.replace is atomic when src and dst are on the same
+            # filesystem; staging lives under dst_dir so this holds.
+            os.replace(rec['stage_path'], rec['final_path'])
+        # Source-file removal happens AFTER all renames succeed, so a
+        # mid-rename failure (rare) still leaves sources intact for the
+        # files we haven't renamed yet.
+        if self.import_mode == 'move':
+            for rec in self._staged:
+                try:
+                    os.unlink(rec['src_path'])
+                except FileNotFoundError:
+                    pass  # already gone
+                except OSError as e:
+                    # The file is at its final path; source is just
+                    # leftover. Log but don't fail the import.
+                    print(f"[Import] could not remove source {rec['src_path']}: {e}")
+        self._cleanup()
+
+    def rollback(self) -> None:
+        """Remove every staged file; source files are untouched."""
+        self._cleanup()
+
+    def _cleanup(self) -> None:
+        try:
+            shutil.rmtree(self.staging_dir)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            print(f"[Import] failed to clean staging dir {self.staging_dir}: {e}")
+
+
 # ── Import concurrency guard ──────────────────────────────────────────────────
 # Bound the number of imports that can run in parallel so a backlog of pending
 # queue rows doesn't spawn one task per row and hammer SQLite + disk I/O.
@@ -3957,6 +4090,18 @@ async def _execute_import(
         # Track volumes that gained new chapter imports so we can cascade completion
         chapter_vols_touched: set[int] = set()
 
+        # Two-phase commit for the whole batch. Every file op goes into
+        # staging/; commit_all() renames them into place only if every
+        # file staged successfully. The SQLite SAVEPOINT mirrors the
+        # filesystem staging so DB writes (queue_files, volumes, chapters)
+        # commit together with the renames — or roll back together.
+        staging = _ImportStaging(dst_dir, queue['id'], import_mode)
+        db.execute("SAVEPOINT import_batch")
+        # First file that failed mid-batch, so we can still mark it 'failed'
+        # in the DB AFTER the savepoint rollback reverts other writes.
+        _batch_failed_file_id: int | None = None
+        _batch_failed_reason: str = ""
+
         for f in files:
             if f['id'] in skip_ids:
                 db.execute(
@@ -4008,18 +4153,16 @@ async def _execute_import(
                     continue
 
                 try:
-                    if import_mode == 'hardlink':
-                        if os.path.exists(dst):
-                            os.remove(dst)
-                        os.link(src, dst)
-                    elif import_mode == 'move':
-                        shutil.move(src, dst)
-                    else:
-                        shutil.copy2(src, dst)
-
-                    dst = _maybe_convert_to_cbz(dst)   # CBR→CBZ if needed
+                    # Stage the file. Overwrite semantics are deferred to
+                    # commit_all's os.replace, which atomically clobbers
+                    # any pre-existing final path.
+                    stage_path = staging.stage(src, dst)
+                    stage_after = _maybe_convert_to_cbz(stage_path)
+                    if stage_after != stage_path:
+                        dst = staging.rename(stage_path, stage_after)
+                        stage_path = stage_after
                     if s:
-                        _try_inject_comicinfo(dst, s, chapter_num=proposed_chap, tags=_series_tags)
+                        _try_inject_comicinfo(stage_path, s, chapter_num=proposed_chap, tags=_series_tags)
 
                     db.execute(
                         "UPDATE import_queue_files SET status='imported', dst_path=? WHERE id=?",
@@ -4103,6 +4246,9 @@ async def _execute_import(
                     )
                     log_event('error', f"Import chapter error ({f['filename']}): {e}", queue['series_id'])
                     any_error = True
+                    if _batch_failed_file_id is None:
+                        _batch_failed_file_id = f['id']
+                        _batch_failed_reason = f"Import chapter error ({f['filename']}): {e}"
                 continue  # chapter file handled — skip volume logic below
 
             # ── Volume file: needs a volume number ────────────────────────────
@@ -4134,16 +4280,13 @@ async def _execute_import(
                         any_error = True
                         continue
                     try:
-                        if import_mode == 'hardlink':
-                            if os.path.exists(dst): os.remove(dst)
-                            os.link(src, dst)
-                        elif import_mode == 'move':
-                            shutil.move(src, dst)
-                        else:
-                            shutil.copy2(src, dst)
-                        dst = _maybe_convert_to_cbz(dst)   # CBR→CBZ if needed
+                        stage_path = staging.stage(src, dst)
+                        stage_after = _maybe_convert_to_cbz(stage_path)
+                        if stage_after != stage_path:
+                            dst = staging.rename(stage_path, stage_after)
+                            stage_path = stage_after
                         if s:
-                            _try_inject_comicinfo(dst, s, chapter_num=recheck_chap, tags=_series_tags)
+                            _try_inject_comicinfo(stage_path, s, chapter_num=recheck_chap, tags=_series_tags)
                         db.execute("UPDATE import_queue_files SET status='imported', dst_path=? WHERE id=?", (dst, f['id']))
                         imported_count += 1
                         _ch_quality2 = quality_from_filename(dst)
@@ -4194,6 +4337,9 @@ async def _execute_import(
                         db.execute("UPDATE import_queue_files SET status='failed' WHERE id=?", (f['id'],))
                         log_event('error', f"Import chapter error ({f['filename']}): {e}", queue['series_id'])
                         any_error = True
+                        if _batch_failed_file_id is None:
+                            _batch_failed_file_id = f['id']
+                            _batch_failed_reason = f"Import chapter error ({f['filename']}): {e}"
                     continue
 
             # For legacy chapter-mode grabs the file has no volume number — allow through.
@@ -4229,17 +4375,13 @@ async def _execute_import(
                 continue
 
             try:
-                if import_mode == 'hardlink':
-                    if os.path.exists(dst):
-                        os.remove(dst)
-                    os.link(src, dst)
-                elif import_mode == 'move':
-                    shutil.move(src, dst)
-                else:
-                    shutil.copy2(src, dst)
-                dst = _maybe_convert_to_cbz(dst)   # CBR→CBZ if needed
+                stage_path = staging.stage(src, dst)
+                stage_after = _maybe_convert_to_cbz(stage_path)
+                if stage_after != stage_path:
+                    dst = staging.rename(stage_path, stage_after)
+                    stage_path = stage_after
                 if s:
-                    _try_inject_comicinfo(dst, s, volume_num=proposed_vol, tags=_series_tags)
+                    _try_inject_comicinfo(stage_path, s, volume_num=proposed_vol, tags=_series_tags)
                 db.execute(
                     "UPDATE import_queue_files SET status='imported', dst_path=? WHERE id=?",
                     (dst, f['id'])
@@ -4327,6 +4469,60 @@ async def _execute_import(
                 )
                 log_event('error', f"Import file error ({f['filename']}): {e}", queue['series_id'])
                 any_error = True
+                if _batch_failed_file_id is None:
+                    _batch_failed_file_id = f['id']
+                    _batch_failed_reason = f"Import file error ({f['filename']}): {e}"
+
+        # ── Two-phase commit decision ─────────────────────────────────────────
+        # If ANY file failed mid-batch AND at least one other file would have
+        # imported, roll back the whole batch so the library doesn't end up
+        # half-full with an incomplete release. Pure-failure batches (0
+        # imports) keep their 'failed' per-file markers so the user sees
+        # which file was bad.
+        if any_error and imported_count > 0:
+            # Filesystem rollback: drop every staged file, sources intact.
+            staging.rollback()
+            # DB rollback: revert every per-file UPDATE done in the loop.
+            db.execute("ROLLBACK TO SAVEPOINT import_batch")
+            # Re-apply the bits we want to keep: the queue status and the
+            # identity of the one file that actually broke.
+            if _batch_failed_file_id is not None:
+                db.execute(
+                    "UPDATE import_queue_files SET status='failed' WHERE id=?",
+                    (_batch_failed_file_id,),
+                )
+            db.execute("RELEASE SAVEPOINT import_batch")
+            log_event(
+                'error',
+                f"Import rolled back (batch atomicity): {_batch_failed_reason}",
+                queue['series_id'],
+            )
+            # Force the post-loop "Determine final queue status" logic to see
+            # a fully-failed batch.
+            imported_count = 0
+            chapter_vols_touched.clear()
+            imported_vols.clear()
+        elif imported_count > 0:
+            # All-or-nothing succeeded: commit the staged files into place.
+            try:
+                staging.commit_all()
+                db.execute("RELEASE SAVEPOINT import_batch")
+            except Exception as e:
+                # Commit-phase failure is extremely rare (rename within one
+                # filesystem). Fall back to rolling the batch back.
+                staging.rollback()
+                db.execute("ROLLBACK TO SAVEPOINT import_batch")
+                db.execute("RELEASE SAVEPOINT import_batch")
+                log_event(
+                    'error',
+                    f"Import commit phase failed; rolled back: {e}",
+                    queue['series_id'],
+                )
+                imported_count = 0
+        else:
+            # No files succeeded; nothing to commit or roll back.
+            staging.rollback()
+            db.execute("RELEASE SAVEPOINT import_batch")
 
         # ── After all files: cascade chapter completion to volumes ────────────
         for vol_id in chapter_vols_touched:
