@@ -13,11 +13,21 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from routers._templates import templates
 from shared import (
-    cascade_chapters, get_cfg, get_db, get_root_folders,
+    build_order_by, cascade_chapters, get_cfg, get_db, get_root_folders,
     quality_rank, vol_num_to_display,
 )
 
 router = APIRouter()
+
+# Library-index sort allowlist. Any value not in this dict falls back to
+# the default ("title"). Fragments include direction where a non-ASC
+# default matters (e.g. "added" shows newest first).
+_LIBRARY_SORT_ALLOWED = {
+    "title":  "title",
+    "status": "status, title",
+    "added":  "added_at DESC",
+}
+_LIBRARY_SORT_DEFAULT = "title"
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
@@ -318,10 +328,11 @@ async def index(request: Request, q: str = "", sort: str = "title",
         view = request.cookies.get("library_view", "grid")
 
     with get_db() as db:
-        order = {
-            "status": "status, title",
-            "added":  "added_at DESC",
-        }.get(sort, "title")
+        # Allowlist-backed ORDER BY — only values in _LIBRARY_SORT_ALLOWED
+        # can ever appear in the emitted SQL. `sort` is a request param.
+        order = build_order_by(sort,
+                               allowed=_LIBRARY_SORT_ALLOWED,
+                               default_key=_LIBRARY_SORT_DEFAULT)
         series_rows = db.execute(f"SELECT * FROM series ORDER BY {order}").fetchall()
 
         _vstats = {

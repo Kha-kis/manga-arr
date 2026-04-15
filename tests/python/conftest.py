@@ -46,3 +46,19 @@ _sqlite3.connect = _redir_connect
 APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "app"))
 if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
+
+# Redirect Jinja2 template loading from /app/templates (container path) to
+# the host path so integration tests that render templates work outside
+# Docker. Only affects the default FileSystemLoader used by Jinja2Templates.
+HOST_TEMPLATE_DIR = os.path.join(APP_DIR, "templates")
+if os.path.isdir(HOST_TEMPLATE_DIR):
+    import jinja2 as _jinja2  # noqa: E402
+    _orig_fsl_init = _jinja2.FileSystemLoader.__init__
+    def _patched_fsl_init(self, searchpath, *a, **kw):
+        if isinstance(searchpath, str) and searchpath == "/app/templates":
+            searchpath = HOST_TEMPLATE_DIR
+        elif isinstance(searchpath, (list, tuple)):
+            searchpath = [HOST_TEMPLATE_DIR if p == "/app/templates" else p
+                          for p in searchpath]
+        return _orig_fsl_init(self, searchpath, *a, **kw)
+    _jinja2.FileSystemLoader.__init__ = _patched_fsl_init
