@@ -27,26 +27,56 @@ def test_build_filename_strips_traversal_when_no_format(monkeypatch):
         shutil.rmtree(base, ignore_errors=True)
 
 
-def test_safe_join_under_contains_traversal_payloads(tmp_path):
-    """safe_join_under must always return a path under dst_dir, regardless of
-    payload (relative traversal, absolute path, mixed separators)."""
+def test_safe_join_under_rejects_unsafe_payloads(tmp_path):
+    """safe_join_under must REJECT (raise ValueError on) any filename that
+    contains a path separator, '..' component, or absolute path. It must not
+    silently sanitize them — that hides intent from the caller's logs."""
+    import main
+    base = str(tmp_path)
+
+    rejected = [
+        "../../etc/passwd",
+        "..\\..\\windows.cbz",
+        "/etc/passwd",
+        "C:\\Windows\\system32\\evil.cbz",   # backslash separator
+        "subdir/../../escape.cbz",
+        "subdir/file.cbz",                    # bare separator, no traversal
+        "..",
+        "../sibling.cbz",
+        "",
+    ]
+    for p in rejected:
+        with pytest.raises(ValueError):
+            main.safe_join_under(base, p)
+
+
+def test_safe_join_under_accepts_normal_filenames(tmp_path):
+    """Normal, separator-free filenames must still work and land under dst_dir."""
     import main
     base = str(tmp_path)
     base_real = os.path.realpath(base)
 
-    payloads = [
-        "../../etc/passwd",
-        "..\\..\\windows.cbz",
-        "/etc/passwd",
-        "C:\\Windows\\system32\\evil.cbz",
-        "subdir/../../escape.cbz",
+    for p in [
         "normal.cbz",
-    ]
-    for p in payloads:
+        "Series Vol 01.cbz",
+        "[Group] Title - c001 (v01) [Digital].cbz",
+        "weird:chars*here?.cbz",  # forbidden chars get sanitized but no separators
+    ]:
         out = main.safe_join_under(base, p)
         out_real = os.path.realpath(out)
-        assert out_real == base_real or out_real.startswith(base_real + os.sep), \
-            f"{p!r} escaped to {out_real!r}"
+        assert out_real.startswith(base_real + os.sep), \
+            f"{p!r} did not land under base: {out_real!r}"
+
+
+def test_safe_join_under_rejects_unusable_input(tmp_path):
+    """Inputs that sanitize down to the 'Unknown' placeholder must be rejected
+    rather than coined as a generic name. (sanitize_filename returns 'Unknown'
+    for empty / all-dots / all-spaces input.)"""
+    import main
+    base = str(tmp_path)
+    for p in ["...", "   ", ". . .", "."]:
+        with pytest.raises(ValueError):
+            main.safe_join_under(base, p)
 
 
 def test_safe_join_under_raises_on_symlink_escape(tmp_path):
@@ -63,9 +93,10 @@ def test_safe_join_under_raises_on_symlink_escape(tmp_path):
         main.safe_join_under(str(base), "trap.cbz")
 
 
-def test_import_queue_filename_traversal_does_not_escape_root(tmp_path):
+def test_import_queue_filename_traversal_is_rejected(tmp_path):
     """Simulate the import-loop sink: a queue row whose filename column is
-    '../../pwn.cbz' must not produce a destination path outside the series root."""
+    '../../pwn.cbz' must be rejected outright. The sentinel target outside
+    the series root must never be written."""
     import main
 
     series_root = tmp_path / "Series"
@@ -73,13 +104,9 @@ def test_import_queue_filename_traversal_does_not_escape_root(tmp_path):
     parent_sentinel = tmp_path / "pwn.cbz"
     assert not parent_sentinel.exists()
 
-    dst = main.safe_join_under(str(series_root), "../../pwn.cbz")
-    real_dst = os.path.realpath(dst)
-    real_root = os.path.realpath(str(series_root))
-    assert real_dst.startswith(real_root + os.sep), \
-        f"{real_dst} escaped {real_root}"
+    with pytest.raises(ValueError):
+        main.safe_join_under(str(series_root), "../../pwn.cbz")
 
-    # And the sentinel target was never written.
     assert not parent_sentinel.exists()
 
 

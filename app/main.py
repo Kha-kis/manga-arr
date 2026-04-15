@@ -2033,17 +2033,43 @@ def sanitize_filename(name: str) -> str:
 
 
 def safe_join_under(dst_dir: str, filename: str) -> str:
-    """Join filename under dst_dir, refusing to escape it.
+    """Join filename under dst_dir, rejecting unsafe input.
 
-    Sanitizes the basename, then verifies the resolved path is contained in
-    realpath(dst_dir). Raises ValueError on traversal attempts.
+    Raises ValueError if filename:
+      - is empty,
+      - contains a path separator (/ or \\),
+      - is absolute,
+      - has any '..' path component,
+      - sanitizes to the placeholder 'Unknown' (i.e. nothing usable left).
+
+    Defense-in-depth: also verifies the resolved candidate lives under
+    realpath(dst_dir), catching symlink escapes inside dst_dir.
     """
-    safe_name = sanitize_filename(os.path.basename(filename))
+    if not filename:
+        raise ValueError("empty filename")
+    if '/' in filename or '\\' in filename:
+        raise ValueError(f"path separator in filename: {filename!r}")
+    if os.path.isabs(filename):
+        raise ValueError(f"absolute path rejected: {filename!r}")
+    # Reject '..' as a whole component (covers '..', '../x', 'x/..', etc.).
+    # Path-separator check above already rules out the embedded forms, but
+    # this also rejects a bare '..' filename.
+    parts = filename.replace('\\', '/').split('/')
+    if any(p == '..' for p in parts):
+        raise ValueError(f"path traversal component in filename: {filename!r}")
+
+    safe_name = sanitize_filename(filename)
+    if safe_name == 'Unknown':
+        # sanitize_filename returns 'Unknown' when the input has nothing usable
+        # (empty, all dots/spaces, or only forbidden chars). Refuse rather than
+        # silently coining a generic name.
+        raise ValueError(f"unusable filename after sanitize: {filename!r}")
+
     candidate = os.path.join(dst_dir, safe_name)
     base_real = os.path.realpath(dst_dir)
     cand_real = os.path.realpath(candidate)
     if cand_real != base_real and not cand_real.startswith(base_real + os.sep):
-        raise ValueError(f"path traversal blocked: {filename!r}")
+        raise ValueError(f"resolved path escapes dst_dir: {filename!r}")
     return candidate
 
 
