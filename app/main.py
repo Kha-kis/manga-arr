@@ -117,6 +117,16 @@ SETTINGS_SECRET_KEYS = frozenset({
     "google_books_api_key",
 })
 
+# Per-table secret columns encrypted at rest (H4 PR #3).
+# Structure: {table_name: (secret_column, label_column_for_logs)}
+# Label column is used only for WARNING log context when a row fails to
+# decrypt — never for routing or business logic. notification_connections
+# is intentionally absent; it lands in a later PR.
+TABLE_SECRET_COLUMNS = {
+    "indexers":         ("api_key",  "name"),
+    "download_clients": ("password", "name"),
+}
+
 
 def load_config():
     global CONFIG
@@ -225,6 +235,60 @@ def migrate_encrypt_settings_secrets():
             type(e).__name__, e,
         )
         return 0
+
+
+def migrate_encrypt_table_column_secrets():
+    """Encrypt plaintext values in TABLE_SECRET_COLUMNS at rest.
+
+    Idempotent: enc:v1: values are skipped, NULL / empty values are
+    skipped. Atomic: one get_db() transaction per table; a failure in
+    one table rolls back only that table — siblings remain unchanged
+    (operator can investigate one table without losing progress on
+    another).
+
+    No-op when the cipher isn't loaded. Returns a dict of
+    {table_name: rows_updated}. Never raises through to the caller.
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    from security import (
+        secret_cipher_loaded, encrypt_secret, is_encrypted_secret,
+    )
+    if not secret_cipher_loaded():
+        _log.warning(
+            "indexer/download-client secrets migration skipped: "
+            "secret cipher unavailable",
+        )
+        return {t: 0 for t in TABLE_SECRET_COLUMNS}
+
+    totals: dict[str, int] = {}
+    for table, (col, _label) in TABLE_SECRET_COLUMNS.items():
+        updated = 0
+        try:
+            with get_db() as db:
+                rows = db.execute(
+                    f"SELECT id, {col} FROM {table} WHERE {col} IS NOT NULL AND {col}!=''"
+                ).fetchall()
+                for row in rows:
+                    v = row[col]
+                    if not v or is_encrypted_secret(v):
+                        continue
+                    ct = encrypt_secret(v)
+                    db.execute(
+                        f"UPDATE {table} SET {col}=? WHERE id=?", (ct, row['id']),
+                    )
+                    updated += 1
+            totals[table] = updated
+            if updated:
+                _log.info("encrypted %d %s.%s value(s) at rest", updated, table, col)
+        except Exception as e:
+            _log.error(
+                "%s.%s migration failed; rolled back: %s: %s",
+                table, col, type(e).__name__, e,
+            )
+            totals[table] = 0
+    return totals
+
 
 def get_cfg(key: str, default: str = '') -> str:
     return CONFIG.get(key, default)
@@ -6985,6 +7049,11 @@ async def lifespan(app: FastAPI):
     # auto-seeded api_key (which is written plaintext by ensure_api_key)
     # gets encrypted on the same boot it was created.
     migrate_encrypt_settings_secrets()
+    # H4 PR #3: encrypt indexers.api_key and download_clients.password
+    # at rest. Idempotent; no-op when cipher unavailable. Read paths
+    # decrypt per-call via security.decrypt_secret_safe() so the
+    # caller-visible plaintext is unchanged.
+    migrate_encrypt_table_column_secrets()
     # Re-run load_config so CONFIG reflects the just-encrypted-and-decrypted
     # values. Without this, the in-memory CONFIG still holds whatever the
     # first load_config produced; for the api_key auto-seed path that's

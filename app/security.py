@@ -479,3 +479,47 @@ def secret_cipher_loaded() -> bool:
     """True iff load_or_create_secret_cipher() has populated the module
     cache. Used by migration code to decide whether to run."""
     return _SECRET_CIPHER is not None
+
+
+def decrypt_secret_safe(value, *, field_name: str, context: str = "") -> str:
+    """Read-path wrapper around decrypt_secret() that degrades gracefully.
+
+    Returns:
+      - '' for None / empty / undecryptable enc:v1: values
+      - the decrypted plaintext for valid enc:v1: values
+      - the value unchanged for plaintext (back-compat)
+
+    On SecretDecryptionError (wrong key / corruption) logs a WARNING naming
+    `field_name` plus optional `context` (e.g. an indexer/client name) and
+    returns '' so the caller disables that integration cleanly without
+    crashing the rest of the app.
+
+    On SecretCipherUnavailable: if the value is enc:v1: (we can't decrypt
+    it without the cipher), return '' so the integration fails closed.
+    Plaintext values still pass through — this matters for first-boot
+    code paths that run before the cipher is initialised.
+
+    NEVER logs the value, the decrypted plaintext, or the ciphertext —
+    only the field name and optional context.
+    """
+    if value is None or value == "":
+        return ""
+    try:
+        return decrypt_secret(value)
+    except SecretDecryptionError:
+        suffix = f" ({context})" if context else ""
+        logger.warning(
+            "%s%s could not be decrypted — treating credential as "
+            "unavailable; re-enter to restore the integration",
+            field_name, suffix,
+        )
+        return ""
+    except SecretCipherUnavailable:
+        if isinstance(value, str) and value.startswith(_ENC_PREFIX):
+            suffix = f" ({context})" if context else ""
+            logger.warning(
+                "%s%s is encrypted but the secret cipher is unavailable — "
+                "treating as unavailable", field_name, suffix,
+            )
+            return ""
+        return value

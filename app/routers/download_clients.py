@@ -7,6 +7,22 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from routers._templates import templates
 
 from shared import get_db, from_json
+from security import decrypt_secret_safe, encrypt_if_cipher_available
+
+
+def _row_decrypted(c) -> dict:
+    """Row → dict with download_clients.password decrypted (or '' if
+    undecryptable). Plaintext values pass through; enc:v1: values are
+    decrypted; wrong-key / corrupt values log a WARNING naming the
+    client and become '' so the downstream integration fails cleanly.
+    """
+    d = dict(c)
+    d['password'] = decrypt_secret_safe(
+        d.get('password'),
+        field_name='download_clients.password',
+        context=d.get('name') or '?',
+    )
+    return d
 
 # Circuit breaker: track consecutive failures per client id
 # Structure: {client_id: {'failures': int, 'open_until': float}}
@@ -70,7 +86,7 @@ def _all_clients(db):
         tags = db.execute(
             "SELECT tag FROM download_client_tags WHERE client_id=?", (c['id'],)
         ).fetchall()
-        result.append({**dict(c), 'tags': [t['tag'] for t in tags]})
+        result.append({**_row_decrypted(c), 'tags': [t['tag'] for t in tags]})
     return result
 
 
@@ -127,6 +143,7 @@ async def create_download_client(
     download_path: str = Form(""),
     merge_chapters: int = Form(0),
 ):
+    stored_password = encrypt_if_cipher_available(password) if password else None
     with get_db() as db:
         cur = db.execute(
             "INSERT INTO download_clients(name,type,host,port,use_ssl,url_base,username,password,"
@@ -135,7 +152,7 @@ async def create_download_client(
             " download_path,merge_chapters)"
             " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (name.strip(), type, host.strip(), port or None, use_ssl, url_base.strip() or None,
-             username.strip() or None, password or None, category.strip() or 'manga',
+             username.strip() or None, stored_password, category.strip() or 'manga',
              post_import_category.strip() or None, recent_priority, older_priority,
              initial_state, sequential_order, first_last_first, content_layout,
              priority, enabled, remove_completed, remove_failed,
@@ -235,6 +252,7 @@ async def edit_download_client(
                 _shared
             )
         else:
+            stored_password = encrypt_if_cipher_available(password) if password else None
             db.execute(
                 "UPDATE download_clients SET name=?,type=?,host=?,port=?,use_ssl=?,url_base=?,"
                 " username=?,password=?,category=?,post_import_category=?,recent_priority=?,"
@@ -242,7 +260,7 @@ async def edit_download_client(
                 " content_layout=?,priority=?,enabled=?,remove_completed=?,remove_failed=?,"
                 " download_path=?,merge_chapters=? WHERE id=?",
                 (name.strip(), type, host.strip(), port or None, use_ssl, url_base.strip() or None,
-                 username.strip() or None, password or None, category.strip() or 'manga',
+                 username.strip() or None, stored_password, category.strip() or 'manga',
                  post_import_category.strip() or None, recent_priority, older_priority,
                  initial_state, sequential_order, first_last_first, content_layout,
                  priority, enabled, remove_completed, remove_failed,
@@ -286,7 +304,7 @@ async def test_download_client(client_id: int):
     if not c:
         return JSONResponse({"ok": False, "message": "Client not found"})
 
-    ok, msg = await _test_client(dict(c))
+    ok, msg = await _test_client(_row_decrypted(c))
     return JSONResponse({"ok": ok, "message": msg})
 
 
@@ -417,7 +435,7 @@ def get_client_for_protocol(db, protocol: str, series_tags: list[str] | None = N
         return None
 
     def _norm(c) -> dict:
-        d = dict(c)
+        d = _row_decrypted(c)
         d['host'] = client_base_url(d)
         return d
 
