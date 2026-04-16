@@ -49,12 +49,14 @@ five PRs that completed the work.
   without re-entering credentials will make existing encrypted values
   unreadable.
 
-### Known issues
+### Issue follow-up
 
-- Issue [#22](https://github.com/Kha-kis/manga-arr/issues/22):
+- Issue [#22](https://github.com/Kha-kis/manga-arr/issues/22) was
+  re-tested on `master` and on the originally cited commit `1e3b862`.
+  The previously reported pytest hang for
   `tests/python/test_api_key_middleware.py::test_api_route_fails_closed_when_api_key_blank`
-  hangs under pytest. This reproduces on `master` and is tracked as a
-  baseline test issue; it does not block this release.
+  did not reproduce and the issue was closed as a transient /
+  non-reproducible report.
 
 ## 2026-04-15 — Security audit hardening
 
