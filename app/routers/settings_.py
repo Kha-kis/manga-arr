@@ -9,7 +9,24 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 
 from routers._templates import templates
 from shared import get_cfg, get_db, is_htmx
-from security import validate_outbound_url, UnsafeURLError
+from security import (
+    validate_outbound_url, UnsafeURLError,
+    encrypt_if_cipher_available,
+)
+
+
+def _encrypt_settings_secrets_in_place(fields: dict) -> dict:
+    """Return a copy of `fields` with any keys in SETTINGS_SECRET_KEYS
+    encrypted. Plaintext fall-through when the cipher is unavailable;
+    the next migration_encrypt_settings_secrets() boot picks them up.
+    """
+    # Lazy import to avoid main↔settings_ circular import at module load
+    from main import SETTINGS_SECRET_KEYS
+    out = dict(fields)
+    for k in list(out):
+        if k in SETTINGS_SECRET_KEYS:
+            out[k] = encrypt_if_cipher_available(out[k])
+    return out
 
 router = APIRouter()
 
@@ -100,6 +117,7 @@ async def save_settings(
     if google_books_api_key.strip():
         fields['google_books_api_key'] = google_books_api_key.strip()
 
+    fields = _encrypt_settings_secrets_in_place(fields)
     with get_db() as db:
         for k, v in fields.items():
             if v:
@@ -143,7 +161,9 @@ async def save_general_settings(
         }.items():
             db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (k, v))
         if api_key.strip():
-            db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('api_key',?)", (api_key.strip(),))
+            # H4 PR #2: encrypt the user-supplied api_key before write.
+            encrypted_api_key = encrypt_if_cipher_available(api_key.strip())
+            db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('api_key',?)", (encrypted_api_key,))
     _reload_config()
     logging.getLogger().setLevel(getattr(logging, log_level.upper(), logging.INFO))
     if is_htmx(request):
@@ -219,8 +239,12 @@ async def set_default_root_folder(folder_id: int):
 @router.post("/api/system/regenerate-api-key")
 async def regenerate_api_key():
     new_key = secrets.token_hex(32)
+    # H4 PR #2: encrypt the stored value when the cipher is available.
+    # The plaintext key is what we return to the caller (the UI shows it
+    # once); only the at-rest copy is encrypted.
+    stored_value = encrypt_if_cipher_available(new_key)
     with get_db() as db:
-        db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('api_key',?)", (new_key,))
+        db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('api_key',?)", (stored_value,))
     _reload_config()
     return JSONResponse({"ok": True, "api_key": new_key})
 
