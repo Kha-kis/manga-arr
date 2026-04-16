@@ -6,9 +6,55 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from routers._templates import templates
 
 from shared import get_db, from_json, get_cfg
-from security import validate_outbound_url, UnsafeURLError
+from security import (
+    validate_outbound_url, UnsafeURLError,
+    encrypt_if_cipher_available, decrypt_secret_safe,
+)
 
 router = APIRouter()
+
+
+def _secret_keys_for(ctype: str) -> tuple[str, ...]:
+    """Return the tuple of JSON keys whose values are encrypted at rest
+    for the given notification connection type. Lazy-imported from main
+    so the registry stays in one place."""
+    from main import NOTIFICATION_SECRET_KEYS_BY_TYPE
+    return NOTIFICATION_SECRET_KEYS_BY_TYPE.get(ctype or "", ())
+
+
+def _encrypt_secret_fields(ctype: str, settings: dict) -> dict:
+    """Return a new dict with this type's secret fields encrypted.
+
+    Idempotent: already enc:v1: values pass through unchanged. Empty /
+    None / non-str values pass through. Non-secret keys are preserved.
+    Safe when the cipher isn't loaded (plaintext fall-through — the
+    next migration boot picks it up).
+    """
+    out = dict(settings)
+    for k in _secret_keys_for(ctype):
+        v = out.get(k)
+        if v and isinstance(v, str):
+            out[k] = encrypt_if_cipher_available(v)
+    return out
+
+
+def _decrypt_secret_fields(ctype: str, name: str, settings: dict) -> dict:
+    """Return a new dict with this type's secret fields decrypted via
+    decrypt_secret_safe. An undecryptable value becomes '' with a
+    WARNING naming the field + connection; the downstream sender sees
+    "no credential" and fails that one send cleanly — fanout over
+    other connections is unaffected.
+    """
+    out = dict(settings)
+    for k in _secret_keys_for(ctype):
+        v = out.get(k)
+        if v and isinstance(v, str):
+            out[k] = decrypt_secret_safe(
+                v,
+                field_name=f"notification_connections.settings.{k}",
+                context=f"{ctype}/{name}",
+            )
+    return out
 
 CONNECTION_TYPES = [
     "discord", "telegram", "slack", "ntfy", "gotify",
@@ -56,6 +102,8 @@ async def create_notification_connection(
         settings_dict = json.loads(settings)
     except Exception:
         settings_dict = {}
+    if isinstance(settings_dict, dict):
+        settings_dict = _encrypt_secret_fields(type, settings_dict)
     with get_db() as db:
         db.execute(
             "INSERT INTO notification_connections(name,type,enabled,settings,"
@@ -85,6 +133,8 @@ async def edit_notification_connection(
         settings_dict = json.loads(settings)
     except Exception:
         settings_dict = {}
+    if isinstance(settings_dict, dict):
+        settings_dict = _encrypt_secret_fields(type, settings_dict)
     with get_db() as db:
         db.execute(
             "UPDATE notification_connections SET name=?,type=?,enabled=?,settings=?,"
@@ -124,6 +174,8 @@ async def send_connection(conn: dict, message: str,
     """Send a notification via a single connection. Returns (ok, message)."""
     t        = conn['type']
     settings = from_json(conn.get('settings'), {})
+    if isinstance(settings, dict):
+        settings = _decrypt_secret_fields(t, conn.get('name') or '?', settings)
 
     try:
         if t == 'discord':
