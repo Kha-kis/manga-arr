@@ -5,10 +5,11 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from routers._templates import templates
 
-from shared import get_db, from_json, get_cfg
+from shared import get_db, from_json, get_cfg, get_secret_health_summary
 from security import (
     validate_outbound_url, UnsafeURLError,
-    encrypt_if_cipher_available, decrypt_secret_safe,
+    encrypt_if_cipher_available, decrypt_secret_safe, decrypt_secret,
+    SecretDecryptionError, SecretCipherUnavailable,
 )
 
 router = APIRouter()
@@ -75,15 +76,55 @@ def _all_connections(db):
     return db.execute("SELECT * FROM notification_connections ORDER BY name").fetchall()
 
 
+def _friendly_connection_error(exc: Exception) -> str:
+    msg = (str(exc) or type(exc).__name__).strip()
+    low = msg.lower()
+    if "name or service not known" in low or "could not resolve" in low or "nodename nor servname provided" in low:
+        return "Could not resolve the host. Check the hostname."
+    if "all connection attempts failed" in low:
+        return "Connection failed. Check the host, port, and scheme."
+    if "connection refused" in low:
+        return "Connection refused. Check that the service is running and reachable."
+    if "timed out" in low or "timeout" in low:
+        return "Connection timed out. Check reachability and TLS settings."
+    return msg
+
+
+def _serialize_settings_for_edit(ctype: str, name: str, settings_blob) -> str:
+    settings = from_json(settings_blob, {})
+    if not isinstance(settings, dict):
+        settings = {}
+    out = dict(settings)
+    for key in _secret_keys_for(ctype):
+        value = out.get(key)
+        if value and isinstance(value, str):
+            try:
+                out[key] = decrypt_secret(value)
+            except (SecretDecryptionError, SecretCipherUnavailable):
+                out[key] = ""
+    settings = out
+    return json.dumps(settings, indent=2, sort_keys=True)
+
+
 # ── List ──────────────────────────────────────────────────────────────────────
 @router.get("/notifications", response_class=HTMLResponse)
 async def notifications_page(request: Request):
     with get_db() as db:
-        connections = _all_connections(db)
+        connections = []
+        for row in _all_connections(db):
+            conn = dict(row)
+            conn["settings_display"] = _serialize_settings_for_edit(
+                conn.get("type") or "",
+                conn.get("name") or "?",
+                conn.get("settings"),
+            )
+            connections.append(conn)
+        secret_health = get_secret_health_summary(db)
     return templates.TemplateResponse(request, "notification_connections.html", {
         "connections":      connections,
         "connection_types": CONNECTION_TYPES,
         "event_flags":      EVENT_FLAGS,
+        "secret_health":    secret_health,
     })
 
 
@@ -168,6 +209,26 @@ async def test_notification_connection(conn_id: int):
     return JSONResponse({"ok": ok, "message": msg})
 
 
+@router.post("/api/notifications/test-form")
+async def test_notification_connection_form(
+    name: str = Form("Unsaved notification"),
+    type: str = Form(...),
+    settings: str = Form("{}"),
+):
+    try:
+        settings_dict = json.loads(settings)
+    except Exception:
+        return JSONResponse({"ok": False, "message": "Settings JSON is invalid"})
+    if not isinstance(settings_dict, dict):
+        return JSONResponse({"ok": False, "message": "Settings JSON must be an object"})
+    ok, msg = await send_connection(
+        {"name": name.strip() or "Unsaved notification", "type": type, "settings": json.dumps(settings_dict)},
+        "Test notification from Mangarr",
+        event="test",
+    )
+    return JSONResponse({"ok": ok, "message": msg})
+
+
 # ── Core send function ────────────────────────────────────────────────────────
 async def send_connection(conn: dict, message: str,
                           event: str = "", embed: dict | None = None) -> tuple[bool, str]:
@@ -201,7 +262,7 @@ async def send_connection(conn: dict, message: str,
         else:
             return False, f"Unsupported type: {t}"
     except Exception as e:
-        return False, str(e)
+        return False, _friendly_connection_error(e)
 
 
 async def _send_discord(s: dict, message: str, embed: dict | None) -> tuple[bool, str]:

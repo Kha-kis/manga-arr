@@ -9,7 +9,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from routers._templates import templates
-from shared import cascade_chapters, get_cfg, get_db, vol_num_to_display
+from shared import cascade_chapters, get_cfg, get_db, vol_num_to_display, with_flash
 
 router = APIRouter()
 
@@ -87,7 +87,7 @@ async def process_import(queue_id: int, request: Request):
     # Route through the guarded wrapper so two racing form submits (or a
     # form submit racing an auto-import worker) can't both process the row.
     await _m._guarded_execute_import(queue_id, volume_overrides, skip_ids, chapter_overrides)
-    return RedirectResponse("/import", status_code=303)
+    return RedirectResponse(with_flash("/import", "Import queued for retry", "success"), status_code=303)
 
 
 @router.post("/import/{queue_id}/skip")
@@ -104,7 +104,7 @@ async def skip_import(request: Request, queue_id: int):
     if request.headers.get("HX-Request") == "true":
         from fastapi.responses import Response as _Resp
         return _Resp(headers={"HX-Refresh": "true"})
-    return RedirectResponse("/import", status_code=303)
+    return RedirectResponse(with_flash("/import", "Failed imports cleared", "success"), status_code=303)
 
 
 @router.post("/import/{queue_id}/dismiss")

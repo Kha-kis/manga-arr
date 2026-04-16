@@ -11,6 +11,19 @@
   </button>
 </div>
 
+{% if secret_health.has_warning %}
+<div class="panel" style="border-color:rgba(220,53,69,.35)">
+  <div class="panel-body">
+    <div class="d-flex align-items-start gap-3">
+      <i class="bi bi-exclamation-triangle-fill" style="color:var(--ruby);font-size:1.1rem"></i>
+      <div style="font-size:.85rem;color:var(--text-2)">
+        Some encrypted credentials could not be decrypted with the active key. Restore the matching key or re-enter the affected credentials before testing integrations.
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <div class="row g-3">
 {% for c in clients %}
 <div class="col-12">
@@ -309,7 +322,7 @@
         }
       }
     }">
-      <form method="POST" action="/download-clients">
+      <form method="POST" action="/download-clients" id="new-download-client-form">
         <div class="modal-header">
           <h6 class="modal-title text-ember"><i class="bi bi-plus-circle me-2"></i>Add Download Client</h6>
           <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
@@ -485,8 +498,11 @@
           </div>
 
         </div>
+        <div id="new-download-client-test-result" class="mx-3 mb-2" style="display:none"></div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="new-download-client-test-btn"
+                  onclick="testNewClient(this)">Test Before Save</button>
           <button type="submit" class="btn btn-ember btn-sm">Add Client</button>
         </div>
       </form>
@@ -629,6 +645,27 @@ async function testClient(id, btn) {
   }
   btn.disabled = false;
   btn.innerHTML = '<i class="bi bi-plug"></i>';
+}
+async function testNewClient(btn) {
+  const form = document.getElementById('new-download-client-form');
+  const result = document.getElementById('new-download-client-test-result');
+  btn.disabled = true;
+  const original = btn.innerHTML;
+  btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Testing…';
+  try {
+    const r = await fetch('/api/download-clients/test-form', { method: 'POST', body: new FormData(form) });
+    const d = await r.json();
+    result.className = `connection-status ${d.ok ? 'connection-ok' : 'connection-fail'}`;
+    result.textContent = d.message;
+    result.style.display = 'inline-block';
+  } catch (e) {
+    result.className = 'connection-status connection-fail';
+    result.textContent = 'Request failed';
+    result.style.display = 'inline-block';
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = original;
+  }
 }
 </script>
 {% endblock %}

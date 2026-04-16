@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from routers._templates import templates
 from shared import (
     build_order_by, cascade_chapters, get_cfg, get_db, get_root_folders,
-    quality_rank, vol_num_to_display,
+    quality_rank, vol_num_to_display, with_flash,
 )
 
 router = APIRouter()
@@ -807,7 +807,7 @@ async def add_series(
         'color': 0x4cc9f0,
         'thumbnail': {'url': cover_url} if cover_url else {},
     }))
-    return RedirectResponse(f"/series/{series_id}", status_code=303)
+    return RedirectResponse(with_flash(f"/series/{series_id}", "Search queued for all wanted volumes", "success"), status_code=303)
 
 
 @router.get("/api/series/{series_id}/cover-refresh")
@@ -1938,7 +1938,7 @@ async def grab_chapter_route(request: Request, sid: int, cid: int):
             "SELECT * FROM chapters WHERE id=? AND series_id=?", (cid, sid)
         ).fetchone()
     if not s or not ch:
-        return RedirectResponse(f"/series/{sid}", status_code=303)
+        return RedirectResponse(with_flash(f"/series/{sid}", "No wanted chapters found", "info"), status_code=303)
     asyncio.create_task(_grab_chapter_task(sid, dict(s), dict(ch)))
     if request.headers.get("HX-Request") == "true":
         if ch['volume_id']:
@@ -1946,7 +1946,7 @@ async def grab_chapter_route(request: Request, sid: int, cid: int):
             return templates.TemplateResponse(request, "partials/volume_row.html", ctx)
         from fastapi.responses import Response as _Resp
         return _Resp(headers={"HX-Refresh": "true"})
-    return RedirectResponse(f"/series/{sid}", status_code=303)
+    return RedirectResponse(with_flash(f"/series/{sid}", f"Grab queued for {len(chs)} chapters", "success"), status_code=303)
 
 
 # ── Uncollected chapters ──────────────────────────────────────────────────────
@@ -1965,7 +1965,7 @@ async def uncollected_toggle_monitor(request: Request, sid: int):
     if request.headers.get("HX-Request") == "true":
         from fastapi.responses import Response as _Resp
         return _Resp(headers={"HX-Refresh": "true"})
-    return RedirectResponse(f"/series/{sid}", status_code=303)
+    return RedirectResponse(with_flash(f"/series/{sid}", f"Search queued for {len(wanted)} volumes", "success"), status_code=303)
 
 
 @router.post("/series/{sid}/uncollected/mark-downloaded")

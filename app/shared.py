@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 from contextlib import contextmanager
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 DB_PATH = "/config/manga_arr.db"
 
@@ -169,6 +170,88 @@ def get_root_folders(db) -> list:
     return db.execute(
         "SELECT * FROM root_folders ORDER BY is_default DESC, label, path"
     ).fetchall()
+
+
+def get_secret_health_summary(db=None) -> dict:
+    """Summarize whether encrypted credentials are currently unreadable.
+
+    This is intentionally UI-oriented and side-effect free: it inspects the
+    stored encrypted values directly and attempts decryption without emitting
+    extra warning logs. Operators need a visible recovery hint when the active
+    key no longer matches the DB, not just backend log lines.
+    """
+    from security import (
+        SecretCipherUnavailable,
+        SecretDecryptionError,
+        decrypt_secret,
+        is_encrypted_secret,
+    )
+    from main import NOTIFICATION_SECRET_KEYS_BY_TYPE, SETTINGS_SECRET_KEYS
+
+    owns_db = db is None
+    if owns_db:
+        db_cm = get_db()
+        db = db_cm.__enter__()
+
+    try:
+        affected: list[str] = []
+        encrypted_present = False
+
+        def _check(label: str, value):
+            nonlocal encrypted_present
+            if not is_encrypted_secret(value):
+                return
+            encrypted_present = True
+            try:
+                decrypt_secret(value)
+            except (SecretDecryptionError, SecretCipherUnavailable):
+                affected.append(label)
+
+        placeholders = ",".join("?" * len(SETTINGS_SECRET_KEYS))
+        settings_rows = db.execute(
+            f"SELECT key, value FROM settings WHERE key IN ({placeholders})",
+            tuple(SETTINGS_SECRET_KEYS),
+        ).fetchall()
+        for row in settings_rows:
+            _check(f"Setting: {row['key']}", row["value"])
+
+        for row in db.execute(
+            "SELECT name, api_key FROM indexers WHERE api_key IS NOT NULL AND api_key != ''"
+        ).fetchall():
+            _check(f"Indexer: {row['name']}", row["api_key"])
+
+        for row in db.execute(
+            "SELECT name, password FROM download_clients WHERE password IS NOT NULL AND password != ''"
+        ).fetchall():
+            _check(f"Download Client: {row['name']}", row["password"])
+
+        for row in db.execute(
+            "SELECT name, type, settings FROM notification_connections WHERE settings IS NOT NULL AND settings != ''"
+        ).fetchall():
+            blob = from_json(row["settings"], {})
+            if not isinstance(blob, dict):
+                continue
+            for key in NOTIFICATION_SECRET_KEYS_BY_TYPE.get(row["type"] or "", ()):
+                _check(f"Notification: {row['name']} ({key})", blob.get(key))
+
+        return {
+            "has_warning": bool(affected),
+            "encrypted_present": encrypted_present,
+            "affected_count": len(affected),
+            "affected_items": affected[:5],
+        }
+    finally:
+        if owns_db:
+            db_cm.__exit__(None, None, None)
+
+
+def with_flash(path: str, msg: str, type: str = "info") -> str:
+    """Append a one-shot toast payload to a redirect URL."""
+    parts = urlsplit(path)
+    qs = dict(parse_qsl(parts.query, keep_blank_values=True))
+    qs["flash_msg"] = msg
+    qs["flash_type"] = type
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(qs), parts.fragment))
 
 
 # ── SQL ORDER BY allowlist helper ─────────────────────────────────────────────
