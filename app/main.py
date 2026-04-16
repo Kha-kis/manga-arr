@@ -127,6 +127,28 @@ TABLE_SECRET_COLUMNS = {
     "download_clients": ("password", "name"),
 }
 
+# Per-provider secret keys that live INSIDE the JSON blob stored in
+# notification_connections.settings (H4 PR #4). For each row we parse
+# the JSON, encrypt the keys listed for that row's type, preserve
+# everything else unchanged, and re-serialize. Keys not in this map
+# (server/host/port/chat_id/method/etc.) stay plaintext.
+#
+# URL-shaped credentials (Discord/Slack webhooks, Apprise, generic
+# webhook) are included because the URL IS the bearer token for those
+# providers — anyone who reads the URL can post to it.
+NOTIFICATION_SECRET_KEYS_BY_TYPE: dict[str, tuple[str, ...]] = {
+    "discord":    ("webhook_url",),
+    "slack":      ("webhook_url",),
+    "telegram":   ("bot_token",),
+    "ntfy":       ("token",),
+    "gotify":     ("app_token",),
+    "pushover":   ("user_key", "api_token"),
+    "webhook":    ("url",),
+    "email":      ("password",),
+    "apprise":    ("url", "config_key"),
+    "pushbullet": ("access_token",),
+}
+
 
 def load_config():
     global CONFIG
@@ -288,6 +310,97 @@ def migrate_encrypt_table_column_secrets():
             )
             totals[table] = 0
     return totals
+
+
+def migrate_encrypt_notification_connection_secrets():
+    """Encrypt per-provider secret fields inside every row's
+    notification_connections.settings JSON blob.
+
+    Idempotent: enc:v1: values are skipped, NULL / empty values are
+    skipped, unknown (non-secret) JSON keys are preserved unchanged.
+
+    Atomicity model: per-row. A malformed JSON payload or a single
+    row's encrypt failure logs an error and leaves that row unchanged
+    — siblings still migrate. The alternative (one all-or-nothing
+    transaction) would let a single corrupt row block encryption on a
+    fleet of healthy ones; correctness per-row is the safer default
+    here because each row is semantically independent.
+
+    No-op when the cipher isn't loaded. Returns the count of rows
+    actually updated. Never raises through to the caller.
+    """
+    import json as _json
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    from security import secret_cipher_loaded, encrypt_if_cipher_available
+    if not secret_cipher_loaded():
+        _log.warning(
+            "notification_connections secrets migration skipped: "
+            "secret cipher unavailable",
+        )
+        return 0
+    updated = 0
+    try:
+        with get_db() as db:
+            rows = db.execute(
+                "SELECT id, name, type, settings FROM notification_connections"
+            ).fetchall()
+        # Process per-row outside the big SELECT cursor so each UPDATE
+        # runs in its own short transaction; a single bad row doesn't
+        # roll back the rest.
+        for row in rows:
+            ctype = (row['type'] or '').strip()
+            secret_keys = NOTIFICATION_SECRET_KEYS_BY_TYPE.get(ctype)
+            if not secret_keys:
+                continue
+            raw = row['settings'] or '{}'
+            try:
+                blob = _json.loads(raw)
+            except Exception:
+                _log.warning(
+                    "notification_connections id=%s (%s/%s) has malformed JSON — skipping",
+                    row['id'], ctype, row['name'],
+                )
+                continue
+            if not isinstance(blob, dict):
+                continue
+            changed = False
+            for k in secret_keys:
+                v = blob.get(k)
+                if not v or not isinstance(v, str):
+                    continue
+                new_v = encrypt_if_cipher_available(v)
+                if new_v != v:
+                    blob[k] = new_v
+                    changed = True
+            if not changed:
+                continue
+            try:
+                new_blob = _json.dumps(blob)
+                with get_db() as db2:
+                    db2.execute(
+                        "UPDATE notification_connections SET settings=? WHERE id=?",
+                        (new_blob, row['id']),
+                    )
+                updated += 1
+            except Exception as e:
+                _log.error(
+                    "notification_connections id=%s encrypt failed (%s): %s — "
+                    "row unchanged",
+                    row['id'], type(e).__name__, e,
+                )
+        if updated:
+            _log.info(
+                "encrypted secret fields in %d notification_connections row(s)",
+                updated,
+            )
+        return updated
+    except Exception as e:
+        _log.error(
+            "notification_connections migration failed: %s: %s",
+            type(e).__name__, e,
+        )
+        return 0
 
 
 def get_cfg(key: str, default: str = '') -> str:
@@ -7054,6 +7167,10 @@ async def lifespan(app: FastAPI):
     # decrypt per-call via security.decrypt_secret_safe() so the
     # caller-visible plaintext is unchanged.
     migrate_encrypt_table_column_secrets()
+    # H4 PR #4: encrypt per-provider secret fields inside the JSON blob
+    # stored in notification_connections.settings. Per-row atomicity so
+    # one malformed JSON row doesn't block siblings.
+    migrate_encrypt_notification_connection_secrets()
     # Re-run load_config so CONFIG reflects the just-encrypted-and-decrypted
     # values. Without this, the in-memory CONFIG still holds whatever the
     # first load_config produced; for the api_key auto-seed path that's
