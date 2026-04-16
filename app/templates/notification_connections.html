@@ -3,6 +3,51 @@
 {% block title_short %}Notifications{% endblock %}
 {% block nav_settings %}active{% endblock %}
 
+{% macro render_notification_fields(form_id, ctype, settings_data) -%}
+  {% set fields = notification_field_schemas.get(ctype, []) %}
+  <div class="notification-provider-group" data-provider-group="{{ ctype }}" style="display:none">
+    <div class="row g-3">
+      {% for field in fields %}
+      {% set value = settings_data.get(field.name, field.default if 'default' in field else '') %}
+      <div class="col-12 {% if fields|length > 1 and field.input_type != 'textarea' %}col-md-6{% endif %}">
+        <label class="form-label">{{ field.label }}</label>
+        {% if field.input_type == 'select' %}
+        <select name="{{ field.name }}" class="form-select">
+          {% for opt in field.options %}
+          <option value="{{ opt.value }}" {% if (value|string) == (opt.value|string) %}selected{% endif %}>{{ opt.label }}</option>
+          {% endfor %}
+        </select>
+        {% else %}
+        <input
+          type="{{ 'password' if field.secret else ('text' if field.input_type in ['url', 'email'] else field.input_type) }}"
+          name="{{ field.name }}"
+          class="form-control"
+          value="{{ value }}"
+          {% if field.placeholder %}placeholder="{{ field.placeholder }}"{% endif %}
+          {% if field.input_type == 'number' %}inputmode="numeric"{% endif %}
+          autocomplete="off">
+        {% endif %}
+        {% if field.help %}
+        <div class="form-text">{{ field.help }}</div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+{%- endmacro %}
+
+{% macro advanced_json_help() -%}
+<div class="form-text mt-2" style="font-size:.78rem">
+  Discord: <code>{"webhook_url":"..."}</code><br>
+  Telegram: <code>{"bot_token":"...","chat_id":"..."}</code><br>
+  Ntfy: <code>{"server":"https://ntfy.sh","topic":"...","token":"..."}</code><br>
+  Gotify: <code>{"server":"http://...","app_token":"..."}</code><br>
+  Pushover: <code>{"user_key":"...","api_token":"..."}</code><br>
+  Webhook: <code>{"url":"https://...","method":"POST"}</code><br>
+  Email: <code>{"host":"localhost","port":25,"to":"user@example.com","from":"mangarr@localhost"}</code>
+</div>
+{%- endmacro %}
+
 {% block content %}
 <div class="d-flex align-items-center justify-content-between mb-4">
   <div class="page-heading mb-0"><i class="bi bi-bell-fill"></i>Notification Connections</div>
@@ -63,11 +108,14 @@
   </div>
 </div>
 
-<!-- Edit Modal -->
 <div class="modal fade" id="editModal{{ conn.id }}" tabindex="-1">
   <div class="modal-dialog modal-lg">
     <div class="modal-content">
-      <form method="POST" action="/notifications/{{ conn.id }}">
+      <form method="POST" action="/notifications/{{ conn.id }}" id="edit-notification-form-{{ conn.id }}"
+            data-notification-form data-result-target="edit-notification-test-result-{{ conn.id }}">
+        <input type="hidden" name="settings_mode" value="{% if conn.type in advanced_only_connection_types %}advanced{% else %}structured{% endif %}">
+        <input type="hidden" name="original_type" value="{{ conn.type }}">
+        <input type="hidden" name="settings_base" value='{{ conn.settings_display|tojson }}'>
         <div class="modal-header">
           <h6 class="modal-title text-ember">Edit: {{ conn.name }}</h6>
           <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
@@ -80,7 +128,7 @@
             </div>
             <div class="col-4">
               <label class="form-label">Type</label>
-              <select name="type" class="form-select">
+              <select name="type" class="form-select" data-notification-type>
                 {% for t in connection_types %}
                 <option value="{{ t }}" {% if conn.type == t %}selected{% endif %}>{{ t }}</option>
                 {% endfor %}
@@ -92,21 +140,35 @@
                    {% if conn.enabled %}checked{% endif %} id="en{{ conn.id }}">
             <label class="form-check-label" for="en{{ conn.id }}">Enabled</label>
           </div>
-          <div class="mb-3">
-            <label class="form-label">Settings (JSON)</label>
-            <textarea name="settings" class="form-control font-monospace" rows="6"
-                      >{{ conn.settings_display }}</textarea>
-            <div class="form-text mt-1" style="font-size:.78rem">
-              Discord: <code>{"webhook_url":"..."}</code><br>
-              Telegram: <code>{"bot_token":"...","chat_id":"..."}</code><br>
-              Ntfy: <code>{"server":"https://ntfy.sh","topic":"...","token":"..."}</code><br>
-              Gotify: <code>{"server":"http://...","app_token":"..."}</code><br>
-              Pushover: <code>{"user_key":"...","api_token":"..."}</code><br>
-              Webhook: <code>{"url":"https://...","method":"POST"}</code><br>
-              Email: <code>{"host":"localhost","port":25,"to":"user@example.com","from":"mangarr@localhost"}</code>
-            </div>
+
+          <div class="d-flex gap-2 mb-3">
+            <button type="button" class="btn btn-sm btn-secondary" data-mode-btn="structured"
+                    onclick="toggleNotificationMode('edit-notification-form-{{ conn.id }}', 'structured')">
+              Structured Fields
+            </button>
+            <button type="button" class="btn btn-sm btn-secondary" data-mode-btn="advanced"
+                    onclick="toggleNotificationMode('edit-notification-form-{{ conn.id }}', 'advanced')">
+              Advanced JSON
+            </button>
           </div>
-          <div class="mb-3">
+
+          <div class="alert alert-secondary py-2 px-3 mb-3" data-advanced-only-notice style="display:none;font-size:.82rem">
+            This provider stays on Advanced JSON for now. Mangarr will preserve unknown keys already stored in the settings blob.
+          </div>
+
+          <div data-mode-panel="structured">
+            {% for ctype in notification_field_schemas.keys() %}
+            {{ render_notification_fields('edit-' ~ conn.id, ctype, conn.settings_data if conn.type == ctype else notification_defaults_by_type.get(ctype, {})) }}
+            {% endfor %}
+          </div>
+
+          <div data-mode-panel="advanced" style="display:none">
+            <label class="form-label">Settings (JSON)</label>
+            <textarea name="settings" class="form-control font-monospace" rows="7" data-settings-json>{{ conn.settings_display }}</textarea>
+            {{ advanced_json_help() }}
+          </div>
+
+          <div class="mb-3 mt-3">
             <label class="form-label">Notification Events</label>
             <div class="d-flex flex-wrap gap-3">
               {% for flag, label in event_flags %}
@@ -120,9 +182,12 @@
               {% endfor %}
             </div>
           </div>
+          <div id="edit-notification-test-result-{{ conn.id }}" style="display:none"></div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-secondary btn-sm"
+                  onclick="testNotificationForm('edit-notification-form-{{ conn.id }}', this)">Test Before Save</button>
           <button type="submit" class="btn btn-ember btn-sm">Save</button>
         </div>
       </form>
@@ -140,11 +205,14 @@
 {% endif %}
 </div>
 
-<!-- New Modal -->
 <div class="modal fade" id="newModal" tabindex="-1">
   <div class="modal-dialog modal-lg">
     <div class="modal-content">
-      <form method="POST" action="/notifications" id="new-notification-form">
+      <form method="POST" action="/notifications" id="new-notification-form"
+            data-notification-form data-result-target="new-notification-test-result">
+        <input type="hidden" name="settings_mode" value="structured">
+        <input type="hidden" name="original_type" value="discord">
+        <input type="hidden" name="settings_base" value='{{ notification_defaults_by_type.get("discord", {}) | tojson }}'>
         <div class="modal-header">
           <h6 class="modal-title text-ember"><i class="bi bi-plus-circle me-2"></i>Add Notification</h6>
           <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
@@ -157,8 +225,7 @@
             </div>
             <div class="col-4">
               <label class="form-label">Type</label>
-              <select name="type" class="form-select" id="newTypeSelect"
-                      onchange="updateSettingsPlaceholder()">
+              <select name="type" class="form-select" id="newTypeSelect" data-notification-type>
                 {% for t in connection_types %}
                 <option value="{{ t }}">{{ t }}</option>
                 {% endfor %}
@@ -169,12 +236,35 @@
             <input class="form-check-input" type="checkbox" name="enabled" value="1" checked id="en_new">
             <label class="form-check-label" for="en_new">Enabled</label>
           </div>
-          <div class="mb-3">
-            <label class="form-label">Settings (JSON)</label>
-            <textarea name="settings" id="newSettings" class="form-control font-monospace" rows="4"
-                      >{"webhook_url": ""}</textarea>
+
+          <div class="d-flex gap-2 mb-3">
+            <button type="button" class="btn btn-sm btn-secondary" data-mode-btn="structured"
+                    onclick="toggleNotificationMode('new-notification-form', 'structured')">
+              Structured Fields
+            </button>
+            <button type="button" class="btn btn-sm btn-secondary" data-mode-btn="advanced"
+                    onclick="toggleNotificationMode('new-notification-form', 'advanced')">
+              Advanced JSON
+            </button>
           </div>
-          <div class="mb-3">
+
+          <div class="alert alert-secondary py-2 px-3 mb-3" data-advanced-only-notice style="display:none;font-size:.82rem">
+            This provider stays on Advanced JSON for now. Use the JSON editor below.
+          </div>
+
+          <div data-mode-panel="structured">
+            {% for ctype in notification_field_schemas.keys() %}
+            {{ render_notification_fields('new', ctype, notification_defaults_by_type.get(ctype, {})) }}
+            {% endfor %}
+          </div>
+
+          <div data-mode-panel="advanced" style="display:none">
+            <label class="form-label">Settings (JSON)</label>
+            <textarea name="settings" id="newSettings" class="form-control font-monospace" rows="7" data-settings-json>{{ notification_defaults_by_type.get("discord", {}) | tojson(indent=2) }}</textarea>
+            {{ advanced_json_help() }}
+          </div>
+
+          <div class="mb-3 mt-3">
             <label class="form-label">Notification Events</label>
             <div class="d-flex flex-wrap gap-3">
               {% for flag, label in event_flags %}
@@ -187,12 +277,12 @@
               {% endfor %}
             </div>
           </div>
+          <div id="new-notification-test-result" style="display:none"></div>
         </div>
-        <div id="new-notification-test-result" class="mx-3 mb-2" style="display:none"></div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
           <button type="button" class="btn btn-secondary btn-sm" id="new-notification-test-btn"
-                  onclick="testNewNotification(this)">Test Before Save</button>
+                  onclick="testNotificationForm('new-notification-form', this)">Test Before Save</button>
           <button type="submit" class="btn btn-ember btn-sm">Add</button>
         </div>
       </form>
@@ -203,22 +293,220 @@
 
 {% block scripts %}
 <script>
-const SETTINGS_TEMPLATES = {
-  discord:    '{"webhook_url": ""}',
-  telegram:   '{"bot_token": "", "chat_id": ""}',
-  slack:      '{"webhook_url": ""}',
-  ntfy:       '{"server": "https://ntfy.sh", "topic": "", "token": ""}',
-  gotify:     '{"server": "http://gotify:80", "app_token": ""}',
-  pushover:   '{"user_key": "", "api_token": ""}',
-  email:      '{"host": "mailserver", "port": 25, "to": "", "from": "mangarr@localhost"}',
-  webhook:    '{"url": "", "method": "POST"}',
-  apprise:    '{"url": "http://apprise:8000", "config_key": ""}',
-  pushbullet: '{"access_token": ""}',
-};
-function updateSettingsPlaceholder() {
-  const t = document.getElementById('newTypeSelect').value;
-  document.getElementById('newSettings').value = SETTINGS_TEMPLATES[t] || '{}';
+const NOTIFICATION_SCHEMAS = {{ notification_field_schemas | tojson }};
+const ADVANCED_ONLY_NOTIFICATION_TYPES = new Set({{ advanced_only_connection_types | list | tojson }});
+const NOTIFICATION_DEFAULTS = {{ notification_defaults_by_type | tojson }};
+
+function notificationParseJson(raw) {
+  try {
+    return JSON.parse(raw || '{}');
+  } catch (_) {
+    return null;
+  }
 }
+
+function notificationResultEl(form) {
+  return document.getElementById(form.dataset.resultTarget);
+}
+
+function showNotificationFormResult(form, ok, msg) {
+  const el = notificationResultEl(form);
+  if (!el) return;
+  el.className = `connection-status ${ok ? 'connection-ok' : 'connection-fail'}`;
+  el.textContent = msg;
+  el.style.display = 'inline-block';
+}
+
+function currentNotificationType(form) {
+  const select = form.querySelector('[data-notification-type]');
+  return select ? select.value : 'discord';
+}
+
+function notificationTextarea(form) {
+  return form.querySelector('[data-settings-json]');
+}
+
+function notificationBaseInput(form) {
+  return form.querySelector('input[name="settings_base"]');
+}
+
+function notificationModeInput(form) {
+  return form.querySelector('input[name="settings_mode"]');
+}
+
+function notificationOriginalTypeInput(form) {
+  return form.querySelector('input[name="original_type"]');
+}
+
+function notificationStructuredGroups(form) {
+  return Array.from(form.querySelectorAll('[data-provider-group]'));
+}
+
+function notificationFieldInput(form, type, fieldName) {
+  return form.querySelector(`[data-provider-group="${type}"] [name="${fieldName}"]`);
+}
+
+function applyNotificationSettingsToFields(form, type, settings) {
+  const schema = NOTIFICATION_SCHEMAS[type] || [];
+  const values = settings && typeof settings === 'object' ? settings : {};
+  for (const field of schema) {
+    const el = notificationFieldInput(form, type, field.name);
+    if (!el) continue;
+    const fallback = Object.prototype.hasOwnProperty.call(field, 'default') ? field.default : '';
+    const value = Object.prototype.hasOwnProperty.call(values, field.name) ? values[field.name] : fallback;
+    el.value = value == null ? '' : String(value);
+  }
+}
+
+function notificationCollectStructuredSettings(form, type) {
+  const schema = NOTIFICATION_SCHEMAS[type] || [];
+  const base = notificationParseJson(notificationBaseInput(form)?.value || '{}') || {};
+  const originalType = notificationOriginalTypeInput(form)?.value || type;
+  const settings = (originalType === type) ? { ...base } : {};
+
+  for (const field of schema) {
+    const el = notificationFieldInput(form, type, field.name);
+    if (!el) continue;
+    let raw = String(el.value || '').trim();
+    if (!raw) {
+      if (Object.prototype.hasOwnProperty.call(field, 'default')) {
+        raw = String(field.default);
+      } else {
+        delete settings[field.name];
+        if (field.required) {
+          return { ok: false, message: `${field.label} is required` };
+        }
+        continue;
+      }
+    }
+    if (field.input_type === 'number') {
+      const num = Number(raw);
+      if (!Number.isFinite(num)) {
+        return { ok: false, message: `${field.label} must be a number` };
+      }
+      settings[field.name] = Math.trunc(num);
+      continue;
+    }
+    settings[field.name] = field.input_type === 'select' ? raw.toUpperCase() : raw;
+  }
+
+  return { ok: true, settings };
+}
+
+function notificationSyncJsonFromStructured(form) {
+  const type = currentNotificationType(form);
+  const result = notificationCollectStructuredSettings(form, type);
+  if (!result.ok) return result;
+  const textarea = notificationTextarea(form);
+  const settings = result.settings || {};
+  if (textarea) textarea.value = JSON.stringify(settings, null, 2);
+  return { ok: true, settings };
+}
+
+function notificationSetMode(form, mode, syncFromAdvanced = false) {
+  const type = currentNotificationType(form);
+  const resolvedMode = ADVANCED_ONLY_NOTIFICATION_TYPES.has(type) ? 'advanced' : mode;
+  const modeInput = notificationModeInput(form);
+  if (modeInput) modeInput.value = resolvedMode;
+
+  const structuredPanel = form.querySelector('[data-mode-panel="structured"]');
+  const advancedPanel = form.querySelector('[data-mode-panel="advanced"]');
+  if (structuredPanel) structuredPanel.style.display = resolvedMode === 'structured' ? '' : 'none';
+  if (advancedPanel) advancedPanel.style.display = resolvedMode === 'advanced' ? '' : 'none';
+
+  if (syncFromAdvanced && resolvedMode === 'structured') {
+    const parsed = notificationParseJson(notificationTextarea(form)?.value || '{}');
+    if (parsed && typeof parsed === 'object') {
+      applyNotificationSettingsToFields(form, type, parsed);
+      const baseInput = notificationBaseInput(form);
+      if (baseInput) baseInput.value = JSON.stringify(parsed);
+    }
+  }
+
+  const notice = form.querySelector('[data-advanced-only-notice]');
+  if (notice) {
+    notice.style.display = ADVANCED_ONLY_NOTIFICATION_TYPES.has(type) ? '' : 'none';
+  }
+
+  const buttons = form.querySelectorAll('[data-mode-btn]');
+  buttons.forEach((btn) => {
+    const btnMode = btn.getAttribute('data-mode-btn');
+    const active = btnMode === resolvedMode;
+    btn.classList.toggle('btn-ember', active);
+    btn.classList.toggle('btn-secondary', !active);
+    if (btnMode === 'structured') {
+      btn.disabled = ADVANCED_ONLY_NOTIFICATION_TYPES.has(type);
+    }
+  });
+}
+
+function notificationUpdateType(form) {
+  const type = currentNotificationType(form);
+  notificationStructuredGroups(form).forEach((group) => {
+    const active = group.getAttribute('data-provider-group') === type;
+    group.style.display = active ? '' : 'none';
+    group.querySelectorAll('input, select, textarea').forEach((el) => {
+      el.disabled = !active;
+    });
+  });
+  const baseInput = notificationBaseInput(form);
+  const textarea = notificationTextarea(form);
+  if (baseInput && (!baseInput.value || notificationOriginalTypeInput(form)?.value !== type)) {
+    baseInput.value = JSON.stringify(NOTIFICATION_DEFAULTS[type] || {});
+  }
+  if (textarea && (!textarea.value.trim() || notificationOriginalTypeInput(form)?.value !== type)) {
+    textarea.value = JSON.stringify(NOTIFICATION_DEFAULTS[type] || {}, null, 2);
+  }
+  const currentMode = notificationModeInput(form)?.value || 'structured';
+  notificationSetMode(form, currentMode);
+}
+
+function prepareNotificationForm(form) {
+  const mode = notificationModeInput(form)?.value || 'structured';
+  if (mode === 'advanced' || ADVANCED_ONLY_NOTIFICATION_TYPES.has(currentNotificationType(form))) {
+    const parsed = notificationParseJson(notificationTextarea(form)?.value || '{}');
+    if (parsed === null) {
+      showNotificationFormResult(form, false, 'Settings JSON is invalid');
+      return false;
+    }
+    if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+      showNotificationFormResult(form, false, 'Settings JSON must be an object');
+      return false;
+    }
+    return true;
+  }
+  const result = notificationSyncJsonFromStructured(form);
+  if (!result.ok) {
+    showNotificationFormResult(form, false, result.message);
+    return false;
+  }
+  return true;
+}
+
+function initNotificationForm(form) {
+  const type = currentNotificationType(form);
+  const base = notificationParseJson(notificationBaseInput(form)?.value || '{}') || {};
+  if (NOTIFICATION_SCHEMAS[type]) {
+    applyNotificationSettingsToFields(form, type, base);
+  }
+  notificationUpdateType(form);
+  const typeSelect = form.querySelector('[data-notification-type]');
+  if (typeSelect) {
+    typeSelect.addEventListener('change', () => notificationUpdateType(form));
+  }
+  form.addEventListener('submit', (evt) => {
+    if (!prepareNotificationForm(form)) {
+      evt.preventDefault();
+    }
+  });
+}
+
+function toggleNotificationMode(formId, mode) {
+  const form = document.getElementById(formId);
+  if (!form) return;
+  notificationSetMode(form, mode, mode === 'structured');
+}
+
 async function testConn(id, btn) {
   btn.disabled = true;
   btn.innerHTML = '<i class="bi bi-hourglass-split"></i>';
@@ -233,26 +521,28 @@ async function testConn(id, btn) {
   btn.disabled = false;
   btn.innerHTML = '<i class="bi bi-bell"></i>';
 }
-async function testNewNotification(btn) {
-  const form = document.getElementById('new-notification-form');
-  const result = document.getElementById('new-notification-test-result');
+
+async function testNotificationForm(formId, btn) {
+  const form = document.getElementById(formId);
+  if (!form) return;
+  if (!prepareNotificationForm(form)) return;
   btn.disabled = true;
   const original = btn.innerHTML;
   btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Testing…';
   try {
     const r = await fetch('/api/notifications/test-form', { method: 'POST', body: new FormData(form) });
     const d = await r.json();
-    result.className = `connection-status ${d.ok ? 'connection-ok' : 'connection-fail'}`;
-    result.textContent = d.message;
-    result.style.display = 'inline-block';
+    showNotificationFormResult(form, !!d.ok, d.message || (d.ok ? 'Sent' : 'Failed'));
   } catch (e) {
-    result.className = 'connection-status connection-fail';
-    result.textContent = 'Request failed';
-    result.style.display = 'inline-block';
+    showNotificationFormResult(form, false, 'Request failed');
   } finally {
     btn.disabled = false;
     btn.innerHTML = original;
   }
 }
+
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('[data-notification-form]').forEach(initNotificationForm);
+});
 </script>
 {% endblock %}

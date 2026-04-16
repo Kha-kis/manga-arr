@@ -252,7 +252,23 @@ async function run() {
     fail(`${newErrors.length} new console errors during sweep`, newErrors.slice(0, 3).join('; '));
   }
 
-  console.log('\n=== R2.9: Session console error summary ===');
+  console.log('\n=== R2.9: Notification modal Test Before Save validation ===');
+  try {
+    await page.goto(BASE + '/notifications', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.click('[data-bs-target="#newModal"]');
+    await page.waitForSelector('#newModal.show', { timeout: 3000 });
+    await page.fill('#newModal input[name="name"]', 'Browser Notification Test');
+    await page.selectOption('#newModal select[name="type"]', 'discord');
+    await page.click('#new-notification-test-btn');
+    await page.waitForSelector('#new-notification-test-result.connection-fail', { timeout: 2000 });
+    const text = await page.textContent('#new-notification-test-result');
+    if (text && text.includes('Webhook URL is required')) ok('Notification modal shows validation feedback before save');
+    else fail('Notification modal validation', text || 'no message');
+  } catch (e) {
+    fail('notification modal test-before-save', e.message);
+  }
+
+  console.log('\n=== R2.10: Session console error summary ===');
   if (consoleErrors.length === 0) ok('Zero console errors in entire test run');
   else {
     fail(`${consoleErrors.length} total console errors`, '');

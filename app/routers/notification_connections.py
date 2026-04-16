@@ -15,6 +15,67 @@ from security import (
 router = APIRouter()
 
 
+NOTIFICATION_FIELD_SCHEMAS: dict[str, list[dict]] = {
+    "discord": [
+        {"name": "webhook_url", "label": "Webhook URL", "input_type": "url", "required": True, "secret": True,
+         "placeholder": "https://discord.com/api/webhooks/...", "help": "Discord webhook endpoint."},
+    ],
+    "telegram": [
+        {"name": "bot_token", "label": "Bot Token", "input_type": "password", "required": True, "secret": True,
+         "placeholder": "123456:ABCDEF...", "help": "Telegram bot token from BotFather."},
+        {"name": "chat_id", "label": "Chat ID", "input_type": "text", "required": True, "secret": False,
+         "placeholder": "123456789", "help": "Target chat or channel ID."},
+    ],
+    "slack": [
+        {"name": "webhook_url", "label": "Webhook URL", "input_type": "url", "required": True, "secret": True,
+         "placeholder": "https://hooks.slack.com/services/...", "help": "Slack incoming webhook endpoint."},
+    ],
+    "ntfy": [
+        {"name": "server", "label": "Server URL", "input_type": "url", "required": False, "secret": False,
+         "placeholder": "https://ntfy.sh", "help": "Defaults to https://ntfy.sh.", "default": "https://ntfy.sh"},
+        {"name": "topic", "label": "Topic", "input_type": "text", "required": True, "secret": False,
+         "placeholder": "mangarr", "help": "Topic to publish notifications to."},
+        {"name": "token", "label": "Access Token", "input_type": "password", "required": False, "secret": True,
+         "placeholder": "optional", "help": "Optional bearer token for protected topics."},
+    ],
+    "gotify": [
+        {"name": "server", "label": "Server URL", "input_type": "url", "required": True, "secret": False,
+         "placeholder": "http://gotify:80", "help": "Base URL of the Gotify server."},
+        {"name": "app_token", "label": "App Token", "input_type": "password", "required": True, "secret": True,
+         "placeholder": "application token", "help": "Token from the Gotify application."},
+    ],
+    "pushover": [
+        {"name": "user_key", "label": "User Key", "input_type": "password", "required": True, "secret": True,
+         "placeholder": "user key", "help": "Pushover user or group key."},
+        {"name": "api_token", "label": "API Token", "input_type": "password", "required": True, "secret": True,
+         "placeholder": "application token", "help": "Pushover application token."},
+    ],
+    "email": [
+        {"name": "host", "label": "SMTP Host", "input_type": "text", "required": False, "secret": False,
+         "placeholder": "localhost", "help": "SMTP server host.", "default": "localhost"},
+        {"name": "port", "label": "Port", "input_type": "number", "required": False, "secret": False,
+         "placeholder": "25", "help": "SMTP port.", "default": 25},
+        {"name": "username", "label": "Username", "input_type": "text", "required": False, "secret": False,
+         "placeholder": "optional", "help": "Optional SMTP username."},
+        {"name": "password", "label": "Password", "input_type": "password", "required": False, "secret": True,
+         "placeholder": "optional", "help": "Optional SMTP password."},
+        {"name": "from", "label": "From Address", "input_type": "email", "required": False, "secret": False,
+         "placeholder": "mangarr@localhost", "help": "Envelope sender used for notifications.", "default": "mangarr@localhost"},
+        {"name": "to", "label": "To Address", "input_type": "email", "required": True, "secret": False,
+         "placeholder": "user@example.com", "help": "Recipient address."},
+    ],
+    "webhook": [
+        {"name": "url", "label": "Webhook URL", "input_type": "url", "required": True, "secret": True,
+         "placeholder": "https://example.com/hook", "help": "HTTP endpoint to call."},
+        {"name": "method", "label": "Method", "input_type": "select", "required": False, "secret": False,
+         "default": "POST", "options": [{"value": "POST", "label": "POST"}, {"value": "GET", "label": "GET"}],
+         "help": "Request method for the outbound webhook."},
+    ],
+}
+
+ADVANCED_ONLY_CONNECTION_TYPES = frozenset({"apprise", "pushbullet"})
+
+
 def _secret_keys_for(ctype: str) -> tuple[str, ...]:
     """Return the tuple of JSON keys whose values are encrypted at rest
     for the given notification connection type. Lazy-imported from main
@@ -106,6 +167,73 @@ def _serialize_settings_for_edit(ctype: str, name: str, settings_blob) -> str:
     return json.dumps(settings, indent=2, sort_keys=True)
 
 
+def _settings_dict_for_edit(ctype: str, name: str, settings_blob) -> dict:
+    raw = _serialize_settings_for_edit(ctype, name, settings_blob)
+    parsed = from_json(raw, {})
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _notification_settings_defaults(ctype: str) -> dict:
+    out = {}
+    for field in NOTIFICATION_FIELD_SCHEMAS.get(ctype, ()):
+        if "default" in field:
+            out[field["name"]] = field["default"]
+    return out
+
+
+def _coerce_notification_field(field: dict, raw_value):
+    if raw_value is None:
+        return None
+    value = str(raw_value).strip()
+    if value == "":
+        return field.get("default") if "default" in field else None
+    input_type = field.get("input_type")
+    if input_type == "number":
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    if input_type == "select":
+        return value.upper()
+    return value
+
+
+def _notification_settings_from_form(form, ctype: str, *, base_settings: dict | None = None,
+                                     original_type: str | None = None) -> tuple[dict | None, str | None]:
+    mode = (form.get("settings_mode") or "").strip().lower()
+    raw_settings = str(form.get("settings") or "").strip()
+    schema = NOTIFICATION_FIELD_SCHEMAS.get(ctype, ())
+    has_structured_fields = any(field["name"] in form for field in schema)
+    if mode == "advanced" or ctype in ADVANCED_ONLY_CONNECTION_TYPES:
+        try:
+            parsed = json.loads(raw_settings or "{}")
+        except Exception:
+            return None, "Settings JSON is invalid"
+        if not isinstance(parsed, dict):
+            return None, "Settings JSON must be an object"
+        return parsed, None
+
+    if raw_settings and not has_structured_fields:
+        try:
+            parsed = json.loads(raw_settings)
+        except Exception:
+            return None, "Settings JSON is invalid"
+        if not isinstance(parsed, dict):
+            return None, "Settings JSON must be an object"
+        return parsed, None
+
+    settings = dict(base_settings or {})
+    if original_type and original_type != ctype:
+        settings = {}
+    for field in schema:
+        value = _coerce_notification_field(field, form.get(field["name"]))
+        if value is None:
+            settings.pop(field["name"], None)
+        else:
+            settings[field["name"]] = value
+    return settings, None
+
+
 # ── List ──────────────────────────────────────────────────────────────────────
 @router.get("/notifications", response_class=HTMLResponse)
 async def notifications_page(request: Request):
@@ -118,6 +246,11 @@ async def notifications_page(request: Request):
                 conn.get("name") or "?",
                 conn.get("settings"),
             )
+            conn["settings_data"] = _settings_dict_for_edit(
+                conn.get("type") or "",
+                conn.get("name") or "?",
+                conn.get("settings"),
+            )
             connections.append(conn)
         secret_health = get_secret_health_summary(db)
     return templates.TemplateResponse(request, "notification_connections.html", {
@@ -125,6 +258,11 @@ async def notifications_page(request: Request):
         "connection_types": CONNECTION_TYPES,
         "event_flags":      EVENT_FLAGS,
         "secret_health":    secret_health,
+        "notification_field_schemas": NOTIFICATION_FIELD_SCHEMAS,
+        "advanced_only_connection_types": ADVANCED_ONLY_CONNECTION_TYPES,
+        "notification_defaults_by_type": {
+            t: _notification_settings_defaults(t) for t in CONNECTION_TYPES
+        },
     })
 
 
@@ -139,12 +277,10 @@ async def create_notification_connection(
 ):
     form = await request.form()
     events = {flag: int(form.get(flag, 0)) for flag, _ in EVENT_FLAGS}
-    try:
-        settings_dict = json.loads(settings)
-    except Exception:
-        settings_dict = {}
-    if isinstance(settings_dict, dict):
-        settings_dict = _encrypt_secret_fields(type, settings_dict)
+    settings_dict, err = _notification_settings_from_form(form, type)
+    if err:
+        return JSONResponse({"ok": False, "message": err}, status_code=400)
+    settings_dict = _encrypt_secret_fields(type, settings_dict or {})
     with get_db() as db:
         db.execute(
             "INSERT INTO notification_connections(name,type,enabled,settings,"
@@ -170,13 +306,22 @@ async def edit_notification_connection(
 ):
     form = await request.form()
     events = {flag: int(form.get(flag, 0)) for flag, _ in EVENT_FLAGS}
-    try:
-        settings_dict = json.loads(settings)
-    except Exception:
-        settings_dict = {}
-    if isinstance(settings_dict, dict):
-        settings_dict = _encrypt_secret_fields(type, settings_dict)
     with get_db() as db:
+        current = db.execute(
+            "SELECT type, settings FROM notification_connections WHERE id=?", (conn_id,)
+        ).fetchone()
+        current_settings = from_json(current["settings"], {}) if current else {}
+        if not isinstance(current_settings, dict):
+            current_settings = {}
+        settings_dict, err = _notification_settings_from_form(
+            form,
+            type,
+            base_settings=current_settings,
+            original_type=current["type"] if current else None,
+        )
+        if err:
+            return JSONResponse({"ok": False, "message": err}, status_code=400)
+        settings_dict = _encrypt_secret_fields(type, settings_dict or {})
         db.execute(
             "UPDATE notification_connections SET name=?,type=?,enabled=?,settings=?,"
             " on_grab=?,on_download=?,on_upgrade=?,on_series_add=?,on_health_issue=?,"
@@ -211,18 +356,17 @@ async def test_notification_connection(conn_id: int):
 
 @router.post("/api/notifications/test-form")
 async def test_notification_connection_form(
+    request: Request,
     name: str = Form("Unsaved notification"),
     type: str = Form(...),
     settings: str = Form("{}"),
 ):
-    try:
-        settings_dict = json.loads(settings)
-    except Exception:
-        return JSONResponse({"ok": False, "message": "Settings JSON is invalid"})
-    if not isinstance(settings_dict, dict):
-        return JSONResponse({"ok": False, "message": "Settings JSON must be an object"})
+    form = await request.form()
+    settings_dict, err = _notification_settings_from_form(form, type)
+    if err:
+        return JSONResponse({"ok": False, "message": err})
     ok, msg = await send_connection(
-        {"name": name.strip() or "Unsaved notification", "type": type, "settings": json.dumps(settings_dict)},
+        {"name": name.strip() or "Unsaved notification", "type": type, "settings": json.dumps(settings_dict or {})},
         "Test notification from Mangarr",
         event="test",
     )
