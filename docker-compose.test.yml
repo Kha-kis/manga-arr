@@ -1,0 +1,76 @@
+# Isolated test container.
+#
+# Distinct from docker-compose.yml in three ways that keep it safe to run
+# alongside the live container:
+#   - container_name: mangarr-test           (vs. mangarr)
+#   - host port:      127.0.0.1:16789        (vs. 6789)
+#   - /config mount:  ./.test-config         (vs. live ~/.config/mangarr)
+#
+# .test-config is recreated by the test runner before each run, so the test
+# DB starts empty every time. The seed script populates the minimum fixtures
+# the browser tests need.
+#
+# Usage:
+#   make test-browser-isolated
+# or directly:
+#   docker compose -f docker-compose.test.yml up -d --build
+#   ./tests/seed_test_db.sh
+#   MANGARR_TEST_BASE=http://127.0.0.1:16789 \
+#     MANGARR_TEST_CONTAINER=mangarr-test \
+#     node tests/browser_smoke.js
+#   docker compose -f docker-compose.test.yml down
+
+services:
+  mangarr-test:
+    build: .
+    container_name: mangarr-test
+    environment:
+      - TZ=America/Chicago
+      # Deterministic Fernet key — published intentionally; only the test
+      # container ever sees it. Real prod uses an auto-generated key file.
+      - MANGARR_SECRET_KEY=ZmFrZS10ZXN0LWtleS1mb3ItYnJvd3Nlci1zdWl0ZS0xMg==
+      # No live integrations: SAB / Prowlarr point at TEST-NET-1 (any
+      # outbound call fails fast). qBit DL client config is seeded at
+      # http://mock-qbit:8080 — the sidecar below answers it.
+      - QBIT_HOST=http://mock-qbit:8080
+      - SAB_HOST=http://192.0.2.2:65530
+      - PROWLARR_URL=http://192.0.2.3:65530
+      - MANGA_SAVE_PATH=/data/media/manga
+      - MANGA_CATEGORY=manga
+      - RSS_INTERVAL=86400  # effectively "never" during a test run
+    volumes:
+      - ./.test-config:/config
+      - ./app:/app
+    ports:
+      - "127.0.0.1:16789:8000"
+    depends_on:
+      mock-qbit:
+        condition: service_healthy
+    # No restart policy — test runner manages lifecycle explicitly.
+    security_opt:
+      - no-new-privileges=true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # Mock qBittorrent. Implements only what _test_client (and the e2e flow)
+  # exercises: /api/v2/auth/login → "Ok.", /api/v2/app/version → text.
+  # Source lives at tests/mock_qbit.py and is mounted in (no separate image
+  # build needed; uses the bare python:3.12-slim image).
+  mock-qbit:
+    image: python:3.12-slim
+    container_name: mangarr-test-mock-qbit
+    command: ["python3", "/mock_qbit.py", "8080"]
+    volumes:
+      - ./tests/mock_qbit.py:/mock_qbit.py:ro
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+      start_period: 2s
