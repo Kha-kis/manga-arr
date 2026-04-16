@@ -5,19 +5,56 @@ All notable changes to this project. Format roughly follows
 
 ## [Unreleased]
 
+_No unreleased changes._
+
+## 2026-04-16 — H4 encryption at rest
+
+This release closes the last deferred hardening item from the security
+audit: **H4 — plaintext secrets in the SQLite DB**. Secrets stored in
+the database are now encrypted at rest, operators have documented key
+backup and recovery guidance, and the release notes below summarize the
+five PRs that completed the work.
+
+### Added
+
+- Fernet-based secret-cipher primitives and master-key resolution
+  (PR [#17](https://github.com/Kha-kis/manga-arr/pull/17)).
+- Regression coverage for the H4 rollout:
+  `test_secret_cipher.py`, `test_settings_secret_migration.py`,
+  `test_indexer_dlclient_secret_migration.py`, and
+  `test_notification_secret_migration.py`.
+
 ### Changed
 
-- Documentation now reflects that **H4 plaintext-secrets hardening is
-  complete**. Operators are told how `MANGARR_SECRET_KEY` works, how
-  `/config/.mangarr-secret-key` is auto-generated, what must be backed
-  up for restore, how wrong-key failures surface, and how to recover by
-  re-entering credentials.
+- `settings` table secret values are encrypted at rest
+  (PR [#18](https://github.com/Kha-kis/manga-arr/pull/18)).
+- `indexers.api_key` and `download_clients.password` are encrypted at
+  rest (PR [#19](https://github.com/Kha-kis/manga-arr/pull/19)).
+- Secret fields inside `notification_connections.settings` JSON are
+  encrypted at rest (PR [#20](https://github.com/Kha-kis/manga-arr/pull/20)).
+- Operator docs now cover `MANGARR_SECRET_KEY`,
+  `/config/.mangarr-secret-key`, backup/restore requirements,
+  wrong-key behavior, recovery by re-entering credentials, and the
+  current key-rotation limitation
+  (PR [#21](https://github.com/Kha-kis/manga-arr/pull/21)).
 
-### Notes
+### Operational notes
 
+- Back up the database and the active secret-key source together:
+  `/config/.mangarr-secret-key` if file-backed, or the
+  `MANGARR_SECRET_KEY` secret if environment-backed.
+- Restoring the database without the matching key leaves encrypted
+  credentials unreadable until they are re-entered.
 - Key rotation is **not yet supported**. Changing the master key
-  without also re-encrypting stored secrets will make existing
-  encrypted credentials unreadable until they are re-entered.
+  without re-entering credentials will make existing encrypted values
+  unreadable.
+
+### Known issues
+
+- Issue [#22](https://github.com/Kha-kis/manga-arr/issues/22):
+  `tests/python/test_api_key_middleware.py::test_api_route_fails_closed_when_api_key_blank`
+  hangs under pytest. This reproduces on `master` and is tracked as a
+  baseline test issue; it does not block this release.
 
 ## 2026-04-15 — Security audit hardening
 
