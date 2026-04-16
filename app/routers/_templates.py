@@ -83,6 +83,32 @@ def _get_instance_name() -> str:
     except Exception:
         return 'Mangarr'
 
+def _ch_label(row) -> str:
+    """Render a chapter row's number, honoring chapter_range_end so a
+    `c001-002` pack imported as one row displays as '1-2'.
+
+    Mirrors main._ch_label_filter (shared logic must agree across the two
+    Jinja environments — main.py's templates and the shared routers one)."""
+    if row is None:
+        return ""
+    try:
+        n = row["chapter_num"]
+    except (KeyError, IndexError, TypeError):
+        return ""
+    if n is None:
+        return ""
+    end = None
+    try:
+        end = row["chapter_range_end"]
+    except (KeyError, IndexError, TypeError):
+        end = None
+    n_disp = int(n) if n == int(n) else n
+    if end is not None and end > n:
+        e_disp = int(end) if end == int(end) else end
+        return f"{n_disp}-{e_disp}"
+    return f"{n_disp}"
+
+
 templates.env.filters['from_json']       = _from_json
 templates.env.filters['format_bytes']    = _fmt_bytes
 templates.env.filters['format_protocol'] = _fmt_protocol
@@ -90,6 +116,7 @@ templates.env.filters['format_client']   = _fmt_client
 templates.env.filters['vol_display']     = _vol_display
 templates.env.filters['quality_rank']    = _quality_rank
 templates.env.filters['format_date']     = _format_date
+templates.env.filters['ch_label']        = _ch_label
 
 def _get_api_key() -> str:
     try:

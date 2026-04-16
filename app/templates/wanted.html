@@ -111,7 +111,7 @@
       <div class="d-flex align-items-center gap-1 px-2 py-1 rounded"
            style="background:var(--ink-4); border:1px solid rgba(100,180,255,0.15)">
         <span class="fw-semibold text-xs" style="color:var(--sky, #6ab4ff)">
-          Ch&nbsp;{% if ch['chapter_num'] == ch['chapter_num']|int %}{{ ch['chapter_num']|int }}{% else %}{{ ch['chapter_num'] }}{% endif %}
+          Ch&nbsp;{{ ch | ch_label }}
         </span>
         <button class="btn p-0 ms-1 text-xs" style="color:var(--gold); border:none; background:transparent" title="Grab" aria-label="Grab chapter"
                 hx-post="/series/{{ group.series_id }}/chapters/{{ ch['id'] }}/grab"

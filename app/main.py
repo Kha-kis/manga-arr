@@ -713,6 +713,11 @@ def init_db():
         # back every CREATE TABLE that ran earlier in init_db.
         add_col('chapters',           'quality',          'TEXT')
         add_col('chapters',           'imported_at',      'TEXT')
+        # Multi-chapter file support (e.g. c001-002 packs in one CBZ).
+        # When set, this row covers chapter_num..chapter_range_end inclusive
+        # via a single import_path. NULL preserves the original one-row-per-
+        # chapter behaviour. Mirrors the volumes.vol_range_start/end pattern.
+        add_col('chapters',           'chapter_range_end','REAL')
 
         # Backfill download_id from seen → volumes for existing grabbed items
         db.execute("""
@@ -1307,6 +1312,20 @@ def populate_chapters(db, series_id: int) -> int:
         except (ValueError, TypeError):
             continue
         vol_id = vol_id_map.get(float(vol_num)) if vol_num is not None else None
+        # Coverage guard: skip if this chapter is already covered by an
+        # existing range row (chapter_num <= ch_num <= chapter_range_end).
+        # Without this guard, re-syncing chapter metadata would re-create
+        # `wanted` placeholders for chapters that a c001-002 pack already
+        # imported.
+        covered = db.execute(
+            "SELECT 1 FROM chapters WHERE series_id=?"
+            "   AND chapter_num <= ?"
+            "   AND ? <= COALESCE(chapter_range_end, chapter_num)"
+            " LIMIT 1",
+            (series_id, ch_num, ch_num)
+        ).fetchone()
+        if covered:
+            continue
         cur = db.execute(
             "INSERT OR IGNORE INTO chapters(series_id, volume_id, chapter_num, status, monitored)"
             " VALUES(?,?,?,'wanted',1)",
@@ -1632,6 +1651,50 @@ def extract_volume_range(title: str) -> tuple[float, float] | None:
                 if start < end and (end - start) < 600:  # sanity: reasonable range
                     return (start, end)
     return None
+
+def extract_chapter_range(title: str) -> tuple[float, float] | None:
+    """Extract a chapter range from a release/file name. Returns (start, end) or None.
+
+    Mirrors extract_volume_range but pinned to chapter prefixes (`c`, `ch`,
+    `chapter`) so a bare `1-2` doesn't get misread as chapters. Volume-prefix
+    ranges (`v01-v05`) are intentionally not matched here — those are
+    volume ranges and stay in extract_volume_range's domain.
+
+    Accepted shapes (case-insensitive):
+        c001-002, c001-c002, ch1-2, ch1-ch2, chapter 1-2, chapter1-chapter2
+
+    Rejected:
+        - missing chapter prefix
+        - descending ranges (end < start)
+        - degenerate ranges (start == end) — caller should use extract_chapter_num
+        - silly spans (>200 chapters) — defends against false positives
+    """
+    if not title:
+        return None
+    _sfx = r'[a-d½¼¾]?'
+    pat = (
+        rf'\bc(?:h(?:apter)?)?\.?\s*'
+        rf'(\d{{1,4}}(?:\.\d+)?{_sfx})'
+        rf'\s*[-–—~]\s*'
+        rf'(?:c(?:h(?:apter)?)?\.?\s*)?'
+        rf'(\d{{1,4}}(?:\.\d+)?{_sfx})\b'
+    )
+    m = re.search(pat, title, re.IGNORECASE)
+    if not m:
+        return None
+    start = _parse_vol_suffix(m.group(1))
+    end   = _parse_vol_suffix(m.group(2))
+    if start is None or end is None:
+        return None
+    if start >= end:
+        # Reject descending or degenerate (caller should use extract_chapter_num for single).
+        return None
+    if (end - start) > 200:
+        # Sanity cap: a pack covering >200 chapters in one file is almost
+        # certainly a mis-parse (e.g. a year tag like 2010-2020).
+        return None
+    return (start, end)
+
 
 def extract_chapter_num(title: str) -> float | None:
     """
@@ -2576,6 +2639,32 @@ def build_volume_label(vol_num, vol_range, pack_type) -> str:
     if vol_range:
         return f"Vol {vol_num_to_display(vol_range[0])}–{vol_num_to_display(vol_range[1])}"
     return "Pack"
+
+
+def _format_chapter_num(n: float) -> str:
+    """Render a chapter number for display. Pad integers to 3 digits (Ch.001),
+    keep decimals as-is (Ch.1.5)."""
+    if n == int(n):
+        return f"{int(n):03d}"
+    return f"{n:g}"
+
+
+def build_chapter_label(chapter_num: float | None,
+                        chapter_range_end: float | None = None) -> str:
+    """Build a human-readable chapter label.
+
+    Examples:
+        chapter_num=1, range_end=None  →  'Ch.001'
+        chapter_num=1, range_end=2     →  'Ch.001-002'
+        chapter_num=1.5, range_end=None →  'Ch.1.5'
+    """
+    if chapter_num is None:
+        return ""
+    start = _format_chapter_num(chapter_num)
+    if chapter_range_end is not None and chapter_range_end > chapter_num:
+        end = _format_chapter_num(chapter_range_end)
+        return f"Ch.{start}-{end}"
+    return f"Ch.{start}"
 
 
 def add_history(db, event_type: str, series_id: int | None, series_title: str,
@@ -4474,6 +4563,21 @@ async def _execute_import(
             # ── Chapter file: has a chapter number ────────────────────────────
             if file_type == 'chapter' and proposed_chap is not None:
                 src = f['src_path']
+
+                # Auto-detect a chapter range from the filename so a
+                # `c001-002` pack imports as one row covering both. Operator
+                # overrides win if they ever wire range_end into the UI;
+                # for now this path is auto-only.
+                _ch_range_end: float | None = None
+                _detected_range = extract_chapter_range(os.path.basename(src))
+                if _detected_range is not None:
+                    _r_start, _r_end = _detected_range
+                    # Only honor the detected range if it agrees with the
+                    # proposed start (don't silently rewrite an operator's
+                    # explicit single-chapter assignment).
+                    if abs(_r_start - proposed_chap) < 1e-6:
+                        _ch_range_end = _r_end
+
                 try:
                     dst = safe_join_under(dst_dir, f['filename'])
                 except ValueError as _e:
@@ -4541,7 +4645,9 @@ async def _execute_import(
                     _ch_quality = quality_from_filename(dst)
                     _ch_torrent_name = _pv_meta.get('torrent_name') or queue['torrent_name']
 
-                    # Upsert the chapter record with full metadata
+                    # Upsert the chapter record with full metadata. When
+                    # importing a chapter pack (c001-002), set chapter_range_end
+                    # so a single row covers the whole span.
                     chap_row = db.execute(
                         "SELECT id FROM chapters WHERE series_id=? AND chapter_num=?",
                         (queue['series_id'], proposed_chap)
@@ -4554,25 +4660,41 @@ async def _execute_import(
                             " indexer=COALESCE(indexer,?), protocol=COALESCE(protocol,?),"
                             " client=COALESCE(client,?), release_group=COALESCE(release_group,?),"
                             " size_bytes=COALESCE(NULLIF(size_bytes,0),?),"
-                            " volume_id=COALESCE(volume_id,?), download_id=COALESCE(download_id,?)"
+                            " volume_id=COALESCE(volume_id,?), download_id=COALESCE(download_id,?),"
+                            " chapter_range_end=COALESCE(?, chapter_range_end)"
                             " WHERE id=?",
                             (dst, _ch_quality, now_ts, _ch_torrent_name,
                              _pv_meta.get('indexer'), _pv_meta.get('protocol'),
                              _pv_meta.get('client'), _pv_meta.get('release_group'),
                              _pv_meta.get('size_bytes'),
-                             vol_id, queue['download_id'], chap_row['id'])
+                             vol_id, queue['download_id'], _ch_range_end, chap_row['id'])
                         )
                     else:
                         db.execute(
                             "INSERT INTO chapters(series_id, volume_id, chapter_num, status,"
                             " import_path, download_id, torrent_name, indexer, protocol, client,"
-                            " release_group, size_bytes, quality, imported_at)"
-                            " VALUES(?,?,?,'downloaded',?,?,?,?,?,?,?,?,?,?)",
+                            " release_group, size_bytes, quality, imported_at, chapter_range_end)"
+                            " VALUES(?,?,?,'downloaded',?,?,?,?,?,?,?,?,?,?,?)",
                             (queue['series_id'], vol_id, proposed_chap, dst,
                              queue['download_id'], _ch_torrent_name,
                              _pv_meta.get('indexer'), _pv_meta.get('protocol'),
                              _pv_meta.get('client'), _pv_meta.get('release_group'),
-                             _pv_meta.get('size_bytes'), _ch_quality, now_ts)
+                             _pv_meta.get('size_bytes'), _ch_quality, now_ts,
+                             _ch_range_end)
+                        )
+
+                    # If this row covers a chapter range, sweep up any
+                    # pre-existing placeholder rows for the inner chapters
+                    # (status='wanted', no import_path) — they're now covered
+                    # by this single file. Rows with their own import_path
+                    # are left alone (different physical files).
+                    if _ch_range_end is not None:
+                        db.execute(
+                            "DELETE FROM chapters WHERE series_id=?"
+                            "   AND chapter_num > ? AND chapter_num <= ?"
+                            "   AND status = 'wanted'"
+                            "   AND import_path IS NULL",
+                            (queue['series_id'], proposed_chap, _ch_range_end)
                         )
 
                     if vol_id is not None:
@@ -7564,12 +7686,39 @@ def _from_json(s):
     except Exception:
         return {}
 
+def _ch_label_filter(row) -> str:
+    """Jinja filter: render a chapter row's number, honoring chapter_range_end.
+
+    `row` is a dict-like (sqlite3.Row or dict) exposing chapter_num and,
+    optionally, chapter_range_end. Returns "1", "1.5", or "1-2".
+    """
+    if row is None:
+        return ""
+    try:
+        n = row["chapter_num"]
+    except (KeyError, IndexError, TypeError):
+        return ""
+    if n is None:
+        return ""
+    end = None
+    try:
+        end = row["chapter_range_end"]
+    except (KeyError, IndexError, TypeError):
+        end = None
+    n_disp = int(n) if n == int(n) else n
+    if end is not None and end > n:
+        e_disp = int(end) if end == int(end) else end
+        return f"{n_disp}-{e_disp}"
+    return f"{n_disp}"
+
+
 templates.env.filters['format_bytes']    = format_bytes
 templates.env.filters['format_protocol'] = format_protocol
 templates.env.filters['format_client']   = format_client
 templates.env.filters['vol_display']     = vol_num_to_display
 templates.env.filters['quality_rank']    = quality_rank
 templates.env.filters['from_json']       = _from_json
+templates.env.filters['ch_label']        = _ch_label_filter
 
 def _get_api_key_global() -> str:
     try:
