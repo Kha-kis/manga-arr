@@ -5,19 +5,31 @@ All notable changes to this project. Format roughly follows
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Changed
+
+- Documentation now reflects that **H4 plaintext-secrets hardening is
+  complete**. Operators are told how `MANGARR_SECRET_KEY` works, how
+  `/config/.mangarr-secret-key` is auto-generated, what must be backed
+  up for restore, how wrong-key failures surface, and how to recover by
+  re-entering credentials.
+
+### Notes
+
+- Key rotation is **not yet supported**. Changing the master key
+  without also re-encrypting stored secrets will make existing
+  encrypted credentials unreadable until they are re-entered.
 
 ## 2026-04-15 — Security audit hardening
 
-This release closes every Critical, High, and Medium finding from a
+This release closed every Critical, High, and Medium finding from a
 full external security audit performed on 2026-04-15. All 15 PRs
 below were landed on the same day. Changes in this section were
 additive or surgical; no public API / UI surface was broken.
 
-One High finding (**H4 — plaintext secrets in the SQLite DB**) is
-deferred to a future release; it needs a Fernet / master-key design
-plus a migration path for existing installs. Mitigation today is
-documented in the deployment security checklist.
+The one deferred audit item, **H4 — plaintext secrets in the SQLite
+DB**, has since been completed by the follow-up encryption-at-rest
+series. Current operator guidance for that work lives in
+`README.md`, `docs/deployment.md`, and `.env.example`.
 
 ### Added
 
@@ -40,6 +52,9 @@ documented in the deployment security checklist.
 - `.env.example` — tracked template (PR #15).
 - `README.md` and this `CHANGELOG.md` — stabilisation PR
   ([#16](https://github.com/Kha-kis/manga-arr/pull/16)).
+- Follow-up H4 encryption-at-rest operator guidance:
+  `MANGARR_SECRET_KEY`, `/config/.mangarr-secret-key`, backup/restore,
+  wrong-key recovery, and current key-rotation limits.
 - **172 tests** across 14 new test files under `tests/python/` —
   every hardening change has at least one regression test and most
   have source-level drift guards.
