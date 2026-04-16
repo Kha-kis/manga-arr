@@ -301,6 +301,108 @@ def test_dlclient_test_endpoint_decrypts_password(fresh_env):
     assert observed['data'].get("password") == "CANARY-DC-TEST"
 
 
+def test_indexer_test_form_endpoint_uses_plaintext_api_key(fresh_env):
+    import main
+    from fastapi.testclient import TestClient
+    client = TestClient(main.app)
+    client.get("/system/status", follow_redirects=False)
+
+    observed: dict = {}
+
+    class _MockResp:
+        status_code = 200
+        def json(self): return {"version": "1.2.3"}
+
+    class _MockAsyncClient:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return None
+        async def get(self, url, **kwargs):
+            observed["url"] = url
+            observed["headers"] = kwargs.get("headers") or {}
+            return _MockResp()
+
+    with patch("routers.indexers.httpx.AsyncClient", _MockAsyncClient):
+        r = client.post("/api/indexers/test-form", data={
+            "name": "unsaved-ix",
+            "type": "prowlarr",
+            "url": "http://192.168.1.50:9696",
+            "api_key": "FORM-PLAINTEXT-KEY",
+        })
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True
+    assert observed["headers"]["X-Api-Key"] == "FORM-PLAINTEXT-KEY"
+
+
+def test_dlclient_test_form_endpoint_uses_plaintext_password(fresh_env):
+    import main
+    from fastapi.testclient import TestClient
+    client = TestClient(main.app)
+    client.get("/system/status", follow_redirects=False)
+
+    observed: dict = {}
+
+    class _MockResp:
+        status_code = 200
+        text = "Ok."
+        def json(self): return {}
+
+    class _MockAsyncClient:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return None
+        async def post(self, url, **kwargs):
+            observed["url"] = url
+            observed["data"] = kwargs.get("data") or {}
+            return _MockResp()
+
+    with patch("routers.download_clients.httpx.AsyncClient", _MockAsyncClient):
+        r = client.post("/api/download-clients/test-form", data={
+            "name": "unsaved-qb",
+            "type": "qbittorrent",
+            "host": "http://qbit.lan",
+            "port": "8080",
+            "username": "u",
+            "password": "FORM-DC-PLAINTEXT",
+        })
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True
+    assert observed["data"]["password"] == "FORM-DC-PLAINTEXT"
+
+
+def test_nzbget_test_uses_normalized_rpc_url():
+    from routers.download_clients import _test_client
+    import asyncio
+
+    observed: dict = {}
+
+    class _MockResp:
+        def json(self): return {"result": "24.5"}
+
+    class _MockAsyncClient:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return None
+        async def post(self, url, **kwargs):
+            observed["url"] = url
+            return _MockResp()
+
+    async def _run():
+        with patch("routers.download_clients.httpx.AsyncClient", _MockAsyncClient):
+            return await _test_client({
+                "type": "nzbget",
+                "host": "http://nzbget.lan/base",
+                "port": 6789,
+                "username": "u",
+                "password": "p",
+                "use_ssl": 0,
+            })
+
+    ok, msg = asyncio.run(_run())
+    assert ok is True, msg
+    assert observed["url"] == "http://u:p@nzbget.lan:6789/base/jsonrpc"
+
+
 def test_get_client_for_protocol_returns_plaintext_password(fresh_env):
     """Covers every grab / queue handler path: qbit_grab, qbit_remove,
     sab_grab, sab_remove, nzbget_grab. All funnel through

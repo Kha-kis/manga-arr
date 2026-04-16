@@ -46,6 +46,20 @@ def _all_indexers(db):
     return db.execute("SELECT * FROM indexers ORDER BY priority, id").fetchall()
 
 
+def _friendly_indexer_error(exc: Exception) -> str:
+    msg = (str(exc) or type(exc).__name__).strip()
+    low = msg.lower()
+    if "name or service not known" in low or "could not resolve" in low or "nodename nor servname provided" in low:
+        return "Could not resolve the host. Check the hostname."
+    if "all connection attempts failed" in low:
+        return "Connection failed. Check the host, port, and URL."
+    if "connection refused" in low:
+        return "Connection refused. Check that the indexer is running and reachable."
+    if "timed out" in low or "timeout" in low:
+        return "Connection timed out. Check reachability and TLS settings."
+    return msg
+
+
 # ── List ──────────────────────────────────────────────────────────────────────
 @router.get("/indexers", response_class=HTMLResponse)
 async def indexers_page(request: Request, saved: str = ""):
@@ -174,6 +188,33 @@ async def test_indexer(indexer_id: int):
     return JSONResponse({"ok": ok, "message": msg})
 
 
+@router.post("/api/indexers/test-form")
+async def test_indexer_form(
+    name: str = Form("Unsaved indexer"),
+    type: str = Form("prowlarr"),
+    url: str = Form(""),
+    api_key: str = Form(""),
+    categories: str = Form("7000,7010,7020"),
+    settings: str = Form("{}"),
+    client_id: str = Form(""),
+    min_seeders: int = Form(0),
+    seed_ratio: float = Form(0.0),
+):
+    idx = {
+        "name": name.strip() or "Unsaved indexer",
+        "type": type,
+        "url": url.strip() or None,
+        "api_key": api_key.strip(),
+        "categories": categories,
+        "settings": settings or "{}",
+        "client_id": int(client_id) if client_id.strip().isdigit() else None,
+        "min_seeders": min_seeders,
+        "seed_ratio": seed_ratio,
+    }
+    ok, msg = await _test_indexer(idx)
+    return JSONResponse({"ok": ok, "message": msg})
+
+
 async def _test_indexer(idx: dict) -> tuple[bool, str]:
     t   = idx['type']
     url = (idx['url'] or '').rstrip('/')
@@ -204,7 +245,7 @@ async def _test_indexer(idx: dict) -> tuple[bool, str]:
 
         return False, f"Unsupported indexer type: {t}"
     except Exception as e:
-        return False, str(e)
+        return False, _friendly_indexer_error(e)
 
 
 # ── Fetch RSS from all enabled indexers ──────────────────────────────────────

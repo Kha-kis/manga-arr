@@ -2097,6 +2097,14 @@ document.body.addEventListener('showToast', function(evt) {
   showToast(evt.detail.msg || 'Done', evt.detail.type || 'success');
 });
 
+document.addEventListener('DOMContentLoaded', function() {
+  const flashMsg  = {{ request.query_params.get('flash_msg')|tojson if request else 'null' }};
+  const flashType = {{ request.query_params.get('flash_type')|tojson if request else 'null' }};
+  if (flashMsg) {
+    showToast(flashMsg, flashType || 'info');
+  }
+});
+
 // ── Plain form POST: auto-inject CSRF token ───────────────────────────────
 // Handles all regular <form method="post"> submissions so no template
 // changes are needed for existing forms. HTMX forms use the header above.

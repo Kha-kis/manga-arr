@@ -2,11 +2,12 @@
 import json
 import time
 import httpx
+from urllib.parse import quote, urlparse, urlunparse
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from routers._templates import templates
 
-from shared import get_db, from_json
+from shared import get_db, from_json, get_secret_health_summary
 from security import decrypt_secret_safe, encrypt_if_cipher_available
 
 
@@ -74,6 +75,43 @@ def client_base_url(c: dict) -> str:
             host = urlunparse(parsed).rstrip('/')
     return host
 
+
+def _friendly_client_error(exc: Exception) -> str:
+    msg = (str(exc) or type(exc).__name__).strip()
+    low = msg.lower()
+    if "name or service not known" in low or "could not resolve" in low or "nodename nor servname provided" in low:
+        return "Could not resolve the host. Check the hostname."
+    if "all connection attempts failed" in low:
+        return "Connection failed. Check the host, port, and scheme."
+    if "connection refused" in low:
+        return "Connection refused. Check that the service is running and reachable."
+    if "timed out" in low or "timeout" in low:
+        return "Connection timed out. Check reachability and TLS settings."
+    return msg
+
+
+def _nzbget_rpc_url(c: dict) -> str:
+    host = (c.get("host") or "").strip()
+    if not host:
+        return ""
+    scheme_default = "https" if c.get("use_ssl") else "http"
+    raw = host if "://" in host else f"{scheme_default}://{host}"
+    parsed = urlparse(raw)
+    hostname = parsed.hostname or parsed.path
+    if not hostname:
+        return raw
+    port = parsed.port or c.get("port") or 6789
+    netloc = hostname
+    if port:
+        netloc = f"{hostname}:{port}"
+    user = c.get("username") or ""
+    password = c.get("password") or ""
+    if user or password:
+        netloc = f"{quote(user, safe='')}:{quote(password, safe='')}@{netloc}"
+    path = (parsed.path or "").rstrip("/")
+    path = f"{path}/jsonrpc" if path else "/jsonrpc"
+    return urlunparse((parsed.scheme or scheme_default, netloc, path, "", "", ""))
+
 router = APIRouter()
 
 CLIENT_TYPES = ["qbittorrent", "sabnzbd", "nzbget", "deluge", "transmission", "rtorrent", "blackhole", "suwayomi"]
@@ -107,12 +145,14 @@ async def download_clients_page(request: Request):
             'failed_download_handling':      _opt('failed_download_handling'),
             'redownload_failed_interactive': _opt('redownload_failed_interactive'),
         }
+        secret_health = get_secret_health_summary(db)
     return templates.TemplateResponse(request, "download_clients.html", {
         "clients":      clients,
         "client_types": CLIENT_TYPES,
         "mappings":     mappings,
         "options":      options,
         "saved":        request.query_params.get("saved") == "1",
+        "secret_health": secret_health,
     })
 
 
@@ -308,6 +348,59 @@ async def test_download_client(client_id: int):
     return JSONResponse({"ok": ok, "message": msg})
 
 
+@router.post("/api/download-clients/test-form")
+async def test_download_client_form(
+    name: str = Form("Unsaved client"),
+    type: str = Form(...),
+    host: str = Form(""),
+    port: int = Form(0),
+    use_ssl: int = Form(0),
+    url_base: str = Form(""),
+    username: str = Form(""),
+    password: str = Form(""),
+    category: str = Form("manga"),
+    post_import_category: str = Form(""),
+    recent_priority: str = Form("last"),
+    older_priority: str = Form("last"),
+    initial_state: str = Form("normal"),
+    sequential_order: int = Form(0),
+    first_last_first: int = Form(0),
+    content_layout: str = Form("original"),
+    priority: int = Form(1),
+    enabled: int = Form(1),
+    remove_completed: int = Form(0),
+    remove_failed: int = Form(0),
+    download_path: str = Form(""),
+    merge_chapters: int = Form(0),
+):
+    client = {
+        "name": name.strip() or "Unsaved client",
+        "type": type,
+        "host": host.strip(),
+        "port": port or None,
+        "use_ssl": use_ssl,
+        "url_base": url_base.strip() or None,
+        "username": username.strip() or None,
+        "password": password,
+        "category": category.strip() or "manga",
+        "post_import_category": post_import_category.strip() or None,
+        "recent_priority": recent_priority,
+        "older_priority": older_priority,
+        "initial_state": initial_state,
+        "sequential_order": sequential_order,
+        "first_last_first": first_last_first,
+        "content_layout": content_layout,
+        "priority": priority,
+        "enabled": enabled,
+        "remove_completed": remove_completed,
+        "remove_failed": remove_failed,
+        "download_path": download_path.strip() or None,
+        "merge_chapters": merge_chapters,
+    }
+    ok, msg = await _test_client(client)
+    return JSONResponse({"ok": ok, "message": msg})
+
+
 async def _test_client(c: dict) -> tuple[bool, str]:
     t = c['type']
     host = client_base_url(c)
@@ -356,10 +449,7 @@ async def _test_client(c: dict) -> tuple[bool, str]:
             return False, f"HTTP {r.status_code}"
 
         elif t == 'nzbget':
-            user = c.get('username') or ''
-            pw   = c.get('password') or ''
-            port = c.get('port') or 6789
-            api_url = f"http://{user}:{pw}@{host}:{port}/jsonrpc"
+            api_url = _nzbget_rpc_url(c)
             async with httpx.AsyncClient(timeout=10) as cli:
                 r = await cli.post(api_url, json={"method": "version", "params": []})
             data = r.json()
@@ -393,7 +483,7 @@ async def _test_client(c: dict) -> tuple[bool, str]:
         else:
             return False, f"Unsupported client type: {t}"
     except Exception as e:
-        return False, str(e)
+        return False, _friendly_client_error(e)
 
 
 # ── Path mapping helper ───────────────────────────────────────────────────────

@@ -297,6 +297,34 @@ def test_wrong_key_treats_secret_as_unavailable_with_safe_log(
     assert canary not in joined
 
 
+def test_settings_general_page_shows_wrong_key_recovery_banner(fresh_env, monkeypatch):
+    import main, security
+    from cryptography.fernet import Fernet
+    from fastapi.testclient import TestClient
+
+    _seed_plaintext(fresh_env["db_path"], komga_pass="CANARY-banner")
+    main.migrate_encrypt_settings_secrets()
+    monkeypatch.setattr(security, "_SECRET_CIPHER", Fernet(Fernet.generate_key()))
+
+    client = TestClient(main.app)
+    r = client.get("/settings/general")
+    assert r.status_code == 200
+    assert "Encrypted credentials need recovery" in r.text
+    assert "re-enter the affected credentials" in r.text
+    assert "/config/.mangarr-secret-key" in r.text
+
+
+def test_settings_general_page_shows_first_run_backup_callout(fresh_env):
+    import main
+    from fastapi.testclient import TestClient
+
+    client = TestClient(main.app)
+    r = client.get("/settings/general")
+    assert r.status_code == 200
+    assert "First boot generated an API key" in r.text
+    assert "/config/.mangarr-secret-key" in r.text
+
+
 # ───────────────────── secret-leak guard across full lifecycle ─────────────────────
 
 def test_no_secret_logs_during_full_lifecycle(fresh_env, caplog):

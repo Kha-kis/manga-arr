@@ -78,6 +78,43 @@
     <script>setTimeout(()=>{const el=document.getElementById('saved-toast');if(el)el.style.display='none';},4000);</script>
     {% endif %}
 
+    {% if secret_health.has_warning %}
+    <div class="panel" style="border-color:rgba(220,53,69,.35)">
+      <div class="panel-body">
+        <div class="d-flex align-items-start gap-3">
+          <i class="bi bi-exclamation-triangle-fill" style="color:var(--ruby);font-size:1.1rem"></i>
+          <div>
+            <div class="fw-semibold mb-1">Encrypted credentials need recovery</div>
+            <div style="font-size:.85rem;color:var(--text-2)">
+              Mangarr cannot decrypt {{ secret_health.affected_count }} stored credential{% if secret_health.affected_count != 1 %}s{% endif %} with the active key.
+              Restore the matching {% if secret_key_source == 'environment' %}<code>MANGARR_SECRET_KEY</code>{% else %}<code>/config/.mangarr-secret-key</code>{% endif %}
+              or re-enter the affected credentials. Integrations fail closed until the key or credentials are fixed.
+            </div>
+            {% if secret_health.affected_items %}
+            <div class="mt-2" style="font-size:.78rem;color:var(--text-3)">
+              Affected examples: {{ secret_health.affected_items | join(', ') }}
+            </div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if first_run %}
+    <div class="panel">
+      <div class="panel-body">
+        <div class="d-flex align-items-start gap-3">
+          <i class="bi bi-info-circle-fill" style="color:var(--sky);font-size:1.1rem"></i>
+          <div style="font-size:.85rem;color:var(--text-2)">
+            First boot generated an API key and {% if secret_key_source == 'environment' %}expects <code>MANGARR_SECRET_KEY</code> from your deployment{% else %}created <code>/config/.mangarr-secret-key</code>{% endif %} for secret encryption.
+            Back up the database and the active key source together before configuring indexers, download clients, or notifications.
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
     <form method="POST" action="/settings/general" hx-post="/settings/general" hx-swap="none" data-track-changes>
 
     <!-- Host -->
@@ -90,6 +127,13 @@
             <input type="text" name="instance_name" class="form-control"
                    value="{{ cfg.instance_name or 'Mangarr' }}" placeholder="Mangarr">
             <div class="form-text">Displayed in the browser tab and nav bar.</div>
+          </div>
+          <div class="col-12">
+            <div class="form-text">
+              Credentials are encrypted at rest. Back up the database and the active key source together:
+              <code>/config/.mangarr-secret-key</code> for file-backed installs or
+              <code>MANGARR_SECRET_KEY</code> for env-backed installs.
+            </div>
           </div>
         </div>
       </div>
@@ -184,6 +228,12 @@
         </div>
         <div>
           <a href="/system/backup" class="text-ember text-sm"><i class="bi bi-box-arrow-up-right me-1"></i>Manage backups</a>
+        </div>
+        <div class="mt-3" style="font-size:.82rem;color:var(--text-2)">
+          A valid restore needs both the database and the active secret key source.
+          File-backed installs must preserve <code>/config/.mangarr-secret-key</code>.
+          Env-backed installs must preserve the deployment secret that provides <code>MANGARR_SECRET_KEY</code>.
+          If the key is missing or wrong, encrypted credentials stay unreadable until you restore the key or re-enter them.
         </div>
       </div>
     </div>

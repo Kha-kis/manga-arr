@@ -598,6 +598,58 @@ def test_create_form_apprise_encrypts_url_and_config_key(fresh_env):
     assert b["tags"] == "manga"
 
 
+def test_notifications_page_renders_plaintext_for_edit_not_ciphertext(fresh_env):
+    import main
+    cid = _seed(
+        fresh_env["db_path"],
+        name="page-disc",
+        type="discord",
+        settings={"webhook_url": "https://PAGE-CANARY.example/hook", "mention": "@here"},
+    )
+    main.migrate_encrypt_notification_connection_secrets()
+    stored = _blob(fresh_env["db_path"], cid)["webhook_url"]
+    assert stored.startswith("enc:v1:")
+
+    from fastapi.testclient import TestClient
+    client = TestClient(main.app)
+    r = client.get("/notifications")
+    assert r.status_code == 200
+    assert "https://PAGE-CANARY.example/hook" in r.text
+    assert stored not in r.text
+
+
+def test_notification_test_form_uses_plaintext_secret_fields(fresh_env):
+    import main
+    from fastapi.testclient import TestClient
+    client = TestClient(main.app)
+    client.get("/system/status", follow_redirects=False)
+
+    observed = {}
+
+    class _Resp:
+        status_code = 204
+        text = ""
+
+    class _AsyncCli:
+        def __init__(self, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return None
+        async def post(self, url, **kw):
+            observed["url"] = url
+            return _Resp()
+
+    with patch("routers.notification_connections.httpx.AsyncClient", _AsyncCli), \
+         patch("routers.notification_connections.validate_outbound_url", lambda *a, **kw: None):
+        r = client.post("/api/notifications/test-form", data={
+            "name": "unsaved-discord",
+            "type": "discord",
+            "settings": json.dumps({"webhook_url": "https://FORM-NOTIFY.example/hook"}),
+        })
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True
+    assert observed["url"] == "https://FORM-NOTIFY.example/hook"
+
+
 # ───────────────────── wrong-key: fanout continues ─────────────────────
 
 def test_wrong_key_disables_only_that_connection_in_fanout(fresh_env, monkeypatch):

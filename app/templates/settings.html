@@ -11,6 +11,43 @@
   {% endif %}
 </div>
 
+{% if secret_health.has_warning %}
+<div class="panel" style="border-color:rgba(220,53,69,.35)">
+  <div class="panel-body">
+    <div class="d-flex align-items-start gap-3">
+      <i class="bi bi-exclamation-triangle-fill" style="color:var(--ruby);font-size:1.1rem"></i>
+      <div>
+        <div class="fw-semibold mb-1">Encrypted credentials could not be unlocked</div>
+        <div style="font-size:.85rem;color:var(--text-2)">
+          Mangarr found {{ secret_health.affected_count }} encrypted credential{% if secret_health.affected_count != 1 %}s{% endif %} that do not match the active secret key.
+          Restore the matching {% if secret_key_source == 'environment' %}<code>MANGARR_SECRET_KEY</code>{% else %}<code>/config/.mangarr-secret-key</code>{% endif %}
+          or re-enter the affected credentials below.
+        </div>
+        {% if secret_health.affected_items %}
+        <div class="mt-2" style="font-size:.78rem;color:var(--text-3)">
+          Affected examples: {{ secret_health.affected_items | join(', ') }}
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if first_run %}
+<div class="panel">
+  <div class="panel-body">
+    <div class="d-flex align-items-start gap-3">
+      <i class="bi bi-info-circle-fill" style="color:var(--sky);font-size:1.1rem"></i>
+      <div style="font-size:.85rem;color:var(--text-2)">
+        First boot generated an API key and {% if secret_key_source == 'environment' %}expects <code>MANGARR_SECRET_KEY</code> from your deployment{% else %}created <code>/config/.mangarr-secret-key</code>{% endif %} for secret encryption.
+        Back up the database and the active key source together before adding integrations.
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <div class="row g-0" style="min-height:70vh">
 
   <!-- Sidebar -->

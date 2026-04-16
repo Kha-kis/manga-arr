@@ -2,13 +2,14 @@
 import json
 import logging
 import secrets
+import os
 
 import httpx
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from routers._templates import templates
-from shared import get_cfg, get_db, is_htmx
+from shared import get_cfg, get_db, get_secret_health_summary, is_htmx
 from security import (
     validate_outbound_url, UnsafeURLError,
     encrypt_if_cipher_available,
@@ -43,6 +44,13 @@ def _get_root_folders(db) -> list:
     ).fetchall()
 
 
+def _is_first_run(db) -> bool:
+    for table in ("series", "indexers", "download_clients", "notification_connections"):
+        if db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
+            return False
+    return True
+
+
 # ── Settings pages ────────────────────────────────────────────────────────────
 
 @router.get("/settings", response_class=HTMLResponse)
@@ -50,8 +58,15 @@ async def settings_page(request: Request, saved: str = ""):
     from shared import CONFIG
     with get_db() as db:
         root_folders = _get_root_folders(db)
+        secret_health = get_secret_health_summary(db)
+        first_run = _is_first_run(db)
     return templates.TemplateResponse(request, "settings.html", {
-        "cfg": CONFIG, "saved": saved, "root_folders": root_folders,
+        "cfg": CONFIG,
+        "saved": saved,
+        "root_folders": root_folders,
+        "secret_health": secret_health,
+        "secret_key_source": "environment" if os.getenv("MANGARR_SECRET_KEY") else "file",
+        "first_run": first_run,
     })
 
 
@@ -132,8 +147,14 @@ async def save_settings(
 async def settings_general_page(request: Request, saved: str = ""):
     with get_db() as db:
         cfg = {row['key']: row['value'] for row in db.execute("SELECT key, value FROM settings")}
+        secret_health = get_secret_health_summary(db)
+        first_run = _is_first_run(db)
     return templates.TemplateResponse(request, "settings_general.html", {
-        "cfg": cfg, "saved": saved,
+        "cfg": cfg,
+        "saved": saved,
+        "secret_health": secret_health,
+        "secret_key_source": "environment" if os.getenv("MANGARR_SECRET_KEY") else "file",
+        "first_run": first_run,
     })
 
 
