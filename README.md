@@ -29,7 +29,8 @@ loopback by default. For LAN or internet access, see
 - **[`docs/deployment.md`](docs/deployment.md)** — why the container
   binds `0.0.0.0`, how to publish it safely (local-only / LAN /
   reverse proxy), and a security checklist covering API-key,
-  CSRF cookie flags, `/config` permissions, and the `.env` template.
+  CSRF cookie flags, `/config` permissions, encrypted-secret key
+  backup/recovery, and the `.env` template.
 
 The default `docker-compose.yml` ships the safest pattern:
 `ports: ["127.0.0.1:6789:8000"]` — only the host machine can
@@ -40,8 +41,9 @@ or the internet.
 
 A full external security audit closed with **15 merged PRs** covering
 every Critical, High, and Medium finding from the original report.
-See [`CHANGELOG.md`](CHANGELOG.md) for per-PR detail. One-line
-summary of what each PR addressed:
+The deferred H4 plaintext-secrets item has since been closed by a
+follow-up encryption-at-rest sweep. See [`CHANGELOG.md`](CHANGELOG.md)
+for per-PR detail. One-line summary of what each PR addressed:
 
 | PR | Severity | Finding |
 |---:|---|---|
@@ -61,14 +63,25 @@ summary of what each PR addressed:
 | [#14](https://github.com/Kha-kis/manga-arr/pull/14) | **M7**         | Log (don't silently swallow) at four best-effort exception sites |
 | [#15](https://github.com/Kha-kis/manga-arr/pull/15) | **M8**         | Deployment + network-binding documentation |
 
-### One known remaining item
+### Follow-up hardening completed after the audit release
 
-- **H4 — plaintext secrets in the SQLite DB** (download-client
-  passwords, Komga credentials, Google Books API key, indexer API
-  keys). Needs a Fernet / master-key design plus a migration path
-  for existing installs. Explicitly deferred; tracked for a future
-  release. Mitigation today: keep `/config` permissions at `0700`
-  (noted in the deployment security checklist).
+- **H4 — secret encryption at rest** is now implemented for settings,
+  indexer API keys, download-client passwords, and encrypted secret
+  fields inside notification-connection settings JSON. Existing
+  plaintext rows are migrated in place when the secret cipher is
+  available at startup.
+- Master-key resolution order is:
+  `MANGARR_SECRET_KEY` environment variable, then
+  `/config/.mangarr-secret-key`, then auto-generation of that file on
+  first boot. The key file is created with mode `0600`.
+- Back up the SQLite database and `/config/.mangarr-secret-key`
+  together. Restoring one without the other leaves encrypted
+  credentials unreadable.
+- If Mangarr starts with the wrong key, encrypted credentials are
+  treated as unavailable and affected integrations fail closed until
+  you restore the correct key or re-enter the credentials in the UI.
+- Key rotation is not yet supported. To change keys safely, plan on
+  re-entering stored credentials after switching to the new key.
 
 ### Tests added by the hardening sweep
 

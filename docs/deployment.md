@@ -136,12 +136,10 @@ Before pointing anything at Mangarr beyond your local machine, verify:
       deliberately want LAN or internet access (and, for internet, you
       have a reverse proxy in front).
 - [ ] **The `/config` directory is not world-readable.** It contains
-      the SQLite database, which stores download-client credentials
-      (and, until future encryption work lands, stores them in
-      plaintext). The repo's `docker-compose.yml` maps it to
-      `~/.config/mangarr` on the host — check its permissions with
-      `ls -ld ~/.config/mangarr` (should be `drwx------`, i.e. mode
-      `0700`).
+      the SQLite database and the Mangarr secret-key file. The repo's
+      `docker-compose.yml` maps it to `~/.config/mangarr` on the host —
+      check its permissions with `ls -ld ~/.config/mangarr` (should be
+      `drwx------`, i.e. mode `0700`).
 - [ ] **The `.env` file is in `.gitignore`** and not committed. The
       repo's `.gitignore` already excludes it; `.env.example` is the
       checked-in template.
@@ -152,6 +150,73 @@ Before pointing anything at Mangarr beyond your local machine, verify:
       blocked because it means "the Mangarr container itself."
 - [ ] **A reverse proxy is fronting any internet-facing deployment.**
       See pattern 3 above.
+
+## Secret-key, backup, and recovery guidance
+
+Mangarr now encrypts stored secrets at rest. That includes secrets in
+the `settings` table, `indexers.api_key`, `download_clients.password`,
+and secret fields inside `notification_connections.settings`.
+
+### Master-key resolution order
+
+On startup, Mangarr resolves the encryption key in this order:
+
+1. `MANGARR_SECRET_KEY` environment variable.
+2. `/config/.mangarr-secret-key`.
+3. If neither exists, Mangarr auto-generates
+   `/config/.mangarr-secret-key` on first boot and logs a warning
+   telling you to back it up separately from the database.
+
+The key file is created with mode `0600`. Mangarr never logs the key
+value itself.
+
+### What to back up
+
+Back up these together:
+
+- `/config/manga.db`
+- `/config/.mangarr-secret-key`
+
+Do not assume one can recover the other. Restoring the database without
+the matching secret key leaves encrypted credentials unreadable.
+Restoring the key without the matching database is harmless, but it does
+not recover lost data.
+
+If you supply `MANGARR_SECRET_KEY` from your orchestrator instead of the
+file, that environment secret becomes part of the restore requirement.
+Use one source consistently.
+
+### Wrong-key behavior
+
+If Mangarr starts with the wrong key, or with encrypted rows but no
+usable key, it does not overwrite those rows. Instead, encrypted values
+that cannot be decrypted are treated as unavailable:
+
+- API-key-backed routes fail closed.
+- External integrations behave as if the credential is blank.
+- Warnings are logged naming the affected field, but not the secret.
+
+This is a recoverable state as long as you still have the original key.
+
+### Recovery
+
+Recovery options:
+
+1. Restore the correct `MANGARR_SECRET_KEY` or
+   `/config/.mangarr-secret-key` and restart Mangarr.
+2. If the original key is gone, re-enter the affected credentials in the
+   UI. Mangarr will store the newly entered values under the currently
+   active key.
+
+If the original key is lost, previously encrypted values are not
+recoverable from the database alone.
+
+### Key rotation
+
+Key rotation is not yet supported. There is no built-in workflow to
+re-encrypt all stored secrets under a new master key. If you must change
+keys today, plan on re-entering stored credentials after switching to
+the new key.
 
 ## TL;DR
 
