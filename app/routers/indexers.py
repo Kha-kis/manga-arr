@@ -5,7 +5,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from routers._templates import templates
 
-from shared import get_db, from_json, get_cfg
+from shared import get_db, from_json, get_cfg, get_secret_health_summary
 from security import (
     validate_outbound_url, UnsafeURLError,
     decrypt_secret_safe, encrypt_if_cipher_available,
@@ -68,12 +68,14 @@ async def indexers_page(request: Request, saved: str = ""):
         clients  = db.execute(
             "SELECT id, name FROM download_clients WHERE enabled=1 ORDER BY priority, id"
         ).fetchall()
+        secret_health = get_secret_health_summary(db)
     return templates.TemplateResponse(request, "indexers.html", {
         "indexers":         indexers,
         "indexer_types":    INDEXER_TYPES,
         "manga_categories": MANGA_CATEGORIES,
         "clients":          [dict(c) for c in clients],
         "saved":            saved,
+        "secret_health":    secret_health,
         "cfg":              {
             "rss_interval":      get_cfg("rss_interval",      "900"),
             "indexer_max_size":  get_cfg("indexer_max_size",  "0"),

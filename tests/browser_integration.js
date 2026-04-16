@@ -6,7 +6,7 @@
  */
 const { chromium } = require('playwright');
 
-const BASE = 'http://127.0.0.1:6789';
+const BASE = process.env.MANGARR_TEST_BASE || 'http://127.0.0.1:6789';
 const results = [];
 
 function ok(name)   { results.push({ name, pass: true  }); console.log('  [OK]   ' + name); }

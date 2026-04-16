@@ -12,7 +12,10 @@
 const { chromium } = require('playwright');
 const { execSync } = require('child_process');
 
-const BASE = 'http://127.0.0.1:6789';
+const BASE = process.env.MANGARR_TEST_BASE || 'http://127.0.0.1:6789';
+// Container that holds the DB the test mutates. Defaults to live `mangarr`
+// for backward compatibility; isolated runs set MANGARR_TEST_CONTAINER=mangarr-test.
+const CONTAINER = process.env.MANGARR_TEST_CONTAINER || 'mangarr';
 const results = [];
 
 function ok(name)   { results.push({ name, pass: true  }); console.log('  [OK]   ' + name); }
@@ -25,7 +28,7 @@ function fail(name, detail) {
 function dbQuery(sql) {
   const escaped = sql.replace(/"/g, '\\"').replace(/\$/g, '\\$');
   const out = execSync(
-    `docker exec mangarr python3 -c "import sqlite3, json; db = sqlite3.connect('/config/manga_arr.db'); db.row_factory = sqlite3.Row; rows = [dict(r) for r in db.execute(\\"${escaped}\\").fetchall()]; print(json.dumps(rows, default=str))"`,
+    `docker exec ${CONTAINER} python3 -c "import sqlite3, json; db = sqlite3.connect('/config/manga_arr.db'); db.row_factory = sqlite3.Row; rows = [dict(r) for r in db.execute(\\"${escaped}\\").fetchall()]; print(json.dumps(rows, default=str))"`,
     { encoding: 'utf-8' }
   );
   return JSON.parse(out);
@@ -51,7 +54,7 @@ async function run() {
     if (seriesTagBefore[0].n !== 0) fail('pre-check', 'tag already exists');
 
     // Use the web form at /tags or direct INSERT via docker exec
-    execSync(`docker exec mangarr python3 -c "import sqlite3; db=sqlite3.connect('/config/manga_arr.db'); db.execute('INSERT INTO series_tags(series_id, tag) VALUES(40, ?)', ('${TEST_TAG}',)); db.commit()"`);
+    execSync(`docker exec ${CONTAINER} python3 -c "import sqlite3; db=sqlite3.connect('/config/manga_arr.db'); db.execute('INSERT INTO series_tags(series_id, tag) VALUES(40, ?)', ('${TEST_TAG}',)); db.commit()"`);
     const created = dbQuery(`SELECT COUNT(*) AS n FROM series_tags WHERE tag='${TEST_TAG}'`);
     if (created[0].n === 1) ok(`Test tag "${TEST_TAG}" created in DB`);
     else fail('tag creation', `count=${created[0].n}`);
@@ -107,7 +110,7 @@ async function run() {
     fail('E3.1 tag delete flow', e.message);
     // Cleanup just in case
     try {
-      execSync(`docker exec mangarr python3 -c "import sqlite3; db=sqlite3.connect('/config/manga_arr.db'); db.execute(\\"DELETE FROM series_tags WHERE tag='${TEST_TAG}'\\"); db.commit()"`);
+      execSync(`docker exec ${CONTAINER} python3 -c "import sqlite3; db=sqlite3.connect('/config/manga_arr.db'); db.execute(\\"DELETE FROM series_tags WHERE tag='${TEST_TAG}'\\"); db.commit()"`);
     } catch (_) {}
   }
 
@@ -180,7 +183,7 @@ async function run() {
     else fail('update_strategy persist', `got "${a.update_strategy}"`);
 
     // REVERT to original state
-    execSync(`docker exec mangarr python3 -c "import sqlite3; db=sqlite3.connect('/config/manga_arr.db'); db.execute('UPDATE series SET search_pattern=?, omnibus_preference=?, update_strategy=? WHERE id=40', ('${origSearchPattern.replace(/'/g, "''")}', '${origOmnibus}', '${origStrategy}')); db.commit()"`);
+    execSync(`docker exec ${CONTAINER} python3 -c "import sqlite3; db=sqlite3.connect('/config/manga_arr.db'); db.execute('UPDATE series SET search_pattern=?, omnibus_preference=?, update_strategy=? WHERE id=40', ('${origSearchPattern.replace(/'/g, "''")}', '${origOmnibus}', '${origStrategy}')); db.commit()"`);
     const reverted = dbQuery(`SELECT search_pattern FROM series WHERE id=40`);
     if (reverted[0].search_pattern === origSearchPattern) ok('Reverted to original state');
     else fail('revert', `got "${reverted[0].search_pattern}"`);
@@ -231,7 +234,7 @@ async function run() {
   console.log('\n=== E3.4: Trigger manual download status check via API ===');
   // ════════════════════════════════════════════════════════════════════
   try {
-    const apiKey = execSync(`docker exec mangarr python3 -c "import sqlite3; db=sqlite3.connect('/config/manga_arr.db'); r=db.execute(\\"SELECT value FROM settings WHERE key='api_key'\\").fetchone(); print(r[0] if r else '')"`, { encoding: 'utf-8' }).trim();
+    const apiKey = execSync(`docker exec ${CONTAINER} python3 -c "import sqlite3; db=sqlite3.connect('/config/manga_arr.db'); r=db.execute(\\"SELECT value FROM settings WHERE key='api_key'\\").fetchone(); print(r[0] if r else '')"`, { encoding: 'utf-8' }).trim();
     if (!apiKey) fail('api_key', 'not set');
     else {
       const resp = await page.request.post(BASE + '/api/check-downloads', {
@@ -249,7 +252,7 @@ async function run() {
   console.log('\n=== E3.5: Trigger backlog search via API ===');
   // ════════════════════════════════════════════════════════════════════
   try {
-    const apiKey = execSync(`docker exec mangarr python3 -c "import sqlite3; db=sqlite3.connect('/config/manga_arr.db'); r=db.execute(\\"SELECT value FROM settings WHERE key='api_key'\\").fetchone(); print(r[0] if r else '')"`, { encoding: 'utf-8' }).trim();
+    const apiKey = execSync(`docker exec ${CONTAINER} python3 -c "import sqlite3; db=sqlite3.connect('/config/manga_arr.db'); r=db.execute(\\"SELECT value FROM settings WHERE key='api_key'\\").fetchone(); print(r[0] if r else '')"`, { encoding: 'utf-8' }).trim();
     const resp = await page.request.post(BASE + '/api/backlog-search', {
       headers: { 'X-Api-Key': apiKey },
     });
@@ -264,7 +267,7 @@ async function run() {
   console.log('\n=== E3.6: Test download client via API ===');
   // ════════════════════════════════════════════════════════════════════
   try {
-    const apiKey = execSync(`docker exec mangarr python3 -c "import sqlite3; db=sqlite3.connect('/config/manga_arr.db'); r=db.execute(\\"SELECT value FROM settings WHERE key='api_key'\\").fetchone(); print(r[0] if r else '')"`, { encoding: 'utf-8' }).trim();
+    const apiKey = execSync(`docker exec ${CONTAINER} python3 -c "import sqlite3; db=sqlite3.connect('/config/manga_arr.db'); r=db.execute(\\"SELECT value FROM settings WHERE key='api_key'\\").fetchone(); print(r[0] if r else '')"`, { encoding: 'utf-8' }).trim();
     const resp = await page.request.post(BASE + '/api/download-clients/1/test', {
       headers: { 'X-Api-Key': apiKey },
     });
@@ -334,7 +337,7 @@ async function run() {
     else fail('leftover tags', `${tagLeftover[0].n} test tags still in DB`);
 
     // Run the DB state verification one more time
-    execSync(`docker exec mangarr python3 /app/verify_e2e.py > /tmp/verify_final.out 2>&1`);
+    execSync(`docker exec ${CONTAINER} python3 /app/verify_e2e.py > /tmp/verify_final.out 2>&1`);
     ok('verify_e2e.py still passes after E2E mutations');
   } catch (e) {
     fail('E3.8 data integrity', e.message);

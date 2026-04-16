@@ -9,6 +9,8 @@ __pycache__/
 /config/
 /covers/
 /backups/
+/.test-config/
+.codex
 .claude/
 node_modules/
 .DS_Store
