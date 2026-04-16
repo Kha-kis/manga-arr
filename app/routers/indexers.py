@@ -6,9 +6,28 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from routers._templates import templates
 
 from shared import get_db, from_json, get_cfg
-from security import validate_outbound_url, UnsafeURLError
+from security import (
+    validate_outbound_url, UnsafeURLError,
+    decrypt_secret_safe, encrypt_if_cipher_available,
+)
 
 router = APIRouter()
+
+
+def _row_decrypted(row) -> dict:
+    """Row → dict with indexers.api_key decrypted (or '' if undecryptable).
+
+    Plaintext values pass through. enc:v1: values are decrypted. Wrong-key
+    / corrupt values log a WARNING naming the indexer and become empty
+    string (the downstream integration sees "no key" and fails cleanly).
+    """
+    d = dict(row)
+    d['api_key'] = decrypt_secret_safe(
+        d.get('api_key'),
+        field_name='indexers.api_key',
+        context=d.get('name') or '?',
+    )
+    return d
 
 INDEXER_TYPES = ["prowlarr", "torznab", "newznab"]
 
@@ -86,12 +105,13 @@ async def create_indexer(
 ):
     cats = json.dumps([int(c.strip()) for c in categories.split(',') if c.strip().isdigit()])
     cid  = int(client_id) if client_id.strip().isdigit() else None
+    stored_key = encrypt_if_cipher_available(api_key.strip()) if api_key.strip() else None
     with get_db() as db:
         db.execute(
             "INSERT INTO indexers(name,type,url,api_key,priority,enabled,categories,settings,"
             " client_id,min_seeders,seed_ratio)"
             " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-            (name.strip(), type, url.strip() or None, api_key.strip() or None,
+            (name.strip(), type, url.strip() or None, stored_key,
              priority, enabled, cats, settings or '{}', cid, min_seeders, seed_ratio)
         )
     return RedirectResponse("/indexers", status_code=303)
@@ -125,10 +145,11 @@ async def edit_indexer(
                  cid, min_seeders, seed_ratio, indexer_id)
             )
         else:
+            stored_key = encrypt_if_cipher_available(api_key.strip()) if api_key.strip() else None
             db.execute(
                 "UPDATE indexers SET name=?,type=?,url=?,api_key=?,priority=?,enabled=?,"
                 " categories=?,settings=?,client_id=?,min_seeders=?,seed_ratio=? WHERE id=?",
-                (name.strip(), type, url.strip() or None, api_key.strip() or None,
+                (name.strip(), type, url.strip() or None, stored_key,
                  priority, enabled, cats, settings or '{}', cid, min_seeders, seed_ratio, indexer_id)
             )
     return RedirectResponse("/indexers", status_code=303)
@@ -149,7 +170,7 @@ async def test_indexer(indexer_id: int):
         idx = db.execute("SELECT * FROM indexers WHERE id=?", (indexer_id,)).fetchone()
     if not idx:
         return JSONResponse({"ok": False, "message": "Indexer not found"})
-    ok, msg = await _test_indexer(dict(idx))
+    ok, msg = await _test_indexer(_row_decrypted(idx))
     return JSONResponse({"ok": ok, "message": msg})
 
 
@@ -203,7 +224,7 @@ async def fetch_all_rss(db) -> list[dict]:
     max_size_bytes = max_size_mb * 1024 * 1024 if max_size_mb > 0 else 0
 
     import asyncio
-    idx_list = [dict(idx) for idx in indexers]
+    idx_list = [_row_decrypted(idx) for idx in indexers]
     results  = await asyncio.gather(*[_fetch_rss_for_indexer(idx) for idx in idx_list])
 
     seen: set[str] = set()
@@ -373,7 +394,7 @@ async def search_all_indexers(db, query: str) -> list[dict]:
     max_size_bytes = max_size_mb * 1024 * 1024 if max_size_mb > 0 else 0
 
     import asyncio
-    idx_list = [dict(idx) for idx in indexers]
+    idx_list = [_row_decrypted(idx) for idx in indexers]
     results  = await asyncio.gather(*[_search_indexer(idx, query) for idx in idx_list])
 
     seen: set[str] = set()

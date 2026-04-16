@@ -61,7 +61,10 @@ def get_suwayomi_client(db) -> dict | None:
         "SELECT * FROM download_clients WHERE type='suwayomi' AND enabled=1"
         " ORDER BY priority, id LIMIT 1"
     ).fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+    from routers.download_clients import _row_decrypted
+    return _row_decrypted(row)
 
 
 # ── Source classification ─────────────────────────────────────────────────────
