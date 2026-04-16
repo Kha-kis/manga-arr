@@ -683,7 +683,7 @@
             <td colspan="7" style="padding:8px 14px 10px 42px; background:rgba(8,8,16,0.4)">
               <div style="display:flex; flex-wrap:wrap; gap:4px">
                 {% for ch in unlinked_chapters %}
-                {% set ch_num = ch['chapter_num']|int if ch['chapter_num'] == ch['chapter_num']|int else ch['chapter_num'] %}
+                {% set ch_num = ch | ch_label %}
                 {% if ch['status'] == 'downloaded' %}
                 {% set _uch_tip %}Ch {{ ch_num }}{% if ch['title'] %} · {{ ch['title'] }}{% endif %}{% if ch['quality'] %} · {{ ch['quality']|upper }}{% endif %}{% if ch['size_bytes'] %} · {{ ch['size_bytes']|format_bytes }}{% endif %}{% if ch['import_path'] %} · {{ ch['import_path'].split('/')[-1] }}{% endif %}{% endset %}
                 <div class="ch-pill dl {% if not ch['monitored'] %}opacity-50{% endif %}" title="{{ _uch_tip }}">{{ ch_num }}</div>
