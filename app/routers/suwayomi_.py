@@ -862,8 +862,10 @@ async def check_suwayomi_jobs():
                     ch_num = float(job["chapter_num"])
                     ch_label = f"Ch {int(ch_num)}" if ch_num == int(ch_num) else f"Ch {ch_num}"
                     with get_db() as db:
-                        s_title = (db.execute("SELECT title FROM series WHERE id=?",
-                                             (job["series_id"],)).fetchone() or {}).get("title", "")
+                        # get_db() uses sqlite3.Row; Row has no .get() — use indexing.
+                        s_row = db.execute("SELECT title FROM series WHERE id=?",
+                                           (job["series_id"],)).fetchone()
+                        s_title = s_row["title"] if s_row else ""
                         _m.add_history(db, 'imported', job["series_id"], s_title, ch_label,
                                        source_title=os.path.basename(import_path) if import_path else '',
                                        client='suwayomi', protocol='ddl',
@@ -911,8 +913,10 @@ async def check_suwayomi_jobs():
                     )
                     vol_label = _m.build_volume_label(job["volume_num"], None, None)
                     with get_db() as db:
-                        s_title = (db.execute("SELECT title FROM series WHERE id=?",
-                                             (job["series_id"],)).fetchone() or {}).get("title", "")
+                        # get_db() uses sqlite3.Row; Row has no .get() — use indexing.
+                        s_row = db.execute("SELECT title FROM series WHERE id=?",
+                                           (job["series_id"],)).fetchone()
+                        s_title = s_row["title"] if s_row else ""
                         _m.add_history(db, 'imported', job["series_id"], s_title, vol_label,
                                        source_title=os.path.basename(import_path) if import_path else '',
                                        client='suwayomi', protocol='ddl',
