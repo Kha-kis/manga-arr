@@ -480,6 +480,30 @@ def test_create_form_encrypts_discord_webhook(fresh_env):
     assert blob["mention"] == "@here"
 
 
+def test_create_form_accepts_structured_fields_without_json(fresh_env):
+    import main
+    from fastapi.testclient import TestClient
+    client = TestClient(main.app)
+    client.get("/system/status", follow_redirects=False)
+    token = client.cookies.get("csrftoken")
+    r = client.post("/notifications", data={
+        "csrf_token": token,
+        "name": "structured-disc",
+        "type": "discord",
+        "enabled": "1",
+        "settings_mode": "structured",
+        "webhook_url": "https://STRUCTURED-CANARY-disc",
+        "on_grab": "1",
+    }, follow_redirects=False)
+    assert r.status_code == 303, r.text
+    with sqlite3.connect(fresh_env["db_path"]) as c:
+        row = c.execute(
+            "SELECT settings FROM notification_connections WHERE name='structured-disc'"
+        ).fetchone()
+    blob = json.loads(row[0])
+    assert blob["webhook_url"].startswith("enc:v1:")
+
+
 def test_edit_form_encrypts_new_telegram_bot_token(fresh_env):
     import main
     cid = _seed(fresh_env["db_path"], name="tg-edit", type="telegram",
@@ -505,6 +529,35 @@ def test_edit_form_encrypts_new_telegram_bot_token(fresh_env):
     assert new_blob["bot_token"].startswith("enc:v1:")
     assert new_blob["bot_token"] != old_blob["bot_token"]
     assert new_blob["chat_id"] == "999"
+
+
+def test_edit_structured_form_preserves_unknown_keys_for_same_type(fresh_env):
+    import main
+    cid = _seed(
+        fresh_env["db_path"],
+        name="discord-extra",
+        type="discord",
+        settings={"webhook_url": "https://OLD.example/hook", "custom_label": "keep-me"},
+    )
+    main.migrate_encrypt_notification_connection_secrets()
+    from fastapi.testclient import TestClient
+    client = TestClient(main.app)
+    client.get("/system/status", follow_redirects=False)
+    token = client.cookies.get("csrftoken")
+    r = client.post(f"/notifications/{cid}", data={
+        "csrf_token": token,
+        "name": "discord-extra",
+        "type": "discord",
+        "enabled": "1",
+        "settings_mode": "structured",
+        "original_type": "discord",
+        "settings_base": json.dumps({"webhook_url": "https://OLD.example/hook", "custom_label": "keep-me"}),
+        "webhook_url": "https://NEW.example/hook",
+    }, follow_redirects=False)
+    assert r.status_code == 303, r.text
+    blob = _blob(fresh_env["db_path"], cid)
+    assert blob["webhook_url"].startswith("enc:v1:")
+    assert blob["custom_label"] == "keep-me"
 
 
 def test_edit_form_passes_through_existing_encrypted_value(fresh_env):
@@ -648,6 +701,39 @@ def test_notification_test_form_uses_plaintext_secret_fields(fresh_env):
     assert r.status_code == 200, r.text
     assert r.json()["ok"] is True
     assert observed["url"] == "https://FORM-NOTIFY.example/hook"
+
+
+def test_notification_test_form_accepts_structured_fields(fresh_env):
+    import main
+    from fastapi.testclient import TestClient
+    client = TestClient(main.app)
+    client.get("/system/status", follow_redirects=False)
+
+    observed = {}
+
+    class _Resp:
+        status_code = 204
+        text = ""
+
+    class _AsyncCli:
+        def __init__(self, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return None
+        async def post(self, url, **kw):
+            observed["url"] = url
+            return _Resp()
+
+    with patch("routers.notification_connections.httpx.AsyncClient", _AsyncCli), \
+         patch("routers.notification_connections.validate_outbound_url", lambda *a, **kw: None):
+        r = client.post("/api/notifications/test-form", data={
+            "name": "structured-discord",
+            "type": "discord",
+            "settings_mode": "structured",
+            "webhook_url": "https://STRUCTURED-NOTIFY.example/hook",
+        })
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True
+    assert observed["url"] == "https://STRUCTURED-NOTIFY.example/hook"
 
 
 # ───────────────────── wrong-key: fanout continues ─────────────────────
