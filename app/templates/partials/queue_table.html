@@ -188,40 +188,106 @@
         </div>
         <button type="button" class="btn-close ms-3" data-bs-dismiss="modal"></button>
       </div>
+      {#
+        Review form (Stage 2 of the mapping audit).
+
+        Each row exposes every shape the Stage 1 parser can produce:
+          - single volume   (Vol, optionally 3a / 3.5 / 3½)
+          - volume range    (Vol + Vol End)
+          - single chapter  (Ch)
+          - chapter range   (Ch + Ch End)
+          - complete pack, special release, skip
+
+        Name conventions consumed by routers/import_.py:
+          vol_{id}, vol_end_{id}     — volume (start) and range end
+          chap_{id}, chap_end_{id}   — chapter (start) and range end
+          pack_{id}                  — pack type override
+          spec_{id}                  — is_special checkbox
+          skip_{id}                  — skip this file
+
+        Volume inputs use type="text" (not number) so letter/fraction
+        suffixes like "3a" or "3½" round-trip without truncation —
+        fixes audit D11. `pattern` validates the allowed shapes.
+      #}
       <form method="POST" action="/import/{{ row.queue_id }}/process">
         <div class="modal-body p-0">
           <table class="table table-sm mb-0">
             <thead>
               <tr>
                 <th>Filename</th>
-                <th style="width:110px">Volume</th>
-                <th style="width:90px">Chapter</th>
-                <th style="width:60px">Skip</th>
+                <th style="width:80px" title="Volume (accepts 3, 3.5, 3a, 3½)">Vol</th>
+                <th style="width:80px" title="Volume-range end (for packs covering v1-v3 in one file)">Vol End</th>
+                <th style="width:70px" title="Chapter number, decimals OK">Ch</th>
+                <th style="width:70px" title="Chapter-range end (for c001-002 style packs)">Ch End</th>
+                <th style="width:110px" title="Pack type">Pack</th>
+                <th style="width:50px" title="Mark as side-story / oneshot / extra">Spec</th>
+                <th style="width:50px">Skip</th>
               </tr>
             </thead>
             <tbody>
               {% for f in row.files %}
-              {% set is_chapter = f['file_type'] == 'chapter' if 'file_type' in f.keys() else false %}
-              {% set unmapped = not f['proposed_volume'] and not f['proposed_chapter'] %}
+              {% set keys = f.keys() %}
+              {% set is_chapter = f['file_type'] == 'chapter' if 'file_type' in keys else false %}
+              {% set vol_start  = f['proposed_volume'] %}
+              {% set vol_rs     = f['proposed_volume_range_start'] if 'proposed_volume_range_start' in keys else None %}
+              {% set vol_re     = f['proposed_volume_range_end']   if 'proposed_volume_range_end'   in keys else None %}
+              {% set chap_start = f['proposed_chapter'] %}
+              {% set chap_re    = f['proposed_chapter_range_end']  if 'proposed_chapter_range_end'  in keys else None %}
+              {% set pack_type  = f['proposed_pack_type']          if 'proposed_pack_type'          in keys else None %}
+              {% set is_special = f['proposed_is_special']         if 'proposed_is_special'         in keys else 0 %}
+              {# Volume cell prefers the range start when a range is set — that's the operator's anchor #}
+              {% set vol_input_val = vol_rs if vol_rs is not none else vol_start %}
+              {% set unmapped = not vol_start and not chap_start and not vol_rs and not chap_re %}
               <tr id="mr_{{ f['id'] }}" {% if unmapped %}style="background:rgba(240,80,80,0.06)"{% endif %}>
                 <td style="font-size:0.82rem; font-family:var(--font-mono); word-break:break-all">
                   {{ f['filename'] }}
                   {% if is_chapter %}<span class="badge-status badge-sky ms-1" style="font-size:0.6rem">chapter</span>{% endif %}
+                  {% if is_special %}<span class="badge-status badge-ember ms-1" style="font-size:0.6rem">special</span>{% endif %}
                   {% if unmapped %}<span class="badge-status badge-wanted ms-1">unmapped</span>{% endif %}
                 </td>
                 <td>
-                  <input type="number" name="vol_{{ f['id'] }}" class="form-control form-control-sm"
-                         value="{{ f['proposed_volume']|int if f['proposed_volume'] else '' }}"
-                         placeholder="?" step="1" min="1" style="width:90px; font-size:0.8rem">
+                  <input type="text" name="vol_{{ f['id'] }}" class="form-control form-control-sm"
+                         value="{{ vol_input_val|vol_display if vol_input_val is not none else '' }}"
+                         placeholder="?" pattern="[0-9]+([.][0-9]+)?[a-d½¼¾]?"
+                         title="e.g. 3, 3.5, 3a, 3½"
+                         style="width:75px; font-size:0.8rem">
                 </td>
                 <td>
-                  {% if is_chapter %}
+                  <input type="text" name="vol_end_{{ f['id'] }}" class="form-control form-control-sm"
+                         value="{{ vol_re|vol_display if vol_re is not none else '' }}"
+                         placeholder="—" pattern="[0-9]+([.][0-9]+)?[a-d½¼¾]?"
+                         title="Leave blank for single volume"
+                         style="width:75px; font-size:0.8rem">
+                </td>
+                <td>
                   <input type="number" name="chap_{{ f['id'] }}" class="form-control form-control-sm"
-                         value="{{ f['proposed_chapter'] if f['proposed_chapter'] else '' }}"
-                         placeholder="?" step="0.1" min="0" style="width:80px; font-size:0.8rem">
-                  {% endif %}
+                         value="{{ chap_start if chap_start is not none else '' }}"
+                         placeholder="?" step="any" min="0" style="width:65px; font-size:0.8rem">
                 </td>
                 <td>
+                  <input type="number" name="chap_end_{{ f['id'] }}" class="form-control form-control-sm"
+                         value="{{ chap_re if chap_re is not none else '' }}"
+                         placeholder="—" step="any" min="0"
+                         title="Leave blank for single chapter"
+                         style="width:65px; font-size:0.8rem">
+                </td>
+                <td>
+                  <select name="pack_{{ f['id'] }}" class="form-select form-select-sm"
+                          style="width:105px; font-size:0.75rem">
+                    <option value=""              {% if not pack_type %}selected{% endif %}>auto</option>
+                    <option value="volume"        {% if pack_type == 'volume' %}selected{% endif %}>volume</option>
+                    <option value="volume_range"  {% if pack_type == 'volume_range' %}selected{% endif %}>vol range</option>
+                    <option value="chapter"       {% if pack_type == 'chapter' %}selected{% endif %}>chapter</option>
+                    <option value="chapter_range" {% if pack_type == 'chapter_range' %}selected{% endif %}>ch range</option>
+                    <option value="complete"      {% if pack_type == 'complete' %}selected{% endif %}>complete</option>
+                    <option value="special"       {% if pack_type == 'special' %}selected{% endif %}>special</option>
+                  </select>
+                </td>
+                <td class="text-center">
+                  <input class="form-check-input" type="checkbox" name="spec_{{ f['id'] }}" value="1"
+                         id="msp_{{ f['id'] }}" {% if is_special %}checked{% endif %}>
+                </td>
+                <td class="text-center">
                   <input class="form-check-input" type="checkbox" name="skip_{{ f['id'] }}" value="1"
                          id="ms_{{ f['id'] }}" onchange="dimRow('mr_{{ f['id'] }}', this.checked)">
                 </td>

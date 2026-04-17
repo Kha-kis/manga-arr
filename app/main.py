@@ -664,6 +664,21 @@ def init_db():
         add_col('volumes', 'quality',         'TEXT')                   # cbz|cbr|epub|mobi|pdf
         add_col('import_queue_files', 'proposed_chapter', 'REAL')
         add_col('import_queue_files', 'file_type',        'TEXT DEFAULT "volume"')
+        # Stage 2 of the mapping audit: explicit range / pack-type /
+        # special-release fields the review UI can now set. All nullable
+        # so existing queue rows keep importing through the fallback
+        # paths in _execute_import. See tests/python/test_import_mapping.py
+        # for the contract these columns carry.
+        add_col('import_queue_files', 'proposed_volume_range_start',  'REAL')
+        add_col('import_queue_files', 'proposed_volume_range_end',    'REAL')
+        add_col('import_queue_files', 'proposed_chapter_range_end',   'REAL')
+        add_col('import_queue_files', 'proposed_pack_type',           'TEXT')
+        add_col('import_queue_files', 'proposed_is_special',          'INTEGER DEFAULT 0')
+        # Side-story / oneshot persistence on the final volumes row.
+        # Stage 2 only stores this flag; Stage 3 adds the coverage
+        # exclusion that makes it load-bearing. Non-null default so
+        # existing WHERE is_special=0 filters work without a NULL check.
+        add_col('volumes',            'is_special',                   'INTEGER DEFAULT 0')
         add_col('history',            'torrent_url',      'TEXT')
         add_col('volumes',            'imported_at',      'TEXT')
         add_col('volumes',            'edition_type',     'TEXT')   # standard|deluxe|omnibus|special|collector|digital
@@ -3719,10 +3734,22 @@ def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
         return None, False
 
     s = db.execute(
-        "SELECT title, root_folder_id, chapter_vol_map FROM series WHERE id=?", (series_id,)
+        "SELECT title, root_folder_id, chapter_vol_map, total_volumes FROM series WHERE id=?", (series_id,)
     ).fetchone()
     if not s:
         return None, False
+    _total_vols = s['total_volumes'] if 'total_volumes' in s.keys() else None
+
+    # ── Release-level parser signals (Stage 2) ───────────────────────────────
+    # Computed once per release so each file-level decision can reference
+    # them without re-parsing torrent_name every iteration. These feed
+    # the new import_queue_files columns (proposed_pack_type,
+    # proposed_is_special) so the review UI and _execute_import can see
+    # the shape the parser inferred.
+    _rel_vol_range  = extract_volume_range(torrent_name or '')
+    _rel_chap_range = extract_chapter_range(torrent_name or '')
+    _rel_is_special = is_special_release(torrent_name or '')
+    _rel_pack_type  = detect_pack_type(torrent_name or '', _rel_vol_range, _total_vols)
 
     # Check early: if this download is already fully imported, skip silently and
     # clean up any stale partial queue entry so it stops showing in the UI.
@@ -3811,8 +3838,24 @@ def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
             log_event('import', f"Skipped foreign-language file: {fname}", series_id, db=db)
             continue
 
-        proposed_vol  = extract_volume_num(fname)
-        proposed_chap = extract_chapter_num(fname)
+        proposed_vol        = extract_volume_num(fname)
+        proposed_chap       = extract_chapter_num(fname)
+        # Per-file range detection. Stage 1 made these mutually exclusive
+        # with the single-value parsers, so vol_range ∧ vol_num and
+        # chap_range ∧ chap_num can't both be set for the same file.
+        file_vol_range      = extract_volume_range(fname)
+        file_chap_range     = extract_chapter_range(fname)
+        proposed_vol_rs: float | None = None
+        proposed_vol_re: float | None = None
+        proposed_chap_re: float | None = None
+        if file_vol_range is not None:
+            proposed_vol_rs, proposed_vol_re = file_vol_range
+            proposed_vol  = None  # range owns this file
+        if file_chap_range is not None:
+            proposed_chap, proposed_chap_re = file_chap_range
+        # Special / side-story marker: release-level override wins, but a
+        # per-file marker (e.g. an extras subfolder) also flips the flag.
+        proposed_is_special = int(_rel_is_special or is_special_release(fname))
 
         # ComicInfo.xml overrides filename-based detection for cbz/zip/cbr
         ext_lower = os.path.splitext(fname)[1].lower()
@@ -3824,8 +3867,11 @@ def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
                     log_event('import',
                         f"ComicInfo.xml: vol {proposed_vol} → {ci_vol} for {fname}",
                         series_id, db=db)
-                    proposed_vol  = ci_vol
-                    proposed_chap = None   # <Volume> tag wins — treat as volume file
+                    proposed_vol     = ci_vol
+                    proposed_chap    = None   # <Volume> tag wins — treat as volume file
+                    proposed_vol_rs  = None   # and clear any filename range detection
+                    proposed_vol_re  = None
+                    proposed_chap_re = None
             elif ci.get('number') is not None and proposed_chap is None:
                 # <Number> without <Volume> typically means a chapter number
                 proposed_chap = ci['number']
@@ -3851,8 +3897,11 @@ def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
                                     log_event('import',
                                         f"ComicInfo.xml (CBR): vol {proposed_vol} → {ci_vol} for {fname}",
                                         series_id, db=db)
-                                proposed_vol  = ci_vol
-                                proposed_chap = None
+                                proposed_vol     = ci_vol
+                                proposed_chap    = None
+                                proposed_vol_rs  = None
+                                proposed_vol_re  = None
+                                proposed_chap_re = None
                         elif _raw_num and proposed_chap is None:
                             ci_num = _parse_vol_suffix(_raw_num)
                             if ci_num is not None:
@@ -3862,33 +3911,70 @@ def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
             except Exception:
                 pass
 
-        # Classify: a chapter file has a chapter num but no volume num
-        if proposed_chap is not None and proposed_vol is None:
+        # Classify: chapter file has a chapter num or chapter range,
+        # volume file has a volume num or volume range. Ranges are the
+        # stronger signal — they can only be inferred from an explicit
+        # v#-v# / c#-c# pattern.
+        has_chap_signal = proposed_chap is not None or proposed_chap_re is not None
+        has_vol_signal  = proposed_vol  is not None or proposed_vol_re  is not None
+
+        if has_chap_signal and not has_vol_signal:
             file_type = 'chapter'
-            # Resolve parent volume from chapter→volume map if available
-            chap_key = str(int(proposed_chap)) if proposed_chap == int(proposed_chap) else str(proposed_chap)
-            if chap_key in cvm:
-                proposed_vol = float(cvm[chap_key])
+            # Resolve parent volume from chapter→volume map if available.
+            # For chapter ranges, key off the start chapter.
+            _key_src = proposed_chap if proposed_chap is not None else proposed_chap_re
+            if _key_src is not None:
+                chap_key = str(int(_key_src)) if _key_src == int(_key_src) else str(_key_src)
+                if chap_key in cvm:
+                    proposed_vol = float(cvm[chap_key])
         else:
             file_type = 'volume'
-            proposed_chap = None  # discard spurious chapter detection for volume files
+            # Discard spurious chapter detection for volume files.
+            proposed_chap    = None
+            proposed_chap_re = None
 
         # If filename has no volume number but we know it from the grab, use it (volume files only)
-        if proposed_vol is None and volume_num is not None and file_type == 'volume':
+        if (proposed_vol is None and proposed_vol_rs is None
+                and volume_num is not None and file_type == 'volume'):
             proposed_vol = volume_num
 
         dst_fname = build_filename(s['title'], proposed_vol, fname)
         dst_path  = os.path.join(dst_dir, dst_fname)
 
-        if proposed_vol is None and proposed_chap is None and not _is_chapter_grab:
+        # Per-file pack type. 'complete' at the release level always wins
+        # (a file in a complete pack is part of that pack; the operator
+        # can override in review if they disagree). Otherwise refine to
+        # 'chapter_range' / 'volume_range' when this file carries range
+        # info, else fall back to the release-level verdict. None means
+        # "no explicit verdict, let _execute_import use legacy behaviour".
+        if _rel_pack_type == 'complete':
+            proposed_pack_type: str | None = 'complete'
+        elif proposed_chap_re is not None:
+            proposed_pack_type = 'chapter_range'
+        elif proposed_vol_re is not None:
+            proposed_pack_type = 'volume_range'
+        elif _rel_pack_type in ('chapter', 'volume'):
+            proposed_pack_type = _rel_pack_type
+        else:
+            proposed_pack_type = None
+
+        if proposed_vol is None and proposed_chap is None and proposed_vol_rs is None \
+                and proposed_chap_re is None and not _is_chapter_grab:
             unmapped += 1
         else:
             mapped += 1
         db.execute(
             "INSERT INTO import_queue_files"
-            "(queue_id, filename, src_path, dst_path, proposed_volume, proposed_chapter, file_type, status)"
-            " VALUES(?,?,?,?,?,?,?,'pending')",
-            (queue_id, dst_fname, src_path, dst_path, proposed_vol, proposed_chap, file_type)
+            "(queue_id, filename, src_path, dst_path, proposed_volume, proposed_chapter,"
+            " proposed_volume_range_start, proposed_volume_range_end,"
+            " proposed_chapter_range_end, proposed_pack_type, proposed_is_special,"
+            " file_type, status)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'pending')",
+            (queue_id, dst_fname, src_path, dst_path,
+             proposed_vol, proposed_chap,
+             proposed_vol_rs, proposed_vol_re,
+             proposed_chap_re, proposed_pack_type, proposed_is_special,
+             file_type)
         )
 
     # No usable files found — remove the empty queue entry so the volume doesn't
@@ -4648,7 +4734,11 @@ async def _execute_import(
 
     with get_db() as db:
         queue = db.execute("SELECT * FROM import_queue WHERE id=?", (queue_id,)).fetchone()
-        if not queue or queue['status'] not in ('pending', 'partial'):
+        # 'importing' accepted because _guarded_execute_import's claim
+        # flips the row from pending → importing atomically before we
+        # get here. Rejecting 'importing' silently no-oped every form
+        # POST that routed through the guarded wrapper.
+        if not queue or queue['status'] not in ('pending', 'partial', 'importing'):
             return False
 
         # For partial entries, process both pending and needs_review files;
@@ -4657,6 +4747,20 @@ async def _execute_import(
             "SELECT * FROM import_queue_files WHERE queue_id=? AND status IN ('pending', 'needs_review')",
             (queue_id,)
         ).fetchall()
+
+        # Empty queue → pure no-op. Previously this path marked the queue
+        # as 'imported' and deleted it, which is wrong (nothing was
+        # imported) and broke the safety contract that an active queue row
+        # protects its grabbed volumes from the stuck-grabbed sweeper. If
+        # the row was flipped to 'importing' by our claim, flip it back
+        # so the next poll can find it again.
+        if not files:
+            if queue['status'] == 'importing':
+                db.execute(
+                    "UPDATE import_queue SET status='pending' WHERE id=?",
+                    (queue_id,),
+                )
+            return False
 
         s = db.execute(
             "SELECT * FROM series WHERE id=?", (queue['series_id'],)
@@ -4733,24 +4837,37 @@ async def _execute_import(
                 'chapter' if new_chap is not None
                 else (f['file_type'] if 'file_type' in f.keys() else 'volume')
             )
+            # Stage 2 — explicit range / pack-type / special fields.
+            # Back-compat: the keys() guard lets rows written before the
+            # migration still import through the legacy code paths.
+            _keys = f.keys()
+            row_vol_rs     = f['proposed_volume_range_start'] if 'proposed_volume_range_start' in _keys else None
+            row_vol_re     = f['proposed_volume_range_end']   if 'proposed_volume_range_end'   in _keys else None
+            row_chap_re    = f['proposed_chapter_range_end']  if 'proposed_chapter_range_end'  in _keys else None
+            row_pack_type  = f['proposed_pack_type']          if 'proposed_pack_type'          in _keys else None
+            row_is_special = int(f['proposed_is_special']) if 'proposed_is_special' in _keys and f['proposed_is_special'] else 0
 
             # ── Chapter file: has a chapter number ────────────────────────────
             if file_type == 'chapter' and proposed_chap is not None:
                 src = f['src_path']
 
-                # Auto-detect a chapter range from the filename so a
-                # `c001-002` pack imports as one row covering both. Operator
-                # overrides win if they ever wire range_end into the UI;
-                # for now this path is auto-only.
+                # Chapter-range end (covers `c001-002` imports as one row).
+                # Stage 2: the review UI now carries an explicit
+                # proposed_chapter_range_end column — trust it first.
+                # The filename auto-detect survives as a fallback so older
+                # queue rows written before the migration still work.
                 _ch_range_end: float | None = None
-                _detected_range = extract_chapter_range(os.path.basename(src))
-                if _detected_range is not None:
-                    _r_start, _r_end = _detected_range
-                    # Only honor the detected range if it agrees with the
-                    # proposed start (don't silently rewrite an operator's
-                    # explicit single-chapter assignment).
-                    if abs(_r_start - proposed_chap) < 1e-6:
-                        _ch_range_end = _r_end
+                if row_chap_re is not None:
+                    _ch_range_end = row_chap_re
+                else:
+                    _detected_range = extract_chapter_range(os.path.basename(src))
+                    if _detected_range is not None:
+                        _r_start, _r_end = _detected_range
+                        # Only honour the detected range if it agrees with
+                        # the proposed start (don't silently rewrite an
+                        # operator's explicit single-chapter assignment).
+                        if abs(_r_start - proposed_chap) < 1e-6:
+                            _ch_range_end = _r_end
 
                 try:
                     dst = safe_join_under(dst_dir, f['filename'])
@@ -4979,8 +5096,13 @@ async def _execute_import(
                     continue
 
             # For legacy chapter-mode grabs the file has no volume number — allow through.
+            # Stage 2: a volume-range file (e.g. one CBZ covering v1-v3) may
+            # also have proposed_vol=None but row_vol_rs/re set. That's a
+            # volume import with a range, not a chapter stub — don't treat
+            # it as needs_review. The range-aware write below handles it.
             _ch_stub = None
-            if proposed_vol is None and f['id'] not in volume_overrides:
+            _has_vol_range = row_vol_rs is not None and row_vol_re is not None
+            if proposed_vol is None and not _has_vol_range and f['id'] not in volume_overrides:
                 if queue['download_id']:
                     _ch_stub = db.execute(
                         "SELECT id FROM volumes WHERE series_id=? AND download_id=?"
@@ -5033,6 +5155,42 @@ async def _execute_import(
                         (dst, quality_from_filename(dst), now_ts, _ch_stub['id'])
                     )
 
+                # ── Volume-range file (Stage 2) ─────────────────────────
+                # One physical file covering v1-v3 style: write a single
+                # volumes row with vol_range_start/end + pack_type, then
+                # skip the single-volume flow below.
+                if _has_vol_range and proposed_vol is None:
+                    seen_row = db.execute(
+                        "SELECT torrent_name, indexer, protocol, client, release_group, size_bytes"
+                        " FROM seen WHERE (download_id=? AND download_id IS NOT NULL)"
+                        " OR torrent_url=? LIMIT 1",
+                        (queue['download_id'], queue['torrent_url'])
+                    ).fetchone()
+                    meta = dict(seen_row) if seen_row else {}
+                    file_quality = quality_from_filename(f['filename'])
+                    _rpt = row_pack_type if row_pack_type in ('volume', 'volume_range', 'complete') \
+                           else 'volume'
+                    db.execute(
+                        "INSERT INTO volumes(series_id, volume_num, status, source_url,"
+                        " torrent_name, import_path, download_id, indexer, protocol,"
+                        " client, release_group, size_bytes, quality, imported_at,"
+                        " vol_range_start, vol_range_end, pack_type, is_special)"
+                        " VALUES(?,NULL,'downloaded',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (queue['series_id'],
+                         queue['torrent_url'], meta.get('torrent_name'),
+                         dst, queue['download_id'],
+                         meta.get('indexer'), meta.get('protocol'),
+                         meta.get('client'), meta.get('release_group'),
+                         meta.get('size_bytes'), file_quality, now_ts,
+                         row_vol_rs, row_vol_re, _rpt, row_is_special)
+                    )
+                    # Volume range satisfies all interior volumes — skip
+                    # the single-volume cascade; chapter tables for those
+                    # inner volumes will be updated by future grabs.
+                    for _v in range(int(row_vol_rs), int(row_vol_re) + 1):
+                        imported_vols.add(float(_v))
+                    continue  # next queue file
+
                 # Stamp full source metadata on the volume stub now that the file is confirmed
                 if proposed_vol is not None:
                     seen_row = db.execute(
@@ -5053,12 +5211,17 @@ async def _execute_import(
                             "UPDATE volumes SET status='downloaded', import_path=?,"
                             " torrent_name=?, indexer=?, protocol=?, client=?,"
                             " release_group=?, size_bytes=?, quality=?, imported_at=?,"
-                            " download_id=COALESCE(download_id,?) WHERE id=?",
+                            " download_id=COALESCE(download_id,?),"
+                            " is_special=COALESCE(NULLIF(?,0), is_special),"
+                            " pack_type=COALESCE(?, pack_type) WHERE id=?",
                             (dst,
                              meta.get('torrent_name'), meta.get('indexer'),
                              meta.get('protocol'), meta.get('client'),
                              meta.get('release_group'), meta.get('size_bytes'),
-                             file_quality, now_ts, queue['download_id'], vol_row['id'])
+                             file_quality, now_ts, queue['download_id'],
+                             row_is_special,
+                             row_pack_type if row_pack_type in ('volume', 'complete') else None,
+                             vol_row['id'])
                         )
                         _check_volume_completion(db, queue['series_id'], vol_row['id'])
                         # Whole-volume file satisfies all chapters in this volume.
@@ -5076,17 +5239,20 @@ async def _execute_import(
                                           size_bytes=meta.get('size_bytes'))
                     else:
                         # Stub doesn't exist yet — create it with full metadata
+                        _rpt_new = row_pack_type if row_pack_type in ('volume', 'complete') else None
                         cur_ins = db.execute(
                             "INSERT INTO volumes(series_id, volume_num, status, source_url,"
                             " torrent_name, import_path, download_id, indexer, protocol,"
-                            " client, release_group, size_bytes, quality, imported_at)"
-                            " VALUES(?,?,'downloaded',?,?,?,?,?,?,?,?,?,?,?)",
+                            " client, release_group, size_bytes, quality, imported_at,"
+                            " pack_type, is_special)"
+                            " VALUES(?,?,'downloaded',?,?,?,?,?,?,?,?,?,?,?,?,?)",
                             (queue['series_id'], proposed_vol,
                              queue['torrent_url'], meta.get('torrent_name'),
                              dst, queue['download_id'],
                              meta.get('indexer'), meta.get('protocol'),
                              meta.get('client'), meta.get('release_group'),
-                             meta.get('size_bytes'), file_quality, now_ts)
+                             meta.get('size_bytes'), file_quality, now_ts,
+                             _rpt_new, row_is_special)
                         )
                         _cascade_chapters(db, queue['series_id'], [cur_ins.lastrowid],
                                           'downloaded', import_path=dst,
