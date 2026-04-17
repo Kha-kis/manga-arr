@@ -18,17 +18,55 @@ def get_cfg(key: str, default: str = '') -> str:
     return CONFIG.get(key, default)
 
 # ── Database ──────────────────────────────────────────────────────────────────
+_DEBUG_DB_TIMING = os.environ.get("MANGARR_DEBUG_TIMING") == "1"
+_DB_SLOW_OPEN_MS = 100      # log connect+pragma sequences slower than this
+_DB_SLOW_TOTAL_MS = 200     # log whole-transaction durations slower than this
+
+
+def ensure_wal_journal_mode() -> None:
+    """One-shot at startup: make sure the DB file is in WAL mode.
+
+    journal_mode is a persistent DB-file setting — once applied, every
+    future connection sees WAL without re-applying. Running `PRAGMA
+    journal_mode=WAL` on every connection acquires a write-lock even
+    when already WAL, which under contention caused multi-second stalls
+    visible to unrelated HTTP requests. Call this once from app startup
+    (after init_db has created the file) instead.
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=5)
+    try:
+        cur = conn.execute("PRAGMA journal_mode")
+        current = (cur.fetchone() or (None,))[0]
+        if (current or "").lower() != "wal":
+            conn.execute("PRAGMA journal_mode=WAL")
+    finally:
+        conn.close()
+
 @contextmanager
 def get_db():
+    import time as _t
+    _t0 = _t.perf_counter() if _DEBUG_DB_TIMING else 0
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
+    _t_connect = (_t.perf_counter() - _t0) * 1000 if _DEBUG_DB_TIMING else 0
     try:
         conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA journal_mode=WAL")
+        # NOTE: journal_mode=WAL is intentionally NOT set per-connection.
+        # It's a *persistent* DB-file setting — once applied, every future
+        # connection sees WAL automatically. Setting it on every connection
+        # would acquire a write lock (even as a no-op when already WAL) and,
+        # under concurrent writers, produced 5-second busy_timeout stalls
+        # that cascaded into 15-60s event-loop blocks (issue #31).
+        # The mode is applied once at startup via ensure_wal_journal_mode().
         conn.execute("PRAGMA synchronous=NORMAL")   # safe with WAL, much faster
         conn.execute("PRAGMA busy_timeout=5000")     # wait up to 5s on lock instead of failing
         conn.execute("PRAGMA cache_size=-8000")      # 8MB cache (was 2MB)
         conn.execute("PRAGMA mmap_size=67108864")    # 64MB memory-mapped I/O
+        if _DEBUG_DB_TIMING:
+            _t_open = (_t.perf_counter() - _t0) * 1000
+            if _t_open > _DB_SLOW_OPEN_MS:
+                print(f"[DB-OPEN]  {_t_open:>8.1f}ms (connect={_t_connect:.1f}ms)",
+                      flush=True)
         yield conn
         conn.commit()
     except Exception:
@@ -46,6 +84,10 @@ def get_db():
         raise
     finally:
         conn.close()
+        if _DEBUG_DB_TIMING:
+            _t_total = (_t.perf_counter() - _t0) * 1000
+            if _t_total > _DB_SLOW_TOTAL_MS:
+                print(f"[DB-SLOW] {_t_total:>8.1f}ms total", flush=True)
 
 
 # ── Tiny helpers used in routers ─────────────────────────────────────────────
