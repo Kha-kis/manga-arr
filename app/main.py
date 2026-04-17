@@ -3921,7 +3921,16 @@ async def _check_download_status_impl():
                     for _imp_id in _new_imports:
                         asyncio.create_task(_process_auto_import(_imp_id))
 
-                    with get_db() as db:
+                    # qBit orphan cleanup — originally ran synchronously on the
+                    # event loop inside `with get_db()`, iterating orphaned
+                    # rows with ~6 writes each plus add_history. For N orphans
+                    # that's a multi-second sync block; the event-loop lag
+                    # monitor showed 5s CRITICAL blocks attributed to this
+                    # exact section. Moved into asyncio.to_thread — same
+                    # semantics, off the event loop.
+                    _all_hashes_snapshot = all_hashes
+                    def _qbit_orphan_cleanup_sync():
+                      with get_db() as db:
                         # ── No-hash orphans: grabbed with no download_id → reset immediately ──
                         db.execute(
                             "UPDATE volumes SET status='wanted', grabbed_at=NULL, source_url=NULL,"
@@ -3999,50 +4008,60 @@ async def _check_download_status_impl():
                                         download_id=h,
                                         data={'reason': 'removed_from_client'})
 
-                        # ── Failed download handling ──────────────────────────────────────────────
-                        if get_cfg('failed_download_handling', '0') == '1':
-                            all_torrent_by_hash = {t['hash'].lower(): t for t in all_torrents}
-                            error_states = {'error', 'missingFiles', 'stalledDL'}
-                            with get_db() as db:
-                                seen_rows = db.execute(
-                                    "SELECT download_id, series_id, torrent_name, torrent_url"
-                                    " FROM seen WHERE client='qbittorrent' AND protocol='torrent'"
-                                ).fetchall()
-                            for row in seen_rows:
-                                h_fail = (row['download_id'] or '').lower()
-                                if not h_fail:
-                                    continue
-                                torrent_fail = all_torrent_by_hash.get(h_fail)
-                                if torrent_fail and torrent_fail.get('state', '') in error_states:
+                    # Close the orphan-cleanup helper. End of _qbit_orphan_cleanup_sync.
+                    await asyncio.to_thread(_qbit_orphan_cleanup_sync)
+
+                    # ── Failed download handling ──────────────────────────────────────────────
+                    # Separate from the orphan cleanup because it has an
+                    # awaited `qbit_remove` call — can't live in the
+                    # to_thread helper. DB writes that don't need the
+                    # await are threaded; the HTTP call is awaited; then
+                    # a final sync helper logs and optionally re-grabs.
+                    if get_cfg('failed_download_handling', '0') == '1':
+                        all_torrent_by_hash = {t['hash'].lower(): t for t in all_torrents}
+                        error_states = {'error', 'missingFiles', 'stalledDL'}
+                        with get_db() as _fdb:
+                            seen_rows = _fdb.execute(
+                                "SELECT download_id, series_id, torrent_name, torrent_url"
+                                " FROM seen WHERE client='qbittorrent' AND protocol='torrent'"
+                            ).fetchall()
+                        for row in seen_rows:
+                            h_fail = (row['download_id'] or '').lower()
+                            if not h_fail:
+                                continue
+                            torrent_fail = all_torrent_by_hash.get(h_fail)
+                            if torrent_fail and torrent_fail.get('state', '') in error_states:
+                                def _mark_failed_sync(r=row, tf=torrent_fail, h=h_fail):
                                     with get_db() as db:
                                         db.execute(
                                             "INSERT OR IGNORE INTO blocklist(series_id, torrent_url, torrent_name, reason)"
                                             " VALUES(?,?,?,?)",
-                                            (row['series_id'], row['torrent_url'] or '', row['torrent_name'] or '',
-                                             f"Download failed: {torrent_fail.get('state', 'error')}")
+                                            (r['series_id'], r['torrent_url'] or '', r['torrent_name'] or '',
+                                             f"Download failed: {tf.get('state', 'error')}")
                                         )
                                         db.execute(
                                             "UPDATE volumes SET status='wanted', download_id=NULL, grabbed_at=NULL,"
                                             " source_url=NULL, torrent_name=NULL "
-                                            "WHERE download_id=? AND status='grabbed'", (h_fail,)
+                                            "WHERE download_id=? AND status='grabbed'", (h,)
                                         )
-                                        db.execute("DELETE FROM seen WHERE download_id=?", (h_fail,))
-                                    if (_qc or {}).get('remove_failed'):
-                                        await qbit_remove(h_fail, delete_files=True)
-                                    log_event('grab_failed',
-                                              f"Auto-blacklisted failed download: {row['torrent_name']}",
-                                              row['series_id'])
-                                    # Trigger re-search unless "interactive search" mode is on
-                                    if get_cfg('redownload_failed_interactive', '0') != '1':
-                                        with get_db() as _rsdb:
-                                            _rs = _rsdb.execute(
-                                                "SELECT title, search_pattern FROM series WHERE id=?",
-                                                (row['series_id'],)
-                                            ).fetchone()
-                                        if _rs:
-                                            asyncio.create_task(grab_existing(
-                                                row['series_id'], _rs['title'], _rs['search_pattern'] or ''
-                                            ))
+                                        db.execute("DELETE FROM seen WHERE download_id=?", (h,))
+                                await asyncio.to_thread(_mark_failed_sync)
+                                if (_qc or {}).get('remove_failed'):
+                                    await qbit_remove(h_fail, delete_files=True)
+                                log_event('grab_failed',
+                                          f"Auto-blacklisted failed download: {row['torrent_name']}",
+                                          row['series_id'])
+                                # Trigger re-search unless "interactive search" mode is on
+                                if get_cfg('redownload_failed_interactive', '0') != '1':
+                                    with get_db() as _rsdb:
+                                        _rs = _rsdb.execute(
+                                            "SELECT title, search_pattern FROM series WHERE id=?",
+                                            (row['series_id'],)
+                                        ).fetchone()
+                                    if _rs:
+                                        asyncio.create_task(grab_existing(
+                                            row['series_id'], _rs['title'], _rs['search_pattern'] or ''
+                                        ))
     except Exception as e:
         log_event('error', f"qBit status check failed: {e}")
         print(f"[Status/qBit] {e}")
@@ -4083,7 +4102,13 @@ async def _check_download_status_impl():
                     if s.get('status') == 'Completed' and s.get('nzo_id')
                 }
 
-                with get_db() as db:
+                # SAB processing — moved off the event loop via asyncio.to_thread.
+                # Previously this entire block (seen-row match + orphan cleanup)
+                # ran synchronously on the event loop inside one long write
+                # transaction, stalling HTTP requests for seconds (issue #31).
+                _sab_new_queue_ids: list[int] = []
+                def _sab_process_sync():
+                  with get_db() as db:
                     rows = db.execute(
                         "SELECT torrent_url, torrent_name, series_id, volume_num, download_id "
                         "FROM seen WHERE client='sabnzbd'"
@@ -4104,7 +4129,7 @@ async def _check_download_status_impl():
                             row['volume_num'],
                             content_path)
                         if q_id and not needs_review:
-                            asyncio.create_task(_process_auto_import(q_id))
+                            _sab_new_queue_ids.append(q_id)
 
                     # ── SABnzbd orphan cleanup ─────────────────────────────────────
                     # Volumes grabbed via SAB but whose job has disappeared from both
@@ -4171,6 +4196,11 @@ async def _check_download_status_impl():
                                     source_title=gs['torrent_name'] or '',
                                     download_id=h_id,
                                     data={'reason': 'removed_from_client'})
+
+                await asyncio.to_thread(_sab_process_sync)
+                # Spawn post-processing for any newly queued SAB imports (async).
+                for _sqid in _sab_new_queue_ids:
+                    asyncio.create_task(_process_auto_import(_sqid))
         except Exception as e:
             log_event('error', f"SABnzbd status check failed: {e}")
             print(f"[Status/SAB] {e}")
@@ -7355,6 +7385,11 @@ async def lifespan(app: FastAPI):
     # they can be cancelled on shutdown and their unexpected exits logged.
     # Previously seven of the nine were fire-and-forget tasks without a
     # stored reference — see create_background_task() docstring.
+    # Event-loop lag watchdog — no-op unless MANGARR_DEBUG_TIMING=1.
+    # Helps diagnose issue #31 follow-up A stalls during investigation.
+    from shared import event_loop_lag_monitor as _event_loop_lag
+    create_background_task(_event_loop_lag(),                  name="event_loop_lag_monitor")
+
     create_background_task(rss_loop(),                         name="rss_loop")
     create_background_task(status_loop(),                      name="status_loop")
     create_background_task(refresh_ongoing_loop(),             name="refresh_ongoing_loop")

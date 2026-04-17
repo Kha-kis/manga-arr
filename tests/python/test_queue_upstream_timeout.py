@@ -140,6 +140,71 @@ def test_timeout_constant_is_at_most_three_seconds():
     assert QUEUE_UPSTREAM_TIMEOUT_SECONDS > 0
 
 
+def test_render_budget_is_strictly_below_upstream_timeout():
+    """The render-path budget caps how long queue pagination waits on
+    upstreams; it MUST be below the per-call httpx timeout so a slow
+    upstream gets cut off at the render layer rather than dragging the
+    page to 2.5s."""
+    from routers.queue_ import (QUEUE_UPSTREAM_TIMEOUT_SECONDS,
+                                QUEUE_RENDER_UPSTREAM_BUDGET)
+    assert 0 < QUEUE_RENDER_UPSTREAM_BUDGET < QUEUE_UPSTREAM_TIMEOUT_SECONDS
+    # And the budget should be tight enough to feel responsive — under 1s.
+    assert QUEUE_RENDER_UPSTREAM_BUDGET <= 1.0
+
+
+def test_build_queue_rows_respects_render_budget(fresh_db):
+    """When both upstreams hang, _build_queue_rows must return within
+    ~QUEUE_RENDER_UPSTREAM_BUDGET seconds and show rows (minus live data)."""
+    import time as _time
+    import routers.queue_ as q
+    db_path = fresh_db
+
+    # Seed one grabbed volume so the page has something to render.
+    import sqlite3 as _sqlite
+    with _sqlite.connect(db_path) as c:
+        c.execute("INSERT INTO series(id, title, search_pattern)"
+                  " VALUES(7, 'Test', 'Test')")
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, download_id,"
+            " torrent_name, grabbed_at, client)"
+            " VALUES(7, 1.0, 'grabbed', 'hang-id', 'rel.torrent',"
+            " datetime('now'), 'qbittorrent')"
+        )
+
+    class _Hang:
+        """Both upstreams sleep past the render budget."""
+        def __init__(self, *a, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **kw):
+            await asyncio.sleep(q.QUEUE_RENDER_UPSTREAM_BUDGET + 2.0)
+            class _R: text = "Ok."; status_code = 200
+            return _R()
+        async def get(self, *a, **kw):
+            await asyncio.sleep(q.QUEUE_RENDER_UPSTREAM_BUDGET + 2.0)
+            class _R:
+                status_code = 200
+                def json(self_): return {}
+            return _R()
+
+    t0 = _time.perf_counter()
+    with patch("routers.queue_.httpx.AsyncClient", new=_Hang):
+        rows, *_ = asyncio.run(q._build_queue_rows())
+    dt = _time.perf_counter() - t0
+
+    # The render must not wait for the full upstream timeout; budget + a
+    # little slack for DB work.
+    assert dt < q.QUEUE_RENDER_UPSTREAM_BUDGET + 0.5, (
+        f"/queue render took {dt:.2f}s with upstreams hung; "
+        f"budget is {q.QUEUE_RENDER_UPSTREAM_BUDGET}s"
+    )
+    # And the rows still render from DB even though live upstream data
+    # was unavailable.
+    assert any(r["hash"] == "hang-id" for r in rows), (
+        "queue rows must render from DB when upstreams time out"
+    )
+
+
 def test_helpers_pass_constant_as_httpx_timeout():
     """Every AsyncClient instantiation in the queue helpers must use
     QUEUE_UPSTREAM_TIMEOUT_SECONDS, not a literal."""

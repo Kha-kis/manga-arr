@@ -23,6 +23,28 @@ _DB_SLOW_OPEN_MS = 100      # log connect+pragma sequences slower than this
 _DB_SLOW_TOTAL_MS = 200     # log whole-transaction durations slower than this
 
 
+async def event_loop_lag_monitor():
+    """Background watchdog: sleeps 50ms in a loop; if the wake-up is
+    noticeably delayed, the event loop was blocked by sync work for that
+    duration. Logs when lag exceeds 250ms or 1000ms. Gated on
+    MANGARR_DEBUG_TIMING=1. Use to prove event-loop starvation during
+    issue #31 follow-up A investigations.
+    """
+    if not _DEBUG_DB_TIMING:
+        return
+    import asyncio as _a, time as _t
+    interval = 0.05
+    while True:
+        t0 = _t.perf_counter()
+        await _a.sleep(interval)
+        dt_ms = (_t.perf_counter() - t0) * 1000
+        lag = dt_ms - interval * 1000
+        if lag > 1000:
+            print(f"[EVENT_LOOP_LAG] {lag:>8.1f}ms (CRITICAL — multi-second block)", flush=True)
+        elif lag > 250:
+            print(f"[EVENT_LOOP_LAG] {lag:>8.1f}ms", flush=True)
+
+
 class timed_block:
     """Context manager + async context manager. Logs a labelled duration
     when MANGARR_DEBUG_TIMING=1 and elapsed > threshold_ms. Used to
