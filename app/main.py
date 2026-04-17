@@ -1314,14 +1314,21 @@ def populate_chapters(db, series_id: int) -> int:
             continue
         vol_id = vol_id_map.get(float(vol_num)) if vol_num is not None else None
         # Coverage guard: skip if this chapter is already covered by an
-        # existing range row (chapter_num <= ch_num <= chapter_range_end).
-        # Without this guard, re-syncing chapter metadata would re-create
-        # `wanted` placeholders for chapters that a c001-002 pack already
-        # imported.
+        # existing non-special range row (chapter_num <= ch_num <=
+        # chapter_range_end). Without this guard, re-syncing chapter
+        # metadata would re-create `wanted` placeholders for chapters
+        # that a c001-002 pack already imported.
+        #
+        # Specials (parent volume is_special=1) must NOT suppress mainline
+        # chapter creation — a Gaiden c001-002 grab shouldn't prevent the
+        # mainline chapter 1 stub from existing.
         covered = db.execute(
-            "SELECT 1 FROM chapters WHERE series_id=?"
-            "   AND chapter_num <= ?"
-            "   AND ? <= COALESCE(chapter_range_end, chapter_num)"
+            "SELECT 1 FROM chapters c"
+            "  LEFT JOIN volumes v ON v.id = c.volume_id"
+            " WHERE c.series_id=?"
+            "   AND c.chapter_num <= ?"
+            "   AND ? <= COALESCE(c.chapter_range_end, c.chapter_num)"
+            "   AND COALESCE(v.is_special, 0) = 0"
             " LIMIT 1",
             (series_id, ch_num, ch_num)
         ).fetchone()
@@ -4905,22 +4912,44 @@ async def _execute_import(
                     )
                     imported_count += 1
 
-                    # Resolve or create the parent volume record
+                    # Resolve or create the parent volume record.
+                    # Specials and mainline share volume numbers (Gaiden
+                    # "vol 3" is not mainline vol 3), so route by the
+                    # is_special flag — a special chapter gets its own
+                    # parent row that the Stage 3 coverage queries
+                    # recognise as non-mainline.
                     vol_id = None
                     if proposed_vol is not None:
-                        vol_row = db.execute(
-                            "SELECT id FROM volumes WHERE series_id=? AND volume_num=?",
-                            (queue['series_id'], proposed_vol)
-                        ).fetchone()
-                        if vol_row:
-                            vol_id = vol_row['id']
-                        else:
-                            cur2 = db.execute(
-                                "INSERT INTO volumes(series_id, volume_num, status)"
-                                " VALUES(?,?,'wanted')",
+                        if row_is_special:
+                            vol_row = db.execute(
+                                "SELECT id FROM volumes WHERE series_id=? AND volume_num=?"
+                                " AND COALESCE(is_special, 0) = 1",
                                 (queue['series_id'], proposed_vol)
-                            )
-                            vol_id = cur2.lastrowid
+                            ).fetchone()
+                            if vol_row:
+                                vol_id = vol_row['id']
+                            else:
+                                cur2 = db.execute(
+                                    "INSERT INTO volumes(series_id, volume_num, status, is_special)"
+                                    " VALUES(?,?,'wanted',1)",
+                                    (queue['series_id'], proposed_vol)
+                                )
+                                vol_id = cur2.lastrowid
+                        else:
+                            vol_row = db.execute(
+                                "SELECT id FROM volumes WHERE series_id=? AND volume_num=?"
+                                " AND COALESCE(is_special, 0) = 0",
+                                (queue['series_id'], proposed_vol)
+                            ).fetchone()
+                            if vol_row:
+                                vol_id = vol_row['id']
+                            else:
+                                cur2 = db.execute(
+                                    "INSERT INTO volumes(series_id, volume_num, status)"
+                                    " VALUES(?,?,'wanted')",
+                                    (queue['series_id'], proposed_vol)
+                                )
+                                vol_id = cur2.lastrowid
 
                     # Pull parent-volume metadata (if linked) to stamp onto chapter
                     # rows — keeps chapters in sync with the grab that produced them.
@@ -5201,10 +5230,21 @@ async def _execute_import(
                     ).fetchone()
                     meta = dict(seen_row) if seen_row else {}
 
-                    vol_row = db.execute(
-                        "SELECT id FROM volumes WHERE series_id=? AND volume_num=?",
-                        (queue['series_id'], proposed_vol)
-                    ).fetchone()
+                    # Match/create the volumes row on the same is_special
+                    # track as the import itself — a special single-volume
+                    # grab must not flip a mainline row to is_special=1.
+                    if row_is_special:
+                        vol_row = db.execute(
+                            "SELECT id FROM volumes WHERE series_id=? AND volume_num=?"
+                            " AND COALESCE(is_special, 0) = 1",
+                            (queue['series_id'], proposed_vol)
+                        ).fetchone()
+                    else:
+                        vol_row = db.execute(
+                            "SELECT id FROM volumes WHERE series_id=? AND volume_num=?"
+                            " AND COALESCE(is_special, 0) = 0",
+                            (queue['series_id'], proposed_vol)
+                        ).fetchone()
                     file_quality = quality_from_filename(f['filename'])
                     if vol_row:
                         db.execute(
@@ -5948,51 +5988,85 @@ def _coverage_already_grabbed(series_id: int, pack_type: str,
                                ch_map: dict,
                                total_chs: int | None,
                                total_vols: int | None) -> bool:
-    """
-    Return True if the content this pack would provide is already fully covered
-    by existing grabbed packs for this series — skip the download client.
+    """Return True if the content this pack would provide is already fully
+    covered by existing non-special grabbed/downloaded rows.
+
+    Stage 3 rules:
+      - Only non-special rows (is_special = 0) can satisfy mainline coverage.
+        A Gaiden / oneshot / side-story grab does NOT cover mainline slots.
+      - Volume matching is float-precise: volume 3 does not cover 3.5 or 3a.
+      - Existing volume-range rows count as coverage — a row with
+        vol_range_start=1, vol_range_end=5 and status in (grabbed, downloaded)
+        satisfies targets 1..5 even if interior stubs are still 'wanted'.
+      - "Grabbed" and "downloaded" both count as covering; the pre-Stage-3
+        logic only inspected 'wanted' stubs, which missed ranges that hadn't
+        cascaded into interior stubs.
     """
     with get_db() as db:
-        # If a complete pack is already grabbed, everything is covered
+        # A non-special complete pack supersedes any narrower new pack.
         has_complete = db.execute(
-            "SELECT 1 FROM volumes WHERE series_id=? AND pack_type='complete' AND status='grabbed'",
+            "SELECT 1 FROM volumes WHERE series_id=? AND pack_type='complete'"
+            " AND status IN ('grabbed','downloaded')"
+            " AND COALESCE(is_special, 0) = 0",
             (series_id,)
         ).fetchone()
         if has_complete and pack_type != 'complete':
             return True
 
-        # For a new complete pack, only skip if no wanted+monitored stubs remain
+        # For a new complete pack, only skip if no mainline wanted+monitored
+        # stubs remain (specials don't block a mainline complete grab).
         if pack_type == 'complete':
             wanted = db.execute(
                 "SELECT 1 FROM volumes WHERE series_id=? AND volume_num IS NOT NULL"
-                " AND status='wanted' AND monitored=1",
+                " AND status='wanted' AND monitored=1"
+                " AND COALESCE(is_special, 0) = 0",
                 (series_id,)
             ).fetchone()
-            return wanted is None  # no wanted+monitored stubs → already complete
+            return wanted is None
 
-        # Determine which volumes this pack covers
+        # Determine target volumes. Keep them as floats so fractional
+        # parser outputs round-trip cleanly (no int cast collapse).
+        # For volume ranges, include the explicit endpoints plus any
+        # integer volumes in between — (3.5, 3.5) → {3.5}, not {3}.
+        target_vols: set[float] = set()
         if pack_type == 'chapter' and ch_range:
-            target_vols = chapters_to_volume_set(ch_range[0], ch_range[1], ch_map, total_chs, total_vols)
+            target_vols = {float(v) for v in chapters_to_volume_set(
+                ch_range[0], ch_range[1], ch_map, total_chs, total_vols)}
         elif pack_type == 'chapter' and not ch_range:
-            return False  # can't determine coverage, don't skip
+            return False  # unknown coverage → don't skip
         elif pack_type == 'volume' and vol_rng:
-            target_vols = set(range(int(vol_rng[0]), int(vol_rng[1]) + 1))
+            start_f, end_f = float(vol_rng[0]), float(vol_rng[1])
+            target_vols = {start_f, end_f}
+            lo = int(start_f) + 1
+            hi = int(end_f)
+            for iv in range(lo, hi + 1):
+                target_vols.add(float(iv))
         else:
             return False
 
         if not target_vols:
             return False
 
-        # Check if all target volume stubs are already grabbed/downloaded or unmonitored.
-        # A range is "covered" (skip grab) when no wanted+monitored volumes remain in it.
-        placeholders = ','.join('?' * len(target_vols))
-        wanted_in_range = db.execute(
-            f"SELECT 1 FROM volumes WHERE series_id=? AND volume_num IS NOT NULL"
-            f" AND CAST(volume_num AS INTEGER) IN ({placeholders})"
-            f" AND status='wanted' AND monitored=1",
-            [series_id, *target_vols]
-        ).fetchone()
-        return wanted_in_range is None  # no wanted+monitored stubs in range → covered
+        # Each target must be satisfied by SOME non-special row, either a
+        # precise volume_num match OR a range row covering it. Use one
+        # parameterised SELECT per target — the loop is cheap and keeps
+        # the SQL trivially readable.
+        satisfy_sql = (
+            "SELECT 1 FROM volumes WHERE series_id=?"
+            "  AND status IN ('grabbed','downloaded')"
+            "  AND COALESCE(is_special, 0) = 0"
+            "  AND ("
+            "    volume_num = ?"
+            "    OR (vol_range_start IS NOT NULL AND vol_range_end IS NOT NULL"
+            "        AND vol_range_start <= ? AND vol_range_end >= ?)"
+            "  )"
+            "  LIMIT 1"
+        )
+        for v in target_vols:
+            row = db.execute(satisfy_sql, (series_id, v, v, v)).fetchone()
+            if row is None:
+                return False
+        return True
 
 def _extract_map_from_cbzs(series_dir: str) -> dict:
     """
@@ -6547,13 +6621,17 @@ async def grab_item(item: dict, series_id: int, respect_monitoring: bool = True)
         if vol_mon and vol_mon['monitored'] == 0:
             return False
 
-    # Pack monitoring check: reject the entire pack (RSS sync) if no wanted+monitored
-    # volumes are in the range — mirrors Sonarr's MonitoredEpisodeSpecification behavior.
+    # Pack monitoring check: reject the entire pack (RSS sync) if no
+    # MAINLINE wanted+monitored volumes are in the range — mirrors Sonarr's
+    # MonitoredEpisodeSpecification. Specials don't count for a mainline
+    # pack grab (a side-story marked monitored shouldn't make us grab an
+    # unrelated mainline pack).
     if respect_monitoring and vol_num is None and vol_rng is not None:
         with get_db() as db:
             has_monitored = db.execute(
                 "SELECT 1 FROM volumes WHERE series_id=? AND status='wanted' AND monitored=1"
-                " AND volume_num >= ? AND volume_num <= ? LIMIT 1",
+                " AND volume_num >= ? AND volume_num <= ?"
+                " AND COALESCE(is_special, 0) = 0 LIMIT 1",
                 (series_id, vol_rng[0], vol_rng[1])
             ).fetchone()
         if not has_monitored:
@@ -6831,23 +6909,30 @@ async def grab_item(item: dict, series_id: int, respect_monitoring: bool = True)
                 if rng_vol_ids:
                     _cascade_chapters(db, series_id, rng_vol_ids, 'grabbed', **_ch_cascade_kw)
 
-            # Mark the resolved volume stubs for chapter packs
+            # Mark the resolved volume stubs for chapter packs.
+            # Float-precise match (no CAST collapse): a chapter pack that
+            # maps to volume 3 must not also flip volume 3.5 to grabbed.
+            # Skip specials so a mainline grab doesn't touch side-story rows.
             if covered_vols:
                 placeholders = ','.join('?' * len(covered_vols))
+                _float_vols = [float(v) for v in covered_vols]
                 db.execute(
                     f"UPDATE volumes SET status='grabbed', grabbed_at=?, source_url=?,"
                     f" download_id=?, torrent_name=?, client=?, indexer=?, protocol=?,"
                     f" release_group=?, size_bytes=?, edition_type=?, language=?"
                     f" WHERE series_id=? AND status='wanted'"
-                    f" AND volume_num IS NOT NULL AND CAST(volume_num AS INTEGER) IN ({placeholders})",
+                    f" AND volume_num IS NOT NULL AND volume_num IN ({placeholders})"
+                    f" AND COALESCE(is_special, 0) = 0",
                     [now, item['url'], dl_id, title, client_name,
-                     indexer, protocol, rgroup, size, edition, lang, series_id, *covered_vols]
+                     indexer, protocol, rgroup, size, edition, lang,
+                     series_id, *_float_vols]
                 )
                 covered_vol_ids = [
                     r['id'] for r in db.execute(
                         f"SELECT id FROM volumes WHERE series_id=? AND volume_num IS NOT NULL"
-                        f" AND CAST(volume_num AS INTEGER) IN ({placeholders})",
-                        [series_id, *covered_vols]
+                        f" AND volume_num IN ({placeholders})"
+                        f" AND COALESCE(is_special, 0) = 0",
+                        [series_id, *_float_vols]
                     ).fetchall()
                 ]
                 if covered_vol_ids:
@@ -8247,12 +8332,14 @@ def backfill_pack_ranges():
                         covered = chapters_to_volume_set(ch, ch, ch_map, total_chs, total_vols)
                 if covered:
                     placeholders = ','.join('?' * len(covered))
+                    _float_covered = [float(v) for v in covered]
                     cur = db.execute(
                         f"UPDATE volumes SET status='grabbed', grabbed_at=?, torrent_name=? "
                         f"WHERE series_id=? AND status='wanted' "
                         f"AND volume_num IS NOT NULL "
-                        f"AND CAST(volume_num AS INTEGER) IN ({placeholders})",
-                        [now, name, p['series_id'], *covered]
+                        f"AND volume_num IN ({placeholders}) "
+                        f"AND COALESCE(is_special, 0) = 0",
+                        [now, name, p['series_id'], *_float_covered]
                     )
                     total_marked += cur.rowcount
     return total_marked
