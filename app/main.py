@@ -26,7 +26,13 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
 # ── Shared helpers ───────────────────────────────────────────────────────────
-from shared import is_htmx, is_boosted
+# Use shared.get_db as the single source of truth for connection config
+# (busy_timeout, synchronous=NORMAL, cache, mmap). Previously main.py had
+# its own thinner get_db() missing those PRAGMAs, which left every
+# background-loop write running with synchronous=FULL + default cache.
+# Under contention that produced 15–60s event-loop stalls visible to
+# unrelated HTTP requests (issue #31).
+from shared import is_htmx, is_boosted, get_db as _shared_get_db
 
 # ── Sonarr-parity routers ─────────────────────────────────────────────────────
 import shared as _shared
@@ -455,31 +461,11 @@ def ensure_api_key() -> str:
     return new_key
 
 # ── Database ──────────────────────────────────────────────────────────────────
-@contextmanager
-def get_db():
-    conn = sqlite3.connect(DB_PATH, timeout=15)
-    conn.row_factory = sqlite3.Row
-    try:
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA journal_mode=WAL")
-        yield conn
-        conn.commit()
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception as _rb:
-            # Rollback itself failed — extremely rare (usually means the
-            # connection is already dead). We still want to surface the
-            # original exception via `raise` below, but a failed rollback
-            # is a real operational signal worth logging. Do NOT raise it
-            # here or we'd mask the original error.
-            import logging as _logging
-            _logging.getLogger(__name__).warning(
-                "get_db: rollback failed (connection may be corrupt): %r", _rb,
-            )
-        raise
-    finally:
-        conn.close()
+# get_db delegates to shared.get_db so every writer — routes *and* the
+# background loops that live in this module — uses the same PRAGMA set
+# (busy_timeout=5000, synchronous=NORMAL, WAL, 8MB cache, 64MB mmap).
+# See the import block above for context.
+get_db = _shared_get_db
 
 def init_db():
     with get_db() as db:
@@ -7256,6 +7242,10 @@ async def _cancel_background_tasks() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # Apply WAL journal mode once — persistent setting, so every later
+    # connection inherits it without re-running the (write-locked) PRAGMA.
+    from shared import ensure_wal_journal_mode as _ensure_wal
+    _ensure_wal()
     # Initialise the secret-encryption cipher (H4 PR #1) BEFORE load_config
     # so load_config can transparently decrypt enc:v1: values for the
     # SETTINGS_SECRET_KEYS allowlist on the way into CONFIG.
@@ -7676,6 +7666,35 @@ class CSRFMiddleware:
             await send(message)
 
         await self.app(scope, forward_receive, send_with_cookie)
+
+# Temporary timing instrumentation — env-gated. Logs total request duration
+# to stderr for every request when MANGARR_DEBUG_TIMING=1. Used to diagnose
+# issue #31 page-navigation stalls. Safe to keep in the codebase; off by
+# default imposes ~zero overhead (one env var check per request).
+if os.environ.get("MANGARR_DEBUG_TIMING") == "1":
+    import time as _time_mod
+
+    class _TimingMiddleware:
+        def __init__(self, app):
+            self.app = app
+        async def __call__(self, scope, receive, send):
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+            t0 = _time_mod.perf_counter()
+            status_holder = {"code": 0}
+            async def _send(message):
+                if message["type"] == "http.response.start":
+                    status_holder["code"] = message.get("status", 0)
+                await send(message)
+            try:
+                await self.app(scope, receive, _send)
+            finally:
+                dt_ms = (_time_mod.perf_counter() - t0) * 1000
+                path = scope.get("path", "")
+                print(f"[TIMING] {dt_ms:>8.1f}ms  {status_holder['code']}  {path}",
+                      flush=True)
+    app.add_middleware(_TimingMiddleware)
 
 app.add_middleware(CSRFMiddleware)
 app.add_middleware(ApiKeyMiddleware)
