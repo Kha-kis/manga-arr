@@ -50,9 +50,132 @@ CHECK_FIX_URL = {
 }
 
 
+# Per-severity HTTP timeouts. These bound how long the /health endpoint
+# will wait on any single upstream probe; a healthy LAN download client
+# typically responds in <200ms. Timeouts used to be 6s uniformly, which
+# made p50 /health latency ~6s whenever any configured upstream was
+# unreachable (connect timeout pinned to the full 6s). Short timeouts
+# keep the page responsive while still reporting the slow provider as
+# degraded in its own check row (not as whole-endpoint failure).
+#
+# Issue #31 follow-up B — /health upstream probe latency.
+HEALTH_TIMEOUT_HIGH    = 2.5   # qBit, SAB — informational; a real slow/dead upstream shows as degraded
+HEALTH_TIMEOUT_WARNING = 2.0   # Komga and other optional integrations
+
+
+def _health_db_snapshot() -> dict:
+    """Fetch every DB fact /health needs in a SINGLE connection.
+
+    Previously /health opened 10+ separate get_db() connections (one per
+    check, plus a second aggregate block for the stale-series /
+    stuck-imports tables at the bottom of the page). Under background-
+    writer contention each was exposed to the 5s busy_timeout and the
+    waits cascaded into ~30s page stalls. Consolidating into ONE open
+    connection caps the exposure to a single lock wait.
+    """
+    from routers.download_clients import get_client_for_protocol as _gcp_h
+    with get_db() as db:
+        snap = {
+            # ── Fast COUNT / config facts (used by check functions) ──
+            'indexers_enabled': db.execute(
+                "SELECT COUNT(*) AS n FROM indexers WHERE enabled=1"
+            ).fetchone()['n'],
+            'download_clients_enabled': db.execute(
+                "SELECT COUNT(*) AS n FROM download_clients WHERE enabled=1"
+            ).fetchone()['n'],
+            'quality_profiles': db.execute(
+                "SELECT COUNT(*) AS n FROM quality_profiles"
+            ).fetchone()['n'],
+            'root_folders': [
+                {'path': r['path'], 'label': r['label']}
+                for r in db.execute("SELECT path, label FROM root_folders").fetchall()
+            ],
+            'orphan_series_rf': db.execute("""
+                SELECT COUNT(*) AS n FROM series s
+                WHERE s.root_folder_id IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM root_folders rf WHERE rf.id = s.root_folder_id
+                  )
+            """).fetchone()['n'],
+            'wanted_volumes': db.execute(
+                "SELECT COUNT(*) AS n FROM volumes WHERE status='wanted' AND monitored=1"
+            ).fetchone()['n'],
+            'last_grab': db.execute(
+                "SELECT created_at FROM events WHERE event_type='grab'"
+                " ORDER BY created_at DESC LIMIT 1"
+            ).fetchone(),
+            'last_rss_poll': db.execute(
+                "SELECT created_at FROM events WHERE event_type='rss_poll'"
+                " ORDER BY created_at DESC LIMIT 1"
+            ).fetchone(),
+            'qbit_client': _gcp_h(db, 'torrent'),
+            'sab_client':  _gcp_h(db, 'nzb'),
+
+            # ── Aggregate rows shown at the bottom of the page ──
+            # Previously these lived in a second `with get_db()` block
+            # after asyncio.gather returned. That second open was a
+            # second exposure to the busy_timeout.
+            'stale_series': db.execute("""
+                SELECT s.id, s.title, COUNT(v.id) as wanted_count,
+                       MAX(s.added_at) as added_at
+                FROM series s
+                JOIN volumes v ON v.series_id = s.id AND v.status='wanted'
+                WHERE s.monitored=1
+                  AND NOT EXISTS (
+                    SELECT 1 FROM volumes v2
+                    WHERE v2.series_id = s.id AND v2.status IN ('grabbed','downloaded')
+                  )
+                GROUP BY s.id
+            """).fetchall(),
+            'stale_grabs': db.execute("""
+                SELECT v.id, v.series_id, v.volume_num, v.pack_type, v.grabbed_at,
+                       v.torrent_name, s.title as series_title
+                FROM volumes v JOIN series s ON s.id=v.series_id
+                WHERE v.status='grabbed'
+                  AND v.grabbed_at < datetime('now', '-2 days')
+                ORDER BY v.grabbed_at ASC
+                LIMIT 20
+            """).fetchall(),
+            'stuck_imports': db.execute("""
+                SELECT iq.id, iq.series_id, iq.torrent_name, iq.status, iq.created_at,
+                       s.title as series_title
+                FROM import_queue iq JOIN series s ON s.id=iq.series_id
+                WHERE iq.status IN ('pending', 'partial')
+                  AND iq.created_at < datetime('now', '-1 hour')
+                ORDER BY iq.created_at ASC
+                LIMIT 10
+            """).fetchall(),
+            'recent_errors': db.execute(
+                "SELECT * FROM events WHERE event_type='error'"
+                " ORDER BY created_at DESC LIMIT 10"
+            ).fetchall(),
+            'last_backlog': db.execute(
+                "SELECT created_at FROM events WHERE event_type='backlog_search'"
+                " ORDER BY created_at DESC LIMIT 1"
+            ).fetchone(),
+            'stats': db.execute("""
+                SELECT
+                    COUNT(DISTINCT series_id) as series,
+                    SUM(CASE WHEN status='wanted'     THEN 1 ELSE 0 END) as wanted,
+                    SUM(CASE WHEN status='grabbed'    THEN 1 ELSE 0 END) as grabbed,
+                    SUM(CASE WHEN status='downloaded' THEN 1 ELSE 0 END) as downloaded
+                FROM volumes
+            """).fetchone(),
+        }
+    return snap
+
+
 @router.get("/health", response_class=HTMLResponse)
 async def health_page(request: Request):
     checks = []
+
+    # ── One-shot DB snapshot used by every check below. ──────────────────
+    # This is the "smallest safe fix" half of the change: we used to open
+    # ~10 separate get_db() connections (one per check). Each call was
+    # exposed to the 5s busy_timeout during background-writer contention,
+    # and the waits serialised, cascading into ~30s page stalls. With a
+    # single snapshot we take that ceiling to exactly one wait.
+    snap = _health_db_snapshot()
 
     async def check(name: str, coro):
         try:
@@ -74,13 +197,11 @@ async def health_page(request: Request):
             })
 
     async def _qbit():
-        from routers.download_clients import get_client_for_protocol as _gcp_h
-        with get_db() as _hdb:
-            c = _gcp_h(_hdb, 'torrent')
+        c = snap['qbit_client']
         if not c:
             return True, 'Not configured'
         host = (c.get('host') or '').rstrip('/')
-        async with httpx.AsyncClient(timeout=6) as client:
+        async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT_HIGH) as client:
             r = await client.post(f"{host}/api/v2/auth/login",
                 data={'username': c.get('username') or '', 'password': c.get('password') or ''})
             if 'Ok' not in r.text:
@@ -89,26 +210,21 @@ async def health_page(request: Request):
             return True, f"qBittorrent {r2.text.strip()}"
 
     async def _sab():
-        from routers.download_clients import get_client_for_protocol as _gcp_h
-        with get_db() as _hdb:
-            c = _gcp_h(_hdb, 'nzb')
+        c = snap['sab_client']
         if not c:
             return True, 'Not configured'
         h = (c.get('host') or '').rstrip('/')
         k = c.get('password') or ''
         if not k:
             return True, 'Not configured'
-        async with httpx.AsyncClient(timeout=6) as client:
+        async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT_HIGH) as client:
             r = await client.get(f"{h}/api",
                                  params={'mode': 'version', 'apikey': k, 'output': 'json'})
             d = r.json()
             return ('version' in d), d.get('version', 'Bad response')
 
     async def _indexers():
-        with get_db() as _hdb:
-            n = _hdb.execute(
-                "SELECT COUNT(*) as n FROM indexers WHERE enabled=1"
-            ).fetchone()['n']
+        n = snap['indexers_enabled']
         if n == 0:
             return False, "No indexers configured — nothing will be grabbed"
         return True, f'{n} indexer(s) enabled'
@@ -117,15 +233,18 @@ async def health_page(request: Request):
         u = get_cfg('komga_url')
         if not u:
             return True, 'Not configured'
-        async with httpx.AsyncClient(timeout=6) as client:
+        # Komga is a warning-severity optional integration — its slowness
+        # must not translate into slow page navigation. 2s is long enough
+        # for a healthy response and short enough to surface a degraded
+        # provider quickly.
+        async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT_WARNING) as client:
             r = await client.get(f"{u}/api/v1/libraries",
                 auth=(get_cfg('komga_user'), get_cfg('komga_pass')) if get_cfg('komga_user') else None)
             return (r.status_code == 200,
                     f'{len(r.json())} libraries' if r.status_code == 200 else f'HTTP {r.status_code}')
 
     async def _root_folders():
-        with get_db() as _hdb:
-            folders = _hdb.execute("SELECT path, label FROM root_folders").fetchall()
+        folders = snap['root_folders']
         issues = []
         for f in folders:
             p = f['path']
@@ -161,8 +280,7 @@ async def health_page(request: Request):
         return True, f"Last backup {age_days:.1f} days ago"
 
     async def _quality_profiles():
-        with get_db() as _hdb:
-            n = _hdb.execute("SELECT COUNT(*) as n FROM quality_profiles").fetchone()['n']
+        n = snap['quality_profiles']
         if n == 0:
             return False, "No quality profiles — create one in Settings → Quality Profiles"
         return True, f'{n} quality profile(s) configured'
@@ -174,38 +292,22 @@ async def health_page(request: Request):
         return True, 'Configured'
 
     async def _download_clients():
-        with get_db() as _hdb:
-            n = _hdb.execute(
-                "SELECT COUNT(*) as n FROM download_clients WHERE enabled=1"
-            ).fetchone()['n']
+        n = snap['download_clients_enabled']
         if n == 0:
             return False, "No download clients enabled — add one in Settings → Download Clients"
         return True, f'{n} client(s) enabled'
 
     async def _series_root_folders():
-        with get_db() as _hdb:
-            orphans = _hdb.execute("""
-                SELECT COUNT(*) as n FROM series s
-                WHERE s.root_folder_id IS NOT NULL
-                  AND NOT EXISTS (
-                      SELECT 1 FROM root_folders rf WHERE rf.id = s.root_folder_id
-                  )
-            """).fetchone()['n']
+        orphans = snap['orphan_series_rf']
         if orphans:
             return False, f"{orphans} series reference a deleted root folder — reassign in Series Editor"
         return True, 'All series root folders valid'
 
     async def _recent_grabs():
-        with get_db() as _hdb:
-            wanted = _hdb.execute(
-                "SELECT COUNT(*) as n FROM volumes WHERE status='wanted' AND monitored=1"
-            ).fetchone()['n']
-            if wanted == 0:
-                return True, 'No wanted volumes — nothing to grab'
-            last_grab = _hdb.execute(
-                "SELECT created_at FROM events WHERE event_type='grab'"
-                " ORDER BY created_at DESC LIMIT 1"
-            ).fetchone()
+        wanted = snap['wanted_volumes']
+        if wanted == 0:
+            return True, 'No wanted volumes — nothing to grab'
+        last_grab = snap['last_grab']
         if not last_grab:
             return False, 'No grabs ever recorded — check indexers and release profiles'
         from datetime import datetime, timezone
@@ -217,11 +319,7 @@ async def health_page(request: Request):
         return True, f'Last grab {age_days}d ago'
 
     async def _rss_health():
-        with get_db() as _hdb:
-            last_poll = _hdb.execute(
-                "SELECT created_at FROM events WHERE event_type='rss_poll'"
-                " ORDER BY created_at DESC LIMIT 1"
-            ).fetchone()
+        last_poll = snap['last_rss_poll']
         if not last_poll:
             return True, 'No RSS poll yet (first run)'
         from datetime import datetime, timezone
@@ -258,72 +356,20 @@ async def health_page(request: Request):
         c['name'],
     ))
 
-    with get_db() as db:
-        stale = db.execute("""
-            SELECT s.id, s.title, COUNT(v.id) as wanted_count,
-                   MAX(s.added_at) as added_at
-            FROM series s
-            JOIN volumes v ON v.series_id = s.id AND v.status='wanted'
-            WHERE s.monitored=1
-              AND NOT EXISTS (
-                SELECT 1 FROM volumes v2
-                WHERE v2.series_id = s.id AND v2.status IN ('grabbed','downloaded')
-              )
-            GROUP BY s.id
-        """).fetchall()
-
-        stale_grabs = db.execute("""
-            SELECT v.id, v.series_id, v.volume_num, v.pack_type, v.grabbed_at,
-                   v.torrent_name, s.title as series_title
-            FROM volumes v JOIN series s ON s.id=v.series_id
-            WHERE v.status='grabbed'
-              AND v.grabbed_at < datetime('now', '-2 days')
-            ORDER BY v.grabbed_at ASC
-            LIMIT 20
-        """).fetchall()
-
-        stuck_imports = db.execute("""
-            SELECT iq.id, iq.series_id, iq.torrent_name, iq.status, iq.created_at,
-                   s.title as series_title
-            FROM import_queue iq JOIN series s ON s.id=iq.series_id
-            WHERE iq.status IN ('pending', 'partial')
-              AND iq.created_at < datetime('now', '-1 hour')
-            ORDER BY iq.created_at ASC
-            LIMIT 10
-        """).fetchall()
-
-        recent_errors = db.execute(
-            "SELECT * FROM events WHERE event_type='error' ORDER BY created_at DESC LIMIT 10"
-        ).fetchall()
-
-        last_rss = db.execute(
-            "SELECT created_at FROM events WHERE event_type='rss_poll'"
-            " ORDER BY created_at DESC LIMIT 1"
-        ).fetchone()
-
-        last_backlog_row = db.execute(
-            "SELECT created_at FROM events WHERE event_type='backlog_search'"
-            " ORDER BY created_at DESC LIMIT 1"
-        ).fetchone()
-
-        stats = db.execute("""
-            SELECT
-                COUNT(DISTINCT series_id) as series,
-                SUM(CASE WHEN status='wanted'     THEN 1 ELSE 0 END) as wanted,
-                SUM(CASE WHEN status='grabbed'    THEN 1 ELSE 0 END) as grabbed,
-                SUM(CASE WHEN status='downloaded' THEN 1 ELSE 0 END) as downloaded
-            FROM volumes
-        """).fetchone()
-
+    # Aggregate rows for the bottom of the page come from the same
+    # snapshot — second get_db() block removed as part of issue #31
+    # follow-up B.
+    last_rss_row = snap['last_rss_poll']
+    last_backlog_row = snap['last_backlog']
     return templates.TemplateResponse(request, "health.html", {
         "checks":        checks,
-        "stale_series":  stale,
-        "stale_grabs":   stale_grabs,
-        "stuck_imports": stuck_imports,
-        "recent_errors": recent_errors,
-        "last_rss":      last_rss['created_at'] if last_rss else None,
+        "stale_series":  snap['stale_series'],
+        "stale_grabs":   snap['stale_grabs'],
+        "stuck_imports": snap['stuck_imports'],
+        "recent_errors": snap['recent_errors'],
+        "last_rss":      last_rss_row['created_at'] if last_rss_row else None,
         "last_backlog":  last_backlog_row['created_at'] if last_backlog_row else None,
-        "stats":         stats,
+        "stats":         snap['stats'],
     })
 
 
