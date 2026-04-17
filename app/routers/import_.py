@@ -54,35 +54,131 @@ async def import_queue_page(request: Request):
     return RedirectResponse("/queue", status_code=301)
 
 
+_VALID_PACK_TYPES = {
+    '', 'volume', 'volume_range', 'chapter', 'chapter_range', 'complete', 'special',
+}
+
+
+def _parse_vol_input(raw: str) -> float | None:
+    """Parse a volume form input into a float.
+
+    Accepts plain numbers (1, 3.5), letter suffixes (3a → 3.01), and
+    Unicode fraction suffixes (3½ → 3.5). Returns None on blank/invalid
+    so process_import can fall back to the existing proposed value.
+    """
+    if not raw:
+        return None
+    import main as _m
+    # Strip whitespace; the underlying _parse_vol_suffix handles the rest.
+    return _m._parse_vol_suffix(raw.strip())
+
+
 @router.post("/import/{queue_id}/process")
 async def process_import(queue_id: int, request: Request):
-    """Process an import queue item after user review: parse form overrides then execute."""
+    """Process an import queue item after user review: parse form overrides then execute.
+
+    Stage 2 of the mapping audit: the review UI now carries explicit
+    range / pack-type / is-special fields per file. Operator overrides
+    are written straight to import_queue_files so _execute_import reads
+    a consistent, already-resolved row. The old volume_overrides /
+    chapter_overrides kwargs remain on the call for any queue row that
+    was written before this change (they behave identically).
+    """
     import main as _m
     form = await request.form()
 
     volume_overrides: dict[int, float] = {}
     chapter_overrides: dict[int, float] = {}
     skip_ids: set[int] = set()
+
     with get_db() as db:
         file_ids = [r['id'] for r in db.execute(
             "SELECT id FROM import_queue_files WHERE queue_id=?", (queue_id,)
         ).fetchall()]
-    for fid in file_ids:
-        if form.get(f"skip_{fid}"):
-            skip_ids.add(fid)
-        else:
-            raw_vol = form.get(f"vol_{fid}", '')
-            if raw_vol:
-                try:
-                    volume_overrides[fid] = float(raw_vol)
-                except ValueError:
-                    pass
-            raw_chap = form.get(f"chap_{fid}", '')
-            if raw_chap:
-                try:
-                    chapter_overrides[fid] = float(raw_chap)
-                except ValueError:
-                    pass
+
+        for fid in file_ids:
+            if form.get(f"skip_{fid}"):
+                # Skip wins over everything else — don't waste a DB write
+                # persisting overrides for a file we're dropping.
+                skip_ids.add(fid)
+                continue
+
+            # Volume (start) — accepts fractional/letter suffixes (D11).
+            raw_vol     = form.get(f"vol_{fid}",      '') or ''
+            raw_vol_end = form.get(f"vol_end_{fid}",  '') or ''
+            vol_val     = _parse_vol_input(raw_vol)
+            vol_end_val = _parse_vol_input(raw_vol_end)
+
+            # Chapter (start) + range end. type=number already restricts
+            # to decimals; still guard against bad input.
+            raw_chap     = form.get(f"chap_{fid}",     '') or ''
+            raw_chap_end = form.get(f"chap_end_{fid}", '') or ''
+            try:
+                chap_val = float(raw_chap) if raw_chap else None
+            except ValueError:
+                chap_val = None
+            try:
+                chap_end_val = float(raw_chap_end) if raw_chap_end else None
+            except ValueError:
+                chap_end_val = None
+
+            # Pack type select (empty string → no override, leaves the
+            # parser's proposal in place).
+            pack_raw = (form.get(f"pack_{fid}", '') or '').strip()
+            if pack_raw not in _VALID_PACK_TYPES:
+                pack_raw = ''
+            is_special_flag = 1 if form.get(f"spec_{fid}") else 0
+
+            # ── Conflict handling ─────────────────────────────────────
+            # If both a volume and a chapter number are provided, the
+            # pack-type select is the tie-breaker. Otherwise fall back
+            # to whichever has a value; if both present and pack type
+            # doesn't disambiguate, mark the file needs_review and let
+            # the operator resolve it. One file never imports as both.
+            vol_given  = vol_val is not None or vol_end_val is not None
+            chap_given = chap_val is not None or chap_end_val is not None
+            conflict   = vol_given and chap_given and pack_raw in ('', 'complete', 'special')
+
+            if conflict:
+                db.execute(
+                    "UPDATE import_queue_files SET status='needs_review'"
+                    " WHERE id=?", (fid,)
+                )
+                continue
+
+            # Work out the new row values. Cleared fields (empty form
+            # input on a row that previously had a value) zero out via
+            # NULL writes — this lets the operator remove a parser
+            # guess they disagree with.
+            updates: list[tuple[str, object]] = [
+                ('proposed_volume',              vol_val),
+                ('proposed_volume_range_start',  vol_val if vol_end_val is not None else None),
+                ('proposed_volume_range_end',    vol_end_val),
+                ('proposed_chapter',             chap_val),
+                ('proposed_chapter_range_end',   chap_end_val),
+                ('proposed_pack_type',           pack_raw or None),
+                ('proposed_is_special',          is_special_flag),
+            ]
+            # Route file_type with the operator's verdict so downstream
+            # code paths (volume vs chapter insert) pick the right shape.
+            if chap_given or pack_raw in ('chapter', 'chapter_range'):
+                updates.append(('file_type', 'chapter'))
+            elif vol_given or pack_raw in ('volume', 'volume_range', 'complete'):
+                updates.append(('file_type', 'volume'))
+            set_clause = ", ".join(f"{col}=?" for col, _ in updates)
+            db.execute(
+                f"UPDATE import_queue_files SET {set_clause} WHERE id=?",
+                [v for _, v in updates] + [fid],
+            )
+
+            # Mirror the resolved values into the legacy kwargs so a
+            # fallback code path inside _execute_import still sees the
+            # operator's intent even if it hasn't been updated to read
+            # from the row yet.
+            if vol_val is not None:
+                volume_overrides[fid] = vol_val
+            if chap_val is not None:
+                chapter_overrides[fid] = chap_val
 
     # Route through the guarded wrapper so two racing form submits (or a
     # form submit racing an auto-import worker) can't both process the row.
