@@ -1554,10 +1554,31 @@ def extract_volume_num(title: str) -> float | None:
     - Roman numerals: Volume III → 3  (up to XXX)
     - Japanese:  1巻 → 1,  第3巻 → 3
     - Korean:    1권 → 1
+    - Omnibus:   Omnibus 1 → 1  (volume-level edition, not a chapter)
     - Negative lookahead: ignores numbers followed by MB/GB/KB/p (file sizes/resolutions)
+
+    Returns None when the title represents a volume range — the range
+    is owned by extract_volume_range and a caller reading vol_num
+    separately would otherwise pick up the start and treat a multi-volume
+    pack as a single volume (audit defect D9).
     """
     if not title:
         return None
+
+    # Volume ranges belong to extract_volume_range. Don't also hand back
+    # the start as if it were a single-volume release. (D9)
+    if extract_volume_range(title):
+        return None
+
+    # ── Omnibus / box set markers ─────────────────────────────────────────────
+    # "Omnibus 1", "Box Set 2", "Boxset 3" — these are volume-level editions,
+    # not chapters. Matched early so they beat the generic vol/volume patterns
+    # (which they don't contain). (D7)
+    m = re.search(r'\b(?:omnibus|box[\s-]?set)\s+(\d{1,3})\b', title, re.IGNORECASE)
+    if m:
+        val = _parse_vol_suffix(m.group(1))
+        if val is not None:
+            return val
 
     # ── Asian language markers (highest priority, unambiguous) ────────────────
     # Japanese: 第1巻, 1巻
@@ -1614,8 +1635,19 @@ def extract_volume_num(title: str) -> float | None:
 
 def extract_volume_range(title: str) -> tuple[float, float] | None:
     """Extract a volume range from a pack title. Returns (start, end) or None.
-    Supports letter/fraction suffixes: v1a-v5b, v3½-v7."""
+    Supports letter/fraction suffixes: v1a-v5b, v3½-v7.
+
+    A chapter range (c001-002, Ch. 1-2, Chapters 1-10) is NOT a volume
+    range — extract_chapter_range owns those. Previously the same code
+    path here claimed both, which let chapter packs pretend to cover
+    mainline volume slots in coverage checks (audit defect D4).
+    """
     if not title:
+        return None
+    # If this is a chapter range, it is not a volume range — period.
+    # The bare-number fallback below would otherwise match "1-10" inside
+    # "Chapters 1-10" and hand back a volume range.
+    if extract_chapter_range(title):
         return None
     _sfx = r'[a-d½¼¾]?'
     patterns = [
@@ -1623,8 +1655,6 @@ def extract_volume_range(title: str) -> tuple[float, float] | None:
         rf'\bv(?:ol(?:ume)?)?\.?\s*(\d{{1,4}}(?:\.\d+)?{_sfx})\s*[-–—~]\s*(?:v(?:ol(?:ume)?)?\.?\s*)?(\d{{1,4}}(?:\.\d+)?{_sfx})\b',
         # [001-038], [01-10]
         rf'\[(\d{{1,4}}(?:\.\d+)?{_sfx})\s*[-–—~]\s*(\d{{1,4}}(?:\.\d+)?{_sfx})\]',
-        # c001-c100, ch1-ch50, chapter 1-50
-        rf'\bc(?:h(?:apter)?)?\.?\s*(\d{{1,4}}(?:\.\d+)?{_sfx})\s*[-–—~]\s*(?:c(?:h(?:apter)?)?\.?\s*)?(\d{{1,4}}(?:\.\d+)?{_sfx})\b',
         # "1-38" only when preceded by space/start and followed by space/end
         r'(?:^|[\s(])\b(\d{1,3})\s*[-–—]\s*(\d{1,3})\b(?=[\s),\[]|$)',
     ]
@@ -1658,11 +1688,14 @@ def extract_chapter_range(title: str) -> tuple[float, float] | None:
     if not title:
         return None
     _sfx = r'[a-d½¼¾]?'
+    # Prefix supports `c`, `ch`, `chap`, `chapter`, and plural `Chapters`
+    # (the `s?` fixes audit defect D3 — plural was falling through to the
+    # bare-number fallback in extract_chapter_num).
     pat = (
-        rf'\bc(?:h(?:apter)?)?\.?\s*'
+        rf'\bc(?:h(?:a(?:p(?:ter)?)?)?)?s?\.?\s*'
         rf'(\d{{1,4}}(?:\.\d+)?{_sfx})'
         rf'\s*[-–—~]\s*'
-        rf'(?:c(?:h(?:apter)?)?\.?\s*)?'
+        rf'(?:c(?:h(?:a(?:p(?:ter)?)?)?)?s?\.?\s*)?'
         rf'(\d{{1,4}}(?:\.\d+)?{_sfx})\b'
     )
     m = re.search(pat, title, re.IGNORECASE)
@@ -1688,16 +1721,32 @@ def extract_chapter_num(title: str) -> float | None:
     Returns None for ranges, non-chapter titles, or when no number is found.
 
     Handles:
-    - ch/chapter/episode/ep prefix
+    - ch/chapter/chapters/episode/ep prefix
     - Decimal chapters: ch.10.5, c100.1
     - Fraction/letter suffixes: ch.3½, ch.3a
     - Japanese: 第1話 (episode 1)
     - Negative lookahead: ignores 720/1080 in resolutions and file sizes (300MB)
+
+    Guards that keep this from poisoning volume/complete releases:
+    - A chapter range present → return None (D2)
+    - Volume marker present (Vol, Volume, V_001, Omnibus, JP/KR) → bare-
+      number fallback is suppressed so series-title digits like "20th
+      Century Boys Vol. 1" don't leak a ghost chapter (D1, D7)
     """
     if not title:
         return None
-    # Reject range patterns (ch1-5, c001-100, etc.)
-    if re.search(r'\b(?:ch(?:apter)?|ep(?:isode)?|c)[\s.]?\d+\s*[-–—~]\s*\d', title, re.IGNORECASE):
+    # Range-reject: if a chapter range is detected anywhere in the title,
+    # this is a range release and the single-chapter parser must stay
+    # silent. extract_chapter_range already handles plural "Chapters" and
+    # the "Ch. 1-2" space-after-period form, so delegating here avoids
+    # maintaining a second regex for the same thing. (D2, D3)
+    if extract_chapter_range(title):
+        return None
+    # Symmetric guard: if the title is a volume range (including bare
+    # bracket forms like "[001-038]"), the digits inside belong to
+    # volumes. Without this check the bare-number fallback was picking
+    # "1" out of "[001-038]" and reporting it as a chapter.
+    if extract_volume_range(title):
         return None
 
     # ── Japanese episode marker: 第3話 ────────────────────────────────────────
@@ -1712,13 +1761,14 @@ def extract_chapter_num(title: str) -> float | None:
     _num = r'(\d{1,4}(?:\.\d+)?[a-d½¼¾]?)(?!\d)(?![gGmMkK][bBiI]|[pP]\b)'
 
     patterns = [
-        # chapter / ch / chap with or without dot/space separator
-        rf'\bch(?:a(?:p(?:ter)?)?)?\.?\s*{_num}',
+        # chapter / chapters / ch / chap with or without dot/space separator.
+        # `s?` matches plural "Chapters" so "Chapters 1" resolves to 1
+        # instead of falling through to the bare-number fallback. (D3)
+        rf'\bch(?:a(?:p(?:ter)?)?)?s?\.?\s*{_num}',
         # episode / ep prefix (some manga scanners use this)
         rf'\bep(?:isode)?\.?\s*{_num}',
         # bare 'c' followed by at least 2 digits (avoids catching 'c' in words)
         rf'\bc(\d{{2,4}}(?:\.\d+)?[a-d½¼¾]?)(?!\d)(?![gGmMkK][bBiI]|[pP]\b)',
-        # hash-number when no vol marker present (handled below)
     ]
     for pat in patterns:
         m = re.search(pat, title, re.IGNORECASE)
@@ -1732,9 +1782,22 @@ def extract_chapter_num(title: str) -> float | None:
     # Excludes: resolutions (720p, 1080p, 4K), file sizes (300MB, 2GB),
     #           years (2020-2024), Asian volume markers (第N巻, N권), and
     #           very large numbers unlikely to be chapters.
-    has_vol   = (bool(re.search(r'\bv(?:ol(?:ume)?)?[\s.\-]?\d', title, re.IGNORECASE))
-                 or bool(re.search(r'(?:第\s*)?\d+\s*[巻券]|\d+\s*권', title)))  # JP/KR volume
-    has_chap  = bool(re.search(r'\bch(?:a(?:p(?:ter)?)?)?[\s.]?\d', title, re.IGNORECASE))
+    #
+    # The has_vol / has_chap guards accept the shapes the parser's positive
+    # regexes accept — "Vol. 1", "Vol 1", "Volume 01", "Chapters 1",
+    # "Omnibus 1", etc. The earlier pattern required the separator and the
+    # digit to be adjacent, which let the bare-number fallback fire for
+    # every "Vol. 1.cbz" release and hand back a ghost chapter. (D1, D3, D7)
+    has_vol = (
+        bool(re.search(r'\bv(?:ol(?:ume)?)?\.?\s*\d', title, re.IGNORECASE))
+        or bool(re.search(r'(?<![A-Za-z])v(?:ol(?:ume)?)?_\d', title, re.IGNORECASE))
+        or bool(re.search(r'(?:第\s*)?\d+\s*[巻券]|\d+\s*권', title))  # JP/KR volume
+        or bool(re.search(r'\b(?:omnibus|box[\s-]?set)\b', title, re.IGNORECASE))
+    )
+    has_chap = bool(re.search(
+        r'\bch(?:a(?:p(?:ter)?)?)?s?\.?\s*\d|\bep(?:isode)?\.?\s*\d|\bc\d{2,}',
+        title, re.IGNORECASE,
+    ))
     if not has_vol and not has_chap:
         # Reject resolution patterns before bare-number match
         clean = re.sub(
@@ -1782,16 +1845,42 @@ def detect_pack_type(title: str, vol_range: tuple | None,
     """
     Returns 'complete', 'chapter', or 'volume' for a pack release.
     Uses torrent name cues and series volume count as context.
+
+    Ordering matters:
+      1. is_complete_pack wins outright (it knows about year spans and
+         the 90%-of-total-volumes heuristic — both require total_volumes
+         to be passed through, which was missing previously. (D15))
+      2. A chapter range in the title always resolves to 'chapter',
+         including short `c1-c2` forms the old bare-regex missed. (D5)
+      3. Explicit chapter markers ("Chapters", "c123") → 'chapter'.
+      4. If extract_volume_num returned a value, we have a real volume
+         marker — don't let the bare-number heuristic flip us to
+         'chapter' because of an unrelated digit in the title. (D6)
+      5. Only then do the bare-number / range-size heuristics run.
     """
-    if is_complete_pack(title):
+    # (D15) is_complete_pack's year-span and 90%-coverage branches
+    # need total_volumes; not threading it through was silently
+    # demoting "v01-10 Complete" to 'volume'.
+    if is_complete_pack(title, total_volumes):
         return 'complete'
+    # (D5) Chapter ranges own the 'chapter' verdict — the old regex
+    # `\bc\d{2,}` missed forms like c1-c2 where the digit count is <2.
+    if extract_chapter_range(title):
+        return 'chapter'
     t = title.lower()
-    # Explicit chapter markers in the name always = chapter pack
+    # Explicit chapter markers in the name → chapter pack.
     if re.search(r'\bch(?:apter)?s?[\s.]', t) or re.search(r'\bc\d{2,}', t):
         return 'chapter'
+    # (D6) If the parser found a real volume number, trust it; skip the
+    # bare-number heuristic that was misclassifying "Part 5 Vol 17" as
+    # 'chapter' because 17 > total_volumes * 1.5 for small libraries.
+    vol_num = extract_volume_num(title)
+    if vol_num is not None and not vol_range:
+        return 'volume'
     if not vol_range:
-        # No range detected — try to classify using a single extracted number
-        # Look for a bare number that exceeds the series volume count (likely a chapter number)
+        # No range, no volume marker. Try to classify using a single
+        # extracted number — this is the noisiest path and is only
+        # reached when every earlier signal is absent.
         single_m = re.search(r'(?:^|[\s\[({])(\d{2,4})(?:[\s\])}]|$)', title)
         if single_m and total_volumes and total_volumes > 0:
             num = float(single_m.group(1))
@@ -1812,6 +1901,46 @@ def detect_pack_type(title: str, vol_range: tuple | None,
     if end > 60 and not re.search(r'\bv(?:ol)?[\s.]', t):
         return 'chapter'
     return 'volume'
+
+
+# ──────────────────── Special / side-story detection ─────────────────────────
+# Word-boundary regexes so "extra" doesn't match "extraordinary". `one-shot`,
+# `one shot`, and `oneshot` all share one pattern via `[-\s]?`.
+
+_SPECIAL_RELEASE_PATTERNS = (
+    r'\bspecial\b',
+    r'\bextras?\b',
+    r'\bone[-\s]?shot\b',
+    r'\bgaiden\b',
+    r'\bside[-\s]?stor(?:y|ies)\b',
+    r'\bsidestory\b',
+    r'\bbonus\b',
+    r'\bomake\b',
+)
+
+
+def is_special_release(title: str) -> bool:
+    """Detect titles that look like side-stories / oneshots / specials.
+
+    Detection-only in Stage 1. A True here means "operator review is
+    needed before this satisfies mainline volumes/chapters". Stage 2
+    wires this into the queue-review category; Stage 3 excludes flagged
+    rows from mainline coverage. Nothing downstream reads this yet.
+
+    Recognises:
+      - Western markers: Special, Extra(s), Oneshot/One-shot, Gaiden,
+        Side Story / Sidestory / Side Stories, Bonus, Omake
+      - Japanese:       外伝 (gaiden)
+    """
+    if not title:
+        return False
+    t = title.lower()
+    for pat in _SPECIAL_RELEASE_PATTERNS:
+        if re.search(pat, t):
+            return True
+    if '外伝' in title:  # CJK has no word-boundary concept; raw substring.
+        return True
+    return False
 
 def score_release(title: str, series_id: int | None = None,
                   release_group: str = '', indexer: str = '', language: str = '',
