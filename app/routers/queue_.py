@@ -14,6 +14,97 @@ from shared import (
 
 router = APIRouter()
 
+# Upper bound on how long the queue page will wait on qBit/SAB status per
+# pageview. The previous 10s default made a single stalled upstream block
+# page navigation for ~30-60s (two sequential calls + auth). 2.5s keeps
+# the page responsive while leaving enough headroom for a healthy LAN
+# client (typical response <200ms).
+#
+# Delete/recheck/category actions have their own timeouts and keep 10s
+# intentionally — those are user-initiated and can afford to wait.
+QUEUE_UPSTREAM_TIMEOUT_SECONDS = 2.5
+
+
+async def _fetch_qbit_status(qc: dict) -> dict:
+    """Poll qBittorrent for current torrent state.
+
+    Returns {hash: info_dict} or {} on any failure (timeout, auth fail,
+    non-200, unreachable). Never raises — the queue page must render even
+    when qBit is down.
+    """
+    if not qc:
+        return {}
+    host = (qc.get('host') or '').rstrip('/')
+    user = qc.get('username') or ''
+    pw   = qc.get('password') or ''
+    cat  = qc.get('category') or get_cfg('category')
+    try:
+        async with httpx.AsyncClient(timeout=QUEUE_UPSTREAM_TIMEOUT_SECONDS) as client:
+            r = await client.post(
+                f"{host}/api/v2/auth/login",
+                data={'username': user, 'password': pw},
+            )
+            if 'Ok' not in r.text:
+                return {}
+            r2 = await client.get(
+                f"{host}/api/v2/torrents/info",
+                params={'category': cat},
+            )
+            if r2.status_code != 200:
+                return {}
+            out: dict = {}
+            for t in r2.json():
+                h = t.get('hash', '').lower()
+                out[h] = {
+                    'hash':          h,
+                    'name':          t.get('name', ''),
+                    'state':         t.get('state', ''),
+                    'progress':      round(t.get('progress', 0) * 100, 1),
+                    'dlspeed':       t.get('dlspeed', 0),
+                    'eta':           t.get('eta', -1),
+                    'client':        'qbittorrent',
+                    'error_message': t.get('stateMessage', ''),
+                }
+            return out
+    except Exception:
+        return {}
+
+
+async def _fetch_sab_status(sc: dict) -> dict:
+    """Poll SABnzbd for current queue state.
+
+    Returns {nzo_id: info_dict} or {} on any failure. Never raises.
+    """
+    if not sc:
+        return {}
+    host   = (sc.get('host') or '').rstrip('/')
+    apikey = sc.get('password') or ''
+    if not apikey:
+        return {}
+    try:
+        async with httpx.AsyncClient(timeout=QUEUE_UPSTREAM_TIMEOUT_SECONDS) as client:
+            r = await client.get(
+                f"{host}/api",
+                params={'mode': 'queue', 'apikey': apikey, 'output': 'json'},
+            )
+            if r.status_code != 200:
+                return {}
+            out: dict = {}
+            for s in r.json().get('queue', {}).get('slots', []):
+                nzo = s.get('nzo_id', '')
+                out[nzo] = {
+                    'hash':     nzo,
+                    'name':     s.get('filename', ''),
+                    'state':    s.get('status', '').lower(),
+                    'progress': float(s.get('percentage', 0)),
+                    'dlspeed':  0,
+                    'eta':      s.get('timeleft', ''),
+                    'client':   'sabnzbd',
+                }
+            return out
+    except Exception:
+        return {}
+
 
 async def _build_queue_rows() -> tuple[list, list]:
     """Build (queue_rows, disk_info) for the queue page and queue/table partial."""
@@ -21,62 +112,18 @@ async def _build_queue_rows() -> tuple[list, list]:
     from routers.download_clients import get_client_for_protocol as _gcp_q
 
     # ── Download client data ──────────────────────────────────────────────
-    torrent_by_hash: dict = {}
+    # qBit and SAB status are independent — run concurrently so a slow or
+    # unreachable client can't cascade into the other one's timeout. Both
+    # helpers swallow their own exceptions and return {} on failure, so
+    # we never see exceptions here even without return_exceptions.
     with get_db() as _q_dc_db:
         _q_qc = _gcp_q(_q_dc_db, 'torrent')
-    if _q_qc:
-        _q_host = (_q_qc.get('host') or '').rstrip('/')
-        _q_user = _q_qc.get('username') or ''
-        _q_pw   = _q_qc.get('password') or ''
-        _q_cat  = _q_qc.get('category') or get_cfg('category')
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.post(f"{_q_host}/api/v2/auth/login",
-                                      data={'username': _q_user, 'password': _q_pw})
-                if 'Ok' in r.text:
-                    r2 = await client.get(f"{_q_host}/api/v2/torrents/info",
-                                          params={'category': _q_cat})
-                    if r2.status_code == 200:
-                        for t in r2.json():
-                            h = t.get('hash', '').lower()
-                            torrent_by_hash[h] = {
-                                'hash':          h,
-                                'name':          t.get('name', ''),
-                                'state':         t.get('state', ''),
-                                'progress':      round(t.get('progress', 0) * 100, 1),
-                                'dlspeed':       t.get('dlspeed', 0),
-                                'eta':           t.get('eta', -1),
-                                'client':        'qbittorrent',
-                                'error_message': t.get('stateMessage', ''),
-                            }
-        except Exception:
-            pass
+        _q_sc = _gcp_q(_q_dc_db, 'nzb')
 
-    sab_by_id: dict = {}
-    with get_db() as _q_sab_db:
-        _q_sc = _gcp_q(_q_sab_db, 'nzb')
-    if _q_sc:
-        sab_host   = (_q_sc.get('host') or '').rstrip('/')
-        sab_apikey = _q_sc.get('password') or ''
-        if sab_apikey:
-            try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    r = await client.get(f"{sab_host}/api",
-                        params={'mode': 'queue', 'apikey': sab_apikey, 'output': 'json'})
-                    if r.status_code == 200:
-                        for s in r.json().get('queue', {}).get('slots', []):
-                            nzo = s.get('nzo_id', '')
-                            sab_by_id[nzo] = {
-                                'hash':     nzo,
-                                'name':     s.get('filename', ''),
-                                'state':    s.get('status', '').lower(),
-                                'progress': float(s.get('percentage', 0)),
-                                'dlspeed':  0,
-                                'eta':      s.get('timeleft', ''),
-                                'client':   'sabnzbd',
-                            }
-            except Exception:
-                pass
+    torrent_by_hash, sab_by_id = await asyncio.gather(
+        _fetch_qbit_status(_q_qc),
+        _fetch_sab_status(_q_sc),
+    )
 
     all_client_items = {**torrent_by_hash, **sab_by_id}
 
