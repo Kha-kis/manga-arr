@@ -10,7 +10,7 @@ import httpx
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from shared import get_cfg, get_db
+from shared import get_cfg, get_db, timed_block
 
 log = logging.getLogger(__name__)
 
@@ -117,7 +117,12 @@ async def _sync_mangadex_chapters_impl(series_id: int) -> dict:
             await asyncio.sleep(_RATE_SLEEP)
 
     added = updated = external_skipped = 0
-    with get_db() as db:
+    # Instrumentation for issue #31 follow-up A: this block holds a single
+    # write transaction across N chapter upserts. For large series (200+
+    # chapters) it can dominate the event loop and stall other DB work.
+    with timed_block("sync_mangadex_chapters.db_upsert",
+                     series_id=series_id, rows=len(all_chapters)), \
+         get_db() as db:
         for item in all_chapters:
             parsed = _parse_chapter(item, series_id)
             if parsed['is_external']:

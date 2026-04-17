@@ -3775,8 +3775,37 @@ def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
         log_event('import', f"Queued for review ({unmapped} unmapped file(s)): {torrent_name}", series_id, db=db)
     return queue_id, needs_review
 
+# Single-flight guard for check_download_status. Evidence from issue #31
+# follow-up A: the function's body takes 7-38s per run and was being
+# spawned concurrently (up to 4× at once) from:
+#   - status_loop (every 5 min)
+#   - /api/check-downloads button
+#   - /api/backfill-packs / system endpoints
+# Overlapping runs amplify event-loop blocking and DB write contention.
+# When one run is in flight, additional invocations are no-ops — the
+# in-flight run will pick up whatever new state the caller cared about.
+_CHECK_DOWNLOAD_STATUS_LOCK = asyncio.Lock()
+
+
 async def check_download_status():
-    """Poll download clients for completed downloads and queue them for import review."""
+    """Poll download clients for completed downloads and queue them for import review.
+
+    Skips if another invocation is still running (single-flight). Callers
+    that need guaranteed execution should await a completed call instead
+    of firing-and-forgetting via asyncio.create_task.
+    """
+    from shared import timed_block as _tb
+    if _CHECK_DOWNLOAD_STATUS_LOCK.locked():
+        # Another worker is already scanning; its results will reflect the
+        # same queue state this caller would have seen.
+        return
+    async with _CHECK_DOWNLOAD_STATUS_LOCK:
+        with _tb("check_download_status"):
+            return await _check_download_status_impl()
+
+
+async def _check_download_status_impl():
+    """Inner body (wrapped for timing instrumentation — issue #31 follow-up A)."""
     # Clean up stale imported/failed entries older than 7 days
     with get_db() as _cdb:
         _cdb.execute(

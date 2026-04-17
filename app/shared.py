@@ -23,6 +23,40 @@ _DB_SLOW_OPEN_MS = 100      # log connect+pragma sequences slower than this
 _DB_SLOW_TOTAL_MS = 200     # log whole-transaction durations slower than this
 
 
+class timed_block:
+    """Context manager + async context manager. Logs a labelled duration
+    when MANGARR_DEBUG_TIMING=1 and elapsed > threshold_ms. Used to
+    profile background loops (issue #31 follow-up A).
+
+    Usage:
+        with timed_block("sync_mangadex_chapters", rows=n): ...
+        async with timed_block("rss_loop_tick"): ...
+    """
+    __slots__ = ("label", "extra", "threshold_ms", "_t0")
+    def __init__(self, label: str, threshold_ms: int = 100, **extra):
+        self.label = label
+        self.extra = extra
+        self.threshold_ms = threshold_ms
+        self._t0 = 0.0
+    def __enter__(self):
+        if _DEBUG_DB_TIMING:
+            import time as _t
+            self._t0 = _t.perf_counter()
+        return self
+    def __exit__(self, *a):
+        if _DEBUG_DB_TIMING:
+            import time as _t
+            dt = (_t.perf_counter() - self._t0) * 1000
+            if dt > self.threshold_ms:
+                extras = " ".join(f"{k}={v}" for k, v in self.extra.items())
+                print(f"[BG-LOOP] {dt:>8.1f}ms  {self.label}  {extras}", flush=True)
+        return False
+    async def __aenter__(self):
+        return self.__enter__()
+    async def __aexit__(self, *a):
+        return self.__exit__(*a)
+
+
 def ensure_wal_journal_mode() -> None:
     """One-shot at startup: make sure the DB file is in WAL mode.
 

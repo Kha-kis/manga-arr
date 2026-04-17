@@ -19,7 +19,7 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from shared import get_cfg, get_db
+from shared import get_cfg, get_db, timed_block
 
 log    = logging.getLogger(__name__)
 router = APIRouter()
@@ -778,6 +778,12 @@ async def check_suwayomi_jobs():
     Called periodically from main.check_download_status().
     Polls each active suwayomi_downloads job and marks complete when done.
     """
+    with timed_block("check_suwayomi_jobs"):
+        return await _check_suwayomi_jobs_impl()
+
+
+async def _check_suwayomi_jobs_impl():
+    """Inner body (wrapped for timing — issue #31 follow-up A)."""
     import main as _m
 
     with get_db() as db:
