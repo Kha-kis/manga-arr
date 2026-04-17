@@ -14,15 +14,18 @@ from shared import (
 
 router = APIRouter()
 
-# Upper bound on how long the queue page will wait on qBit/SAB status per
-# pageview. The previous 10s default made a single stalled upstream block
-# page navigation for ~30-60s (two sequential calls + auth). 2.5s keeps
-# the page responsive while leaving enough headroom for a healthy LAN
-# client (typical response <200ms).
-#
-# Delete/recheck/category actions have their own timeouts and keep 10s
-# intentionally — those are user-initiated and can afford to wait.
+# Upper bound on how long ONE upstream HTTP call is allowed to wait.
+# Healthy LAN clients respond in <200ms; 2.5s is the per-call ceiling.
 QUEUE_UPSTREAM_TIMEOUT_SECONDS = 2.5
+
+# Stricter upper bound on how long the queue PAGE render will wait on
+# upstream status fetches before rendering without them. The page is
+# built primarily from the DB; live qBit/SAB data is an enrichment
+# (progress %, speed, ETA) that can be missing without breaking UX.
+# Bounding the render path to 0.8s keeps navigation fast even when a
+# single upstream takes ~2s to answer. Subsequent page loads will pick
+# up live data once the upstream responds within budget.
+QUEUE_RENDER_UPSTREAM_BUDGET = 0.8
 
 
 async def _fetch_qbit_status(qc: dict) -> dict:
@@ -114,16 +117,32 @@ async def _build_queue_rows() -> tuple[list, list]:
     # ── Download client data ──────────────────────────────────────────────
     # qBit and SAB status are independent — run concurrently so a slow or
     # unreachable client can't cascade into the other one's timeout. Both
-    # helpers swallow their own exceptions and return {} on failure, so
-    # we never see exceptions here even without return_exceptions.
+    # helpers swallow their own exceptions and return {} on failure.
+    #
+    # Additionally bound the total wait with asyncio.wait_for: the page
+    # renders all queued items from the DB regardless of upstream status,
+    # so once the wait exceeds a page-render budget we'd rather show the
+    # rows without live progress bars than keep the user waiting. Live
+    # status then reappears on the next page load when the upstreams are
+    # responsive again. (Issue #31 — "render from DB / last-known status
+    # immediately; degrade gracefully when live status is unavailable.")
     with get_db() as _q_dc_db:
         _q_qc = _gcp_q(_q_dc_db, 'torrent')
         _q_sc = _gcp_q(_q_dc_db, 'nzb')
 
-    torrent_by_hash, sab_by_id = await asyncio.gather(
-        _fetch_qbit_status(_q_qc),
-        _fetch_sab_status(_q_sc),
-    )
+    try:
+        torrent_by_hash, sab_by_id = await asyncio.wait_for(
+            asyncio.gather(
+                _fetch_qbit_status(_q_qc),
+                _fetch_sab_status(_q_sc),
+            ),
+            timeout=QUEUE_RENDER_UPSTREAM_BUDGET,
+        )
+    except asyncio.TimeoutError:
+        # One or both upstreams missed the budget. Render without their
+        # live data; the rest of the page still shows every queued item
+        # straight from the DB.
+        torrent_by_hash, sab_by_id = {}, {}
 
     all_client_items = {**torrent_by_hash, **sab_by_id}
 
