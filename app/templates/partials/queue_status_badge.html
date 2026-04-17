@@ -1,0 +1,40 @@
+{#
+  Freshness badge for the download-client status cache.
+
+  `queue_status` is the dict built by routers/queue_._queue_status_context:
+      { 'qbit': {'label', 'age_seconds', 'error'},
+        'sab':  {'label', 'age_seconds', 'error'} }
+
+  label ∈ { 'live', 'stale', 'unavailable', 'warming_up', 'disabled' }
+    - 'disabled' means the client isn't configured — we hide it so the
+      badge doesn't shout about a non-setup.
+#}
+{% macro _pill(name, s) %}
+  {% if s.label != 'disabled' %}
+    {% set color =
+      'var(--jade)'   if s.label == 'live' else
+      'var(--gold)'   if s.label == 'stale' else
+      'var(--ember)'  if s.label == 'warming_up' else
+      'var(--ruby)' %}
+    {% set age_txt =
+      'just now'                                    if s.age_seconds is not none and s.age_seconds < 5 else
+      (s.age_seconds|string) + 's ago'              if s.age_seconds is not none and s.age_seconds < 60 else
+      ((s.age_seconds // 60)|string) + 'm ago'      if s.age_seconds is not none and s.age_seconds < 3600 else
+      'never'                                       if s.age_seconds is none else
+      ((s.age_seconds // 3600)|string) + 'h ago' %}
+    <span class="badge text-2xs"
+          style="background:transparent; border:1px solid {{ color }}; color:{{ color }}"
+          title="{% if s.error %}last error: {{ s.error }}{% else %}last success: {{ age_txt }}{% endif %}">
+      <i class="bi bi-circle-fill me-1" style="font-size:0.5em"></i>{{ name }}
+      {%- if s.label == 'warming_up' %} warming up
+      {%- elif s.label == 'unavailable' %} unavailable
+      {%- else %} {{ s.label }} · {{ age_txt }}
+      {%- endif %}
+    </span>
+  {% endif %}
+{% endmacro %}
+
+{% if queue_status %}
+  {{ _pill('qBit', queue_status.qbit) }}
+  {{ _pill('SAB',  queue_status.sab)  }}
+{% endif %}

@@ -7399,6 +7399,10 @@ async def lifespan(app: FastAPI):
     create_background_task(rescan_loop(),                      name="rescan_loop")
     create_background_task(_import_list_loop(),                name="import_list_loop")
     create_background_task(_backup_loop(),                     name="backup_loop")
+    # Poll qBit/SAB in the background so /queue renders from cached
+    # snapshots instead of making live HTTP calls on every pageview.
+    from status_cache import download_status_refresh_loop as _dl_status_loop
+    create_background_task(_dl_status_loop(),                  name="download_status_refresh_loop")
     # Re-process any import_queue entries that were left 'pending' from a previous
     # run (e.g. app restarted mid-import). Only retry entries with no needs_review files.
     with get_db() as _db:

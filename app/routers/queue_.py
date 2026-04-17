@@ -4,146 +4,75 @@ from collections import defaultdict as _dd
 
 import httpx
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from routers._templates import templates
 from shared import (
     cascade_chapters, get_cfg, get_db, get_root_folders,
     build_volume_label, vol_num_to_display, is_htmx,
 )
+# Imported as a module (not `from status_cache import DOWNLOAD_STATUS_CACHE`)
+# so tests can swap the module singleton — a name-level import would snapshot
+# the old reference.
+import status_cache as _sc
+
+
+def _queue_status_context() -> dict:
+    """Build the freshness badge context shown in the queue header.
+
+    Returned shape (one sub-dict per client):
+      {
+        'qbit': {'label': 'live'|'stale'|'unavailable'|'warming_up'|'disabled',
+                 'age_seconds': int | None,
+                 'error': str | None},
+        'sab':  {...},
+      }
+
+    'disabled' means the download client isn't configured — we surface
+    that separately from 'warming_up' so operators can tell the cache
+    isn't broken, there's simply nothing to poll.
+    """
+    from routers.download_clients import get_client_for_protocol as _gcp
+    with get_db() as _db:
+        qc = _gcp(_db, 'torrent')
+        sc = _gcp(_db, 'nzb')
+
+    def _one(snap, configured: bool) -> dict:
+        if not configured:
+            return {'label': 'disabled', 'age_seconds': None, 'error': None}
+        label = _sc.DOWNLOAD_STATUS_CACHE.freshness_label(snap)
+        if snap is None or snap.last_success_at is None:
+            age = None
+        else:
+            from datetime import datetime, timezone
+            age = int((datetime.now(timezone.utc) - snap.last_success_at).total_seconds())
+        return {
+            'label':       label,
+            'age_seconds': age,
+            'error':       snap.error if snap else None,
+        }
+
+    return {
+        'qbit': _one(_sc.DOWNLOAD_STATUS_CACHE.snapshot_qbit(), bool(qc)),
+        'sab':  _one(_sc.DOWNLOAD_STATUS_CACHE.snapshot_sab(),  bool(sc)),
+    }
+
 
 router = APIRouter()
-
-# Upper bound on how long ONE upstream HTTP call is allowed to wait.
-# Healthy LAN clients respond in <200ms; 2.5s is the per-call ceiling.
-QUEUE_UPSTREAM_TIMEOUT_SECONDS = 2.5
-
-# Stricter upper bound on how long the queue PAGE render will wait on
-# upstream status fetches before rendering without them. The page is
-# built primarily from the DB; live qBit/SAB data is an enrichment
-# (progress %, speed, ETA) that can be missing without breaking UX.
-# Bounding the render path to 0.8s keeps navigation fast even when a
-# single upstream takes ~2s to answer. Subsequent page loads will pick
-# up live data once the upstream responds within budget.
-QUEUE_RENDER_UPSTREAM_BUDGET = 0.8
-
-
-async def _fetch_qbit_status(qc: dict) -> dict:
-    """Poll qBittorrent for current torrent state.
-
-    Returns {hash: info_dict} or {} on any failure (timeout, auth fail,
-    non-200, unreachable). Never raises — the queue page must render even
-    when qBit is down.
-    """
-    if not qc:
-        return {}
-    host = (qc.get('host') or '').rstrip('/')
-    user = qc.get('username') or ''
-    pw   = qc.get('password') or ''
-    cat  = qc.get('category') or get_cfg('category')
-    try:
-        async with httpx.AsyncClient(timeout=QUEUE_UPSTREAM_TIMEOUT_SECONDS) as client:
-            r = await client.post(
-                f"{host}/api/v2/auth/login",
-                data={'username': user, 'password': pw},
-            )
-            if 'Ok' not in r.text:
-                return {}
-            r2 = await client.get(
-                f"{host}/api/v2/torrents/info",
-                params={'category': cat},
-            )
-            if r2.status_code != 200:
-                return {}
-            out: dict = {}
-            for t in r2.json():
-                h = t.get('hash', '').lower()
-                out[h] = {
-                    'hash':          h,
-                    'name':          t.get('name', ''),
-                    'state':         t.get('state', ''),
-                    'progress':      round(t.get('progress', 0) * 100, 1),
-                    'dlspeed':       t.get('dlspeed', 0),
-                    'eta':           t.get('eta', -1),
-                    'client':        'qbittorrent',
-                    'error_message': t.get('stateMessage', ''),
-                }
-            return out
-    except Exception:
-        return {}
-
-
-async def _fetch_sab_status(sc: dict) -> dict:
-    """Poll SABnzbd for current queue state.
-
-    Returns {nzo_id: info_dict} or {} on any failure. Never raises.
-    """
-    if not sc:
-        return {}
-    host   = (sc.get('host') or '').rstrip('/')
-    apikey = sc.get('password') or ''
-    if not apikey:
-        return {}
-    try:
-        async with httpx.AsyncClient(timeout=QUEUE_UPSTREAM_TIMEOUT_SECONDS) as client:
-            r = await client.get(
-                f"{host}/api",
-                params={'mode': 'queue', 'apikey': apikey, 'output': 'json'},
-            )
-            if r.status_code != 200:
-                return {}
-            out: dict = {}
-            for s in r.json().get('queue', {}).get('slots', []):
-                nzo = s.get('nzo_id', '')
-                out[nzo] = {
-                    'hash':     nzo,
-                    'name':     s.get('filename', ''),
-                    'state':    s.get('status', '').lower(),
-                    'progress': float(s.get('percentage', 0)),
-                    'dlspeed':  0,
-                    'eta':      s.get('timeleft', ''),
-                    'client':   'sabnzbd',
-                }
-            return out
-    except Exception:
-        return {}
 
 
 async def _build_queue_rows() -> tuple[list, list]:
     """Build (queue_rows, disk_info) for the queue page and queue/table partial."""
     import shutil as _shutil
-    from routers.download_clients import get_client_for_protocol as _gcp_q
 
     # ── Download client data ──────────────────────────────────────────────
-    # qBit and SAB status are independent — run concurrently so a slow or
-    # unreachable client can't cascade into the other one's timeout. Both
-    # helpers swallow their own exceptions and return {} on failure.
-    #
-    # Additionally bound the total wait with asyncio.wait_for: the page
-    # renders all queued items from the DB regardless of upstream status,
-    # so once the wait exceeds a page-render budget we'd rather show the
-    # rows without live progress bars than keep the user waiting. Live
-    # status then reappears on the next page load when the upstreams are
-    # responsive again. (Issue #31 — "render from DB / last-known status
-    # immediately; degrade gracefully when live status is unavailable.")
-    with get_db() as _q_dc_db:
-        _q_qc = _gcp_q(_q_dc_db, 'torrent')
-        _q_sc = _gcp_q(_q_dc_db, 'nzb')
-
-    try:
-        torrent_by_hash, sab_by_id = await asyncio.wait_for(
-            asyncio.gather(
-                _fetch_qbit_status(_q_qc),
-                _fetch_sab_status(_q_sc),
-            ),
-            timeout=QUEUE_RENDER_UPSTREAM_BUDGET,
-        )
-    except asyncio.TimeoutError:
-        # One or both upstreams missed the budget. Render without their
-        # live data; the rest of the page still shows every queued item
-        # straight from the DB.
-        torrent_by_hash, sab_by_id = {}, {}
-
+    # Read from the in-memory cache populated by download_status_refresh_loop
+    # every 20s. Rendering no longer makes live qBit/SAB HTTP calls — a slow
+    # or dead upstream can't stall the page. See app/status_cache.py.
+    _qbit_snap = _sc.DOWNLOAD_STATUS_CACHE.snapshot_qbit()
+    _sab_snap  = _sc.DOWNLOAD_STATUS_CACHE.snapshot_sab()
+    torrent_by_hash = _qbit_snap.items if _qbit_snap else {}
+    sab_by_id       = _sab_snap.items  if _sab_snap  else {}
     all_client_items = {**torrent_by_hash, **sab_by_id}
 
     def _client_stage(state: str) -> str:
@@ -425,7 +354,8 @@ async def _queue_partial_response(request: Request):
         return templates.TemplateResponse(request, "partials/queue_table.html",
                                           {"queue_rows": queue_rows,
                                            "suwayomi_rows": suwayomi_rows,
-                                           "configured_category": configured_category})
+                                           "configured_category": configured_category,
+                                           "queue_status": _queue_status_context()})
     return RedirectResponse("/queue", status_code=303)
 
 
@@ -437,6 +367,7 @@ async def queue_table_partial(request: Request):
         "queue_rows":          queue_rows,
         "suwayomi_rows":       suwayomi_rows,
         "configured_category": configured_category,
+        "queue_status":        _queue_status_context(),
     })
 
 
@@ -448,7 +379,30 @@ async def queue_page(request: Request):
         "disk_info":           disk_info,
         "suwayomi_rows":       suwayomi_rows,
         "configured_category": configured_category,
+        "queue_status":        _queue_status_context(),
     })
+
+
+@router.post("/api/queue/refresh")
+async def queue_refresh(request: Request):
+    """Kick off a download-client status refresh and return immediately.
+
+    We intentionally don't await the refresh — a live upstream poll can
+    take several seconds, and the manual-refresh button shouldn't block
+    the UI. The refresh task writes to DOWNLOAD_STATUS_CACHE; the next
+    /queue/table poll (every 8s) picks up the new data.
+
+    Returns HTTP 202. If HTMX, additionally returns the freshness-only
+    fragment so the badge updates without waiting for the next poll.
+    """
+    asyncio.create_task(_sc.DOWNLOAD_STATUS_CACHE.refresh())
+    if is_htmx(request):
+        return templates.TemplateResponse(
+            request, "partials/queue_status_badge.html",
+            {"queue_status": _queue_status_context()},
+            status_code=202,
+        )
+    return JSONResponse({"ok": True, "status": _queue_status_context()}, status_code=202)
 
 
 @router.post("/queue/grabbed/{dl_hash}/reset-all")
