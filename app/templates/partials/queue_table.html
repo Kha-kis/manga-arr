@@ -1,8 +1,19 @@
 {#
   Partial: partials/queue_table.html
   Context variables required:
-    queue_rows  — list of queue row dicts (from _build_queue_rows())
+    queue_rows   — list of queue row dicts (from _build_queue_rows())
+    queue_status — freshness dict (from _queue_status_context()), used
+                   for the out-of-band badge refresh
 #}
+
+{# OOB: update the header freshness badge every time the queue table
+   re-polls so the "live/stale/…" age counter ticks forward without
+   the user having to click "Refresh now". #}
+{% if queue_status %}
+<span id="queue-status-badge" hx-swap-oob="innerHTML">
+  {% include "partials/queue_status_badge.html" %}
+</span>
+{% endif %}
 
 {% if queue_rows %}
 <div class="table-wrap mb-4">

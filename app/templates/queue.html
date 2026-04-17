@@ -12,7 +12,16 @@
     <span class="htmx-indicator text-xs" style="color:var(--jade)">
       <i class="bi bi-arrow-repeat text-xs"></i>
     </span>
-    <a href="/queue" class="btn btn-secondary btn-sm"><i class="bi bi-arrow-repeat me-1"></i>Refresh</a>
+    <span id="queue-status-badge">
+      {% include "partials/queue_status_badge.html" %}
+    </span>
+    <button type="button"
+            class="btn btn-secondary btn-sm"
+            hx-post="/api/queue/refresh"
+            hx-target="#queue-status-badge"
+            hx-swap="innerHTML">
+      <i class="bi bi-arrow-clockwise me-1"></i>Refresh now
+    </button>
   </div>
 </div>
 

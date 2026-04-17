@@ -1,16 +1,23 @@
-"""Regression tests for the queue-page upstream timeout + concurrency fix.
+"""Regression tests for download-client status concurrency + timeouts.
 
-Production incident: a single rapid-fire test of `/queue` produced outliers
-of 61.5s and 30.5s. `_build_queue_rows` was fetching qBittorrent and
-SABnzbd status sequentially with 10s timeouts, so a stalled upstream
-blocked page rendering for tens of seconds.
+Historical context: a single rapid-fire test of `/queue` produced outliers
+of 61.5s and 30.5s. The original fix moved qBit+SAB fetches concurrent
+with a 2.5s per-call timeout and a 0.8s render budget.
 
-This file pins the new behaviour:
-  - qBit and SAB are fetched concurrently (asyncio.gather)
-  - each fetch respects QUEUE_UPSTREAM_TIMEOUT_SECONDS (2.5s)
-  - a slow or failed upstream never blocks the other
-  - queue rows render using whatever DB data is available even when both
-    upstreams fail
+The follow-up fix (this PR) moved those fetches off the request path
+entirely: the queue page renders from `status_cache.DOWNLOAD_STATUS_CACHE`
+and a background loop refreshes the snapshots every 20s. The per-call
+timeout still exists in the cache layer — it just bounds the background
+poll instead of the page render.
+
+This file now pins the cache-layer behaviour:
+  - status_cache._fetch_qbit / _fetch_sab are invoked concurrently by
+    DownloadStatusCache.refresh so one slow upstream can't block the other
+  - each fetch respects STATUS_UPSTREAM_TIMEOUT_SECONDS
+  - a failed fetch is surfaced as a raised exception (recorded by the
+    cache's _merge_snapshot, not silently swallowed)
+  - _build_queue_rows renders from the cache only — it makes no live
+    httpx calls, so a dead upstream cannot affect render latency
 """
 import asyncio
 import os
@@ -79,10 +86,10 @@ class _MockResp:
         return self._json
 
 
-def _mk_client(delay: float, *, fail: bool = False, payload: dict | None = None,
+def _mk_client(delay: float, *, fail: bool = False, payload=None,
                recorder: list | None = None):
     """Return an AsyncClient stand-in whose every call sleeps `delay` and
-    then returns the given payload (or raises TimeoutError if `fail`)."""
+    then returns the given payload (or raises on `fail`)."""
     class _C:
         def __init__(self, *a, **kw):
             if recorder is not None:
@@ -94,14 +101,16 @@ def _mk_client(delay: float, *, fail: bool = False, payload: dict | None = None,
                 recorder.append(("POST", url, time.perf_counter()))
             await asyncio.sleep(delay)
             if fail:
-                raise httpx.TimeoutException("simulated")  # type: ignore[name-defined]
+                import httpx
+                raise httpx.TimeoutException("simulated")
             return _MockResp(text="Ok.")
         async def get(self, url, *a, **kw):
             if recorder is not None:
                 recorder.append(("GET", url, time.perf_counter()))
             await asyncio.sleep(delay)
             if fail:
-                raise httpx.TimeoutException("simulated")  # type: ignore[name-defined]
+                import httpx
+                raise httpx.TimeoutException("simulated")
             return _MockResp(json_data=payload or {})
     return _C
 
@@ -130,116 +139,44 @@ def _sab_payload():
     }]}}
 
 
-# ───────────────────── the fix: timeout value ────────────────────────────────
+# ───────────────────── cache-layer upstream timeout ──────────────────────────
 
-def test_timeout_constant_is_at_most_three_seconds():
-    """Gate against drift back to 10s. 2.5s is the shipped value; if we
-    ever need to raise it, do so deliberately — not silently."""
-    from routers.queue_ import QUEUE_UPSTREAM_TIMEOUT_SECONDS
-    assert QUEUE_UPSTREAM_TIMEOUT_SECONDS <= 3.0
-    assert QUEUE_UPSTREAM_TIMEOUT_SECONDS > 0
-
-
-def test_render_budget_is_strictly_below_upstream_timeout():
-    """The render-path budget caps how long queue pagination waits on
-    upstreams; it MUST be below the per-call httpx timeout so a slow
-    upstream gets cut off at the render layer rather than dragging the
-    page to 2.5s."""
-    from routers.queue_ import (QUEUE_UPSTREAM_TIMEOUT_SECONDS,
-                                QUEUE_RENDER_UPSTREAM_BUDGET)
-    assert 0 < QUEUE_RENDER_UPSTREAM_BUDGET < QUEUE_UPSTREAM_TIMEOUT_SECONDS
-    # And the budget should be tight enough to feel responsive — under 1s.
-    assert QUEUE_RENDER_UPSTREAM_BUDGET <= 1.0
+def test_status_cache_upstream_timeout_is_bounded():
+    """The background refresh must not hang forever on a dead client.
+    STATUS_UPSTREAM_TIMEOUT_SECONDS bounds per-call wall clock; it can be
+    more generous than the old 2.5s (refresh is off the request path) but
+    must still be finite and reasonable."""
+    from status_cache import STATUS_UPSTREAM_TIMEOUT_SECONDS
+    assert 0 < STATUS_UPSTREAM_TIMEOUT_SECONDS <= 10.0
 
 
-def test_build_queue_rows_respects_render_budget(fresh_db):
-    """When both upstreams hang, _build_queue_rows must return within
-    ~QUEUE_RENDER_UPSTREAM_BUDGET seconds and show rows (minus live data)."""
-    import time as _time
-    import routers.queue_ as q
-    db_path = fresh_db
-
-    # Seed one grabbed volume so the page has something to render.
-    import sqlite3 as _sqlite
-    with _sqlite.connect(db_path) as c:
-        c.execute("INSERT INTO series(id, title, search_pattern)"
-                  " VALUES(7, 'Test', 'Test')")
-        c.execute(
-            "INSERT INTO volumes(series_id, volume_num, status, download_id,"
-            " torrent_name, grabbed_at, client)"
-            " VALUES(7, 1.0, 'grabbed', 'hang-id', 'rel.torrent',"
-            " datetime('now'), 'qbittorrent')"
-        )
-
-    class _Hang:
-        """Both upstreams sleep past the render budget."""
-        def __init__(self, *a, **kw): pass
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def post(self, *a, **kw):
-            await asyncio.sleep(q.QUEUE_RENDER_UPSTREAM_BUDGET + 2.0)
-            class _R: text = "Ok."; status_code = 200
-            return _R()
-        async def get(self, *a, **kw):
-            await asyncio.sleep(q.QUEUE_RENDER_UPSTREAM_BUDGET + 2.0)
-            class _R:
-                status_code = 200
-                def json(self_): return {}
-            return _R()
-
-    t0 = _time.perf_counter()
-    with patch("routers.queue_.httpx.AsyncClient", new=_Hang):
-        rows, *_ = asyncio.run(q._build_queue_rows())
-    dt = _time.perf_counter() - t0
-
-    # The render must not wait for the full upstream timeout; budget + a
-    # little slack for DB work.
-    assert dt < q.QUEUE_RENDER_UPSTREAM_BUDGET + 0.5, (
-        f"/queue render took {dt:.2f}s with upstreams hung; "
-        f"budget is {q.QUEUE_RENDER_UPSTREAM_BUDGET}s"
-    )
-    # And the rows still render from DB even though live upstream data
-    # was unavailable.
-    assert any(r["hash"] == "hang-id" for r in rows), (
-        "queue rows must render from DB when upstreams time out"
-    )
-
-
-def test_helpers_pass_constant_as_httpx_timeout():
-    """Every AsyncClient instantiation in the queue helpers must use
-    QUEUE_UPSTREAM_TIMEOUT_SECONDS, not a literal."""
-    import routers.queue_ as q
+def test_status_cache_fetchers_pass_timeout_to_httpx():
+    """Every AsyncClient instantiation in the cache fetchers must use
+    STATUS_UPSTREAM_TIMEOUT_SECONDS, not a literal."""
+    import status_cache as sc
     rec: list = []
     qc = {"host": "http://qb.local", "username": "u", "password": "p", "category": "manga"}
     cli = _mk_client(0.0, payload=_qbit_payload(), recorder=rec)
-    global httpx
-    import httpx
-    with patch("routers.queue_.httpx.AsyncClient", new=cli):
-        asyncio.run(q._fetch_qbit_status(qc))
+    with patch("status_cache.httpx.AsyncClient", new=cli):
+        asyncio.run(sc._fetch_qbit(qc))
     assert rec, "no httpx.AsyncClient instantiations captured"
-    for kind, ts, *rest in rec:
-        if kind == "init":
-            assert ts == q.QUEUE_UPSTREAM_TIMEOUT_SECONDS, (
-                f"AsyncClient timeout drifted: {ts!r}"
+    for item in rec:
+        if item[0] == "init":
+            assert item[1] == sc.STATUS_UPSTREAM_TIMEOUT_SECONDS, (
+                f"AsyncClient timeout drifted: {item[1]!r}"
             )
 
 
 # ───────────────────── concurrency: qBit + SAB run in parallel ───────────────
 
 def test_qbit_and_sab_are_fetched_concurrently(fresh_db):
-    """With concurrent execution:
-       qBit = POST auth (0.5s) + GET info (0.5s) = 1.0s
-       SAB  = GET queue (0.5s)                   = 0.5s
-       wall-clock = max(1.0, 0.5) = 1.0s.
-    Serial would be 1.0 + 0.5 = 1.5s. Allow 1.3s to catch regression
-    with headroom for CI noise."""
-    import routers.queue_ as q
-    global httpx
-    import httpx
+    """DownloadStatusCache.refresh must run the two polls concurrently.
+    qBit = POST auth (0.5s) + GET info (0.5s) = 1.0s
+    SAB  = GET queue (0.5s)                   = 0.5s
+    wall-clock = max(1.0, 0.5) = 1.0s. Serial would be 1.5s."""
+    import status_cache as sc
+    from status_cache import DownloadStatusCache
 
-    cli = _mk_client(0.5, payload={**_qbit_payload()[0], "queue": {"slots": []}})
-    # qbit expects a list; sab expects a dict — the _mk_client payload is
-    # a shared response, so use a minimal mix that both parsers tolerate.
     class _Mixed:
         def __init__(self, *a, **kw): pass
         async def __aenter__(self): return self
@@ -251,238 +188,203 @@ def test_qbit_and_sab_are_fetched_concurrently(fresh_db):
             await asyncio.sleep(0.5)
             if "torrents/info" in url:
                 return _MockResp(json_data=_qbit_payload())
-            if "sab" in url or "mode=queue" in str(kw.get("params", "")):
-                return _MockResp(json_data=_sab_payload())
-            return _MockResp(json_data={})
+            return _MockResp(json_data=_sab_payload())
 
-    async def _gather_under_patch():
+    cache = DownloadStatusCache()
+    with patch("status_cache.httpx.AsyncClient", new=_Mixed):
         t0 = time.perf_counter()
-        qbit, sab = await asyncio.gather(
-            q._fetch_qbit_status({"host": "http://qb.local", "username": "u",
-                                   "password": "p", "category": "manga"}),
-            q._fetch_sab_status({"host": "http://sab.local", "password": "sabkey"}),
-        )
-        return time.perf_counter() - t0, qbit, sab
-
-    with patch("routers.queue_.httpx.AsyncClient", new=_Mixed):
-        dt, qbit, sab = asyncio.run(_gather_under_patch())
+        asyncio.run(cache.refresh())
+        dt = time.perf_counter() - t0
 
     assert dt < 1.3, (
         f"wall-clock {dt:.3f}s suggests sequential execution "
         "(qbit 1.0s + sab 0.5s = 1.5s); expected concurrent (~1.0s)"
     )
-    # Both responses landed.
-    assert qbit and "abc123" in qbit
-    assert sab  and "SAB-1" in sab
+    assert cache.snapshot_qbit().items.get("abc123")
+    assert cache.snapshot_sab().items.get("SAB-1")
 
-
-def test_total_wall_clock_when_both_slow_is_close_to_one_timeout():
-    """If both upstreams are pinned at 2.5s, total wall-clock must
-    approach 2.5s (one timeout) — not 5s+ (two serial timeouts)."""
-    import routers.queue_ as q
-    global httpx
-    import httpx
-
-    cli = _mk_client(q.QUEUE_UPSTREAM_TIMEOUT_SECONDS + 0.5, fail=True)
-
-    async def _run():
-        t0 = time.perf_counter()
-        qbit, sab = await asyncio.gather(
-            q._fetch_qbit_status({"host": "http://qb.local", "username": "u",
-                                   "password": "p", "category": "manga"}),
-            q._fetch_sab_status({"host": "http://sab.local", "password": "sabkey"}),
-        )
-        return time.perf_counter() - t0, qbit, sab
-
-    with patch("routers.queue_.httpx.AsyncClient", new=cli):
-        dt, qbit, sab = asyncio.run(_run())
-
-    # With concurrent execution and both clients failing at 3.0s, wall
-    # clock stays near 3.0s. A serial fallback would be ~6s.
-    assert dt < q.QUEUE_UPSTREAM_TIMEOUT_SECONDS + 2.0, (
-        f"wall-clock {dt:.3f}s suggests fetches ran serially — "
-        "gather or timeout behaviour regressed"
-    )
-    assert qbit == {}
-    assert sab  == {}
-
-
-# ───────────────────── one-side failure must not block the other ─────────────
 
 def test_slow_qbit_does_not_block_sab(fresh_db):
-    """qBit hangs past the timeout; SAB is fast. Wall-clock equals the
-    qBit timeout (gather waits for the slower side) but SAB's data must
-    still appear in the output."""
-    import routers.queue_ as q
-    global httpx
-    import httpx
+    """qBit fetcher hangs past its timeout; SAB responds fast. The cache
+    must surface fresh SAB data and record a qBit error — not block the
+    whole refresh on the slow side."""
+    import status_cache as sc
+    from status_cache import DownloadStatusCache
 
-    rec: list = []
-
-    # A single client class whose behaviour depends on the URL it's called on.
     class _Mixed:
         def __init__(self, *a, **kw): pass
         async def __aenter__(self): return self
         async def __aexit__(self, *a): return False
         async def post(self, url, *a, **kw):
-            # qBit login path — hang to force timeout.
-            if "qb.local" in url:
-                await asyncio.sleep(q.QUEUE_UPSTREAM_TIMEOUT_SECONDS + 1.0)
+            # qBit auth path — hang to force timeout.
+            if "qb.local" in url or "qbit.local" in url:
+                import httpx
+                await asyncio.sleep(sc.STATUS_UPSTREAM_TIMEOUT_SECONDS + 1.0)
                 raise httpx.TimeoutException("qbit slow")
             raise AssertionError(f"unexpected POST: {url}")
         async def get(self, url, *a, **kw):
-            # SAB queue path — respond fast.
             if "sab.local" in url:
                 await asyncio.sleep(0.05)
                 return _MockResp(json_data=_sab_payload())
             raise AssertionError(f"unexpected GET: {url}")
 
-    async def _run():
+    cache = DownloadStatusCache()
+    with patch("status_cache.httpx.AsyncClient", new=_Mixed):
         t0 = time.perf_counter()
-        qbit, sab = await asyncio.gather(
-            q._fetch_qbit_status({"host": "http://qb.local", "username": "u",
-                                   "password": "p", "category": "manga"}),
-            q._fetch_sab_status({"host": "http://sab.local", "password": "sabkey"}),
-        )
-        return time.perf_counter() - t0, qbit, sab
+        asyncio.run(cache.refresh())
+        dt = time.perf_counter() - t0
 
-    with patch("routers.queue_.httpx.AsyncClient", new=_Mixed):
-        dt, qbit, sab = asyncio.run(_run())
-
-    # qBit hung → returned empty. SAB completed → has data. Wall-clock
-    # equals qBit's timeout (gather waits for both), not sum of both.
-    assert qbit == {}, "slow qBit should degrade to empty, not succeed"
-    assert "SAB-1" in sab, "SAB data should survive slow qBit"
-    assert dt < q.QUEUE_UPSTREAM_TIMEOUT_SECONDS + 2.0, (
-        f"wall-clock {dt:.3f}s too long — gather or timeout regressed"
-    )
+    # SAB must have succeeded despite qBit hanging.
+    assert cache.snapshot_sab().items.get("SAB-1"), "SAB data lost to slow qBit"
+    # qBit snapshot records the failure.
+    assert cache.snapshot_qbit().error is not None
+    assert cache.snapshot_qbit().last_success_at is None
+    # Wall-clock equals the qBit timeout (gather waits for both).
+    assert dt < sc.STATUS_UPSTREAM_TIMEOUT_SECONDS + 2.0
 
 
 def test_slow_sab_does_not_block_qbit(fresh_db):
     """Symmetric check: SAB hangs, qBit is fast."""
-    import routers.queue_ as q
-    global httpx
-    import httpx
+    import status_cache as sc
+    from status_cache import DownloadStatusCache
 
     class _Mixed:
         def __init__(self, *a, **kw): pass
         async def __aenter__(self): return self
         async def __aexit__(self, *a): return False
         async def post(self, url, *a, **kw):
-            if "qb.local" in url:
+            if "qbit.local" in url or "qb.local" in url:
                 await asyncio.sleep(0.05)
                 return _MockResp(text="Ok.")
             raise AssertionError(f"unexpected POST: {url}")
         async def get(self, url, *a, **kw):
-            if "qb.local" in url:
+            if "qbit.local" in url or "qb.local" in url:
                 await asyncio.sleep(0.05)
                 return _MockResp(json_data=_qbit_payload())
             if "sab.local" in url:
-                await asyncio.sleep(q.QUEUE_UPSTREAM_TIMEOUT_SECONDS + 1.0)
+                import httpx
+                await asyncio.sleep(sc.STATUS_UPSTREAM_TIMEOUT_SECONDS + 1.0)
                 raise httpx.TimeoutException("sab slow")
             raise AssertionError(f"unexpected GET: {url}")
 
-    async def _run():
+    cache = DownloadStatusCache()
+    with patch("status_cache.httpx.AsyncClient", new=_Mixed):
         t0 = time.perf_counter()
-        qbit, sab = await asyncio.gather(
-            q._fetch_qbit_status({"host": "http://qb.local", "username": "u",
-                                   "password": "p", "category": "manga"}),
-            q._fetch_sab_status({"host": "http://sab.local", "password": "sabkey"}),
+        asyncio.run(cache.refresh())
+        dt = time.perf_counter() - t0
+
+    assert cache.snapshot_qbit().items.get("abc123"), "qBit data lost to slow SAB"
+    assert cache.snapshot_sab().error is not None
+    assert cache.snapshot_sab().last_success_at is None
+    assert dt < sc.STATUS_UPSTREAM_TIMEOUT_SECONDS + 2.0
+
+
+# ───────────────────── queue render is decoupled from upstreams ──────────────
+
+def test_build_queue_rows_makes_no_live_http_calls(fresh_db):
+    """The whole point of the cache: /queue rendering must NOT make any
+    httpx.AsyncClient() calls. A dead upstream can't block the page."""
+    import routers.queue_ as q
+    import httpx as _httpx
+
+    with sqlite3.connect(fresh_db) as c:
+        c.execute("INSERT INTO series(id, title, search_pattern)"
+                  " VALUES(7, 'Test', 'Test')")
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, download_id,"
+            " torrent_name, grabbed_at, client)"
+            " VALUES(7, 1.0, 'grabbed', 'dlid-1', 'rel.torrent',"
+            " datetime('now'), 'qbittorrent')"
         )
-        return time.perf_counter() - t0, qbit, sab
 
-    with patch("routers.queue_.httpx.AsyncClient", new=_Mixed):
-        dt, qbit, sab = asyncio.run(_run())
+    created: list = []
 
-    assert sab == {}, "slow SAB should degrade to empty"
-    assert "abc123" in qbit, "qBit data should survive slow SAB"
-    assert dt < q.QUEUE_UPSTREAM_TIMEOUT_SECONDS + 2.0
-
-
-# ───────────────────── failure modes never raise ─────────────────────────────
-
-def test_fetchers_return_empty_dict_on_connection_error():
-    """Any exception in the mock (network error, SSL, DNS) → {}."""
-    import routers.queue_ as q
-
-    class _Boom:
-        def __init__(self, *a, **kw): pass
+    class _Tripwire:
+        def __init__(self, *a, **kw):
+            created.append(("AsyncClient", kw))
         async def __aenter__(self): return self
         async def __aexit__(self, *a): return False
-        async def post(self, *a, **kw): raise ConnectionError("boom")
-        async def get(self, *a, **kw):  raise ConnectionError("boom")
+        async def post(self, *a, **kw):
+            raise AssertionError("queue render issued a live POST")
+        async def get(self, *a, **kw):
+            raise AssertionError("queue render issued a live GET")
 
-    with patch("routers.queue_.httpx.AsyncClient", new=_Boom):
-        qbit = asyncio.run(q._fetch_qbit_status({
-            "host": "http://qb.local", "username": "u", "password": "p",
-            "category": "manga"
-        }))
-        sab = asyncio.run(q._fetch_sab_status({
-            "host": "http://sab.local", "password": "sabkey"
-        }))
-    assert qbit == {}
-    assert sab  == {}
+    # Patch the httpx.AsyncClient symbol in the queue router's module
+    # namespace. If queue_ no longer imports httpx, AttributeError would
+    # fire — which is fine and is itself a sign we're decoupled.
+    with patch.object(_httpx, "AsyncClient", new=_Tripwire):
+        rows, *_ = asyncio.run(q._build_queue_rows())
+
+    assert created == [], (
+        f"_build_queue_rows must not instantiate httpx clients; got {created}"
+    )
+    assert any(r["hash"] == "dlid-1" for r in rows)
 
 
-def test_fetchers_return_empty_when_client_config_missing():
-    """Absent download-client config → {} without touching the network."""
+def test_build_queue_rows_renders_without_cache_data(fresh_db):
+    """Before the first cache refresh, the queue page must still render
+    whatever DB data exists. No raise, no block, no wait."""
     import routers.queue_ as q
-    assert asyncio.run(q._fetch_qbit_status(None)) == {}
-    assert asyncio.run(q._fetch_qbit_status({})) == {}
-    assert asyncio.run(q._fetch_sab_status(None)) == {}
-    assert asyncio.run(q._fetch_sab_status({})) == {}
-    assert asyncio.run(q._fetch_sab_status({"host": "http://sab.local"})) == {}  # no apikey
+    from status_cache import DownloadStatusCache
+    import status_cache
 
+    with sqlite3.connect(fresh_db) as c:
+        c.execute("INSERT INTO series(id, title, search_pattern)"
+                  " VALUES(7, 'Test', 'Test')")
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, download_id,"
+            " torrent_name, grabbed_at, client)"
+            " VALUES(7, 1.0, 'grabbed', 'dlid-1', 'rel.torrent',"
+            " datetime('now'), 'qbittorrent')"
+        )
 
-def test_qbit_returns_empty_when_auth_fails():
-    """qBit returns 'Fails.' body → treat as no torrents (user sees empty
-    queue, not a stack trace)."""
-    import routers.queue_ as q
+    # Swap in a brand-new (empty) cache so no prior test's snapshot leaks in.
+    orig = status_cache.DOWNLOAD_STATUS_CACHE
+    status_cache.DOWNLOAD_STATUS_CACHE = DownloadStatusCache()
+    try:
+        t0 = time.perf_counter()
+        rows, *_ = asyncio.run(q._build_queue_rows())
+        dt = time.perf_counter() - t0
+    finally:
+        status_cache.DOWNLOAD_STATUS_CACHE = orig
 
-    class _AuthFail:
-        def __init__(self, *a, **kw): pass
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def post(self, url, *a, **kw): return _MockResp(text="Fails.")
-        async def get(self, url, *a, **kw):
-            raise AssertionError("should never GET after auth fail")
-
-    with patch("routers.queue_.httpx.AsyncClient", new=_AuthFail):
-        qbit = asyncio.run(q._fetch_qbit_status({
-            "host": "http://qb.local", "username": "u", "password": "bad",
-            "category": "manga"
-        }))
-    assert qbit == {}
+    # Cold cache → render is pure DB work. Should be well under 100ms even
+    # on a loaded CI runner.
+    assert dt < 1.0, f"cold-cache render took {dt:.3f}s — too slow"
+    assert any(r["hash"] == "dlid-1" for r in rows), (
+        f"expected grabbed volume in queue rows, got: {rows}"
+    )
 
 
 # ───────────────────── happy-path mapping preserved ──────────────────────────
 
 def test_qbit_happy_path_maps_fields_correctly():
-    """Regression: the field map from the qBit response must match what
-    the template consumes."""
-    import routers.queue_ as q
+    """Field map from the qBit response must match what the template
+    consumes — regardless of whether the fetcher lives in queue_ or
+    status_cache."""
+    import status_cache as sc
     cli = _mk_client(0.0, payload=_qbit_payload())
-    with patch("routers.queue_.httpx.AsyncClient", new=cli):
-        qbit = asyncio.run(q._fetch_qbit_status({
+    with patch("status_cache.httpx.AsyncClient", new=cli):
+        qbit = asyncio.run(sc._fetch_qbit({
             "host": "http://qb.local", "username": "u", "password": "p",
             "category": "manga"
         }))
     assert "abc123" in qbit
     t = qbit["abc123"]
-    assert t["hash"]       == "abc123"
-    assert t["name"]       == "Series Vol.01"
-    assert t["state"]      == "downloading"
-    assert t["progress"]   == 50.0   # 0.5 * 100
-    assert t["dlspeed"]    == 1024
-    assert t["eta"]        == 120
-    assert t["client"]     == "qbittorrent"
+    assert t["hash"]     == "abc123"
+    assert t["name"]     == "Series Vol.01"
+    assert t["state"]    == "downloading"
+    assert t["progress"] == 50.0   # 0.5 * 100
+    assert t["dlspeed"]  == 1024
+    assert t["eta"]      == 120
+    assert t["client"]   == "qbittorrent"
 
 
 def test_sab_happy_path_maps_fields_correctly():
-    import routers.queue_ as q
+    import status_cache as sc
     cli = _mk_client(0.0, payload=_sab_payload())
-    with patch("routers.queue_.httpx.AsyncClient", new=cli):
-        sab = asyncio.run(q._fetch_sab_status({
+    with patch("status_cache.httpx.AsyncClient", new=cli):
+        sab = asyncio.run(sc._fetch_sab({
             "host": "http://sab.local", "password": "sabkey"
         }))
     assert "SAB-1" in sab
@@ -494,36 +396,13 @@ def test_sab_happy_path_maps_fields_correctly():
     assert s["client"]   == "sabnzbd"
 
 
-# ───────────────────── end-to-end: page renders without upstreams ────────────
+# ───────────────────── config-absent shortcuts ───────────────────────────────
 
-def test_build_queue_rows_renders_from_db_when_both_upstreams_fail(fresh_db):
-    """Even when both qBit and SAB are unreachable, the queue page must
-    still render whatever DB-level queue data exists. No raise, no block."""
-    import routers.queue_ as q
-
-    # Seed a grabbed volume so _build_queue_rows has something to report.
-    with sqlite3.connect(fresh_db) as c:
-        c.execute("INSERT INTO series(id, title, search_pattern)"
-                  " VALUES(7, 'Test', 'Test')")
-        c.execute(
-            "INSERT INTO volumes(series_id, volume_num, status, download_id,"
-            " torrent_name, grabbed_at, client)"
-            " VALUES(7, 1.0, 'grabbed', 'dlid-1', 'rel.torrent',"
-            " datetime('now'), 'qbittorrent')"
-        )
-
-    class _Boom:
-        def __init__(self, *a, **kw): pass
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def post(self, *a, **kw): raise ConnectionError("boom")
-        async def get(self, *a, **kw):  raise ConnectionError("boom")
-
-    with patch("routers.queue_.httpx.AsyncClient", new=_Boom):
-        result = asyncio.run(q._build_queue_rows())
-    rows = result[0]
-
-    # One row for the grabbed volume, no upstream enrichment.
-    assert any(r["hash"] == "dlid-1" for r in rows), (
-        f"expected grabbed volume in queue rows, got: {rows}"
-    )
+def test_fetchers_return_empty_when_client_config_missing():
+    """Absent download-client config → {} without touching the network."""
+    import status_cache as sc
+    assert asyncio.run(sc._fetch_qbit(None)) == {}
+    assert asyncio.run(sc._fetch_qbit({})) == {}
+    assert asyncio.run(sc._fetch_sab(None)) == {}
+    assert asyncio.run(sc._fetch_sab({})) == {}
+    assert asyncio.run(sc._fetch_sab({"host": "http://sab.local"})) == {}  # no apikey
