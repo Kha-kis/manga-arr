@@ -35,7 +35,7 @@
   'no_mapping':                  {'color': 'var(--ruby)',  'label': 'No chapter map',            'icon': 'x-circle-fill'},
 }.get(state, {'color': 'var(--text-2)', 'label': state or 'unknown', 'icon': 'question-circle'}) %}
 
-<section id="metadata-health-panel" class="panel mb-4">
+<section id="metadata-health-panel" class="panel mb-4"{% if oob_swap %} hx-swap-oob="true"{% endif %}>
   <div class="panel-header d-flex align-items-center justify-content-between">
     <div class="d-flex align-items-center">
       <i class="bi bi-{{ state_meta['icon'] }} me-2" style="color:{{ state_meta['color'] }}"></i>
@@ -53,11 +53,25 @@
         hide it to keep the panel uncluttered.
       #}
       {% if state in ('drift_detected', 'needs_review', 'blocked_by_missing_volumes') %}
+      {#
+        "Refresh map + preview" — the safer default for old / stale series.
+        Refreshes chapter_vol_map from MangaDex first so the preview below
+        reflects current canonical data, not whatever was cached at import.
+        Recommended for series that haven't been reconciled since an older
+        MangaDex metadata revision.
+      #}
+      <button type="button" class="btn btn-secondary btn-sm"
+              hx-post="/api/series/{{ mh['series_id'] }}/reconcile/refresh-then-preview"
+              hx-target="#reconcile-preview-panel"
+              hx-swap="outerHTML"
+              title="Refresh chapter_vol_map from MangaDex, then show preview — recommended for stale series">
+        <i class="bi bi-cloud-download me-1"></i>Refresh map + preview
+      </button>
       <button type="button" class="btn btn-secondary btn-sm"
               hx-get="/api/series/{{ mh['series_id'] }}/reconcile/preview"
               hx-target="#reconcile-preview-panel"
               hx-swap="outerHTML"
-              title="Preview proposed chapter→volume re-mappings for this series">
+              title="Preview proposed chapter→volume re-mappings against the currently-cached map">
         <i class="bi bi-diagram-3 me-1"></i>Preview chapter re-map
       </button>
       {% endif %}
@@ -165,7 +179,7 @@
   </div>
 </section>
 {% else %}
-<section id="metadata-health-panel" class="panel mb-4">
+<section id="metadata-health-panel" class="panel mb-4"{% if oob_swap %} hx-swap-oob="true"{% endif %}>
   <div class="panel-body text-sm" style="color:var(--text-3); padding:12px 16px">
     <i class="bi bi-question-circle me-1"></i>
     Metadata health check unavailable for this series.

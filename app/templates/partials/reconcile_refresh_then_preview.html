@@ -1,0 +1,19 @@
+{#
+  HTMX response for POST /api/series/{id}/reconcile/refresh-then-preview.
+
+  Primary swap (hx-target="#reconcile-preview-panel", outerHTML):
+    The reconcile preview partial, seeded with a "just refreshed" flash.
+
+  Out-of-band swap:
+    The metadata health panel — rebuilt from fresh data so its state
+    badge reflects the refreshed map size / unlinked count / etc.
+
+  The OOB swap works because metadata_health_panel.html emits
+  `hx-swap-oob="true"` on its root section whenever `oob_swap` is truthy
+  in the template context. HTMX matches by element id and swaps in place.
+#}
+{% include "partials/reconcile_preview_panel.html" %}
+
+{% with oob_swap=True %}
+  {% include "partials/metadata_health_panel.html" %}
+{% endwith %}
