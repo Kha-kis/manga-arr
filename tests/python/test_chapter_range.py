@@ -99,6 +99,11 @@ def test_chapter_range_end_column_exists(env):
     ("Series - chapter 10-15.cbz",                   (10.0, 15.0)),
     ("Series - Chapter 10–20.cbz",                   (10.0, 20.0)),  # en-dash
     ("Series - c001-100.cbz",                        (1.0, 100.0)),
+    # Long runs — real shounen releases routinely exceed 200 chapters.
+    ("Jujutsu Kaisen c001-c267",                     (1.0, 267.0)),
+    ("Naruto c001-c460",                             (1.0, 460.0)),
+    ("One Piece c001-c1089",                         (1.0, 1089.0)),
+    ("Series c001-c1999",                            (1.0, 1999.0)),
     # Decimals are accepted
     ("Series - c1.5-c2.cbz",                         (1.5, 2.0)),
 ])
@@ -113,8 +118,10 @@ def test_extract_chapter_range_accepts(title, expected):
     "Series - ch5.cbz",            # single chapter
     "Series - c002-001.cbz",       # descending
     "Series - c001-001.cbz",       # degenerate (start == end)
-    "Series - c001-1000.cbz",      # absurd span (>200)
+    "Series - c001-5000.cbz",      # absurd span (>2000-cap)
     "Series 2010-2020 Complete.cbz",  # year range without chapter prefix
+    "Series - 2010-2020 Complete.cbz",  # same without the chapter-prefix, bare
+    "Series released 1990-3000 archive.cbz",  # nonsense bare range, no prefix
 ])
 def test_extract_chapter_range_rejects(title):
     from main import extract_chapter_range

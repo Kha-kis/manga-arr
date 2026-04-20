@@ -1705,7 +1705,10 @@ def extract_chapter_range(title: str) -> tuple[float, float] | None:
         - missing chapter prefix
         - descending ranges (end < start)
         - degenerate ranges (start == end) — caller should use extract_chapter_num
-        - silly spans (>200 chapters) — defends against false positives
+        - silly spans (>2000 chapters) — protects against ID-like number
+          pairs. The chapter-prefix requirement above is the real
+          year-range defense; "2010-2020" without a c/ch/chapter prefix
+          never reaches this function.
     """
     if not title:
         return None
@@ -1730,9 +1733,15 @@ def extract_chapter_range(title: str) -> tuple[float, float] | None:
     if start >= end:
         # Reject descending or degenerate (caller should use extract_chapter_num for single).
         return None
-    if (end - start) > 200:
-        # Sanity cap: a pack covering >200 chapters in one file is almost
-        # certainly a mis-parse (e.g. a year tag like 2010-2020).
+    if (end - start) > 2000:
+        # Upper sanity cap: no real manga has a single pack covering
+        # 2000+ chapters. One Piece is currently ~1120 chapters total,
+        # so 2000 leaves comfortable headroom for long-running shounen
+        # (Jujutsu Kaisen c001-c267, Naruto c001-c460, One Piece
+        # c001-c1089, etc.) without inviting ID-like mis-parses. The
+        # earlier 200-cap rejected every such release as a false
+        # positive — year ranges without a chapter prefix never reach
+        # here because the pattern requires `c` / `ch` / `chapter`.
         return None
     return (start, end)
 
