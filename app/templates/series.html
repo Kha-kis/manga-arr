@@ -565,6 +565,9 @@
     </div>
     {% endif %}
 
+    {# ── Metadata health panel (read-only diagnostic) ── #}
+    {% include "partials/metadata_health_panel.html" %}
+
     {# ── Volumes ── #}
     {% if volumes %}
     {% set grabbed_count = volumes | selectattr('status', 'equalto', 'grabbed') | list | length %}

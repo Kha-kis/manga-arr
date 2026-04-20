@@ -444,6 +444,86 @@ def metadata_readiness_report(series_id: int) -> dict:
     return report
 
 
+def build_metadata_health(series_id: int) -> dict:
+    """Single entry point for the series-page health panel.
+
+    Combines `metadata_readiness_report` and the counts-only view of
+    `reconcile_series_chapter_map(..., dry_run=True)` so the template
+    has one flat payload to render. **Strict read-only.**
+
+    The `state` field is a coarse health classification designed for
+    at-a-glance UI — the richer per-row detail is available from the
+    underlying helpers for operators who want to drill in.
+
+    Health states (in increasing severity):
+
+      - ``healthy``                    reconciler has nothing to do
+      - ``no_mapping``                 chapter_vol_map absent; ask
+                                       operator to refresh MangaDex
+      - ``missing_metadata``           total_volumes missing (or zero)
+      - ``blocked_by_missing_volumes`` target_volume_missing dominates
+                                       the reconcile plan
+      - ``drift_detected``             ok_move rows present, all
+                                       resolvable by applying the
+                                       reconciler
+      - ``needs_review``               special_parent / target_ambiguous
+                                       rows present — operator has to
+                                       resolve manually before apply
+    """
+    report = metadata_readiness_report(series_id)
+    report['reconcile'] = _reconcile_summary(series_id)
+    report['state']     = _health_state(report)
+    return report
+
+
+def _reconcile_summary(series_id: int) -> dict:
+    """Counts-only summary from the existing reconciler. Re-uses the
+    classifier so there's one source of truth; the per-row list is
+    discarded by the caller via popping it off."""
+    plan = reconcile_series_chapter_map(series_id, dry_run=True)
+    return {
+        'ok_move':               plan.get('ok_move', 0),
+        'already_correct':       plan.get('already_correct', 0),
+        'no_map_entry':          plan.get('no_map_entry', 0),
+        'target_volume_missing': plan.get('target_volume_missing', 0),
+        'target_ambiguous':      plan.get('target_ambiguous', 0),
+        'special_parent':        plan.get('special_parent', 0),
+        'total_rows':            len(plan.get('rows', [])),
+    }
+
+
+def _health_state(report: dict) -> str:
+    """Coarse classifier. Order matters — the first matching branch wins."""
+    blockers = report.get('blockers', []) or []
+    rec = report.get('reconcile') or {}
+
+    # A non-existent series gets an "unknown" state rather than
+    # defaulting to healthy (which would be misleading — the helper
+    # returns early with empty blockers when the series_id doesn't
+    # resolve).
+    if report.get('title') is None:
+        return 'unknown'
+
+    # Hard blockers first: they hide any reconcile signal because the
+    # reconciler can't reason usefully about a series without metadata.
+    if _BLOCKER_NEEDS_TOTAL_VOLUMES in blockers:
+        return 'missing_metadata'
+    if _BLOCKER_NEEDS_CHAPTER_VOL_MAP in blockers:
+        return 'no_mapping'
+
+    review_rows = rec.get('special_parent', 0) + rec.get('target_ambiguous', 0)
+    if review_rows > 0:
+        return 'needs_review'
+
+    if rec.get('target_volume_missing', 0) > 0:
+        return 'blocked_by_missing_volumes'
+
+    if rec.get('ok_move', 0) > 0:
+        return 'drift_detected'
+
+    return 'healthy'
+
+
 def _recommend_next_step(r: dict) -> str:
     """One actionable sentence describing what the operator should do
     next. Ordered so the earliest blocker wins — fixing a later blocker

@@ -1,0 +1,157 @@
+{#
+  Read-only metadata health panel.
+
+  Context expected:
+    metadata_health — dict from reconcile_map.build_metadata_health(series_id),
+    or None if the helper errored. The panel tolerates None and renders
+    a muted "unavailable" state so page render never fails.
+
+  States surfaced (see reconcile_map._health_state):
+    - healthy
+    - no_mapping
+    - missing_metadata
+    - blocked_by_missing_volumes
+    - drift_detected
+    - needs_review
+
+  The panel is strictly read-only. No buttons mutate state; the
+  reconciliation / stub-creation actions live in their existing
+  supported paths (series editor save, MangaDex refresh) and are
+  intentionally NOT wired up here — this PR is visibility only.
+#}
+{% if metadata_health %}
+{% set mh    = metadata_health %}
+{% set state = mh['state'] %}
+{% set rec   = mh['reconcile'] %}
+
+{# Per-state colour + headline copy. Jade = good; ember = drift that's
+   actionable; gold = review required; ruby = hard blocker. #}
+{% set state_meta = {
+  'healthy':                     {'color': 'var(--jade)',  'label': 'Metadata healthy',          'icon': 'check-circle-fill'},
+  'drift_detected':              {'color': 'var(--ember)', 'label': 'Drift detected',            'icon': 'exclamation-triangle-fill'},
+  'needs_review':                {'color': 'var(--gold)',  'label': 'Review required',           'icon': 'eye-fill'},
+  'blocked_by_missing_volumes':  {'color': 'var(--ruby)',  'label': 'Blocked: missing volumes',  'icon': 'x-circle-fill'},
+  'missing_metadata':            {'color': 'var(--ruby)',  'label': 'Missing metadata',          'icon': 'x-circle-fill'},
+  'no_mapping':                  {'color': 'var(--ruby)',  'label': 'No chapter map',            'icon': 'x-circle-fill'},
+}.get(state, {'color': 'var(--text-2)', 'label': state or 'unknown', 'icon': 'question-circle'}) %}
+
+<section id="metadata-health-panel" class="panel mb-4">
+  <div class="panel-header d-flex align-items-center justify-content-between">
+    <div class="d-flex align-items-center">
+      <i class="bi bi-{{ state_meta['icon'] }} me-2" style="color:{{ state_meta['color'] }}"></i>
+      <span class="fw-semibold">Metadata health</span>
+      <span class="badge-status ms-3"
+            style="border:1px solid {{ state_meta['color'] }}; color:{{ state_meta['color'] }}; background:transparent">
+        {{ state_meta['label'] }}
+      </span>
+    </div>
+    <button type="button" class="btn btn-secondary btn-sm"
+            hx-get="/api/series/{{ mh['series_id'] }}/metadata-health"
+            hx-target="#metadata-health-panel"
+            hx-swap="outerHTML"
+            title="Re-run read-only health check">
+      <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+    </button>
+  </div>
+
+  <div class="panel-body" style="padding:14px 16px">
+    {% if mh['recommended_next_step'] %}
+    <div class="text-sm mb-3" style="color:var(--text-2)">
+      <i class="bi bi-lightbulb me-1 text-ember"></i>
+      <span>{{ mh['recommended_next_step'] }}</span>
+    </div>
+    {% endif %}
+
+    <div class="d-flex gap-4 flex-wrap">
+      <div>
+        <div class="text-xs" style="color:var(--text-3)">Total volumes</div>
+        <div class="fw-semibold">{{ mh['total_volumes'] if mh['total_volumes'] is not none else '—' }}</div>
+      </div>
+      <div>
+        <div class="text-xs" style="color:var(--text-3)">Total chapters</div>
+        <div class="fw-semibold">{{ mh['total_chapters'] if mh['total_chapters'] is not none else '—' }}</div>
+      </div>
+      <div>
+        <div class="text-xs" style="color:var(--text-3)">Chapter→vol map</div>
+        <div class="fw-semibold">
+          {% if mh['chapter_vol_map_size'] > 0 %}{{ mh['chapter_vol_map_size'] }} entries{% else %}<span class="text-ruby">absent</span>{% endif %}
+        </div>
+      </div>
+      <div>
+        <div class="text-xs" style="color:var(--text-3)">Mainline stubs</div>
+        <div class="fw-semibold">
+          {{ mh['existing_vol_nums']|length }}
+          {% if mh['expected_vol_nums'] %}/ {{ mh['expected_vol_nums']|length }}{% endif %}
+          {% if mh['missing_mainline_stubs'] %}<span class="text-xs text-ruby">· {{ mh['missing_mainline_stubs']|length }} missing</span>{% endif %}
+        </div>
+      </div>
+      <div>
+        <div class="text-xs" style="color:var(--text-3)">Special rows</div>
+        <div class="fw-semibold">{{ mh['special_count'] }}</div>
+      </div>
+      <div>
+        <div class="text-xs" style="color:var(--text-3)">Unlinked chapters</div>
+        <div class="fw-semibold {% if mh['unlinked_chapters'] > 0 %}text-ruby{% endif %}">
+          {{ mh['unlinked_chapters'] }}
+        </div>
+      </div>
+    </div>
+
+    {% if rec and rec['total_rows'] > 0 %}
+    <hr style="margin:12px 0; border-color:var(--edge-2)">
+    <div class="text-xs mb-2" style="color:var(--text-2)">
+      <strong>Reconcile plan</strong> — dry-run over {{ rec['total_rows'] }} chapter row(s).
+    </div>
+    <div class="d-flex gap-3 flex-wrap text-xs">
+      <span title="Chapter already points at the right volume"
+            style="color:var(--jade)">
+        <i class="bi bi-check2"></i> {{ rec['already_correct'] }} already correct
+      </span>
+      {% if rec['ok_move'] > 0 %}
+      <span title="Safe reassignment available"
+            style="color:var(--ember)">
+        <i class="bi bi-arrow-right"></i> {{ rec['ok_move'] }} safe move(s)
+      </span>
+      {% endif %}
+      {% if rec['target_volume_missing'] > 0 %}
+      <span title="Map points at a volume with no mainline row"
+            style="color:var(--ruby)">
+        <i class="bi bi-x"></i> {{ rec['target_volume_missing'] }} blocked (target missing)
+      </span>
+      {% endif %}
+      {% if rec['target_ambiguous'] > 0 %}
+      <span title="Multiple mainline rows share the target volume_num"
+            style="color:var(--gold)">
+        <i class="bi bi-question-diamond"></i> {{ rec['target_ambiguous'] }} ambiguous
+      </span>
+      {% endif %}
+      {% if rec['special_parent'] > 0 %}
+      <span title="Row has a special parent volume"
+            style="color:var(--gold)">
+        <i class="bi bi-shield"></i> {{ rec['special_parent'] }} special-parent
+      </span>
+      {% endif %}
+      {% if rec['no_map_entry'] > 0 %}
+      <span title="Chapter is not in the current map"
+            style="color:var(--text-3)">
+        <i class="bi bi-dash"></i> {{ rec['no_map_entry'] }} outside map
+      </span>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {% if mh['blockers'] %}
+    <div class="text-xs mt-3" style="color:var(--text-3)">
+      Blockers: <code class="text-xs">{{ mh['blockers']|join(', ') }}</code>
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% else %}
+<section id="metadata-health-panel" class="panel mb-4">
+  <div class="panel-body text-sm" style="color:var(--text-3); padding:12px 16px">
+    <i class="bi bi-question-circle me-1"></i>
+    Metadata health check unavailable for this series.
+  </div>
+</section>
+{% endif %}

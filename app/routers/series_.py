@@ -668,6 +668,21 @@ async def series_detail(request: Request, series_id: int):
         swy_vol_jobs = _build_swy_vol_jobs(_swy_db, s['id'])
     suwayomi_enabled = _swy_row is not None
 
+    # Metadata health panel (read-only, reuses the Stage 4 helpers).
+    # Computed inline so the panel renders on first paint without an
+    # extra round-trip. For typical series this is one small
+    # aggregation + one per-chapter EXISTS check; HxH-sized series
+    # (400+ chapters) still complete in <20ms.
+    from reconcile_map import build_metadata_health
+    try:
+        metadata_health = build_metadata_health(series_id)
+    except Exception as _e:  # defensive — a panel error must not 500 the page
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "build_metadata_health(%s) failed: %r", series_id, _e
+        )
+        metadata_health = None
+
     return templates.TemplateResponse(request, "series.html", {
         "s": s, "volumes": volumes, "packs": packs, "stats": stats,
         "root_folders": root_folders, "ch_map_count": ch_map_count,
@@ -687,7 +702,36 @@ async def series_detail(request: Request, series_id: int):
         "language_profiles": language_profiles,
         "suwayomi_enabled":  suwayomi_enabled,
         "swy_vol_jobs":      swy_vol_jobs,
+        "metadata_health":   metadata_health,
     })
+
+
+@router.get("/api/series/{series_id}/metadata-health", response_class=HTMLResponse)
+async def api_series_metadata_health(request: Request, series_id: int):
+    """Return the metadata-health payload for a series.
+
+    HTMX callers get the rendered panel partial for in-place refresh;
+    plain callers get JSON. Strictly read-only — reuses
+    build_metadata_health(), which in turn reuses the Stage 4 helpers.
+    """
+    from reconcile_map import build_metadata_health
+    try:
+        payload = build_metadata_health(series_id)
+    except Exception as _e:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "build_metadata_health(%s) failed: %r", series_id, _e
+        )
+        return JSONResponse({"error": "series not found or helper failed"},
+                            status_code=404)
+    if not payload or payload.get('title') is None:
+        return JSONResponse({"error": "series not found"}, status_code=404)
+    if request.headers.get("HX-Request") == "true":
+        return templates.TemplateResponse(
+            request, "partials/metadata_health_panel.html",
+            {"metadata_health": payload}
+        )
+    return JSONResponse(payload)
 
 
 # ── Search & add ──────────────────────────────────────────────────────────────
