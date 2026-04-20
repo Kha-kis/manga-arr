@@ -4904,16 +4904,26 @@ async def _execute_import(
                     continue
 
                 try:
-                    # Stage the file. Overwrite semantics are deferred to
-                    # commit_all's os.replace, which atomically clobbers
-                    # any pre-existing final path.
-                    stage_path = staging.stage(src, dst)
-                    stage_after = _maybe_convert_to_cbz(stage_path)
+                    # Stage the file on a worker thread so a large CBZ
+                    # copy can't freeze the event loop (py-spy dump
+                    # during the v0.1.5 HxH session showed uvicorn's
+                    # MainThread stuck inside shutil.copy2 here, which
+                    # blocked every concurrent page render). Same
+                    # treatment for the CBR→CBZ conversion and
+                    # ComicInfo injection, both of which read/write
+                    # zip archives. staging.rename is a dict update
+                    # and safe to keep sync.
+                    stage_path = await asyncio.to_thread(staging.stage, src, dst)
+                    stage_after = await asyncio.to_thread(_maybe_convert_to_cbz, stage_path)
                     if stage_after != stage_path:
                         dst = staging.rename(stage_path, stage_after)
                         stage_path = stage_after
                     if s:
-                        _try_inject_comicinfo(stage_path, s, chapter_num=proposed_chap, tags=_series_tags)
+                        await asyncio.to_thread(
+                            _try_inject_comicinfo,
+                            stage_path, s,
+                            chapter_num=proposed_chap, tags=_series_tags,
+                        )
 
                     db.execute(
                         "UPDATE import_queue_files SET status='imported', dst_path=? WHERE id=?",
@@ -5071,13 +5081,17 @@ async def _execute_import(
                         any_error = True
                         continue
                     try:
-                        stage_path = staging.stage(src, dst)
-                        stage_after = _maybe_convert_to_cbz(stage_path)
+                        stage_path = await asyncio.to_thread(staging.stage, src, dst)
+                        stage_after = await asyncio.to_thread(_maybe_convert_to_cbz, stage_path)
                         if stage_after != stage_path:
                             dst = staging.rename(stage_path, stage_after)
                             stage_path = stage_after
                         if s:
-                            _try_inject_comicinfo(stage_path, s, chapter_num=recheck_chap, tags=_series_tags)
+                            await asyncio.to_thread(
+                                _try_inject_comicinfo,
+                                stage_path, s,
+                                chapter_num=recheck_chap, tags=_series_tags,
+                            )
                         db.execute("UPDATE import_queue_files SET status='imported', dst_path=? WHERE id=?", (dst, f['id']))
                         imported_count += 1
                         _ch_quality2 = quality_from_filename(dst)
@@ -5171,13 +5185,17 @@ async def _execute_import(
                 continue
 
             try:
-                stage_path = staging.stage(src, dst)
-                stage_after = _maybe_convert_to_cbz(stage_path)
+                stage_path = await asyncio.to_thread(staging.stage, src, dst)
+                stage_after = await asyncio.to_thread(_maybe_convert_to_cbz, stage_path)
                 if stage_after != stage_path:
                     dst = staging.rename(stage_path, stage_after)
                     stage_path = stage_after
                 if s:
-                    _try_inject_comicinfo(stage_path, s, volume_num=proposed_vol, tags=_series_tags)
+                    await asyncio.to_thread(
+                        _try_inject_comicinfo,
+                        stage_path, s,
+                        volume_num=proposed_vol, tags=_series_tags,
+                    )
                 db.execute(
                     "UPDATE import_queue_files SET status='imported', dst_path=? WHERE id=?",
                     (dst, f['id'])
@@ -5332,7 +5350,9 @@ async def _execute_import(
         # which file was bad.
         if any_error and imported_count > 0:
             # Filesystem rollback: drop every staged file, sources intact.
-            staging.rollback()
+            # Off the event loop — shutil.rmtree on a partially-staged
+            # batch can touch dozens of files.
+            await asyncio.to_thread(staging.rollback)
             # DB rollback: revert every per-file UPDATE done in the loop.
             db.execute("ROLLBACK TO SAVEPOINT import_batch")
             # Re-apply the bits we want to keep: the queue status and the
@@ -5356,13 +5376,16 @@ async def _execute_import(
             imported_vols.clear()
         elif imported_count > 0:
             # All-or-nothing succeeded: commit the staged files into place.
+            # commit_all does N os.replace calls (+ optional os.unlink for
+            # move-mode sources) — fast per call but N matters for big
+            # batches, and it's still disk I/O.
             try:
-                staging.commit_all()
+                await asyncio.to_thread(staging.commit_all)
                 db.execute("RELEASE SAVEPOINT import_batch")
             except Exception as e:
                 # Commit-phase failure is extremely rare (rename within one
                 # filesystem). Fall back to rolling the batch back.
-                staging.rollback()
+                await asyncio.to_thread(staging.rollback)
                 db.execute("ROLLBACK TO SAVEPOINT import_batch")
                 db.execute("RELEASE SAVEPOINT import_batch")
                 log_event(
@@ -5374,7 +5397,7 @@ async def _execute_import(
                 imported_count = 0
         else:
             # No files succeeded; nothing to commit or roll back.
-            staging.rollback()
+            await asyncio.to_thread(staging.rollback)
             db.execute("RELEASE SAVEPOINT import_batch")
 
         # ── After all files: cascade chapter completion to volumes ────────────
