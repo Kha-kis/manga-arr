@@ -769,6 +769,102 @@ async def api_series_reconcile_preview(request: Request, series_id: int):
     return JSONResponse(plan)
 
 
+@router.post("/api/series/{series_id}/reconcile/refresh-then-preview", response_class=HTMLResponse)
+async def api_series_reconcile_refresh_then_preview(request: Request, series_id: int):
+    """One-click "refresh MangaDex map, then show preview".
+
+    Motivated by the HxH pilot: the cached chapter_vol_map had drifted
+    off-by-one vs live MangaDex, and the naive reconcile preview would
+    have moved chapters in the wrong direction. This route bakes the
+    "refresh first" step into a single explicit operator action so it
+    can't be skipped.
+
+    Behaviour:
+      1. Verify the series exists.
+      2. Call `main.refresh_mangadex_map(series_id)` — same supported
+         helper the series editor and startup backfill use.
+      3. Rebuild the metadata-health state + reconcile dry-run.
+      4. Return the preview partial (primary swap) plus an HTMX OOB
+         swap that replaces the health panel in place.
+
+    Explicitly NOT an apply path. Does NOT call
+    reconcile_series_chapter_map(dry_run=False). The operator still
+    has to press the Apply button on the returned preview after
+    reviewing it.
+
+    Error handling: if refresh raises or returns False, return a
+    small error partial (HTMX) or JSON 502. The existing preview panel
+    is left untouched so the operator can retry.
+    """
+    import main as _m
+    from reconcile_map import build_metadata_health, reconcile_series_chapter_map
+
+    with get_db() as db:
+        exists = db.execute(
+            "SELECT 1 FROM series WHERE id=?", (series_id,)
+        ).fetchone()
+    if not exists:
+        return JSONResponse({"error": "series not found"}, status_code=404)
+
+    refresh_ok = False
+    refresh_error: str | None = None
+    try:
+        refresh_ok = bool(await _m.refresh_mangadex_map(series_id))
+    except Exception as _e:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "refresh_mangadex_map(%s) raised: %r", series_id, _e
+        )
+        refresh_error = f"{type(_e).__name__}: {str(_e)[:160]}"
+
+    if not refresh_ok:
+        # Refresh didn't succeed (no mangadex_id, validation failed, or
+        # a raised exception caught above). Return an error partial
+        # without touching the existing preview/apply state.
+        err_msg = refresh_error or "MangaDex refresh returned no mapping for this series."
+        _m.log_event(
+            'reconcile',
+            f"Refresh-then-preview: refresh failed ({err_msg})",
+            series_id,
+        )
+        if request.headers.get("HX-Request") == "true":
+            return templates.TemplateResponse(
+                request, "partials/reconcile_refresh_error.html",
+                {"series_id": series_id, "error": err_msg},
+            )
+        return JSONResponse(
+            {"refreshed": False, "error": err_msg},
+            status_code=502 if refresh_error else 200,
+        )
+
+    plan   = reconcile_series_chapter_map(series_id, dry_run=True)
+    health = build_metadata_health(series_id)
+    _m.log_event(
+        'reconcile',
+        f"Refresh-then-preview: map refreshed, plan has "
+        f"{plan.get('ok_move', 0)} safe move(s)",
+        series_id,
+    )
+
+    if request.headers.get("HX-Request") == "true":
+        # Primary swap: the preview panel (lands in #reconcile-preview-panel).
+        # OOB: the metadata health panel (rebuilt with fresh data).
+        return templates.TemplateResponse(
+            request, "partials/reconcile_refresh_then_preview.html",
+            {"plan": plan, "series_id": series_id,
+             "metadata_health": health, "just_refreshed": True},
+        )
+    return JSONResponse({
+        "refreshed":  True,
+        "chapter_vol_map_size": health['chapter_vol_map_size'],
+        "state":      health['state'],
+        "plan": {k: plan.get(k, 0) for k in (
+            'ok_move', 'already_correct', 'no_map_entry',
+            'target_volume_missing', 'target_ambiguous', 'special_parent',
+        )},
+    })
+
+
 @router.post("/api/series/{series_id}/reconcile/apply", response_class=HTMLResponse)
 async def api_series_reconcile_apply(request: Request, series_id: int):
     """Apply the reconciler's safe moves for one series.

@@ -1,0 +1,36 @@
+{#
+  HTMX response when POST /api/series/{id}/reconcile/refresh-then-preview
+  couldn't refresh the MangaDex map.
+
+  Returned via hx-target="#reconcile-preview-panel" swap — the existing
+  preview is NOT touched if one was visible (we intentionally don't
+  destroy its state), but when the button is clicked from the health
+  panel the target is the empty placeholder `<div id="reconcile-preview-panel"></div>`
+  so this error lands there.
+
+  Context:
+    series_id : int
+    error     : short human-readable reason
+
+  No OOB swap — the health panel stays as-is since the refresh didn't
+  actually land, so state hasn't changed.
+#}
+<section id="reconcile-preview-panel" class="panel mb-4">
+  <div class="panel-body" style="padding:14px 16px">
+    <div class="alert alert-danger mb-0" style="font-size:0.9rem">
+      <i class="bi bi-exclamation-triangle-fill me-1"></i>
+      <strong>Map refresh failed.</strong>
+      Could not refresh <code>chapter_vol_map</code> from MangaDex for this series.
+      <div class="text-xs mt-2" style="color:var(--text-2)">
+        <code>{{ error }}</code>
+      </div>
+      <div class="text-xs mt-2" style="color:var(--text-3)">
+        The reconcile preview was not run. The existing cached map
+        and metadata are unchanged. You can retry the action, or use
+        the plain
+        <strong>Preview chapter re-map</strong> button if you want to
+        work with the cached map.
+      </div>
+    </div>
+  </div>
+</section>
