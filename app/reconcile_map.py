@@ -1,4 +1,6 @@
-"""Operator-triggered reconciliation of chapter→volume links.
+"""Operator-triggered reconciliation of chapter→volume links, plus a
+read-only metadata-readiness report that explains why a given series
+isn't ready for reconciliation (and what supported path will fix it).
 
 Problem:
     When MangaDex (or Kitsu, or the operator via the series editor)
@@ -295,3 +297,187 @@ def reconcile_series_chapter_map(series_id: int, dry_run: bool = True) -> dict:
                 },
             )
     return result
+
+
+# ── Metadata readiness report ────────────────────────────────────────────────
+# Answers: "is this series in a state where reconcile_series_chapter_map
+# will produce useful output, and if not, exactly what needs fixing?"
+# Strict read-only — never mutates. Callers decide the next step
+# (usually the series editor's total_volumes field, which invokes the
+# supported create_volume_stubs path).
+
+_BLOCKER_NEEDS_TOTAL_VOLUMES = 'needs_total_volumes'
+_BLOCKER_NEEDS_CHAPTER_VOL_MAP = 'needs_chapter_vol_map'
+_BLOCKER_MISSING_MAINLINE_STUBS = 'missing_mainline_stubs'
+_BLOCKER_UNLINKED_CHAPTERS = 'unlinked_chapters'
+_BLOCKER_SPECIAL_BLOCKS_MAINLINE = 'special_blocks_mainline'
+
+
+def metadata_readiness_report(series_id: int) -> dict:
+    """Inspect a series and classify its metadata readiness.
+
+    Returns a dict with the fields below. Never mutates. The
+    ``ready`` flag is True only when ``blockers`` is empty and the
+    reconciler has enough information to do useful work.
+
+    Blocker codes:
+      - needs_total_volumes       total_volumes is NULL/0 — caller
+                                  must fill this via the series editor
+                                  (which triggers create_volume_stubs)
+                                  or via the MangaDex/AniList refresh
+                                  background task.
+      - needs_chapter_vol_map     chapter_vol_map is absent — run a
+                                  series-metadata refresh before any
+                                  reconciliation.
+      - missing_mainline_stubs    one or more mainline volume stubs
+                                  (volume_num IN 1..total_volumes)
+                                  don't exist as rows. These are
+                                  created by the standard series-
+                                  editor save path (see
+                                  routers/series_.py:1257).
+      - unlinked_chapters         chapters exist with volume_id IS NULL;
+                                  after stubs are in place,
+                                  populate_chapters will link them.
+      - special_blocks_mainline   a special row shares a volume_num
+                                  with the mainline series, which will
+                                  cause create_volume_stubs to skip
+                                  that mainline vol. This is a known
+                                  edge case (see audit notes) — rare
+                                  enough to flag rather than auto-fix.
+    """
+    from shared import get_db
+    report: dict = {
+        'series_id':               series_id,
+        'title':                   None,
+        'total_volumes':           None,
+        'total_chapters':          None,
+        'chapter_vol_map_size':    0,
+        'existing_vol_nums':       [],
+        'expected_vol_nums':       [],
+        'missing_mainline_stubs':  [],
+        'downloaded_with_num':     0,
+        'wanted_pack_rows':        0,
+        'special_count':           0,
+        'unlinked_chapters':       0,
+        'blockers':                [],
+        'ready':                   False,
+        'recommended_next_step':   '',
+    }
+
+    with get_db() as db:
+        s = db.execute(
+            "SELECT id, title, total_volumes, total_chapters, chapter_vol_map"
+            "  FROM series WHERE id=?", (series_id,)
+        ).fetchone()
+        if not s:
+            report['recommended_next_step'] = f"series_id {series_id} not found"
+            return report
+
+        report['title']          = s['title']
+        report['total_volumes']  = s['total_volumes']
+        report['total_chapters'] = s['total_chapters']
+
+        import json
+        cvm: dict = {}
+        if s['chapter_vol_map']:
+            try:
+                loaded = json.loads(s['chapter_vol_map'])
+                if isinstance(loaded, dict):
+                    cvm = loaded
+            except (ValueError, TypeError):
+                pass
+        report['chapter_vol_map_size'] = len(cvm)
+
+        vols = list(db.execute(
+            "SELECT volume_num, status, COALESCE(is_special, 0) AS is_special,"
+            " pack_type, vol_range_start, vol_range_end"
+            " FROM volumes WHERE series_id=?",
+            (series_id,)
+        ).fetchall())
+        existing_mainline: set[float] = set()
+        for v in vols:
+            if v['is_special']:
+                report['special_count'] += 1
+                continue
+            if v['volume_num'] is None:
+                report['wanted_pack_rows'] += 1
+                continue
+            existing_mainline.add(float(v['volume_num']))
+            if v['status'] == 'downloaded':
+                report['downloaded_with_num'] += 1
+        report['existing_vol_nums'] = sorted(existing_mainline)
+
+        # Track specials' volume_num separately so we can flag the
+        # special_blocks_mainline case where a special would prevent
+        # create_volume_stubs from creating the mainline row.
+        special_vol_nums = {
+            float(v['volume_num']) for v in vols
+            if v['is_special'] and v['volume_num'] is not None
+        }
+
+        if s['total_volumes'] and s['total_volumes'] > 0:
+            expected = [float(i) for i in range(1, int(s['total_volumes']) + 1)]
+            report['expected_vol_nums'] = expected
+            missing = [v for v in expected if v not in existing_mainline]
+            report['missing_mainline_stubs'] = missing
+            blocked_by_special = [v for v in missing if v in special_vol_nums]
+            if blocked_by_special:
+                report['blockers'].append(_BLOCKER_SPECIAL_BLOCKS_MAINLINE)
+            if missing:
+                report['blockers'].append(_BLOCKER_MISSING_MAINLINE_STUBS)
+        else:
+            report['blockers'].append(_BLOCKER_NEEDS_TOTAL_VOLUMES)
+
+        if not cvm:
+            report['blockers'].append(_BLOCKER_NEEDS_CHAPTER_VOL_MAP)
+
+        report['unlinked_chapters'] = db.execute(
+            "SELECT COUNT(*) FROM chapters"
+            " WHERE series_id=? AND volume_id IS NULL",
+            (series_id,)
+        ).fetchone()[0]
+        if report['unlinked_chapters'] > 0:
+            report['blockers'].append(_BLOCKER_UNLINKED_CHAPTERS)
+
+    report['ready'] = not report['blockers']
+    report['recommended_next_step'] = _recommend_next_step(report)
+    return report
+
+
+def _recommend_next_step(r: dict) -> str:
+    """One actionable sentence describing what the operator should do
+    next. Ordered so the earliest blocker wins — fixing a later blocker
+    before an earlier one often doesn't stick."""
+    blockers = r['blockers']
+    if _BLOCKER_NEEDS_TOTAL_VOLUMES in blockers:
+        return (
+            "Open the series editor and set 'Total Volumes' (or run a "
+            "MangaDex/AniList metadata refresh). This triggers "
+            "create_volume_stubs and populates missing mainline stubs."
+        )
+    if _BLOCKER_NEEDS_CHAPTER_VOL_MAP in blockers:
+        return (
+            "Run 'Refresh MangaDex map' for this series — reconciliation "
+            "needs an explicit chapter→volume map to work."
+        )
+    if _BLOCKER_SPECIAL_BLOCKS_MAINLINE in blockers:
+        vols = [f"vol {int(v)}" for v in r['missing_mainline_stubs']
+                if v in {float(x) for x in r['existing_vol_nums']}]
+        return (
+            "A special/side-story row shares a volume_num with missing "
+            "mainline stubs; resolve in the series editor before "
+            "reconciling."
+        )
+    if _BLOCKER_MISSING_MAINLINE_STUBS in blockers:
+        n = len(r['missing_mainline_stubs'])
+        return (
+            f"{n} mainline volume stub(s) missing — open the series "
+            "editor and save (total_volumes triggers stub creation)."
+        )
+    if _BLOCKER_UNLINKED_CHAPTERS in blockers:
+        return (
+            f"{r['unlinked_chapters']} chapter row(s) have volume_id=NULL. "
+            "Running a series refresh calls populate_chapters which "
+            "links them via chapter_vol_map."
+        )
+    return "ready — reconcile_series_chapter_map will produce useful output"
