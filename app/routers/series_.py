@@ -734,6 +734,89 @@ async def api_series_metadata_health(request: Request, series_id: int):
     return JSONResponse(payload)
 
 
+# ── Series-scoped reconciliation ─────────────────────────────────────────────
+# UI surface for PR #40's reconcile_series_chapter_map helper. Strictly
+# one-series-at-a-time. Preview is read-only; apply is explicit POST.
+
+@router.get("/api/series/{series_id}/reconcile/preview", response_class=HTMLResponse)
+async def api_series_reconcile_preview(request: Request, series_id: int):
+    """Dry-run preview of the chapter→volume reconciler for one series.
+
+    HTMX callers get the rendered preview partial (summary + per-row
+    plan + apply button when `ok_move > 0`). Plain callers get JSON
+    with the same data. Strict read-only.
+    """
+    from reconcile_map import reconcile_series_chapter_map
+    plan = reconcile_series_chapter_map(series_id, dry_run=True)
+    if not plan.get('rows') and plan.get('ok_move', 0) == 0 \
+            and plan.get('already_correct', 0) == 0 \
+            and plan.get('no_map_entry', 0) == 0:
+        # Empty plan likely means unknown series_id (no chapters and no
+        # classifications). Mirror the health panel's 404 semantics so
+        # callers distinguish "nothing to do" from "series not found".
+        with get_db() as _db:
+            exists = _db.execute(
+                "SELECT 1 FROM series WHERE id=?", (series_id,)
+            ).fetchone()
+        if not exists:
+            return JSONResponse({"error": "series not found"}, status_code=404)
+
+    if request.headers.get("HX-Request") == "true":
+        return templates.TemplateResponse(
+            request, "partials/reconcile_preview_panel.html",
+            {"plan": plan, "series_id": series_id}
+        )
+    return JSONResponse(plan)
+
+
+@router.post("/api/series/{series_id}/reconcile/apply", response_class=HTMLResponse)
+async def api_series_reconcile_apply(request: Request, series_id: int):
+    """Apply the reconciler's safe moves for one series.
+
+    Requires a non-GET method so the action can't fire from a stray GET
+    (e.g., a preload, a bookmark, a link fetcher). Only rows the
+    reconciler flags `safe_to_apply=True` are moved; everything else is
+    left alone per the Stage 4 contract.
+
+    Returns the post-apply preview partial for HTMX callers so the same
+    UI element swaps in place showing the "0 safe moves" state plus the
+    counts of rows moved vs skipped. Plain callers get a JSON summary.
+    """
+    import main as _m
+    from reconcile_map import reconcile_series_chapter_map
+    with get_db() as _db:
+        exists = _db.execute(
+            "SELECT 1 FROM series WHERE id=?", (series_id,)
+        ).fetchone()
+    if not exists:
+        return JSONResponse({"error": "series not found"}, status_code=404)
+
+    result = reconcile_series_chapter_map(series_id, dry_run=False)
+    _m.log_event(
+        'reconcile',
+        f"Reconcile apply: {result['applied']} moved, {result['skipped']} skipped",
+        series_id,
+    )
+    # Re-fetch the fresh preview after apply so the UI panel reflects
+    # the new zero-safe-moves state without a separate round-trip.
+    follow_up = reconcile_series_chapter_map(series_id, dry_run=True)
+
+    if request.headers.get("HX-Request") == "true":
+        return templates.TemplateResponse(
+            request, "partials/reconcile_preview_panel.html",
+            {"plan": follow_up, "series_id": series_id,
+             "just_applied": result['applied']},
+        )
+    return JSONResponse({
+        "applied":  result['applied'],
+        "skipped":  result['skipped'],
+        "summary":  {k: result.get(k, 0) for k in (
+            'ok_move', 'already_correct', 'no_map_entry',
+            'target_volume_missing', 'target_ambiguous', 'special_parent',
+        )},
+    })
+
+
 # ── Search & add ──────────────────────────────────────────────────────────────
 
 @router.get("/search", response_class=HTMLResponse)

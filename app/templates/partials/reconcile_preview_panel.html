@@ -1,0 +1,184 @@
+{#
+  Reconcile preview panel — series-scoped dry-run + apply surface.
+
+  Context expected:
+    plan       — dict from reconcile_map.reconcile_series_chapter_map(series_id, dry_run=True)
+    series_id  — int (used to wire hx-post targets)
+    just_applied (optional) — int; set after an apply to flash a toast
+
+  Layout:
+    - Header with total row count + the six classification counts
+    - Table of safe_to_apply rows (the only actionable ones)
+    - Collapsed list of review-required rows (special_parent / target_ambiguous)
+    - Apply button only when safe moves exist
+    - Close/cancel just returns an empty container
+
+  No mutating buttons other than Apply. No bulk targets. No "re-route
+  specials into mainline" shortcut — those rows stay operator-managed
+  per the Stage 4 contract.
+#}
+{% set safe_rows     = plan['rows'] | selectattr('safe_to_apply')            | list %}
+{% set review_rows   = plan['rows'] | selectattr('requires_manual_review')   | list %}
+{% set ok_move       = plan['ok_move'] %}
+{% set already_ok    = plan['already_correct'] %}
+{% set no_map        = plan['no_map_entry'] %}
+{% set miss_target   = plan['target_volume_missing'] %}
+{% set ambig         = plan['target_ambiguous'] %}
+{% set spec_parent   = plan['special_parent'] %}
+
+<section id="reconcile-preview-panel" class="panel mb-4">
+  <div class="panel-header d-flex align-items-center justify-content-between">
+    <div class="d-flex align-items-center">
+      <i class="bi bi-diagram-3-fill me-2 text-ember"></i>
+      <span class="fw-semibold">Chapter re-map preview</span>
+      <span class="text-xs ms-3" style="color:var(--text-3)">
+        dry-run · {{ plan['rows']|length }} classified chapter row(s)
+      </span>
+    </div>
+    <div class="d-flex gap-2">
+      <button type="button" class="btn btn-secondary btn-sm"
+              hx-get="/api/series/{{ series_id }}/reconcile/preview"
+              hx-target="#reconcile-preview-panel"
+              hx-swap="outerHTML"
+              title="Re-run dry-run">
+        <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+      </button>
+      <button type="button" class="btn btn-secondary btn-sm"
+              onclick="(function(el){const d=document.createElement('div');d.id='reconcile-preview-panel';el.replaceWith(d);})(document.getElementById('reconcile-preview-panel'))"
+              title="Dismiss preview (re-open via the Preview button)">
+        <i class="bi bi-x"></i>
+      </button>
+    </div>
+  </div>
+
+  <div class="panel-body" style="padding:14px 16px">
+    {% if just_applied is defined and just_applied > 0 %}
+    <div class="alert alert-info mb-3" style="font-size:0.85rem">
+      <i class="bi bi-check-circle-fill me-1 text-jade"></i>
+      Applied <strong>{{ just_applied }}</strong> safe chapter move(s).
+      The panel now shows the fresh post-apply state.
+    </div>
+    {% endif %}
+
+    <div class="d-flex gap-3 flex-wrap text-xs mb-3">
+      <span style="color:var(--jade)"     title="Chapter already points at the right volume">
+        <i class="bi bi-check2"></i> {{ already_ok }} already correct
+      </span>
+      {% if ok_move > 0 %}
+      <span style="color:var(--ember)"    title="Safe reassignment available">
+        <i class="bi bi-arrow-right-circle-fill"></i> {{ ok_move }} safe move(s)
+      </span>
+      {% endif %}
+      {% if miss_target > 0 %}
+      <span style="color:var(--ruby)"     title="Map points at a volume with no mainline row — fix via series editor Total Volumes">
+        <i class="bi bi-x-circle"></i> {{ miss_target }} target missing
+      </span>
+      {% endif %}
+      {% if ambig > 0 %}
+      <span style="color:var(--gold)"     title="Multiple mainline rows share the target volume_num">
+        <i class="bi bi-question-diamond-fill"></i> {{ ambig }} ambiguous
+      </span>
+      {% endif %}
+      {% if spec_parent > 0 %}
+      <span style="color:var(--gold)"     title="Chapter has a special/side-story parent — manual review required">
+        <i class="bi bi-shield-fill"></i> {{ spec_parent }} special-parent
+      </span>
+      {% endif %}
+      {% if no_map > 0 %}
+      <span style="color:var(--text-3)"   title="Chapter not in the current chapter_vol_map">
+        <i class="bi bi-dash-circle"></i> {{ no_map }} outside map
+      </span>
+      {% endif %}
+    </div>
+
+    {% if safe_rows %}
+    <div class="section-label mb-2">
+      <i class="bi bi-arrow-right-short text-ember"></i>Proposed safe moves
+    </div>
+    <div class="table-wrap mb-3">
+      <table class="table table-sm mb-0">
+        <thead>
+          <tr>
+            <th style="width:90px">Chapter ID</th>
+            <th style="width:80px">Ch #</th>
+            <th style="width:110px">Current vol</th>
+            <th style="width:110px">Proposed vol</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in safe_rows %}
+          <tr>
+            <td class="text-xs" style="font-family:var(--font-mono)">{{ r['chapter_id'] }}</td>
+            <td class="text-xs">{{ r['chapter_num']|vol_display if r['chapter_num'] is not none else '—' }}</td>
+            <td class="text-xs">
+              {% if r['current_volume_num'] is not none %}Vol {{ r['current_volume_num']|vol_display }}
+              {% else %}<span style="color:var(--text-3)">—</span>{% endif %}
+            </td>
+            <td class="text-xs text-jade">
+              Vol {{ r['proposed_volume_num']|vol_display }}
+            </td>
+            <td class="text-xs" style="color:var(--text-2)">{{ r['reason'] }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <form method="POST"
+          hx-post="/api/series/{{ series_id }}/reconcile/apply"
+          hx-target="#reconcile-preview-panel"
+          hx-swap="outerHTML"
+          hx-confirm="Apply {{ safe_rows|length }} chapter move(s)? Blocked/review rows will be left alone.">
+      <button type="submit" class="btn-grab btn btn-sm px-3">
+        <i class="bi bi-box-arrow-in-down me-1"></i>
+        Apply {{ safe_rows|length }} safe move(s)
+      </button>
+    </form>
+    {% else %}
+    <div class="text-sm" style="color:var(--text-2)">
+      <i class="bi bi-check-circle-fill me-1 text-jade"></i>
+      No safe chapter moves. Reconciliation has nothing to do for this series right now.
+    </div>
+    {% endif %}
+
+    {% if review_rows %}
+    <hr style="margin:14px 0; border-color:var(--edge-2)">
+    <details>
+      <summary class="text-xs fw-semibold" style="color:var(--text-2); cursor:pointer">
+        <i class="bi bi-eye"></i>
+        {{ review_rows|length }} row(s) flagged for manual review
+      </summary>
+      <div class="table-wrap mt-2">
+        <table class="table table-sm mb-0">
+          <thead>
+            <tr>
+              <th style="width:90px">Chapter ID</th>
+              <th style="width:80px">Ch #</th>
+              <th style="width:110px">Current vol</th>
+              <th style="width:110px">Proposed vol</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in review_rows %}
+            <tr style="opacity:0.75">
+              <td class="text-xs" style="font-family:var(--font-mono)">{{ r['chapter_id'] }}</td>
+              <td class="text-xs">{{ r['chapter_num']|vol_display if r['chapter_num'] is not none else '—' }}</td>
+              <td class="text-xs">
+                {% if r['current_volume_num'] is not none %}Vol {{ r['current_volume_num']|vol_display }}
+                {% else %}<span style="color:var(--text-3)">—</span>{% endif %}
+              </td>
+              <td class="text-xs">
+                {% if r['proposed_volume_num'] is not none %}Vol {{ r['proposed_volume_num']|vol_display }}
+                {% else %}<span style="color:var(--text-3)">—</span>{% endif %}
+              </td>
+              <td class="text-xs" style="color:var(--gold)">{{ r['reason'] }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
+    {% endif %}
+  </div>
+</section>
