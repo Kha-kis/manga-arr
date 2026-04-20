@@ -111,9 +111,39 @@ def test_single_chapter_parses(title: str, expected: float) -> None:
     ("Manga Name c1-c2.cbz",     (1.0, 2.0)),
     ("Manga Name Chapters 1-10", (1.0, 10.0)),
     ("Manga Name Chapter 5-15",  (5.0, 15.0)),
+    # Long-running shounen releases legitimately exceed the old 200
+    # cap. Chapter-prefix requirement still protects against year
+    # ranges (tested below).
+    ("Jujutsu Kaisen c001-c267", (1.0, 267.0)),
+    ("Naruto c001-c460",         (1.0, 460.0)),
+    ("One Piece c001-c1089",     (1.0, 1089.0)),
 ])
 def test_chapter_range_parses(title: str, expected: tuple[float, float]) -> None:
     assert extract_chapter_range(title) == expected
+
+
+@pytest.mark.parametrize("title", [
+    # These MUST still be rejected: no chapter prefix means the
+    # bare-number pattern in the volume-range parser handles them
+    # (or rejects them entirely). This guards against the old 200-cap
+    # fix re-introducing year-range false positives.
+    "Manga Name (2010-2020) complete",
+    "Manga Name 2010-2020",
+    "Manga Name - 1990-2010",
+])
+def test_chapter_range_still_rejects_year_ranges(title: str) -> None:
+    assert extract_chapter_range(title) is None
+
+
+@pytest.mark.parametrize("title", [
+    # Spans > 2000 chapters are rejected — no real manga publishes in
+    # a single pack that long; pair is almost certainly an ID / date
+    # munging artifact.
+    "Manga Name c001-c5000",
+    "Manga Name c10-c9999",
+])
+def test_chapter_range_rejects_absurd_spans(title: str) -> None:
+    assert extract_chapter_range(title) is None
 
 
 @pytest.mark.parametrize("title", [
