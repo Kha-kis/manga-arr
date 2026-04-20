@@ -568,6 +568,9 @@
     {# ── Metadata health panel (read-only diagnostic) ── #}
     {% include "partials/metadata_health_panel.html" %}
 
+    {# ── Reconcile preview (HTMX swaps into here on demand) ── #}
+    <div id="reconcile-preview-panel"></div>
+
     {# ── Volumes ── #}
     {% if volumes %}
     {% set grabbed_count = volumes | selectattr('status', 'equalto', 'grabbed') | list | length %}

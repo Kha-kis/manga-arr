@@ -45,13 +45,30 @@
         {{ state_meta['label'] }}
       </span>
     </div>
-    <button type="button" class="btn btn-secondary btn-sm"
-            hx-get="/api/series/{{ mh['series_id'] }}/metadata-health"
-            hx-target="#metadata-health-panel"
-            hx-swap="outerHTML"
-            title="Re-run read-only health check">
-      <i class="bi bi-arrow-clockwise me-1"></i>Refresh
-    </button>
+    <div class="d-flex gap-2">
+      {#
+        The reconcile preview button is only meaningful when the
+        reconciler can actually move something or has items to review.
+        For a "healthy" series it would just report zero safe moves, so
+        hide it to keep the panel uncluttered.
+      #}
+      {% if state in ('drift_detected', 'needs_review', 'blocked_by_missing_volumes') %}
+      <button type="button" class="btn btn-secondary btn-sm"
+              hx-get="/api/series/{{ mh['series_id'] }}/reconcile/preview"
+              hx-target="#reconcile-preview-panel"
+              hx-swap="outerHTML"
+              title="Preview proposed chapter→volume re-mappings for this series">
+        <i class="bi bi-diagram-3 me-1"></i>Preview chapter re-map
+      </button>
+      {% endif %}
+      <button type="button" class="btn btn-secondary btn-sm"
+              hx-get="/api/series/{{ mh['series_id'] }}/metadata-health"
+              hx-target="#metadata-health-panel"
+              hx-swap="outerHTML"
+              title="Re-run read-only health check">
+        <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+      </button>
+    </div>
   </div>
 
   <div class="panel-body" style="padding:14px 16px">
