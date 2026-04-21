@@ -5854,6 +5854,8 @@ async def fetch_mangadex_id(title: str, anilist_id: int | None,
             return best_id, best_links
     except Exception as e:
         print(f"[MangaDex] ID lookup error: {e}")
+        log_event('metadata_fetch_failed',
+                  f'mangadex id lookup failed: {type(e).__name__}: {str(e)[:120]}')
     return None, {}
 
 async def fetch_chapter_volume_map(mangadex_id: str) -> dict:
@@ -5886,6 +5888,9 @@ async def fetch_chapter_volume_map(mangadex_id: str) -> dict:
         return mapping
     except Exception as e:
         print(f"[MangaDex] aggregate error: {e}")
+        log_event('metadata_fetch_failed',
+                  f'mangadex aggregate failed for {mangadex_id}: '
+                  f'{type(e).__name__}: {str(e)[:120]}')
     return {}
 
 async def fetch_kitsu_chapter_map(title: str, anilist_id: int | None,
@@ -5960,6 +5965,8 @@ async def fetch_kitsu_chapter_map(title: str, anilist_id: int | None,
         return mapping
     except Exception as e:
         print(f"[Kitsu] chapter map error: {e}")
+        log_event('metadata_fetch_failed',
+                  f'kitsu chapter-map failed: {type(e).__name__}: {str(e)[:120]}')
     return {}
 
 
@@ -6621,6 +6628,28 @@ async def fetch_mu_metadata(series_id: int, title: str) -> dict | None:
 
 
 # ── Grab logic ────────────────────────────────────────────────────────────────
+def _log_grab_rejection(series_id: int, title: str, reason: str) -> None:
+    """Surface a grab rejection as a `rejected_release` event.
+
+    Called from `grab_item` on rejection paths that represent real
+    filtering decisions (blocklist, edition mismatch, cross-group
+    repack, quality cutoff). Normal-flow deduplication (seen, in-flight
+    dedup) is NOT logged here — those aren't rejections, just guards,
+    and logging them would flood the events table on every RSS poll.
+
+    Also skipped: high-frequency informational rejections that repeat
+    every poll for a stable reason (coverage-already-satisfied,
+    score-too-low, not-an-upgrade). Those would drown the debugging
+    signal from the rare rejections operators actually care about.
+    """
+    try:
+        log_event('rejected_release',
+                  f'{reason}: {title[:120]}',
+                  series_id)
+    except Exception:
+        pass  # logging must never break grab
+
+
 async def grab_item(item: dict, series_id: int, respect_monitoring: bool = True) -> bool:
     """
     Send item to download client and record. Returns True on success.
@@ -6648,6 +6677,7 @@ async def grab_item(item: dict, series_id: int, respect_monitoring: bool = True)
     with get_db() as db:
         if db.execute("SELECT 1 FROM blocklist WHERE torrent_url=?", (item['url'],)).fetchone():
             _GRABBING_URLS.discard(item['url'])
+            _log_grab_rejection(series_id, title, 'blocklisted')
             return False
 
     if respect_monitoring:
@@ -6665,6 +6695,10 @@ async def grab_item(item: dict, series_id: int, respect_monitoring: bool = True)
         _series_edition  = (s_mode_row['edition_type'] if s_mode_row else None) or 'standard'
         _release_edition = detect_edition_type(title) or 'standard'
         if _series_edition != _release_edition:
+            _log_grab_rejection(
+                series_id, title,
+                f'edition mismatch (series={_series_edition}, release={_release_edition})'
+            )
             return False
 
     # Minimum seeders check for torrents
@@ -6789,15 +6823,19 @@ async def grab_item(item: dict, series_id: int, respect_monitoring: bool = True)
             if _revision['is_repack']:
                 if _prop_cfg == 'do_not_upgrade':
                     # Never auto-grab repacks of already-downloaded volumes
-                    print(f"[Grab] Skipping repack '{title[:60]}' — propers_and_repacks=do_not_upgrade")
+                    _log_grab_rejection(series_id, title,
+                                        'repack skipped: propers_and_repacks=do_not_upgrade')
                     return False
                 elif _prop_cfg == 'prefer_and_upgrade':
                     # Only grab if same release group (cross-group repacks rejected)
                     existing_group = (existing_vol['release_group'] or '').strip().lower()
                     new_group      = parse_release_group(title).lower()
                     if existing_group and new_group and existing_group != new_group:
-                        print(f"[Grab] Rejecting cross-group repack '{title[:60]}'"
-                              f" — existing group '{existing_group}', repack group '{new_group}'")
+                        _log_grab_rejection(
+                            series_id, title,
+                            f'cross-group repack rejected '
+                            f'(existing={existing_group!r}, repack={new_group!r})'
+                        )
                         return False
                 # do_not_prefer: fall through — treat repack same as any release
             # Cutoff check first — if current quality already meets cutoff, no upgrades needed
@@ -6832,7 +6870,10 @@ async def grab_item(item: dict, series_id: int, respect_monitoring: bool = True)
         if _cutoff:
             _new_q = quality_from_filename(title)
             if _new_q and quality_rank(_new_q) < quality_rank(_cutoff):
-                print(f"[Grab] Skipping '{title[:60]}' — quality {_new_q} below cutoff {_cutoff}")
+                _log_grab_rejection(
+                    series_id, title,
+                    f'quality {_new_q} below cutoff {_cutoff}'
+                )
                 return False
 
     try:
