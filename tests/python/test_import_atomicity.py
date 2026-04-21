@@ -334,7 +334,20 @@ def exec_env(tmp_path, monkeypatch):
     src_root = tmp_path / "downloads"
     src_root.mkdir()
 
-    # Re-point save_path so _execute_import's dest_root lands in our tmp.
+    # Library destination now resolves through a root folder (PR C
+    # removed the save_path fallback). Seed a default folder pointing
+    # at our tmp library_root so the import pipeline has somewhere to
+    # place files.
+    with sqlite3.connect(db_tmp.name) as c:
+        c.execute(
+            "INSERT OR REPLACE INTO root_folders(id, path, label, is_default)"
+            " VALUES(1, ?, 'Manga', 1)",
+            (str(library_root),)
+        )
+
+    # save_path is kept as a belt-and-braces default for legacy paths
+    # (e.g. first-run bootstrap); with the root folder in place the
+    # import pipeline never reads it.
     monkeypatch.setitem(main.CONFIG, "save_path", str(library_root))
     import shared as _s
     monkeypatch.setitem(_s.CONFIG, "save_path", str(library_root))
@@ -354,9 +367,14 @@ def exec_env(tmp_path, monkeypatch):
 
 
 def _seed_series(db_path, title="Test Series"):
+    """Seed a series row that references root_folder_id=1 (set up by the
+    exec_env fixture). PR B made root_folder_id non-optional at
+    creation; PR C removed the save_path fallback downstream, so tests
+    need a valid folder to pass."""
     with sqlite3.connect(db_path) as c:
         c.execute(
-            "INSERT INTO series(title, search_pattern, monitored) VALUES(?,?,1)",
+            "INSERT INTO series(title, search_pattern, monitored, root_folder_id)"
+            " VALUES(?,?,1,1)",
             (title, title.lower().replace(" ", "-")),
         )
         c.commit()

@@ -3390,7 +3390,7 @@ def _series_library_dir(db, series_id: int) -> str | None:
     rf = db.execute(
         "SELECT path FROM root_folders WHERE id=?", (s['root_folder_id'],)
     ).fetchone() if s['root_folder_id'] else None
-    dest_root = rf['path'] if rf else get_cfg('save_path', '/manga')
+    dest_root = _resolve_series_dest_root(db, s['root_folder_id'], rf)
     title = s['title'] or 'Unknown'
     fmt = get_cfg('folder_format', '').strip()
     if fmt:
@@ -4138,7 +4138,7 @@ def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
         log_event('error', f"Import queue: content_path not found: {content_path}", series_id, db=db)
         return None, False
 
-    dest_root = rf['path'] if rf else get_cfg('save_path', '/manga')
+    dest_root = _resolve_series_dest_root(db, s['root_folder_id'], rf)
     safe_dir  = sanitize_filename(s['title'] or 'Unknown')
     dst_dir   = os.path.join(dest_root, safe_dir)
 
@@ -5146,7 +5146,7 @@ async def _execute_import(
         rf = db.execute(
             "SELECT path FROM root_folders WHERE id=?", (s['root_folder_id'],)
         ).fetchone() if s and s['root_folder_id'] else None
-        dest_root = rf['path'] if rf else get_cfg('save_path', '/manga')
+        dest_root = _resolve_series_dest_root(db, s['root_folder_id'], rf)
         safe_dir  = sanitize_filename(s['title'] or 'Unknown') if s else 'Unknown'
         dst_dir   = os.path.join(dest_root, safe_dir)
 
@@ -8534,6 +8534,45 @@ async def lifespan(app: FastAPI):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def get_root_folders(db) -> list:
     return db.execute("SELECT * FROM root_folders ORDER BY is_default DESC, label, path").fetchall()
+
+
+def _resolve_series_dest_root(db, series_rf_id: int | None, rf_row) -> str:
+    """Return the library destination root path for a series.
+
+    Assumes PR B's guarantee that every series has a root_folder_id at
+    creation time. Handles the edge case where an operator deletes a
+    root folder that still has series pointing at it — in that case we
+    fall back to any remaining folder and log a warning so the operator
+    can re-assign.
+
+    If no root folders exist at all the caller has a bigger problem
+    than this function can solve — raises RuntimeError with a clear
+    message rather than silently landing imports in a half-configured
+    path.
+    """
+    # Happy path: series has a folder and the row exists.
+    if rf_row:
+        return rf_row['path']
+    # Edge: series references a deleted folder, or was never assigned.
+    # Fall back to any available folder and log.
+    fallback = resolve_root_folder_id(db)
+    if fallback is not None:
+        fb_row = db.execute(
+            "SELECT path FROM root_folders WHERE id=?", (fallback,)
+        ).fetchone()
+        log_event(
+            'warning',
+            f"series root_folder_id={series_rf_id!r} did not resolve; "
+            f"falling back to root_folder_id={fallback} ({fb_row['path']!r}). "
+            f"Re-assign the series to an existing folder in the editor.",
+            db=db,
+        )
+        return fb_row['path']
+    # Terminal: no folders at all.
+    raise RuntimeError(
+        "No root folders configured. Add one in Settings before "
+        "attempting to import or place files."
+    )
 
 
 def resolve_root_folder_id(db, preferred_id: int | None = None) -> int | None:

@@ -90,10 +90,31 @@ def env(tmp_path):
 
 
 def _seed_chapter_queue(db_path: str, src_path: str, *, series_id: int = 7,
-                         chap_num: float = 1.0) -> int:
-    """Insert a minimal queue row with one chapter file to import."""
+                         chap_num: float = 1.0,
+                         library_root: str | None = None) -> int:
+    """Insert a minimal queue row with one chapter file to import.
+
+    Library destination now requires a root folder (PR C removed the
+    save_path fallback). Seed one pointing at library_root (defaults
+    to /tmp) so the import pipeline has somewhere to place files.
+    """
+    # Use the settings save_path as the library root by default — that's
+    # where the env fixture already pointed things. init_db's bootstrap
+    # may have pre-created root_folders(id=1) pointing at the old default
+    # (/manga), so REPLACE rather than IGNORE to land on the real tmp path.
     with sqlite3.connect(db_path) as c:
-        c.execute("INSERT INTO series(id, title, search_pattern) VALUES(?, ?, ?)",
+        if library_root is None:
+            sp_row = c.execute(
+                "SELECT value FROM settings WHERE key='save_path'"
+            ).fetchone()
+            library_root = sp_row[0] if sp_row else (os.path.dirname(src_path) or '/tmp')
+        c.execute(
+            "INSERT OR REPLACE INTO root_folders(id, path, label, is_default)"
+            " VALUES(1, ?, 'Manga', 1)",
+            (library_root,)
+        )
+        c.execute("INSERT INTO series(id, title, search_pattern, root_folder_id)"
+                  " VALUES(?, ?, ?, 1)",
                   (series_id, "EvLoopTest", "EvLoopTest"))
         cur = c.execute(
             "INSERT INTO import_queue(series_id, torrent_name, status, created_at)"
