@@ -225,8 +225,12 @@ async def _sync_list(lst: dict):
                 try:
                     from main import create_volume_stubs
                     create_volume_stubs(db, new_id, total_volumes)
-                except Exception:
-                    pass
+                except Exception as e:
+                    from main import log_event as _log
+                    _log('error',
+                         f'create_volume_stubs failed for new import {title!r}: '
+                         f'{type(e).__name__}: {str(e)[:120]}',
+                         new_id)
             if new_id:
                 added_entries.append((new_id, title, search_pattern, cover_url, al_id))
             if al_id:
@@ -247,6 +251,16 @@ async def _sync_list(lst: dict):
             asyncio.create_task(_m.grab_existing(series_id, title, search_pattern))
         except Exception as e:
             print(f"[ImportList] Post-add tasks failed for '{title}': {e}")
+            try:
+                import main as _m
+                _m.log_event(
+                    'error',
+                    f'import-list post-add task spawn failed for {title!r}: '
+                    f'{type(e).__name__}: {str(e)[:120]}',
+                    series_id,
+                )
+            except Exception:
+                pass
 
     added_count = len(added_entries)
     print(f"[ImportList:{lst['name']}] Synced {len(series_list)} items, added {added_count} new")
