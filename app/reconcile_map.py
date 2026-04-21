@@ -544,8 +544,22 @@ def _health_state(report: dict) -> str:
     if rec.get('target_volume_missing', 0) > 0:
         return 'blocked_by_missing_volumes'
 
+    # Drift is actionable even if some unrelated blockers still apply
+    # (e.g. a higher vol's stub is missing but every chapter the
+    # reconciler wants to move has a valid target). Preserve the drift
+    # signal so operators see the apply button.
     if rec.get('ok_move', 0) > 0:
         return 'drift_detected'
+
+    # No drift and no explicit blocker rows: surface remaining
+    # readiness blockers instead of returning 'healthy'. Without these
+    # checks the state label would claim the series is fine while the
+    # readiness report still shows non-empty blockers.
+    if (_BLOCKER_MISSING_MAINLINE_STUBS in blockers
+            or _BLOCKER_SPECIAL_BLOCKS_MAINLINE in blockers):
+        return 'blocked_by_missing_volumes'
+    if _BLOCKER_UNLINKED_CHAPTERS in blockers:
+        return 'needs_review'
 
     return 'healthy'
 
