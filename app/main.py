@@ -7730,6 +7730,143 @@ def _parse_retry_after_seconds(raw: str | None) -> float | None:
     except Exception:
         return None
 
+def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
+                        queue_stale_days: int = 30,
+                        max_rows_per_sweep: int = 500) -> dict:
+    """Reconcile the three stuck-state patterns the app can otherwise
+    accumulate indefinitely:
+
+      1. Volumes in status='grabbed' whose grabbed_at is older than
+         ``grabbed_stale_hours`` and whose download_id is NULL. These
+         got stranded when a client crash lost the download_id before
+         the volume row was fully updated. Reset to 'wanted' so the
+         series can pick them back up.
+
+      2. pending_releases whose series has been deleted or unmonitored
+         since the release was queued. No legitimate grab will fire
+         for these, but the auto-prune only removes rows >7 days old
+         — leaving a long tail of junk in the queue UI.
+
+      3. import_queue rows stuck in status='pending' or 'partial' for
+         more than ``queue_stale_days`` days. Mark them failed so the
+         next periodic reconcile can return the associated volumes
+         to 'wanted'.
+
+    Every destructive action is logged via `log_event` so operators
+    can see what moved. The ``max_rows_per_sweep`` cap exists as a
+    safety valve against a bad filter matching the whole table — if
+    we ever hit it, the next sweep picks up the rest.
+
+    Returns a dict of counts for visibility in tests and logs.
+    """
+    stats = {
+        'volumes_reset':   0,
+        'pending_deleted': 0,
+        'queue_failed':    0,
+    }
+
+    with get_db() as db:
+        # (1) Stale grabbed volumes with no download_id
+        stale = db.execute(
+            "SELECT v.id, v.series_id, v.volume_num, s.title"
+            "  FROM volumes v LEFT JOIN series s ON s.id=v.series_id"
+            " WHERE v.status='grabbed' AND v.download_id IS NULL"
+            "   AND v.grabbed_at IS NOT NULL"
+            "   AND v.grabbed_at < datetime('now', ?)"
+            "   AND (v.client IS NULL OR v.client != 'suwayomi')"
+            " LIMIT ?",
+            (f'-{int(grabbed_stale_hours)} hours', max_rows_per_sweep)
+        ).fetchall()
+        for row in stale:
+            db.execute(
+                "UPDATE volumes SET status='wanted', grabbed_at=NULL,"
+                " source_url=NULL, download_id=NULL, torrent_name=NULL,"
+                " indexer=NULL, protocol=NULL, client=NULL, release_group=NULL,"
+                " imported_at=NULL WHERE id=?",
+                (row['id'],)
+            )
+            stats['volumes_reset'] += 1
+        if stale:
+            log_event(
+                'stuck_cleanup',
+                f'reset {len(stale)} stale grabbed-with-no-download_id volume(s) '
+                f'(older than {grabbed_stale_hours}h)',
+                db=db,
+            )
+
+        # (2) pending_releases for deleted / unmonitored series
+        orphans = db.execute(
+            "SELECT pr.id, pr.series_id, pr.title, s.monitored"
+            "  FROM pending_releases pr"
+            "  LEFT JOIN series s ON s.id=pr.series_id"
+            " WHERE s.id IS NULL OR s.monitored=0"
+            " LIMIT ?",
+            (max_rows_per_sweep,)
+        ).fetchall()
+        if orphans:
+            db.execute(
+                "DELETE FROM pending_releases WHERE id IN ("
+                + ','.join('?' * len(orphans)) + ")",
+                tuple(o['id'] for o in orphans)
+            )
+            stats['pending_deleted'] = len(orphans)
+            log_event(
+                'stuck_cleanup',
+                f'deleted {len(orphans)} pending_release(s) for deleted or '
+                f'unmonitored series',
+                db=db,
+            )
+
+        # (3) import_queue stuck in 'pending'/'partial' for >queue_stale_days
+        stale_queue = db.execute(
+            "SELECT id, series_id, torrent_name"
+            "  FROM import_queue"
+            " WHERE status IN ('pending', 'partial')"
+            "   AND created_at < datetime('now', ?)"
+            " LIMIT ?",
+            (f'-{int(queue_stale_days)} days', max_rows_per_sweep)
+        ).fetchall()
+        for row in stale_queue:
+            db.execute(
+                "UPDATE import_queue SET status='failed' WHERE id=?",
+                (row['id'],)
+            )
+            # Return any grabbed volumes associated via download_id back to wanted
+            db.execute(
+                "UPDATE volumes SET status='wanted', grabbed_at=NULL,"
+                " download_id=NULL, torrent_name=NULL, indexer=NULL,"
+                " protocol=NULL, client=NULL, release_group=NULL"
+                " WHERE download_id IN ("
+                "   SELECT download_id FROM import_queue WHERE id=?"
+                " ) AND status='grabbed'",
+                (row['id'],)
+            )
+            stats['queue_failed'] += 1
+        if stale_queue:
+            log_event(
+                'stuck_cleanup',
+                f'failed {len(stale_queue)} import_queue row(s) stuck in '
+                f'pending/partial for >{queue_stale_days} days',
+                db=db,
+            )
+
+    return stats
+
+
+async def _stuck_state_cleanup_loop():
+    """Run cleanup_stuck_state hourly. Kept separate from backlog_search_loop
+    so a failure in one doesn't hide the other."""
+    await asyncio.sleep(300)   # let startup settle and the boot-time one-shot finish
+    while True:
+        try:
+            stats = cleanup_stuck_state()
+            if any(stats.values()):
+                print(f"[stuck-cleanup] {stats}")
+        except Exception as e:
+            print(f"[stuck-cleanup] error: {e}")
+        await asyncio.sleep(3600)   # 1 hour
+
+
 async def backlog_search_loop():
     """Daily: actively search for all wanted volumes that RSS may have missed."""
     await asyncio.sleep(600)   # initial delay — let startup settle
@@ -8015,6 +8152,7 @@ async def lifespan(app: FastAPI):
     create_background_task(refresh_ongoing_loop(),             name="refresh_ongoing_loop")
     create_background_task(_backfill_metadata_loop(),          name="backfill_metadata_loop")
     create_background_task(backlog_search_loop(),              name="backlog_search_loop")
+    create_background_task(_stuck_state_cleanup_loop(),        name="stuck_state_cleanup_loop")
     create_background_task(_swy_router.suwayomi_monitor_loop(), name="suwayomi_monitor_loop")
     create_background_task(rescan_loop(),                      name="rescan_loop")
     create_background_task(_import_list_loop(),                name="import_list_loop")
