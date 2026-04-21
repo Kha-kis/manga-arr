@@ -1313,6 +1313,29 @@ def populate_chapters(db, series_id: int) -> int:
         except (ValueError, TypeError):
             continue
         vol_id = vol_id_map.get(float(vol_num)) if vol_num is not None else None
+
+        # Exact-match unlinked-row linking takes precedence over the
+        # coverage guard. If a chapter row with this exact chapter_num
+        # already exists but isn't linked to a volume, we always want
+        # to link it (that's what the cvm refresh is for). Without this
+        # short-circuit the coverage guard below would treat any such
+        # row as "covered" and skip both INSERT and UPDATE — leaving
+        # legitimately downloaded chapters stranded with volume_id=NULL
+        # after a cvm refresh.
+        if vol_id:
+            existing_unlinked = db.execute(
+                "SELECT id FROM chapters"
+                " WHERE series_id=? AND chapter_num=? AND volume_id IS NULL"
+                " LIMIT 1",
+                (series_id, ch_num)
+            ).fetchone()
+            if existing_unlinked:
+                db.execute(
+                    "UPDATE chapters SET volume_id=? WHERE id=?",
+                    (vol_id, existing_unlinked['id'])
+                )
+                continue
+
         # Coverage guard: skip if this chapter is already covered by an
         # existing non-special range row (chapter_num <= ch_num <=
         # chapter_range_end). Without this guard, re-syncing chapter
@@ -1341,12 +1364,6 @@ def populate_chapters(db, series_id: int) -> int:
         )
         if cur.rowcount:
             created += 1
-        elif vol_id:
-            # Update volume_id on existing unlinked row
-            db.execute(
-                "UPDATE chapters SET volume_id=? WHERE series_id=? AND chapter_num=? AND volume_id IS NULL",
-                (vol_id, series_id, ch_num)
-            )
     return created
 
 
