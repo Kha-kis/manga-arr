@@ -206,7 +206,19 @@ async def _sync_list(lst: dict):
             else:
                 if title.lower().strip() in existing_titles:
                     continue
-            # Add to library
+            # Add to library — resolve a root folder or bail for the
+            # entire list. If no folders exist we can't place any series
+            # from this list, so stop here rather than creating orphans.
+            from main import resolve_root_folder_id as _rrf
+            rf_id = _rrf(db, preferred_id=lst.get('root_folder_id'))
+            if rf_id is None:
+                from main import log_event as _log
+                _log('error',
+                     f"import-list {lst.get('name', lst.get('id'))!r}: "
+                     f"no root folders configured — add one in Settings "
+                     f"before import lists can add series",
+                     db=db)
+                break
             search_pattern = entry.get('search_pattern', title)
             cover_url      = entry.get('cover_url', '') or ''
             status         = entry.get('status', '')
@@ -218,7 +230,7 @@ async def _sync_list(lst: dict):
                 (title, search_pattern, al_id, cover_url, status, total_volumes,
                  lst.get('monitor_mode', 'all'),
                  lst.get('quality_profile_id'),
-                 lst.get('root_folder_id'))
+                 rf_id)
             )
             new_id = cur.lastrowid
             if new_id and total_volumes and total_volumes > 0:

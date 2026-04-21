@@ -427,7 +427,19 @@ async def manual_import_auto(request: Request):
             if existing:
                 sid = existing['id']
             else:
-                rf_row = db.execute("SELECT id FROM root_folders WHERE is_default=1 LIMIT 1").fetchone()
+                rf_id = _m.resolve_root_folder_id(db)
+                if rf_id is None:
+                    # No library destination possible → skip this entry.
+                    # The manual-import flow is multi-item by nature, so
+                    # skipping rather than aborting the whole batch is
+                    # the less-bad failure mode.
+                    _m.log_event(
+                        'error',
+                        f"manual import: cannot add {best['title']!r} — "
+                        f"no root folder configured",
+                        db=db,
+                    )
+                    continue
                 cur = db.execute(
                     "INSERT INTO series(title, search_pattern, anilist_id, mal_id, cover_url,"
                     " status, description, total_volumes, total_chapters, root_folder_id)"
@@ -435,7 +447,7 @@ async def manual_import_auto(request: Request):
                     (best['title'], best['title'], best['anilist_id'], best.get('mal_id'),
                      best.get('cover_url', ''), best.get('status', ''), best.get('description', ''),
                      best.get('volumes'), best.get('chapters'),
-                     rf_row['id'] if rf_row else None)
+                     rf_id)
                 )
                 sid = cur.lastrowid
                 if best.get('volumes'):

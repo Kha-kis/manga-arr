@@ -989,13 +989,17 @@ async def add_series(
             ).fetchone()
         if existing:
             return RedirectResponse(f"/series/{existing['id']}", status_code=303)
-        rf_id = root_folder_id or None
-        if not rf_id:
-            default_rf = db.execute(
-                "SELECT id FROM root_folders WHERE is_default=1 LIMIT 1"
-            ).fetchone()
-            if default_rf:
-                rf_id = default_rf['id']
+        # Resolve a root folder (operator's pick, default, or lowest-id
+        # fallback). If nothing resolves, refuse to create the series —
+        # a series without a library destination is worse than a
+        # clear error telling the operator to configure one.
+        rf_id = _m.resolve_root_folder_id(db, preferred_id=root_folder_id or None)
+        if rf_id is None:
+            return JSONResponse(
+                {"error": "No root folder configured. Add one in Settings "
+                          "before adding series."},
+                status_code=400,
+            )
         _monitored = monitored == "1"
         _search_now = search_now == "1"
         cur = db.execute(
