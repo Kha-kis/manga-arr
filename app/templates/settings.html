@@ -209,6 +209,21 @@
             </div>
           </div>
           <div class="row g-3 mb-3">
+            <div class="col-12 col-sm-6">
+              <label class="form-label">Torrent Download Path</label>
+              <input type="text" name="torrent_save_path" class="form-control"
+                     value="{{ cfg.torrent_save_path or '' }}" placeholder="/data/torrents/manga (blank = same as Library Path)">
+              <div class="form-text">
+                Where qBittorrent writes in-progress downloads. Blank = same as Library Path
+                (single-directory mode). Setting it separately enables the standard *arr split —
+                downloads under <code>/data/torrents/manga</code>, library under
+                <code>/data/media/manga</code>.
+                <strong>Must be on the same filesystem as Library Path</strong> when
+                Import Mode = Hardlink.
+              </div>
+            </div>
+          </div>
+          <div class="row g-3 mb-3">
             <div class="col-12 col-sm-4">
               <label class="form-label">Import Mode</label>
               <select name="import_mode" class="form-select">
