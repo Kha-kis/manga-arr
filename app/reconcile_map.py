@@ -337,6 +337,7 @@ _BLOCKER_NEEDS_CHAPTER_VOL_MAP = 'needs_chapter_vol_map'
 _BLOCKER_MISSING_MAINLINE_STUBS = 'missing_mainline_stubs'
 _BLOCKER_UNLINKED_CHAPTERS = 'unlinked_chapters'
 _BLOCKER_SPECIAL_BLOCKS_MAINLINE = 'special_blocks_mainline'
+_BLOCKER_EXTRA_MAINLINE_STUBS = 'extra_mainline_stubs'
 
 
 def metadata_readiness_report(series_id: int) -> dict:
@@ -381,6 +382,7 @@ def metadata_readiness_report(series_id: int) -> dict:
         'existing_vol_nums':       [],
         'expected_vol_nums':       [],
         'missing_mainline_stubs':  [],
+        'extra_mainline_stubs':    [],
         'downloaded_with_num':     0,
         'wanted_pack_rows':        0,
         'special_count':           0,
@@ -446,11 +448,23 @@ def metadata_readiness_report(series_id: int) -> dict:
             report['expected_vol_nums'] = expected
             missing = [v for v in expected if v not in existing_mainline]
             report['missing_mainline_stubs'] = missing
+            # Extra stubs: mainline rows whose volume_num exceeds total_volumes.
+            # Observed on multiple series during the post-release triage (JJK
+            # 31 vs 30, Death Note 14 vs 12, pre-fix HxH 40 vs 39) — harmless
+            # from the reconciler's perspective (ok_move stays 0) but a real
+            # data-integrity signal that something produced wanted stubs
+            # beyond the declared total. Surface it so operators can decide
+            # whether to trim the extras or bump total_volumes.
+            report['extra_mainline_stubs'] = sorted(
+                v for v in existing_mainline if v > float(s['total_volumes'])
+            )
             blocked_by_special = [v for v in missing if v in special_vol_nums]
             if blocked_by_special:
                 report['blockers'].append(_BLOCKER_SPECIAL_BLOCKS_MAINLINE)
             if missing:
                 report['blockers'].append(_BLOCKER_MISSING_MAINLINE_STUBS)
+            if report['extra_mainline_stubs']:
+                report['blockers'].append(_BLOCKER_EXTRA_MAINLINE_STUBS)
         else:
             report['blockers'].append(_BLOCKER_NEEDS_TOTAL_VOLUMES)
 
@@ -560,6 +574,11 @@ def _health_state(report: dict) -> str:
         return 'blocked_by_missing_volumes'
     if _BLOCKER_UNLINKED_CHAPTERS in blockers:
         return 'needs_review'
+    # Extra stubs are a latent data-integrity signal, not a reconciler
+    # blocker per se — operators should see 'needs_review' so they can
+    # decide whether to trim or bump total_volumes.
+    if _BLOCKER_EXTRA_MAINLINE_STUBS in blockers:
+        return 'needs_review'
 
     return 'healthy'
 
@@ -593,6 +612,14 @@ def _recommend_next_step(r: dict) -> str:
         return (
             f"{n} mainline volume stub(s) missing — open the series "
             "editor and save (total_volumes triggers stub creation)."
+        )
+    if _BLOCKER_EXTRA_MAINLINE_STUBS in blockers:
+        extras = [int(v) for v in r.get('extra_mainline_stubs', [])]
+        return (
+            f"{len(extras)} extra mainline volume stub(s) beyond "
+            f"total_volumes={r['total_volumes']}: vol(s) {extras}. Remove "
+            "the stubs in the series editor (lower total_volumes then raise) "
+            "or bump total_volumes to match."
         )
     if _BLOCKER_UNLINKED_CHAPTERS in blockers:
         return (
