@@ -62,10 +62,36 @@ def _get_chapter_vol_map(db, series_id: int) -> dict[str, Any]:
 def _chapter_key_candidates(chapter_num: float) -> list[str]:
     """Produce the string forms under which a chapter may appear in the
     map. The map is JSON-serialised so keys are always strings — and
-    both integer and decimal forms are used by different callers."""
-    as_int = int(chapter_num)
-    if chapter_num == as_int:
-        return [str(as_int), f"{as_int}.0", str(chapter_num)]
+    callers store chapters in several formats in the wild:
+
+      - bare integer:     "1", "21"
+      - integer-dot-zero: "1.0", "21.0"
+      - zero-padded:      "001", "021" (Mangarr saw this on at least
+                          one series whose upstream tool emitted
+                          fixed-width 3-digit keys)
+      - decimal chapters: "1.5"
+
+    We generate every plausible representation for integer-valued
+    chapter numbers so a lookup can succeed regardless of how the
+    source stored the key."""
+    if chapter_num == int(chapter_num):
+        as_int = int(chapter_num)
+        candidates = [
+            str(as_int),          # "1"
+            f"{as_int}.0",        # "1.0"
+            str(chapter_num),     # "1.0" for floats, "1" for ints
+            f"{as_int:02d}",      # "01"
+            f"{as_int:03d}",      # "001"
+        ]
+        # Deduplicate while preserving order — the earlier-listed
+        # canonical forms should be checked before padded variants.
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for c in candidates:
+            if c not in seen:
+                seen.add(c)
+                ordered.append(c)
+        return ordered
     return [str(chapter_num)]
 
 
