@@ -123,6 +123,67 @@ SETTINGS_SECRET_KEYS = frozenset({
     "google_books_api_key",
 })
 
+# Value-type validation for settings table entries. Before this check
+# load_config accepted whatever string was in the DB, so a stray
+# 'rss_interval=abc' or 'import_mode=hardlinkk' would sit quietly in
+# CONFIG until a later int() or enum check raised.
+#
+# Each entry: key → ('int', min, max) | ('enum', allowed_set) | ('bool',)
+# On validation failure, load_config falls back to the key's default
+# value from ENV_DEFAULTS and logs a WARNING naming the key. Keys not
+# listed here are accepted verbatim — only the ones with semantic
+# constraints get enforced.
+SETTINGS_VALIDATORS: dict = {
+    'rss_interval':            ('int', 30, 86400 * 7),
+    'refresh_interval':        ('int', 60, 86400 * 30),
+    'grab_delay_minutes':      ('int', 0, 60 * 24 * 30),
+    'suwayomi_check_interval': ('int', 60, 86400 * 7),
+    'blocklist_ttl_days':      ('int', 0, 365 * 5),
+    'import_mode':             ('enum', frozenset({'hardlink', 'move', 'copy'})),
+    'komga_scan_enabled':      ('bool',),
+    'remove_completed':        ('bool',),
+    'ddl_grab_mode':           ('enum', frozenset({'fallback', 'only'})),
+    'quality_cutoff':          ('enum', frozenset({'', 'pdf', 'epub', 'cbr', 'cbz', 'rar', 'zip', 'mobi'})),
+}
+
+
+def _validate_setting_value(key: str, value, default):
+    """Return value if it passes validation; else default.
+    Never raises — logs a WARNING on mismatch so operators can trace it."""
+    spec = SETTINGS_VALIDATORS.get(key)
+    if spec is None or value is None:
+        return value
+    import logging as _log
+    log = _log.getLogger(__name__)
+    kind = spec[0]
+    if kind == 'int':
+        _, lo, hi = spec
+        try:
+            iv = int(value)
+        except (TypeError, ValueError):
+            log.warning("settings[%s]: %r is not an integer; using default %r",
+                        key, value, default)
+            return default
+        if not (lo <= iv <= hi):
+            log.warning("settings[%s]: %d out of range [%d, %d]; using default %r",
+                        key, iv, lo, hi, default)
+            return default
+        return str(iv)
+    if kind == 'enum':
+        _, allowed = spec
+        if str(value) not in allowed:
+            log.warning("settings[%s]: %r not in allowed set %s; using default %r",
+                        key, value, sorted(allowed), default)
+            return default
+        return value
+    if kind == 'bool':
+        if str(value).lower() in ('true', 'false'):
+            return str(value).lower()
+        log.warning("settings[%s]: %r is not a bool-like string; using default %r",
+                    key, value, default)
+        return default
+    return value
+
 # Per-table secret columns encrypted at rest (H4 PR #3).
 # Structure: {table_name: (secret_column, label_column_for_logs)}
 # Label column is used only for WARNING log context when a row fails to
@@ -164,7 +225,14 @@ def load_config():
     try:
         with get_db() as db:
             for row in db.execute("SELECT key, value FROM settings").fetchall():
-                cfg[row['key']] = row['value']  # load ALL settings keys, not just ENV_DEFAULTS
+                k = row['key']
+                v = row['value']
+                # For keys with semantic constraints, validate; fall back
+                # to the ENV_DEFAULTS default on failure.
+                if k in SETTINGS_VALIDATORS:
+                    default_for_key = ENV_DEFAULTS.get(k, (None, ''))[1]
+                    v = _validate_setting_value(k, v, default_for_key)
+                cfg[k] = v  # load ALL settings keys, not just ENV_DEFAULTS
     except Exception as e:
         # Swallowing is intentional — fresh-install path before init_db has
         # created the settings table, and worker restarts that race with
