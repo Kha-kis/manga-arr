@@ -1399,12 +1399,36 @@ def _migrate_schema_constraints() -> None:
                         db=db,
                     )
 
-                cols = [r[1] for r in db.execute(
+                old_cols = [r[1] for r in db.execute(
                     f"PRAGMA table_info({name})"
                 ).fetchall()]
-                col_list = ', '.join(cols)
 
                 db.execute(ddl)
+                new_cols = [r[1] for r in db.execute(
+                    f"PRAGMA table_info({name}_new)"
+                ).fetchall()]
+
+                # Drift guard: the hardcoded CREATE TABLE _new DDL must
+                # carry every column that the old table has. If a future
+                # add_col targets one of these four tables without being
+                # reflected in the DDL above, the old table will have
+                # columns the new one doesn't — INSERT..SELECT below
+                # would fail mid-migration and leave the DB half-migrated
+                # (old dropped, new not yet renamed into place). Abort
+                # cleanly instead so an operator sees a clear error.
+                missing = [c for c in old_cols if c not in new_cols]
+                if missing:
+                    # Clean up the half-built _new table so a future run
+                    # with a corrected DDL can try again.
+                    db.execute(f"DROP TABLE {name}_new")
+                    raise RuntimeError(
+                        f"schema migration drift: {name} has columns "
+                        f"{missing} that the new DDL does not include. "
+                        f"Update _migrate_schema_constraints() to include "
+                        f"these columns in the {name}_new DDL before re-running."
+                    )
+
+                col_list = ', '.join(old_cols)
                 db.execute(
                     f"INSERT INTO {name}_new ({col_list})"
                     f" SELECT {col_list} FROM {name}"
