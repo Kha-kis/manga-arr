@@ -226,8 +226,10 @@ def test_settings_form_save_encrypts_secret(fresh_env):
     assert _row(fresh_env["db_path"], "komga_pass").startswith("enc:v1:")
     assert _row(fresh_env["db_path"], "komga_user").startswith("enc:v1:")
     assert _row(fresh_env["db_path"], "google_books_api_key").startswith("enc:v1:")
-    # Non-secret settings stayed plaintext
-    assert _row(fresh_env["db_path"], "save_path") == "/manga"
+    # Non-secret settings stayed plaintext.
+    # (save_path is no longer exposed via the /settings form after PR D;
+    # library destination now flows through root folders. The form
+    # silently drops the field — test that category/komga_url land.)
     assert _row(fresh_env["db_path"], "category") == "manga"
     assert _row(fresh_env["db_path"], "komga_url") == "http://komga.lan:25600"
     # In-memory: plaintext usable by Komga callers
