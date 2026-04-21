@@ -8535,6 +8535,32 @@ async def lifespan(app: FastAPI):
 def get_root_folders(db) -> list:
     return db.execute("SELECT * FROM root_folders ORDER BY is_default DESC, label, path").fetchall()
 
+
+def resolve_root_folder_id(db, preferred_id: int | None = None) -> int | None:
+    """Pick the root_folder_id a newly-created series should carry.
+
+    Order of preference:
+      1. ``preferred_id`` if it refers to an existing row.
+      2. The folder flagged ``is_default=1``.
+      3. The lowest-id folder (safety net if no default is flagged).
+
+    Returns None only when no root folders exist at all — callers are
+    expected to check and surface a clear error to the operator instead
+    of silently leaving root_folder_id NULL. Requiring a folder at
+    creation time matches the Sonarr/Radarr model and removes the
+    save_path fallback that used to paper over this case.
+    """
+    if preferred_id:
+        ok = db.execute(
+            "SELECT 1 FROM root_folders WHERE id=?", (preferred_id,)
+        ).fetchone()
+        if ok:
+            return preferred_id
+    row = db.execute(
+        "SELECT id FROM root_folders ORDER BY is_default DESC, id LIMIT 1"
+    ).fetchone()
+    return row[0] if row else None
+
 def get_series_stats(db, series_id: int) -> dict:
     """Stats are based only on volume stubs (not pack entries)."""
     rows = db.execute(
