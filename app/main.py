@@ -506,7 +506,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS seen (
                 torrent_url  TEXT PRIMARY KEY,
                 torrent_name TEXT,
-                series_id    INTEGER,
+                series_id    INTEGER REFERENCES series(id) ON DELETE CASCADE,
                 volume_num   REAL,
                 grabbed_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 indexer      TEXT,
@@ -516,7 +516,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS events (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 event_type TEXT,
-                series_id  INTEGER,
+                series_id  INTEGER REFERENCES series(id) ON DELETE CASCADE,
                 message    TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -528,7 +528,7 @@ def init_db():
             );
             CREATE TABLE IF NOT EXISTS blocklist (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                series_id    INTEGER,
+                series_id    INTEGER REFERENCES series(id) ON DELETE CASCADE,
                 torrent_url  TEXT UNIQUE,
                 torrent_name TEXT,
                 reason       TEXT,
@@ -581,7 +581,7 @@ def init_db():
             );
             CREATE TABLE IF NOT EXISTS pending_releases (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                series_id  INTEGER NOT NULL,
+                series_id  INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
                 url        TEXT    NOT NULL,
                 title      TEXT,
                 indexer    TEXT,
@@ -1217,6 +1217,145 @@ def init_db():
             WHERE volume_id IS NOT NULL
               AND NOT EXISTS (SELECT 1 FROM volumes v WHERE v.id = chapters.volume_id)
         """)
+
+    # Schema constraint migrations (FK / CHECK). Run *after* init_db's
+    # main create-and-fill pass so the existing data is stable.
+    _migrate_schema_constraints()
+
+
+# ── Schema constraint migrations ──────────────────────────────────────────────
+# SQLite can't ALTER TABLE to add FK or CHECK constraints. The standard
+# workaround is the "rebuild" pattern: create a new table with the target
+# shape, copy rows in, drop the old table, rename the new into place.
+# We use PRAGMA user_version as a migration flag so the migration runs
+# exactly once per DB. Orphan rows (series_id pointing to a deleted series)
+# are dropped during the copy and logged so operators can see what went.
+
+_SCHEMA_VERSION_FK_CONSTRAINTS = 1
+
+
+def _migrate_schema_constraints() -> None:
+    """Add FK constraints on events / blocklist / seen / pending_releases.
+
+    Pre-migration: series_id was declared INTEGER with no REFERENCES
+    clause, so deleting a series silently orphaned rows in these tables.
+    Post-migration: the same column is INTEGER REFERENCES series(id) ON
+    DELETE CASCADE, enforced by SQLite when foreign_keys=ON.
+
+    Idempotent via PRAGMA user_version. No-op on fresh installs (their
+    CREATE TABLE already uses the new shape).
+    """
+    with get_db() as db:
+        version = db.execute("PRAGMA user_version").fetchone()[0]
+        if version >= _SCHEMA_VERSION_FK_CONSTRAINTS:
+            return
+
+        # Each entry: (table_name, new_schema_ddl, copy_columns)
+        # copy_columns are the columns to copy verbatim. We rely on the
+        # new schema having the same column list so INSERT..SELECT works
+        # without explicit column naming, but explicit naming is safer
+        # against future add_col calls that extend the old table.
+        tables = [
+            ('events', """
+                CREATE TABLE events_new (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT,
+                    series_id  INTEGER REFERENCES series(id) ON DELETE CASCADE,
+                    message    TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """),
+            ('blocklist', """
+                CREATE TABLE blocklist_new (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    series_id    INTEGER REFERENCES series(id) ON DELETE CASCADE,
+                    torrent_url  TEXT UNIQUE,
+                    torrent_name TEXT,
+                    reason       TEXT,
+                    indexer      TEXT,
+                    protocol     TEXT,
+                    size_bytes   INTEGER,
+                    added_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """),
+            ('seen', """
+                CREATE TABLE seen_new (
+                    torrent_url  TEXT PRIMARY KEY,
+                    torrent_name TEXT,
+                    series_id    INTEGER REFERENCES series(id) ON DELETE CASCADE,
+                    volume_num   REAL,
+                    grabbed_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    indexer      TEXT,
+                    protocol     TEXT,
+                    client       TEXT,
+                    download_id  TEXT,
+                    release_group TEXT,
+                    size_bytes   INTEGER
+                )
+            """),
+            ('pending_releases', """
+                CREATE TABLE pending_releases_new (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    series_id  INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+                    url        TEXT    NOT NULL,
+                    title      TEXT,
+                    indexer    TEXT,
+                    protocol   TEXT,
+                    size_bytes INTEGER DEFAULT 0,
+                    first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(series_id, url)
+                )
+            """),
+        ]
+
+        # foreign_keys must be OFF during the rename; SQLite otherwise
+        # validates refs against the half-built new table. Restore after.
+        db.execute("PRAGMA foreign_keys=OFF")
+        try:
+            for name, ddl in tables:
+                # Count orphans so we can log a useful summary. An orphan
+                # is a row whose series_id doesn't resolve in series.
+                # NOT NULL columns (pending_releases.series_id) get
+                # orphans dropped silently; nullable columns drop them
+                # too — either way, the old value is bad.
+                orphan_count = db.execute(
+                    f"SELECT COUNT(*) FROM {name}"
+                    f" WHERE series_id IS NOT NULL"
+                    f"   AND series_id NOT IN (SELECT id FROM series)"
+                ).fetchone()[0]
+                if orphan_count:
+                    log_event(
+                        'schema_migration',
+                        f'{name}: {orphan_count} orphan row(s) with stale '
+                        f'series_id will be dropped during FK migration',
+                        db=db,
+                    )
+
+                cols = [r[1] for r in db.execute(
+                    f"PRAGMA table_info({name})"
+                ).fetchall()]
+                col_list = ', '.join(cols)
+
+                db.execute(ddl)
+                db.execute(
+                    f"INSERT INTO {name}_new ({col_list})"
+                    f" SELECT {col_list} FROM {name}"
+                    f" WHERE series_id IS NULL"
+                    f"    OR series_id IN (SELECT id FROM series)"
+                )
+                db.execute(f"DROP TABLE {name}")
+                db.execute(f"ALTER TABLE {name}_new RENAME TO {name}")
+        finally:
+            db.execute("PRAGMA foreign_keys=ON")
+
+        db.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_FK_CONSTRAINTS}")
+        log_event(
+            'schema_migration',
+            f'FK constraints added to events, blocklist, seen, '
+            f'pending_releases (schema version → {_SCHEMA_VERSION_FK_CONSTRAINTS})',
+            db=db,
+        )
+
 
 # ── Event logging ─────────────────────────────────────────────────────────────
 def log_event(event_type: str, message: str, series_id: int | None = None,
