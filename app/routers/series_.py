@@ -1546,6 +1546,7 @@ async def patch_series(request: Request, series_id: int):
     plain column updates.
     """
     import main as _m
+    import sqlite3 as _sql
     try:
         payload = await request.json()
     except Exception:
@@ -1560,29 +1561,45 @@ async def patch_series(request: Request, series_id: int):
             status_code=400,
         )
 
-    with get_db() as db:
-        exists = db.execute(
-            "SELECT 1 FROM series WHERE id=?", (series_id,)
-        ).fetchone()
-        if not exists:
-            return JSONResponse({"error": "series not found"}, status_code=404)
+    try:
+        with get_db() as db:
+            exists = db.execute(
+                "SELECT 1 FROM series WHERE id=?", (series_id,)
+            ).fetchone()
+            if not exists:
+                return JSONResponse({"error": "series not found"}, status_code=404)
 
-        sets, params = [], []
-        for k, v in payload.items():
-            if k in ('preferred_groups', 'blocked_groups') and isinstance(v, list):
-                v = json.dumps([str(g).strip() for g in v if str(g).strip()])
-            sets.append(f"{k}=?")
-            params.append(v)
-        params.append(series_id)
-        db.execute(f"UPDATE series SET {', '.join(sets)} WHERE id=?", params)
+            sets, params = [], []
+            for k, v in payload.items():
+                if k in ('preferred_groups', 'blocked_groups') and isinstance(v, list):
+                    v = json.dumps([str(g).strip() for g in v if str(g).strip()])
+                sets.append(f"{k}=?")
+                params.append(v)
+            params.append(series_id)
+            db.execute(f"UPDATE series SET {', '.join(sets)} WHERE id=?", params)
 
-        # Keep vol_count_source honest: explicit total_volumes patches are
-        # manual just like the full-form path.
-        if 'total_volumes' in payload and payload.get('total_volumes'):
-            db.execute(
-                "UPDATE series SET vol_count_source='manual' WHERE id=?",
-                (series_id,)
+            # Keep vol_count_source honest: explicit total_volumes patches are
+            # manual just like the full-form path.
+            if 'total_volumes' in payload and payload.get('total_volumes'):
+                db.execute(
+                    "UPDATE series SET vol_count_source='manual' WHERE id=?",
+                    (series_id,)
+                )
+    except _sql.OperationalError as e:
+        # The DB was locked or otherwise unable to service our write within
+        # the busy_timeout window. Return a structured 503 so callers can
+        # retry instead of a generic 500. Root cause of lock contention is
+        # orthogonal to this endpoint — see the post-review notes in
+        # docs/audit-remediation-plan.md.
+        msg = str(e).lower()
+        if 'locked' in msg or 'busy' in msg:
+            return JSONResponse(
+                {"error": "database busy — retry"},
+                status_code=503,
+                headers={"Retry-After": "5"},
             )
+        # Any other operational error is still a server fault — surface it.
+        raise
 
     return JSONResponse({"ok": True, "updated": sorted(payload.keys())})
 
