@@ -115,7 +115,16 @@ def get_db():
         # that cascaded into 15-60s event-loop blocks (issue #31).
         # The mode is applied once at startup via ensure_wal_journal_mode().
         conn.execute("PRAGMA synchronous=NORMAL")   # safe with WAL, much faster
-        conn.execute("PRAGMA busy_timeout=5000")     # wait up to 5s on lock instead of failing
+        # busy_timeout: wait up to 30s on a contended write instead of
+        # failing with OperationalError('database is locked').
+        # Previously 5000ms — long-running writers (schema migration, qbit
+        # orphan cleanup with many orphans, the post-audit stuck-state
+        # sweep) routinely held the write lock past that window, causing
+        # every concurrent writer (including user HTTP handlers) to error
+        # out. 30s covers every legitimate bulk operation observed in
+        # production while still bounding pathological deadlocks.
+        # WAL + busy_timeout: readers never block; only writers queue.
+        conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA cache_size=-8000")      # 8MB cache (was 2MB)
         conn.execute("PRAGMA mmap_size=67108864")    # 64MB memory-mapped I/O
         if _DEBUG_DB_TIMING:
