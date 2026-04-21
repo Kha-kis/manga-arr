@@ -1296,6 +1296,67 @@ def init_db():
     # Schema constraint migrations (FK / CHECK). Run *after* init_db's
     # main create-and-fill pass so the existing data is stable.
     _migrate_schema_constraints()
+    # Library-destination model: root folders are the single mechanism,
+    # matching the Sonarr/Radarr convention. Bootstrap a root folder
+    # from the legacy save_path if none exists; auto-assign any series
+    # missing a root_folder_id. Runs every boot but is a no-op once
+    # both invariants hold, so it's safe to call idempotently.
+    _bootstrap_root_folders()
+
+
+# ── Root-folder bootstrap ─────────────────────────────────────────────────────
+# Mangarr's historical model allowed a global save_path to stand in for
+# root folders. The *arr convention is that root folders are the only
+# library-destination mechanism and every series carries a root_folder_id.
+# This helper migrates legacy data to that shape on boot:
+#   1. If no root folders exist and save_path is non-empty, create a
+#      root folder from save_path (labeled "Manga", default=1).
+#   2. For any series.root_folder_id IS NULL, assign it to the default
+#      root folder (or the first one if no default is flagged).
+# Both steps log a schema_migration event so operators can see what
+# happened. Once every series has a root_folder_id, the save_path
+# fallback paths in the rest of the code can be removed (PR C).
+
+def _bootstrap_root_folders() -> None:
+    """Run the one-shot migration from save_path → root folders.
+
+    Idempotent: after the first successful boot, both queries return
+    0 rows and this helper is a no-op.
+    """
+    with get_db() as db:
+        # Step 1: create a root folder from save_path if no folders exist.
+        count = db.execute("SELECT COUNT(*) FROM root_folders").fetchone()[0]
+        if count == 0:
+            sp = (get_cfg('save_path', '') or '').strip()
+            if sp:
+                db.execute(
+                    "INSERT INTO root_folders(path, label, is_default)"
+                    " VALUES(?, 'Manga', 1)",
+                    (sp,)
+                )
+                log_event(
+                    'schema_migration',
+                    f"bootstrapped root folder from legacy save_path: {sp!r}",
+                    db=db,
+                )
+        # Step 2: assign orphan series (root_folder_id IS NULL) to the
+        # default root folder. If no default is flagged, pick the
+        # lowest-id folder as the fallback.
+        default = db.execute(
+            "SELECT id FROM root_folders ORDER BY is_default DESC, id LIMIT 1"
+        ).fetchone()
+        if default is not None:
+            cur = db.execute(
+                "UPDATE series SET root_folder_id=? WHERE root_folder_id IS NULL",
+                (default[0],)
+            )
+            assigned = cur.rowcount
+            if assigned > 0:
+                log_event(
+                    'schema_migration',
+                    f"assigned {assigned} orphan series to root_folder_id={default[0]}",
+                    db=db,
+                )
 
 
 # ── Schema constraint migrations ──────────────────────────────────────────────
