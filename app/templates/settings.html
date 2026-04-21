@@ -192,22 +192,21 @@
         <div class="panel-body">
           <div class="row g-3 mb-3">
             <div class="col-12 col-sm-6">
-              <label class="form-label">Default Library Path</label>
-              <input type="text" name="save_path" class="form-control"
-                     value="{{ cfg.save_path or '' }}" placeholder="/manga">
-              <div class="form-text">Fallback when no Root Folder is assigned.</div>
-            </div>
-            <div class="col-12 col-sm-3">
               <label class="form-label">Category Label</label>
               <input type="text" name="category" class="form-control" value="{{ cfg.category or 'manga' }}" placeholder="manga">
               <div class="form-text">qBit / SABnzbd category</div>
             </div>
-            <div class="col-12 col-sm-3">
+            <div class="col-12 col-sm-6">
               <label class="form-label">Minimum Seeders</label>
               <input type="number" name="min_seeders" class="form-control" value="{{ cfg.min_seeders or '1' }}" min="0" placeholder="1">
               <div class="form-text">Skip torrents with fewer seeders (0 = disabled)</div>
             </div>
           </div>
+          {# Library destination is configured via Root Folders (System → Root
+             Folders), matching the Sonarr/Radarr convention. The legacy
+             `save_path` setting stays in the DB for backward-compat bootstrap
+             (it seeds a first root folder on initial boot) but is no longer
+             user-facing. #}
           <div class="row g-3 mb-3">
             <div class="col-12 col-sm-6">
               <label class="form-label">Torrent Download Path</label>

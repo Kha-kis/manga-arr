@@ -73,7 +73,6 @@ async def settings_page(request: Request, saved: str = ""):
 @router.post("/settings")
 async def save_settings(
     request:              Request,
-    save_path:            str = Form(""),
     torrent_save_path:    str = Form(""),
     category:             str = Form(""),
     rss_interval:         str = Form(""),
@@ -100,7 +99,6 @@ async def save_settings(
     suwayomi_check_interval: str = Form(""),
 ):
     fields = {
-        'save_path':          save_path,
         # Empty string means "fall back to save_path" — the old single-directory
         # behaviour. Strip whitespace so accidental spaces don't make it look
         # configured when it isn't.
