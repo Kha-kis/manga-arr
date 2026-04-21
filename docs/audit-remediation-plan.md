@@ -99,15 +99,29 @@ SQLite rebuild pattern for 6 tables:
 **Findings:** 8, 9, 10
 
 Sequential commits, each a pure move / additive validator:
-1. Extract `schema.py`
-2. Extract `metadata.py`
-3. Extract `grab.py`
-4. Extract `pipeline.py`
-5. Add `SETTINGS_SCHEMA` + validating `load_config`
-6. Consolidate refresh loops
+1. Extract `schema.py` *(deferred — see below)*
+2. Extract `metadata.py` *(deferred)*
+3. Extract `grab.py` *(deferred)*
+4. Extract `pipeline.py` *(deferred)*
+5. Add `SETTINGS_VALIDATORS` + validating `load_config` ✅
+6. Consolidate refresh loops *(deferred — the 20s vs 300s cadence difference reflects genuinely different responsibilities; forcing a merge would lose separation)*
 
 **Risk:** Medium-high (surface area). Each commit must leave the suite green.
-**LOC:** ~1500 moved + ~200 added. Tests mostly pre-existing.
+**LOC:** ~200 added (validator). File-split deferred.
+
+### Why the file split is deferred
+
+The four-module extraction (1500+ lines moved) is a mechanical refactor,
+but a mechanical refactor of this size ships a lot of surface area in
+one PR. Every cross-module import can introduce a subtle circular-import
+or test-path regression that only shows up under specific run orders.
+Doing it responsibly requires attention that's easier to give when it's
+the only thing landing in a PR — not bundled with behavioural changes.
+
+Split as its own follow-up PR series (one module per PR), each commit
+proven green before the next starts. The validator + loop coverage from
+this PR do the high-signal observability work without requiring the
+file split first.
 
 ## Known false positives from the audit
 
