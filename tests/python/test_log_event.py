@@ -82,6 +82,13 @@ def test_log_event_without_db_still_works(fresh_db):
 def test_log_event_with_db_writes_on_existing_connection(fresh_db):
     """When a db is passed, the INSERT must go through that connection."""
     import main
+    # Seed a real series so the events FK (ON DELETE CASCADE) is satisfied.
+    # Prior to PR 5 series_id was unconstrained and this test wrote
+    # series_id=42 against no real row; now we need a real FK target.
+    with main.get_db() as db:
+        db.execute(
+            "INSERT INTO series(id, title, search_pattern) VALUES(42, 'T', 'T')"
+        )
     with main.get_db() as db:
         before = db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         main.log_event("test", "with db", series_id=42, db=db)
