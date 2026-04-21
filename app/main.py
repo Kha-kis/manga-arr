@@ -72,6 +72,13 @@ CONFIG: dict = {}
 
 ENV_DEFAULTS = {
     'save_path':           ('MANGA_SAVE_PATH',  '/manga'),
+    # torrent_save_path: where qBittorrent writes in-progress downloads.
+    # When empty, falls back to save_path (keeps the single-directory
+    # default from before this setting was split out). Setting it enables
+    # the standard *arr separation: downloads in /data/torrents/manga,
+    # library in /data/media/manga. Both must be on the same filesystem
+    # if import_mode='hardlink' (the default) — see docs/deployment.md.
+    'torrent_save_path':   ('MANGA_TORRENT_PATH', ''),
     'import_mode':         (None,               'hardlink'), # hardlink | move | copy
     'category':            ('MANGA_CATEGORY',   'manga'),
     'rss_interval':        ('RSS_INTERVAL',     '900'),
@@ -8376,6 +8383,13 @@ async def lifespan(app: FastAPI):
         _qpw   = ((_qc or {}).get('password') or '')
         _qcat  = ((_qc or {}).get('category') or get_cfg('category'))
         if _qhost:
+            # Torrent download path is separate from the library path so the
+            # standard *arr convention holds: qBit writes to e.g.
+            # /data/torrents/manga while the library lives at /data/media/manga.
+            # When torrent_save_path is empty we fall back to save_path — the
+            # old single-directory behaviour, preserved for existing installs.
+            _qbit_save = (get_cfg('torrent_save_path', '') or '').strip() \
+                         or get_cfg('save_path')
             async with httpx.AsyncClient(timeout=10) as client:
                 r = await client.post(
                     f"{_qhost}/api/v2/auth/login",
@@ -8384,7 +8398,7 @@ async def lifespan(app: FastAPI):
                 if 'Ok' in r.text:
                     await client.post(
                         f"{_qhost}/api/v2/torrents/createCategory",
-                        data={'category': _qcat, 'savePath': get_cfg('save_path')}
+                        data={'category': _qcat, 'savePath': _qbit_save}
                     )
     except Exception as e:
         # Best-effort at startup: failure here (qBit offline, bad creds,

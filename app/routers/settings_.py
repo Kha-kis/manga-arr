@@ -74,6 +74,7 @@ async def settings_page(request: Request, saved: str = ""):
 async def save_settings(
     request:              Request,
     save_path:            str = Form(""),
+    torrent_save_path:    str = Form(""),
     category:             str = Form(""),
     rss_interval:         str = Form(""),
     komga_url:            str = Form(""),
@@ -100,6 +101,10 @@ async def save_settings(
 ):
     fields = {
         'save_path':          save_path,
+        # Empty string means "fall back to save_path" — the old single-directory
+        # behaviour. Strip whitespace so accidental spaces don't make it look
+        # configured when it isn't.
+        'torrent_save_path':  torrent_save_path.strip(),
         'category':           category,
         'import_mode':        import_mode if import_mode in ('hardlink', 'move', 'copy') else 'hardlink',
         'remove_completed':   'true' if remove_completed == 'true' else 'false',
@@ -133,9 +138,15 @@ async def save_settings(
         fields['google_books_api_key'] = google_books_api_key.strip()
 
     fields = _encrypt_settings_secrets_in_place(fields)
+    # Some settings are legitimately clearable via the form — their
+    # empty value is meaningful (e.g. torrent_save_path="" means "fall
+    # back to save_path"). For those keys we persist the empty value;
+    # for everything else we skip empties so a blank form field doesn't
+    # wipe an existing DB row.
+    _CLEARABLE_KEYS = {'torrent_save_path'}
     with get_db() as db:
         for k, v in fields.items():
-            if v:
+            if v or k in _CLEARABLE_KEYS:
                 db.execute("INSERT OR REPLACE INTO settings(key, value) VALUES(?,?)", (k, v))
     _reload_config()
     if is_htmx(request):
