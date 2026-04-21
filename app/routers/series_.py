@@ -1520,6 +1520,73 @@ async def edit_series(
     return RedirectResponse(f"/series/{series_id}", status_code=303)
 
 
+# ── Partial-patch endpoint ───────────────────────────────────────────────────
+# The full-form endpoint above (`POST /series/{id}/edit`) unconditionally
+# writes most fields from the submitted form, using schema defaults when a
+# field is absent. That's fine for the HTML editor page (every <input> is
+# always in the DOM), but it silently clobbers unrelated settings when a
+# scripted caller omits them. This endpoint exists for scripted/API callers:
+# it only updates the fields explicitly present in the JSON body.
+_PATCHABLE_FIELDS = {
+    'title', 'search_pattern', 'preferred_groups', 'blocked_groups',
+    'omnibus_preference', 'quality_profile_id', 'language_profile_id',
+    'quality_cutoff', 'update_strategy', 'required_scanlator',
+    'source_type', 'edition_type', 'total_volumes', 'ddl_language',
+    'monitor_mode', 'monitored', 'enabled',
+}
+
+
+@router.patch("/api/series/{series_id}")
+async def patch_series(request: Request, series_id: int):
+    """Update a subset of series fields without clobbering unsubmitted ones.
+
+    Body is JSON, containing only the fields to update. Unknown fields are
+    rejected (400). Fields requiring special handling (chapter_map_text,
+    stub creation) go through the full-form endpoint — this path is for
+    plain column updates.
+    """
+    import main as _m
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse({"error": "expected a non-empty object"}, status_code=400)
+
+    unknown = set(payload.keys()) - _PATCHABLE_FIELDS
+    if unknown:
+        return JSONResponse(
+            {"error": f"unknown or non-patchable fields: {sorted(unknown)}"},
+            status_code=400,
+        )
+
+    with get_db() as db:
+        exists = db.execute(
+            "SELECT 1 FROM series WHERE id=?", (series_id,)
+        ).fetchone()
+        if not exists:
+            return JSONResponse({"error": "series not found"}, status_code=404)
+
+        sets, params = [], []
+        for k, v in payload.items():
+            if k in ('preferred_groups', 'blocked_groups') and isinstance(v, list):
+                v = json.dumps([str(g).strip() for g in v if str(g).strip()])
+            sets.append(f"{k}=?")
+            params.append(v)
+        params.append(series_id)
+        db.execute(f"UPDATE series SET {', '.join(sets)} WHERE id=?", params)
+
+        # Keep vol_count_source honest: explicit total_volumes patches are
+        # manual just like the full-form path.
+        if 'total_volumes' in payload and payload.get('total_volumes'):
+            db.execute(
+                "UPDATE series SET vol_count_source='manual' WHERE id=?",
+                (series_id,)
+            )
+
+    return JSONResponse({"ok": True, "updated": sorted(payload.keys())})
+
+
 # ── Volume actions ────────────────────────────────────────────────────────────
 
 @router.post("/series/{series_id}/volumes/{volume_id}/mark-downloaded")

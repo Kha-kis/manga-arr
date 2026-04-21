@@ -25,35 +25,71 @@ def _row_decrypted(c) -> dict:
     )
     return d
 
-# Circuit breaker: track consecutive failures per client id
-# Structure: {client_id: {'failures': int, 'open_until': float}}
-_circuit: dict[int, dict] = {}
+# Circuit breaker: track consecutive failures per client id.
+# Persisted in client_breaker_state so a tripped breaker survives app
+# restarts — an in-memory dict would reset on boot and let a known-bad
+# client retry immediately (masking the failure pattern).
 _CB_THRESHOLD = 3      # open after this many consecutive failures
 _CB_TIMEOUT   = 300    # stay open for 5 minutes
 
 
+def _cb_load(client_id: int) -> dict | None:
+    with get_db() as db:
+        row = db.execute(
+            "SELECT failures, open_until FROM client_breaker_state WHERE client_id=?",
+            (client_id,)
+        ).fetchone()
+    if not row:
+        return None
+    return {'failures': int(row['failures']), 'open_until': float(row['open_until'])}
+
+
+def _cb_write(client_id: int, failures: int, open_until: float) -> None:
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO client_breaker_state(client_id, failures, open_until, updated_at)"
+            " VALUES(?, ?, ?, CURRENT_TIMESTAMP)"
+            " ON CONFLICT(client_id) DO UPDATE SET"
+            "   failures=excluded.failures,"
+            "   open_until=excluded.open_until,"
+            "   updated_at=CURRENT_TIMESTAMP",
+            (client_id, failures, open_until)
+        )
+
+
+def _cb_clear(client_id: int) -> None:
+    with get_db() as db:
+        db.execute(
+            "DELETE FROM client_breaker_state WHERE client_id=?", (client_id,)
+        )
+
+
 def _cb_is_open(client_id: int) -> bool:
     """Return True if circuit is open (client should be skipped)."""
-    state = _circuit.get(client_id)
+    state = _cb_load(client_id)
     if not state:
         return False
     if state['failures'] >= _CB_THRESHOLD:
-        if time.time() < state.get('open_until', 0):
+        if time.time() < state['open_until']:
             return True
-        # Timeout elapsed — half-open: allow one attempt
-        state['failures'] = _CB_THRESHOLD - 1  # reset to one below threshold
+        # Timeout elapsed — half-open: decrement failures so next attempt
+        # counts but doesn't stay open. Persist the half-open state so a
+        # concurrent worker sees it too.
+        _cb_write(client_id, _CB_THRESHOLD - 1, state['open_until'])
     return False
 
 
 def _cb_record_success(client_id: int):
-    _circuit.pop(client_id, None)
+    _cb_clear(client_id)
 
 
 def _cb_record_failure(client_id: int):
-    state = _circuit.setdefault(client_id, {'failures': 0, 'open_until': 0})
-    state['failures'] += 1
-    if state['failures'] >= _CB_THRESHOLD:
-        state['open_until'] = time.time() + _CB_TIMEOUT
+    state = _cb_load(client_id) or {'failures': 0, 'open_until': 0.0}
+    failures = state['failures'] + 1
+    open_until = state['open_until']
+    if failures >= _CB_THRESHOLD:
+        open_until = time.time() + _CB_TIMEOUT
+    _cb_write(client_id, failures, open_until)
 
 
 def client_base_url(c: dict) -> str:
@@ -325,14 +361,15 @@ async def delete_download_client(client_id: int):
 async def reset_circuit_breaker(client_id: int):
     """Force-close the circuit breaker for a client. Useful when a transient
     error tripped it and automated recovery is slow (5-minute timeout)."""
-    _circuit.pop(client_id, None)
+    _cb_clear(client_id)
     return JSONResponse({"ok": True, "message": "Circuit breaker reset"})
 
 
 @router.post("/api/download-clients/reset-all-circuits")
 async def reset_all_circuit_breakers():
     """Clear every circuit breaker state — used at startup and for diagnostics."""
-    _circuit.clear()
+    with get_db() as db:
+        db.execute("DELETE FROM client_breaker_state")
     return JSONResponse({"ok": True, "message": "All circuit breakers reset"})
 
 

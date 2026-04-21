@@ -816,6 +816,17 @@ def init_db():
                 tag       TEXT NOT NULL,
                 PRIMARY KEY (client_id, tag)
             );
+            -- Persisted circuit-breaker state for download clients.
+            -- Pre-fix the breaker was an in-memory dict that reset on every
+            -- app restart, so a client that was tripped 2 minutes ago would
+            -- appear freshly-healthy after a container restart and immediately
+            -- hammer again. Now it survives restarts.
+            CREATE TABLE IF NOT EXISTS client_breaker_state (
+                client_id    INTEGER PRIMARY KEY REFERENCES download_clients(id) ON DELETE CASCADE,
+                failures     INTEGER NOT NULL DEFAULT 0,
+                open_until   REAL NOT NULL DEFAULT 0,
+                updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
 
             -- Indexers
             CREATE TABLE IF NOT EXISTS indexers (
@@ -6876,9 +6887,26 @@ async def grab_item(item: dict, series_id: int, respect_monitoring: bool = True)
                 )
                 return False
 
+    # Outer timeout on the grab operation as a whole. grab_url has its own
+    # per-HTTP-request timeout (30s for qBittorrent, similar for SABnzbd),
+    # but a slow client + retry logic can accumulate well past that. Without
+    # this wrapper an indexer/client combination that hangs will pin the URL
+    # in _GRABBING_URLS until the httpx timeout chains expire, blocking any
+    # retry for minutes.
     try:
-        ok, client_name, dl_id = await grab_url(item['url'], protocol, save_path=save_path,
-                                                 torrent_name=title)
+        try:
+            ok, client_name, dl_id = await asyncio.wait_for(
+                grab_url(item['url'], protocol, save_path=save_path,
+                         torrent_name=title),
+                timeout=45,
+            )
+        except asyncio.TimeoutError:
+            log_event(
+                'grab_timeout',
+                f'grab_url exceeded 45s for {title[:120]}',
+                series_id,
+            )
+            return False
     finally:
         _GRABBING_URLS.discard(item['url'])
     if not ok:
