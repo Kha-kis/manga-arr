@@ -4431,83 +4431,104 @@ async def _check_download_status_impl():
                     # semantics, off the event loop.
                     _all_hashes_snapshot = all_hashes
                     def _qbit_orphan_cleanup_sync():
-                      with get_db() as db:
-                        # ── No-hash orphans: grabbed with no download_id → reset immediately ──
-                        db.execute(
-                            "UPDATE volumes SET status='wanted', grabbed_at=NULL, source_url=NULL,"
-                            " download_id=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
-                            " client=NULL, release_group=NULL"
-                            " WHERE status='grabbed' AND download_id IS NULL AND volume_num IS NOT NULL"
-                        )
-                        db.execute(
-                            "DELETE FROM volumes WHERE status='grabbed'"
-                            " AND download_id IS NULL AND volume_num IS NULL"
-                        )
-                        # ── Orphan cleanup: grabbed volumes whose torrent is gone from client ──
-                        orphaned = db.execute(
-                            "SELECT DISTINCT v.download_id, v.series_id,"
-                            " COALESCE(sv.torrent_name, v.torrent_name) as torrent_name "
-                            "FROM volumes v "
-                            "LEFT JOIN seen sv ON sv.download_id = v.download_id "
-                            "WHERE v.status='grabbed' "
-                            "  AND v.client='qbittorrent' "
-                            "  AND v.download_id IS NOT NULL "
-                            "  AND v.download_id NOT IN ("
-                            "    SELECT download_id FROM import_queue"
-                            "    WHERE status='pending' AND download_id IS NOT NULL)"
-                        ).fetchall()
+                        # Split across multiple transactions so a large orphan
+                        # list doesn't hold the SQLite write lock for the whole
+                        # duration. Prior behaviour wrapped everything in a
+                        # single `with get_db()` block; with N orphans × ~10
+                        # writes per iteration, the write lock could be held
+                        # for many seconds, starving every other writer in the
+                        # app (user HTTP handlers, other background loops) and
+                        # producing OperationalError('database is locked').
+                        #
+                        # Phase A: bulk no-hash orphan resets (one transaction,
+                        #   cheap — just two statements that scan a small set).
+                        # Phase B: list orphan download_ids (short read-only
+                        #   transaction). Orphan count cached for phase C.
+                        # Phase C: per-orphan cleanup, each in its own
+                        #   transaction. Commits in between so other writers
+                        #   can slot in.
+                        # ── Phase A: no-hash orphans (quick) ──
+                        with get_db() as db:
+                            db.execute(
+                                "UPDATE volumes SET status='wanted', grabbed_at=NULL, source_url=NULL,"
+                                " download_id=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
+                                " client=NULL, release_group=NULL"
+                                " WHERE status='grabbed' AND download_id IS NULL AND volume_num IS NOT NULL"
+                            )
+                            db.execute(
+                                "DELETE FROM volumes WHERE status='grabbed'"
+                                " AND download_id IS NULL AND volume_num IS NULL"
+                            )
+                        # ── Phase B: enumerate hash-orphans (read-only) ──
+                        with get_db() as db:
+                            orphaned = db.execute(
+                                "SELECT DISTINCT v.download_id, v.series_id,"
+                                " COALESCE(sv.torrent_name, v.torrent_name) as torrent_name "
+                                "FROM volumes v "
+                                "LEFT JOIN seen sv ON sv.download_id = v.download_id "
+                                "WHERE v.status='grabbed' "
+                                "  AND v.client='qbittorrent' "
+                                "  AND v.download_id IS NOT NULL "
+                                "  AND v.download_id NOT IN ("
+                                "    SELECT download_id FROM import_queue"
+                                "    WHERE status='pending' AND download_id IS NOT NULL)"
+                            ).fetchall()
+                            # Materialise out of the transaction so the per-
+                            # orphan loop below doesn't still hold this conn.
+                            orphaned = [dict(r) for r in orphaned]
+
+                        # ── Phase C: per-orphan cleanup (one tx per orphan) ──
                         for gs in orphaned:
                             if (gs['download_id'] or '').lower() in all_hashes:
                                 continue  # still present in client
                             h = gs['download_id']
-                            # Collect numbered vol IDs before deleting, for chapter cascade
-                            orphan_vol_ids = [
-                                r[0] for r in db.execute(
-                                    "SELECT id FROM volumes WHERE series_id=? AND download_id=?"
-                                    " AND status='grabbed' AND volume_num IS NOT NULL",
+                            with get_db() as db:
+                                orphan_vol_ids = [
+                                    r[0] for r in db.execute(
+                                        "SELECT id FROM volumes WHERE series_id=? AND download_id=?"
+                                        " AND status='grabbed' AND volume_num IS NOT NULL",
+                                        (gs['series_id'], h)
+                                    ).fetchall()
+                                ]
+                                db.execute(
+                                    "DELETE FROM volumes WHERE series_id=? AND download_id=?"
+                                    " AND status='grabbed' AND volume_num IS NULL",
                                     (gs['series_id'], h)
-                                ).fetchall()
-                            ]
-                            # Pack stubs (volume_num IS NULL) are deleted; numbered stubs reset
-                            db.execute(
-                                "DELETE FROM volumes WHERE series_id=? AND download_id=?"
-                                " AND status='grabbed' AND volume_num IS NULL",
-                                (gs['series_id'], h)
-                            )
-                            db.execute(
-                                "UPDATE volumes SET status='wanted', download_id=NULL,"
-                                " torrent_name=NULL, indexer=NULL, protocol=NULL, client=NULL,"
-                                " grabbed_at=NULL, source_url=NULL, release_group=NULL "
-                                "WHERE series_id=? AND download_id=? AND status='grabbed'",
-                                (gs['series_id'], h)
-                            )
-                            if orphan_vol_ids:
-                                _cascade_chapters(db, gs['series_id'], orphan_vol_ids, 'wanted',
-                                                  grabbed_at=None, torrent_name=None, torrent_url=None,
-                                                  indexer=None, protocol=None, client=None,
-                                                  download_id=None, release_group=None)
-                            db.execute(
-                                "UPDATE import_queue SET status='skipped' "
-                                "WHERE download_id=? AND status='pending'", (h,)
-                            )
-                            db.execute(
-                                "UPDATE import_queue_files SET status='skipped' "
-                                "WHERE queue_id IN "
-                                "(SELECT id FROM import_queue WHERE download_id=?)", (h,)
-                            )
-                            db.execute("DELETE FROM seen WHERE download_id=?", (h,))
-                            log_event('warning',
-                                f"Grab lost (removed from client): {gs['torrent_name']}",
-                                gs['series_id'])
-                            _sr = db.execute(
-                                "SELECT title FROM series WHERE id=?", (gs['series_id'],)
-                            ).fetchone()
-                            add_history(db, 'grab_failed', gs['series_id'],
-                                        _sr['title'] if _sr else '',
-                                        '',
-                                        source_title=gs['torrent_name'] or '',
-                                        download_id=h,
-                                        data={'reason': 'removed_from_client'})
+                                )
+                                db.execute(
+                                    "UPDATE volumes SET status='wanted', download_id=NULL,"
+                                    " torrent_name=NULL, indexer=NULL, protocol=NULL, client=NULL,"
+                                    " grabbed_at=NULL, source_url=NULL, release_group=NULL "
+                                    "WHERE series_id=? AND download_id=? AND status='grabbed'",
+                                    (gs['series_id'], h)
+                                )
+                                if orphan_vol_ids:
+                                    _cascade_chapters(db, gs['series_id'], orphan_vol_ids, 'wanted',
+                                                      grabbed_at=None, torrent_name=None, torrent_url=None,
+                                                      indexer=None, protocol=None, client=None,
+                                                      download_id=None, release_group=None)
+                                db.execute(
+                                    "UPDATE import_queue SET status='skipped' "
+                                    "WHERE download_id=? AND status='pending'", (h,)
+                                )
+                                db.execute(
+                                    "UPDATE import_queue_files SET status='skipped' "
+                                    "WHERE queue_id IN "
+                                    "(SELECT id FROM import_queue WHERE download_id=?)", (h,)
+                                )
+                                db.execute("DELETE FROM seen WHERE download_id=?", (h,))
+                                log_event('warning',
+                                    f"Grab lost (removed from client): {gs['torrent_name']}",
+                                    gs['series_id'], db=db)
+                                _sr = db.execute(
+                                    "SELECT title FROM series WHERE id=?", (gs['series_id'],)
+                                ).fetchone()
+                                add_history(db, 'grab_failed', gs['series_id'],
+                                            _sr['title'] if _sr else '',
+                                            '',
+                                            source_title=gs['torrent_name'] or '',
+                                            download_id=h,
+                                            data={'reason': 'removed_from_client'})
 
                     # Close the orphan-cleanup helper. End of _qbit_orphan_cleanup_sync.
                     await asyncio.to_thread(_qbit_orphan_cleanup_sync)
@@ -7990,12 +8011,17 @@ def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
 
     Returns a dict of counts for visibility in tests and logs.
     """
+    # One transaction per phase — not one big transaction for all three.
+    # Each phase might process hundreds of rows; keeping each phase its
+    # own transaction lets other writers slot in between. The stats dict
+    # is accumulated across phases at function scope.
     stats = {
         'volumes_reset':   0,
         'pending_deleted': 0,
         'queue_failed':    0,
     }
 
+    # ── Phase 1: stale grabbed volumes ──
     with get_db() as db:
         # (1) Stale grabbed volumes with no download_id
         stale = db.execute(
@@ -8025,7 +8051,8 @@ def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
                 db=db,
             )
 
-        # (2) pending_releases for deleted / unmonitored series
+    # ── Phase 2: pending_releases orphans ──
+    with get_db() as db:
         orphans = db.execute(
             "SELECT pr.id, pr.series_id, pr.title, s.monitored"
             "  FROM pending_releases pr"
@@ -8048,7 +8075,8 @@ def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
                 db=db,
             )
 
-        # (3) import_queue stuck in 'pending'/'partial' for >queue_stale_days
+    # ── Phase 3: import_queue stuck in pending/partial ──
+    with get_db() as db:
         stale_queue = db.execute(
             "SELECT id, series_id, torrent_name"
             "  FROM import_queue"

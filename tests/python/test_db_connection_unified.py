@@ -160,9 +160,15 @@ def test_lifespan_calls_ensure_wal_after_init_db():
 
 
 def test_busy_timeout_is_reasonable(tmp_path, monkeypatch):
-    """Confirm busy_timeout is set to the documented 5000ms. Too high
-    compounds the stalls when multiple statements contend (reported as
-    issue #31); too low produces spurious 'database is locked' errors."""
+    """Confirm busy_timeout is set to the post-contention-fix 30000ms.
+
+    History: originally 5000ms per issue #31. During the post-audit
+    live review we observed writers (schema migration, qBit orphan
+    cleanup with many orphans, stuck-state sweep) routinely exceeding
+    that window and producing OperationalError('database is locked')
+    for unrelated concurrent writers. Bumped to 30000ms — WAL mode
+    keeps readers unblocked, so the longer wait affects only queued
+    writers, which is the pattern this is meant to absorb."""
     import shared
     db = tmp_path / "test.db"
     monkeypatch.setattr(shared, "DB_PATH", str(db))
@@ -170,4 +176,4 @@ def test_busy_timeout_is_reasonable(tmp_path, monkeypatch):
 
     with shared.get_db() as conn:
         t = conn.execute("PRAGMA busy_timeout").fetchone()[0]
-    assert t == 5000, f"busy_timeout drifted to {t}"
+    assert t == 30000, f"busy_timeout drifted to {t}"
