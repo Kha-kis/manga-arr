@@ -5946,6 +5946,43 @@ async def fetch_kitsu_chapter_map(title: str, anilist_id: int | None,
     return {}
 
 
+def _trim_cvm_to_vol_range(mapping: dict, total_volumes: int | None,
+                           source: str) -> dict:
+    """Drop entries whose target volume exceeds ``total_volumes``.
+
+    Upstream sources (notably MangaDex) sometimes catalogue multi-part
+    series under a single UUID with continuous chapter numbering, so a
+    per-part series record ends up with cvm entries pointing at volumes
+    that belong to a later part. Those entries then drive
+    populate_chapters to create phantom `wanted` chapter rows for
+    chapter numbers that don't belong to this series at all.
+
+    We can't always tell upstream data is wrong, but we can enforce
+    the local invariant: no cvm entry should target a volume the
+    series itself doesn't have. When total_volumes is None/0 we can't
+    judge, so return the map untouched."""
+    if not mapping or not total_volumes or total_volumes <= 0:
+        return mapping
+    kept: dict = {}
+    dropped = 0
+    for k, v in mapping.items():
+        try:
+            vol = float(v)
+        except (TypeError, ValueError):
+            # Non-numeric target — let _validate_chapter_map decide.
+            kept[k] = v
+            continue
+        if vol > float(total_volumes):
+            dropped += 1
+            continue
+        kept[k] = v
+    if dropped:
+        print(f"[{source}] dropped {dropped} cvm entries targeting "
+              f"vol > {total_volumes} (likely continuous-numbering "
+              f"contamination across series parts)")
+    return kept
+
+
 def _validate_chapter_map(mapping: dict, total_chapters: int | None, source: str) -> bool:
     """Return False if the map looks too sparse to be useful."""
     if not mapping:
@@ -6157,9 +6194,11 @@ async def refresh_mangadex_map(series_id: int) -> bool:
             "SELECT title, total_volumes, total_chapters FROM series WHERE id=?",
             (series_id,)
         ).fetchone()
-    total_ch = meta['total_chapters'] if meta else None
+    total_ch  = meta['total_chapters'] if meta else None
+    total_vol = meta['total_volumes'] if meta else None
 
     mapping = await fetch_chapter_volume_map(mdx_id)
+    mapping = _trim_cvm_to_vol_range(mapping, total_vol, 'MangaDex')
     map_source = 'mangadex'
     if not _validate_chapter_map(mapping, total_ch, 'MangaDex'):
         mapping = {}
@@ -6169,6 +6208,7 @@ async def refresh_mangadex_map(series_id: int) -> bool:
         kitsu_map = await fetch_kitsu_chapter_map(
             meta['title'], s['anilist_id'], meta['total_chapters']
         )
+        kitsu_map = _trim_cvm_to_vol_range(kitsu_map, total_vol, 'Kitsu')
         if _validate_chapter_map(kitsu_map, total_ch, 'Kitsu'):
             mapping = kitsu_map
             map_source = 'kitsu'
@@ -6178,6 +6218,7 @@ async def refresh_mangadex_map(series_id: int) -> bool:
         with get_db() as db:
             cbz_dir = _series_library_dir(db, series_id)
         cbz_map = _extract_map_from_cbzs(cbz_dir)
+        cbz_map = _trim_cvm_to_vol_range(cbz_map, total_vol, 'CBZ')
         print(f"[CBZ] series {series_id}: dir={cbz_dir}, entries={len(cbz_map)}, total_ch={total_ch}")
         if _validate_chapter_map(cbz_map, total_ch, 'CBZ'):
             mapping = cbz_map
