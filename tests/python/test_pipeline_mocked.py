@@ -34,7 +34,6 @@ import conftest  # noqa: F401
 def fresh_db_with_qbit():
     """Temp DB seeded with one enabled qBittorrent download client."""
     import main, shared, security
-    from routers.download_clients import _circuit  # for CB cleanup between tests
 
     db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     db.close(); os.unlink(db.name)
@@ -49,7 +48,6 @@ def fresh_db_with_qbit():
 
     main.init_db()
     main.load_config()
-    _circuit.clear()  # so prior test residue can't trip the CB before we run
 
     with sqlite3.connect(db.name) as c:
         c.execute(
@@ -58,13 +56,14 @@ def fresh_db_with_qbit():
             ("test-qbit", "qbittorrent", "qbit.local", 8080, 0,
              "admin", "encrypted-or-plain-pw", "manga", 1, 1)
         )
+        # CB state is now DB-backed; purge any seeded rows (belt and braces)
+        c.execute("DELETE FROM client_breaker_state")
 
     try:
         yield db.name
     finally:
         main.DB_PATH = orig_main_db
         shared.DB_PATH = orig_shared_db
-        _circuit.clear()
         for ext in ("", "-wal", "-shm"):
             p = db.name + ext
             if os.path.exists(p):
@@ -204,7 +203,7 @@ def test_pipeline_qbit_unreachable_trips_circuit(fresh_db_with_qbit):
     records a CB failure. After threshold (3), CB opens and short-circuits."""
     import asyncio
     import main
-    from routers.download_clients import _circuit, _CB_THRESHOLD
+    from routers.download_clients import _cb_load, _CB_THRESHOLD
 
     captured: list = []
     mock_client = _make_qbit_mock(captured, auth_ok=False)
@@ -216,8 +215,9 @@ def test_pipeline_qbit_unreachable_trips_circuit(fresh_db_with_qbit):
             ok, _, _ = asyncio.run(main.grab_url(magnet, protocol="torrent"))
             assert ok is False
 
-    # CB should be open against client id 1 now.
-    state = _circuit.get(1)
+    # CB should be open against client id 1 now — state is persisted in
+    # client_breaker_state (see PR 4).
+    state = _cb_load(1)
     assert state is not None and state["failures"] >= _CB_THRESHOLD, (
         f"circuit breaker did not open after {_CB_THRESHOLD} failures: {state!r}"
     )
