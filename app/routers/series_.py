@@ -1476,9 +1476,7 @@ async def edit_series(
             db.execute(f"UPDATE series SET {', '.join(updates)} WHERE id=?", params)
 
         if _manual_new is not None:
-            if _manual_new > (_manual_old or 0):
-                _m.create_volume_stubs(db, series_id, _manual_new)
-            elif _manual_old and _manual_new < _manual_old:
+            if _manual_old and _manual_new < _manual_old:
                 # Clear volume_id on any chapters pointing at the volumes we're
                 # about to delete — otherwise the chapters become orphans with a
                 # dangling FK pointer.
@@ -1494,6 +1492,24 @@ async def edit_series(
                     (series_id, float(_manual_new))
                 )
                 _m.log_event('metadata', f"[Manual] removed wanted stubs > vol {_manual_new}", series_id)
+
+        # Reconcile stub coverage whenever the edit could have left the
+        # series without a stub for a vol the cvm (or total_volumes) now
+        # requires. create_volume_stubs is idempotent: it only inserts
+        # rows for volume_nums that don't already exist, so calling it
+        # on every cvm-affecting or total_volumes-affecting edit is safe.
+        # Prior behaviour only fired on _manual_new > _manual_old, which
+        # left a gap when the cvm was updated against an unchanged
+        # total_volumes (observed: wiki-map import on Vinland Saga,
+        # vs_fix_stubs workaround).
+        needs_stub_reconcile = map_updated or _manual_new is not None
+        if needs_stub_reconcile:
+            _eff = db.execute(
+                "SELECT total_volumes FROM series WHERE id=?", (series_id,)
+            ).fetchone()
+            eff_total = (_eff['total_volumes'] or 0) if _eff else 0
+            if eff_total > 0:
+                _m.create_volume_stubs(db, series_id, eff_total)
 
         if map_updated:
             _m.populate_chapters(db, series_id)
