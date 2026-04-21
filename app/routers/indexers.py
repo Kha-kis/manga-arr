@@ -1,6 +1,7 @@
 """Indexers — DB-managed indexer configuration (Sonarr parity)."""
 import httpx
 import json
+import time
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from routers._templates import templates
@@ -12,6 +13,107 @@ from security import (
 )
 
 router = APIRouter()
+
+
+# ── Per-indexer backoff ──────────────────────────────────────────────────────
+# When an indexer rate-limits (429), forbids (403), or returns 5xx, retrying
+# at full speed on the next RSS/search cycle risks IP bans, especially on
+# shared Prowlarr instances. indexer_backoff persists a per-indexer retry
+# deadline so both RSS polls and manual searches honour the backoff.
+#
+# Honoured inputs:
+#   - Retry-After header (HTTP-date or delta-seconds) — treated verbatim
+#   - No Retry-After → exponential backoff: 60s, 120s, 240s, capped at 1h
+#
+# Success clears the row.
+
+_BACKOFF_MIN   = 60      # seconds
+_BACKOFF_MAX   = 3600    # 1 hour cap
+_BACKOFF_BASE  = 2       # exponential base
+
+
+def _parse_retry_after(raw: str | None) -> float | None:
+    """Parse a Retry-After header value into 'seconds from now'.
+    Returns None for unparseable values so the caller can fall back."""
+    if not raw:
+        return None
+    raw = raw.strip()
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        import datetime as _dt
+        dt = parsedate_to_datetime(raw)
+        if dt is None:
+            return None
+        delta = (dt - _dt.datetime.now(_dt.timezone.utc)).total_seconds()
+        return max(0.0, delta)
+    except Exception:
+        return None
+
+
+def _indexer_is_backed_off(indexer_id: int) -> tuple[bool, float]:
+    """Return (is_backed_off, retry_after_epoch)."""
+    with get_db() as db:
+        row = db.execute(
+            "SELECT retry_after FROM indexer_backoff WHERE indexer_id=?",
+            (indexer_id,)
+        ).fetchone()
+    if not row:
+        return False, 0.0
+    deadline = float(row['retry_after'] or 0)
+    return (time.time() < deadline), deadline
+
+
+def _indexer_record_failure(indexer_id: int, *, status: int | None,
+                            retry_after_header: str | None,
+                            reason: str) -> float:
+    """Record a failure, compute + persist the next retry deadline, return it."""
+    hdr_seconds = _parse_retry_after(retry_after_header)
+    with get_db() as db:
+        row = db.execute(
+            "SELECT consecutive_failures FROM indexer_backoff WHERE indexer_id=?",
+            (indexer_id,)
+        ).fetchone()
+        failures = (row['consecutive_failures'] + 1) if row else 1
+        if hdr_seconds is not None:
+            delay = min(max(hdr_seconds, 1.0), _BACKOFF_MAX)
+        else:
+            delay = min(_BACKOFF_MIN * (_BACKOFF_BASE ** (failures - 1)), _BACKOFF_MAX)
+        deadline = time.time() + delay
+        db.execute(
+            "INSERT INTO indexer_backoff"
+            "(indexer_id, retry_after, consecutive_failures, last_status, last_reason, updated_at)"
+            " VALUES(?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"
+            " ON CONFLICT(indexer_id) DO UPDATE SET"
+            "   retry_after=excluded.retry_after,"
+            "   consecutive_failures=excluded.consecutive_failures,"
+            "   last_status=excluded.last_status,"
+            "   last_reason=excluded.last_reason,"
+            "   updated_at=CURRENT_TIMESTAMP",
+            (indexer_id, deadline, failures, status, reason[:200])
+        )
+    return deadline
+
+
+def _indexer_record_success(indexer_id: int) -> None:
+    with get_db() as db:
+        db.execute(
+            "DELETE FROM indexer_backoff WHERE indexer_id=?", (indexer_id,)
+        )
+
+
+def _should_backoff_on_response(r: httpx.Response) -> tuple[bool, str]:
+    """Return (should_backoff, reason)."""
+    if r.status_code == 429:
+        return True, 'rate limited (429)'
+    if r.status_code == 403:
+        return True, 'forbidden (403)'
+    if 500 <= r.status_code < 600:
+        return True, f'server error ({r.status_code})'
+    return False, ''
 
 
 def _row_decrypted(row) -> dict:
@@ -304,9 +406,18 @@ async def _fetch_rss_for_indexer(idx: dict) -> list[dict]:
     url  = (idx['url'] or '').rstrip('/')
     key  = idx['api_key'] or ''
     name = idx['name']
+    idx_id = idx['id']
 
     if not url:
         return []
+
+    # Skip if backoff deadline hasn't passed
+    is_off, deadline = _indexer_is_backed_off(idx_id)
+    if is_off:
+        wait_s = int(deadline - time.time())
+        print(f"[Indexer:{name}] skipping RSS poll — backoff active ({wait_s}s left)")
+        return []
+
     try:
         # LAN indexers permitted; loopback/link-local/etc. still blocked.
         validate_outbound_url(url, allow_private=True)
@@ -326,6 +437,10 @@ async def _fetch_rss_for_indexer(idx: dict) -> list[dict]:
             items = []
             for b in batches:
                 items.extend(b)
+            # Consider 'success' when we got any meaningful response — the
+            # sub-indexer calls handle their own failures, but an overall
+            # no-error path clears the parent's backoff counter.
+            _indexer_record_success(idx_id)
             return items
 
         elif t in ('torznab', 'newznab'):
@@ -333,10 +448,27 @@ async def _fetch_rss_for_indexer(idx: dict) -> list[dict]:
             async with httpx.AsyncClient(timeout=20) as cli:
                 r = await cli.get(f"{url}/api",
                                   params={'t': 'search', 'cat': cat_str, 'apikey': key, 'q': ''})
+            should_off, reason = _should_backoff_on_response(r)
+            if should_off:
+                dl = _indexer_record_failure(
+                    idx_id,
+                    status=r.status_code,
+                    retry_after_header=r.headers.get('Retry-After'),
+                    reason=reason,
+                )
+                print(f"[Indexer:{name}] backoff set — {reason}; next retry at "
+                      f"{int(dl)} ({int(dl - time.time())}s from now)")
+                return []
+            _indexer_record_success(idx_id)
             return _parse_torznab_rss(r.text, name, 'torrent' if t == 'torznab' else 'nzb')
 
     except Exception as e:
         print(f"[Indexer:{name}] RSS error: {e}")
+        # Unknown failure — increment counter but with shorter backoff
+        _indexer_record_failure(
+            idx_id, status=None, retry_after_header=None,
+            reason=f'{type(e).__name__}: {str(e)[:120]}'
+        )
     return []
 
 
@@ -466,7 +598,15 @@ async def _search_indexer(idx: dict, query: str) -> list[dict]:
     key  = idx['api_key'] or ''
     cats = from_json(idx.get('categories'), [7000, 7010, 7020])
     name = idx['name']
+    idx_id = idx['id']
     cat_str = ','.join(str(c) for c in cats)
+
+    is_off, deadline = _indexer_is_backed_off(idx_id)
+    if is_off:
+        wait_s = int(deadline - time.time())
+        print(f"[Indexer:{name}] skipping search — backoff active ({wait_s}s left)")
+        return []
+
     try:
         if t == 'prowlarr':
             async with httpx.AsyncClient(timeout=30) as cli:
@@ -475,7 +615,16 @@ async def _search_indexer(idx: dict, query: str) -> list[dict]:
                     headers={"X-Api-Key": key},
                     params={'query': query, 'categories': cats, 'type': 'search'}
                 )
+            should_off, reason = _should_backoff_on_response(r)
+            if should_off:
+                _indexer_record_failure(
+                    idx_id, status=r.status_code,
+                    retry_after_header=r.headers.get('Retry-After'),
+                    reason=reason,
+                )
+                return []
             if r.status_code == 200:
+                _indexer_record_success(idx_id)
                 return _parse_prowlarr_response(r.json(), name)
 
         elif t in ('torznab', 'newznab'):
@@ -483,10 +632,23 @@ async def _search_indexer(idx: dict, query: str) -> list[dict]:
             async with httpx.AsyncClient(timeout=20) as cli:
                 r = await cli.get(f"{url}/api",
                                   params={'t': 'search', 'q': query, 'cat': cat_str, 'apikey': key})
+            should_off, reason = _should_backoff_on_response(r)
+            if should_off:
+                _indexer_record_failure(
+                    idx_id, status=r.status_code,
+                    retry_after_header=r.headers.get('Retry-After'),
+                    reason=reason,
+                )
+                return []
+            _indexer_record_success(idx_id)
             return _parse_torznab_rss(r.text, name, proto)
 
     except Exception as e:
         print(f"[Indexer:{name}] search error: {e}")
+        _indexer_record_failure(
+            idx_id, status=None, retry_after_header=None,
+            reason=f'{type(e).__name__}: {str(e)[:120]}'
+        )
     return []
 
 
