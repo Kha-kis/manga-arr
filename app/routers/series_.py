@@ -1561,6 +1561,21 @@ async def patch_series(request: Request, series_id: int):
             status_code=400,
         )
 
+    # total_volumes needs stricter validation than the generic patch loop:
+    # the full-form editor only writes the column when total_volumes > 0,
+    # and the rest of the app treats 0 as "unknown" (same as NULL). Accept
+    # explicit null (clears the column) or a positive int. Reject 0 and
+    # negatives with 400 so operators can't land the column in an
+    # inconsistent state via a scripted call.
+    if 'total_volumes' in payload:
+        tv = payload['total_volumes']
+        if tv is not None:
+            if not isinstance(tv, int) or isinstance(tv, bool) or tv <= 0:
+                return JSONResponse(
+                    {"error": "total_volumes must be null or a positive integer"},
+                    status_code=400,
+                )
+
     try:
         with get_db() as db:
             exists = db.execute(
@@ -1578,9 +1593,11 @@ async def patch_series(request: Request, series_id: int):
             params.append(series_id)
             db.execute(f"UPDATE series SET {', '.join(sets)} WHERE id=?", params)
 
-            # Keep vol_count_source honest: explicit total_volumes patches are
-            # manual just like the full-form path.
-            if 'total_volumes' in payload and payload.get('total_volumes'):
+            # Keep vol_count_source honest: an explicit positive total_volumes
+            # patch marks the series as operator-curated. Clearing total_volumes
+            # (null) leaves vol_count_source alone — the operator is un-setting
+            # the value, not declaring a source.
+            if 'total_volumes' in payload and payload['total_volumes'] is not None:
                 db.execute(
                     "UPDATE series SET vol_count_source='manual' WHERE id=?",
                     (series_id,)
