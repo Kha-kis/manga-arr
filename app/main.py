@@ -827,6 +827,17 @@ def init_db():
                 open_until   REAL NOT NULL DEFAULT 0,
                 updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+            -- Per-indexer backoff to avoid hammering upstreams that have
+            -- already rate-limited or rejected us. The next RSS/search cycle
+            -- skips any indexer whose retry_after is in the future.
+            CREATE TABLE IF NOT EXISTS indexer_backoff (
+                indexer_id           INTEGER PRIMARY KEY REFERENCES indexers(id) ON DELETE CASCADE,
+                retry_after          REAL NOT NULL DEFAULT 0,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                last_status          INTEGER,
+                last_reason          TEXT,
+                updated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
 
             -- Indexers
             CREATE TABLE IF NOT EXISTS indexers (
@@ -7618,10 +7629,34 @@ async def refresh_ongoing_loop():
                           next_run=datetime.fromtimestamp(now.timestamp() + interval, tz=timezone.utc))
         await asyncio.sleep(interval)
 
+_MDX_BACKOFF_UNTIL: float = 0.0
+
+
+def _mdx_backoff_active() -> bool:
+    import time as _t
+    return _t.time() < _MDX_BACKOFF_UNTIL
+
+
+def _mdx_set_backoff(seconds: float, reason: str) -> None:
+    """Extend the MangaDex backoff deadline. Persisted only in-process —
+    a restart resets it, which is fine because the backfill loop re-runs
+    from scratch at startup anyway and will re-hit any ongoing rate limit
+    immediately."""
+    global _MDX_BACKOFF_UNTIL
+    import time as _t
+    deadline = _t.time() + max(seconds, 1.0)
+    if deadline > _MDX_BACKOFF_UNTIL:
+        _MDX_BACKOFF_UNTIL = deadline
+        print(f"[Backfill] MangaDex backoff set: {int(seconds)}s ({reason})")
+
+
 async def _backfill_metadata_loop():
     """
     At startup, backfill MangaDex ID + cross-references (MAL/MU) for series missing them.
     Runs once, with a small delay between each to respect MangaDex rate limits (~5 req/s).
+    When upstream signals rate-limiting (via an httpx.HTTPStatusError from a 429),
+    respect the Retry-After value and defer remaining work until the deadline
+    elapses so we don't burn through IP-ban thresholds.
     """
     await asyncio.sleep(10)  # let startup settle first
     with get_db() as db:
@@ -7630,10 +7665,16 @@ async def _backfill_metadata_loop():
             " OR (mangadex_id IS NOT NULL AND chapter_vol_map IS NULL)"
         ).fetchall()
     for row in missing:
+        # If we've been rate-limited recently, hold off until the deadline
+        while _mdx_backoff_active():
+            import time as _t
+            wait = max(1.0, _MDX_BACKOFF_UNTIL - _t.time())
+            await asyncio.sleep(min(wait, 30))
         try:
             await refresh_mangadex_map(row['id'])
         except Exception as e:
             print(f"[Startup] metadata backfill error for series {row['id']}: {e}")
+            _maybe_backoff_from_exception(e)
         await asyncio.sleep(2)  # ~0.5 req/s — well under MangaDex limit
 
     # Sync MangaDex chapter manifests for series that have mangadex_id but no chapter rows
@@ -7643,11 +7684,51 @@ async def _backfill_metadata_loop():
             " AND NOT EXISTS (SELECT 1 FROM mangadex_chapters m WHERE m.series_id=series.id)"
         ).fetchall()
     for row in needs_sync:
+        while _mdx_backoff_active():
+            import time as _t
+            wait = max(1.0, _MDX_BACKOFF_UNTIL - _t.time())
+            await asyncio.sleep(min(wait, 30))
         try:
             await _mdx_router.sync_mangadex_chapters(row['id'])
         except Exception as e:
             print(f"[Startup] MangaDex chapter sync error for series {row['id']}: {e}")
+            _maybe_backoff_from_exception(e)
         await asyncio.sleep(1.5)
+
+
+def _maybe_backoff_from_exception(exc: Exception) -> None:
+    """If an httpx exception carries a 429 response with Retry-After, honour
+    it. Otherwise this is a no-op — the caller already handled the error."""
+    resp = getattr(exc, 'response', None)
+    if resp is None:
+        return
+    try:
+        status = getattr(resp, 'status_code', None)
+        if status == 429:
+            ra = resp.headers.get('Retry-After') if hasattr(resp, 'headers') else None
+            seconds = _parse_retry_after_seconds(ra) if ra else 60.0
+            _mdx_set_backoff(seconds or 60.0, f'Retry-After={ra!r}')
+    except Exception:
+        pass
+
+
+def _parse_retry_after_seconds(raw: str | None) -> float | None:
+    if not raw:
+        return None
+    raw = raw.strip()
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        import datetime as _dt
+        dt = parsedate_to_datetime(raw)
+        if dt is None:
+            return None
+        return max(0.0, (dt - _dt.datetime.now(_dt.timezone.utc)).total_seconds())
+    except Exception:
+        return None
 
 async def backlog_search_loop():
     """Daily: actively search for all wanted volumes that RSS may have missed."""

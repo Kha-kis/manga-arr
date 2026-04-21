@@ -9,6 +9,7 @@ Flow:
   3. suwayomi_grab()         → resolve volume→chapters, enqueue + start downloader
   4. check_suwayomi_jobs()   → poll isDownloaded on tracked chapters, mark complete
 """
+import asyncio as _aio
 import json
 import logging
 import os
@@ -798,147 +799,171 @@ async def _check_suwayomi_jobs_impl():
         return
 
     for job in jobs:
-        try:
-            chapter_ids = json.loads(job["chapter_ids"])
-
-            # Fetch manga title + chapters for the manga
-            data  = await _gql(c, """
-                query($mid: Int!) {
-                    manga(id: $mid) {
-                        title
-                        chapters { nodes { id isDownloaded } }
-                    }
-                }
-            """, {"mid": job["suwayomi_manga_id"]})
-            swy_title = (data.get("manga") or {}).get("title") or ""
-
-            ch_map: dict[int, bool] = {
-                int(ch["id"]): bool(ch["isDownloaded"])
-                for ch in (data.get("manga") or {}).get("chapters", {}).get("nodes") or []
-            }
-            done = sum(1 for cid in chapter_ids if ch_map.get(cid, False))
-
-            with get_db() as db:
-                db.execute(
-                    "UPDATE suwayomi_downloads SET progress=? WHERE id=?",
-                    (done, job["id"]),
+        # Retry transient failures up to 3 times before marking 'error'.
+        # A brief Suwayomi GraphQL timeout used to leave user-initiated
+        # DDL grabs stranded until an operator hit /retry manually.
+        _last_exc: Exception | None = None
+        for _attempt in range(3):
+            if _attempt > 0:
+                await _aio.sleep(2 ** _attempt)   # 2s, 4s
+            try:
+                await _process_suwayomi_job(c, job)
+                _last_exc = None
+                break
+            except Exception as e:
+                _last_exc = e
+                log.warning(
+                    "check_suwayomi_jobs job=%d attempt=%d: %s",
+                    job["id"], _attempt + 1, e,
                 )
-
-            if done >= len(chapter_ids):
-                if job["chapter_num"] is not None:
-                    # ── Chapter-level job ─────────────────────────────────────
-                    import_path, file_bytes = await _import_suwayomi_chapter(
-                        c, job["series_id"], float(job["chapter_num"]),
-                        swy_title=swy_title,
-                    )
-                    if not import_path:
-                        err_msg = "Import failed — chapter CBZ not found in library path"
-                        with get_db() as db:
-                            db.execute(
-                                "UPDATE suwayomi_downloads SET status='error', error=? WHERE id=?",
-                                (err_msg, job["id"]),
-                            )
-                        log.error("DDL chapter import failed: series=%d ch=%s",
-                                  job["series_id"], job["chapter_num"])
-                        continue
-                    with get_db() as db:
-                        db.execute(
-                            "UPDATE suwayomi_downloads SET status='completed' WHERE id=?",
-                            (job["id"],),
-                        )
-                        db.execute(
-                            "UPDATE chapters SET status='downloaded',"
-                            " imported_at=CURRENT_TIMESTAMP, client='suwayomi',"
-                            " import_path=?, quality=COALESCE(quality,?),"
-                            " size_bytes=COALESCE(NULLIF(size_bytes,0),?),"
-                            " indexer=NULL, protocol=NULL, torrent_name=NULL,"
-                            " torrent_url=NULL, download_id=NULL, release_group=NULL"
-                            " WHERE series_id=? AND chapter_num=?"
-                            " AND status IN ('grabbed','wanted','downloaded')",
-                            (import_path, _m.quality_from_filename(import_path),
-                             file_bytes or None,
-                             job["series_id"], job["chapter_num"]),
-                        )
-                    _m.log_event(
-                        "download_complete",
-                        f"DDL imported: series {job['series_id']} ch {job['chapter_num']}"
-                        + (f" → {os.path.basename(import_path)}" if import_path else ""),
-                        job["series_id"],
-                    )
-                    ch_num = float(job["chapter_num"])
-                    ch_label = f"Ch {int(ch_num)}" if ch_num == int(ch_num) else f"Ch {ch_num}"
-                    with get_db() as db:
-                        # get_db() uses sqlite3.Row; Row has no .get() — use indexing.
-                        s_row = db.execute("SELECT title FROM series WHERE id=?",
-                                           (job["series_id"],)).fetchone()
-                        s_title = s_row["title"] if s_row else ""
-                        _m.add_history(db, 'imported', job["series_id"], s_title, ch_label,
-                                       source_title=os.path.basename(import_path) if import_path else '',
-                                       client='suwayomi', protocol='ddl',
-                                       size_bytes=file_bytes or 0)
-                else:
-                    # ── Volume-level job ──────────────────────────────────────
-                    import_path, file_bytes = await _import_suwayomi_volume(
-                        c, job["series_id"], job["volume_num"],
-                        swy_title=swy_title,
-                    )
-                    if not import_path:
-                        err_msg = "Import failed — CBZ files not found in library path"
-                        with get_db() as db:
-                            db.execute(
-                                "UPDATE suwayomi_downloads SET status='error', error=? WHERE id=?",
-                                (err_msg, job["id"]),
-                            )
-                        log.error("DDL volume import failed: series=%d vol=%s",
-                                  job["series_id"], job["volume_num"])
-                        continue
-                    with get_db() as db:
-                        db.execute(
-                            "UPDATE suwayomi_downloads SET status='completed' WHERE id=?",
-                            (job["id"],),
-                        )
-                        db.execute(
-                            "UPDATE volumes SET status='downloaded',"
-                            " imported_at=CURRENT_TIMESTAMP,"
-                            " client='suwayomi', import_path=?,"
-                            " quality=COALESCE(quality,?),"
-                            " size_bytes=COALESCE(NULLIF(size_bytes,0),?),"
-                            " indexer=NULL, protocol=NULL, torrent_name=NULL,"
-                            " download_id=NULL, release_group=NULL"
-                            " WHERE series_id=? AND volume_num=?"
-                            " AND status IN ('grabbed','wanted','downloaded')",
-                            (import_path, _m.quality_from_filename(import_path),
-                             file_bytes or None,
-                             job["series_id"], job["volume_num"]),
-                        )
-                    _m.log_event(
-                        "download_complete",
-                        f"DDL imported: series {job['series_id']} vol {job['volume_num']}"
-                        + (f" → {os.path.basename(import_path)}" if import_path else ""),
-                        job["series_id"],
-                    )
-                    vol_label = _m.build_volume_label(job["volume_num"], None, None)
-                    with get_db() as db:
-                        # get_db() uses sqlite3.Row; Row has no .get() — use indexing.
-                        s_row = db.execute("SELECT title FROM series WHERE id=?",
-                                           (job["series_id"],)).fetchone()
-                        s_title = s_row["title"] if s_row else ""
-                        _m.add_history(db, 'imported', job["series_id"], s_title, vol_label,
-                                       source_title=os.path.basename(import_path) if import_path else '',
-                                       client='suwayomi', protocol='ddl',
-                                       size_bytes=file_bytes or 0)
-
-        except Exception as e:
-            log.error("check_suwayomi_jobs job=%d: %s", job["id"], e)
-            # Mark the job as errored so it doesn't loop forever on every poll.
+        if _last_exc is not None:
+            log.error("check_suwayomi_jobs job=%d: all retries exhausted: %s",
+                      job["id"], _last_exc)
             try:
                 with get_db() as db:
                     db.execute(
                         "UPDATE suwayomi_downloads SET status='error', error=? WHERE id=?",
-                        (f"{type(e).__name__}: {e}"[:500], job["id"]),
+                        (f"{type(_last_exc).__name__}: {_last_exc}"[:500], job["id"]),
                     )
             except Exception:
-                pass  # don't let error-path DB issues kill the loop
+                pass
+    return
+
+
+async def _process_suwayomi_job(c: dict, job) -> None:
+    """Per-job body extracted from check_suwayomi_jobs so the retry loop
+    can call it. Raises on failure; caller decides whether to retry or
+    mark the job errored."""
+    import main as _m
+
+    chapter_ids = json.loads(job["chapter_ids"])
+
+    # Fetch manga title + chapters for the manga
+    data  = await _gql(c, """
+        query($mid: Int!) {
+            manga(id: $mid) {
+                title
+                chapters { nodes { id isDownloaded } }
+            }
+        }
+    """, {"mid": job["suwayomi_manga_id"]})
+    swy_title = (data.get("manga") or {}).get("title") or ""
+
+    ch_map: dict[int, bool] = {
+        int(ch["id"]): bool(ch["isDownloaded"])
+        for ch in (data.get("manga") or {}).get("chapters", {}).get("nodes") or []
+    }
+    done = sum(1 for cid in chapter_ids if ch_map.get(cid, False))
+
+    with get_db() as db:
+        db.execute(
+            "UPDATE suwayomi_downloads SET progress=? WHERE id=?",
+            (done, job["id"]),
+        )
+
+    if done < len(chapter_ids):
+        return  # still downloading — recheck next cycle
+
+    if job["chapter_num"] is not None:
+        # ── Chapter-level job ─────────────────────────────────────
+        import_path, file_bytes = await _import_suwayomi_chapter(
+            c, job["series_id"], float(job["chapter_num"]),
+            swy_title=swy_title,
+        )
+        if not import_path:
+            err_msg = "Import failed — chapter CBZ not found in library path"
+            with get_db() as db:
+                db.execute(
+                    "UPDATE suwayomi_downloads SET status='error', error=? WHERE id=?",
+                    (err_msg, job["id"]),
+                )
+            log.error("DDL chapter import failed: series=%d ch=%s",
+                      job["series_id"], job["chapter_num"])
+            return
+        with get_db() as db:
+            db.execute(
+                "UPDATE suwayomi_downloads SET status='completed' WHERE id=?",
+                (job["id"],),
+            )
+            db.execute(
+                "UPDATE chapters SET status='downloaded',"
+                " imported_at=CURRENT_TIMESTAMP, client='suwayomi',"
+                " import_path=?, quality=COALESCE(quality,?),"
+                " size_bytes=COALESCE(NULLIF(size_bytes,0),?),"
+                " indexer=NULL, protocol=NULL, torrent_name=NULL,"
+                " torrent_url=NULL, download_id=NULL, release_group=NULL"
+                " WHERE series_id=? AND chapter_num=?"
+                " AND status IN ('grabbed','wanted','downloaded')",
+                (import_path, _m.quality_from_filename(import_path),
+                 file_bytes or None,
+                 job["series_id"], job["chapter_num"]),
+            )
+        _m.log_event(
+            "download_complete",
+            f"DDL imported: series {job['series_id']} ch {job['chapter_num']}"
+            + (f" → {os.path.basename(import_path)}" if import_path else ""),
+            job["series_id"],
+        )
+        ch_num = float(job["chapter_num"])
+        ch_label = f"Ch {int(ch_num)}" if ch_num == int(ch_num) else f"Ch {ch_num}"
+        with get_db() as db:
+            s_row = db.execute("SELECT title FROM series WHERE id=?",
+                               (job["series_id"],)).fetchone()
+            s_title = s_row["title"] if s_row else ""
+            _m.add_history(db, 'imported', job["series_id"], s_title, ch_label,
+                           source_title=os.path.basename(import_path) if import_path else '',
+                           client='suwayomi', protocol='ddl',
+                           size_bytes=file_bytes or 0)
+    else:
+        # ── Volume-level job ──────────────────────────────────────
+        import_path, file_bytes = await _import_suwayomi_volume(
+            c, job["series_id"], job["volume_num"],
+            swy_title=swy_title,
+        )
+        if not import_path:
+            err_msg = "Import failed — CBZ files not found in library path"
+            with get_db() as db:
+                db.execute(
+                    "UPDATE suwayomi_downloads SET status='error', error=? WHERE id=?",
+                    (err_msg, job["id"]),
+                )
+            log.error("DDL volume import failed: series=%d vol=%s",
+                      job["series_id"], job["volume_num"])
+            return
+        with get_db() as db:
+            db.execute(
+                "UPDATE suwayomi_downloads SET status='completed' WHERE id=?",
+                (job["id"],),
+            )
+            db.execute(
+                "UPDATE volumes SET status='downloaded',"
+                " imported_at=CURRENT_TIMESTAMP,"
+                " client='suwayomi', import_path=?,"
+                " quality=COALESCE(quality,?),"
+                " size_bytes=COALESCE(NULLIF(size_bytes,0),?),"
+                " indexer=NULL, protocol=NULL, torrent_name=NULL,"
+                " download_id=NULL, release_group=NULL"
+                " WHERE series_id=? AND volume_num=?"
+                " AND status IN ('grabbed','wanted','downloaded')",
+                (import_path, _m.quality_from_filename(import_path),
+                 file_bytes or None,
+                 job["series_id"], job["volume_num"]),
+            )
+        _m.log_event(
+            "download_complete",
+            f"DDL imported: series {job['series_id']} vol {job['volume_num']}"
+            + (f" → {os.path.basename(import_path)}" if import_path else ""),
+            job["series_id"],
+        )
+        vol_label = _m.build_volume_label(job["volume_num"], None, None)
+        with get_db() as db:
+            s_row = db.execute("SELECT title FROM series WHERE id=?",
+                               (job["series_id"],)).fetchone()
+            s_title = s_row["title"] if s_row else ""
+            _m.add_history(db, 'imported', job["series_id"], s_title, vol_label,
+                           source_title=os.path.basename(import_path) if import_path else '',
+                           client='suwayomi', protocol='ddl',
+                           size_bytes=file_bytes or 0)
 
 
 # ── Monitoring loop ───────────────────────────────────────────────────────────
@@ -1082,7 +1107,6 @@ async def suwayomi_monitor_loop():
       2. For all monitored series: grabs wanted volumes when their chapters are available.
       3. For all monitored series: grabs wanted uncollected chapters when available.
     """
-    import asyncio as _aio
     import main as _m
 
     await _aio.sleep(180)   # startup delay — let other loops and DB init settle
