@@ -8637,49 +8637,10 @@ def format_client(c: str) -> str:
     return {'qbittorrent': 'qBittorrent', 'sabnzbd': 'SABnzbd', 'suwayomi': 'Suwayomi'}.get(c, c)
 
 # ── Cover image helpers ───────────────────────────────────────────────────────
-os.makedirs('/config/covers', exist_ok=True)
-
-async def download_cover(series_id: int, cover_url: str):
-    """Download cover from URL and save to /config/covers/{series_id}.jpg"""
-    if not cover_url:
-        return
-    dest = f"/config/covers/{series_id}.jpg"
-    if os.path.exists(dest):
-        return  # already have a cover
-    from security import validate_outbound_url, UnsafeURLError
-    try:
-        validate_outbound_url(cover_url)
-    except UnsafeURLError as e:
-        print(f"[Cover] URL rejected for series {series_id}: {e}")
-        return
-    # follow_redirects=False: a public hostname could 30x to a private IP
-    # and bypass the validation above. AniList/MangaDex serve covers from
-    # direct CDN URLs, so disabling redirects has no impact in practice.
-    try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
-            r = await client.get(cover_url)
-            if r.status_code == 200:
-                with open(dest, 'wb') as f:
-                    f.write(r.content)
-    except Exception as e:
-        print(f"[Cover] download error for series {series_id}: {e}")
-
-def extract_cbz_cover(series_id: int, cbz_path: str):
-    """Extract first image from CBZ and save as cover if none exists."""
-    dest = f"/config/covers/{series_id}.jpg"
-    if os.path.exists(dest):
-        return
-    try:
-        with zipfile.ZipFile(cbz_path, 'r') as z:
-            images = sorted([f for f in z.namelist()
-                           if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))
-                           and not f.startswith('__MACOSX')])
-            if images:
-                with z.open(images[0]) as img_file:
-                    with open(dest, 'wb') as out:
-                        out.write(img_file.read())
-    except Exception as e:
-        print(f"[Cover] CBZ extract error: {e}")
+# Cover helpers live in cover_images.py. Re-exported here so existing
+# call sites (`main.download_cover`, `_m.download_cover` from routers)
+# keep working unchanged during the incremental main.py split.
+from cover_images import download_cover, extract_cbz_cover  # noqa: F401
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app       = FastAPI(lifespan=lifespan)
