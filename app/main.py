@@ -1024,50 +1024,14 @@ def rescan_series_folder(db, series_id: int) -> dict:
     return {'found': len(on_disk), 'recovered': recovered, 'missing': missing, 'lost': lost, 'created': created}
 
 
-async def notify_discord(message: str, embed: dict | None = None,
-                         event: str = 'on_grab'):
-    """Send notifications via all enabled notification connections."""
-    from routers.notification_connections import fire_notifications
-    await fire_notifications(event, message, embed=embed)
+# ── Notification dispatch + embeds moved to notifications.py ────────────────
+# notify_discord (fan-out to all enabled connections), make_grab_embed,
+# make_complete_embed, trigger_komga_scan. Re-exported so grab / import
+# pipeline / rescan call sites keep working unchanged.
+from notifications import (  # noqa: F401
+    notify_discord, make_grab_embed, make_complete_embed, trigger_komga_scan,
+)
 
-def make_grab_embed(series_title: str, vol_label: str, indexer: str,
-                    protocol: str, client_name: str, cover_url: str = '') -> dict:
-    return {
-        'title': f'⬇ Grabbed — {series_title}',
-        'description': f'**{vol_label}**  ·  {indexer} [{protocol}] → {client_name}',
-        'color': 0xffd060,
-        'thumbnail': {'url': cover_url} if cover_url else {},
-    }
-
-def make_complete_embed(series_title: str, vol_label: str, cover_url: str = '') -> dict:
-    return {
-        'title': f'✅ Downloaded — {series_title}',
-        'description': f'**{vol_label}** download complete',
-        'color': 0x5dde94,
-        'thumbnail': {'url': cover_url} if cover_url else {},
-    }
-
-async def trigger_komga_scan():
-    """Optionally trigger a Komga library scan after downloads complete."""
-    if get_cfg('komga_scan_enabled', 'false').lower() != 'true':
-        return
-    url = get_cfg('komga_url')
-    lib = get_cfg('komga_library_id')
-    if not url or not lib:
-        return
-    user = get_cfg('komga_user')
-    pw   = get_cfg('komga_pass')
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.post(
-                f"{url}/api/v1/libraries/{lib}/scan",
-                auth=(user, pw) if user else None
-            )
-        log_event('komga_scan', f"Triggered Komga library scan → HTTP {r.status_code}")
-    except Exception as e:
-        log_event('error', f"Komga scan failed: {e}")
-
-# Edition types where AniList's total_volumes reflects the *standard* edition count,
 # not the special edition count. Stub auto-creation is suppressed for these; stubs
 # are instead created by rescan once real files are present.
 _NON_STANDARD_STUB_EDITIONS = {'omnibus', 'deluxe', 'special', 'collector', 'remaster'}
