@@ -210,8 +210,9 @@ def test_rss_loop_survives_poll_exception_and_cancels_cleanly(fresh_db_with_seri
         await real_sleep(0)
 
     async def _runner():
-        with patch.object(main, "poll_rss", new=_flaky_poll), \
-             patch.object(main.asyncio, "sleep", new=_instant):
+        import tasks
+        with patch.object(tasks, "poll_rss", new=_flaky_poll), \
+             patch.object(tasks.asyncio, "sleep", new=_instant):
             task = asyncio.create_task(main.rss_loop())
             # Bounded busy-wait against the real clock.
             for _ in range(50):

@@ -32,22 +32,22 @@ def test_parse_retry_after_seconds_none_on_garbage():
 
 
 def test_set_backoff_extends_deadline_forward_only():
-    import main
+    import tasks
     # Reset
-    main._MDX_BACKOFF_UNTIL = 0.0
-    main._mdx_set_backoff(30, "test")
-    v1 = main._MDX_BACKOFF_UNTIL
+    tasks._MDX_BACKOFF_UNTIL = 0.0
+    tasks._mdx_set_backoff(30, "test")
+    v1 = tasks._MDX_BACKOFF_UNTIL
     # A shorter backoff must NOT reduce the existing deadline
-    main._mdx_set_backoff(5, "test")
-    assert main._MDX_BACKOFF_UNTIL == v1
+    tasks._mdx_set_backoff(5, "test")
+    assert tasks._MDX_BACKOFF_UNTIL == v1
     # A longer one extends
-    main._mdx_set_backoff(60, "test")
-    assert main._MDX_BACKOFF_UNTIL > v1
+    tasks._mdx_set_backoff(60, "test")
+    assert tasks._MDX_BACKOFF_UNTIL > v1
 
 
 def test_maybe_backoff_from_exception_honours_429():
-    import main
-    main._MDX_BACKOFF_UNTIL = 0.0
+    import tasks
+    tasks._MDX_BACKOFF_UNTIL = 0.0
 
     class _Resp:
         status_code = 429
@@ -58,14 +58,14 @@ def test_maybe_backoff_from_exception_honours_429():
             super().__init__("mock")
             self.response = _Resp()
 
-    main._maybe_backoff_from_exception(_Exc())
-    assert main._mdx_backoff_active() is True
-    assert main._MDX_BACKOFF_UNTIL - time.time() >= 40
+    tasks._maybe_backoff_from_exception(_Exc())
+    assert tasks._mdx_backoff_active() is True
+    assert tasks._MDX_BACKOFF_UNTIL - time.time() >= 40
 
 
 def test_maybe_backoff_from_exception_ignores_other_statuses():
-    import main
-    main._MDX_BACKOFF_UNTIL = 0.0
+    import tasks
+    tasks._MDX_BACKOFF_UNTIL = 0.0
 
     class _Resp:
         status_code = 500
@@ -76,13 +76,13 @@ def test_maybe_backoff_from_exception_ignores_other_statuses():
             super().__init__("mock")
             self.response = _Resp()
 
-    main._maybe_backoff_from_exception(_Exc())
+    tasks._maybe_backoff_from_exception(_Exc())
     # Non-429 errors shouldn't set global backoff
-    assert main._mdx_backoff_active() is False
+    assert tasks._mdx_backoff_active() is False
 
 
 def test_maybe_backoff_from_exception_handles_missing_response_cleanly():
-    import main
-    main._MDX_BACKOFF_UNTIL = 0.0
-    main._maybe_backoff_from_exception(RuntimeError("no response attr"))
-    assert main._mdx_backoff_active() is False
+    import tasks
+    tasks._MDX_BACKOFF_UNTIL = 0.0
+    tasks._maybe_backoff_from_exception(RuntimeError("no response attr"))
+    assert tasks._mdx_backoff_active() is False
