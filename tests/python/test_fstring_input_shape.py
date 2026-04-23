@@ -267,7 +267,7 @@ def test_add_col_calls_validators_in_source():
     """Guard: make sure a future refactor doesn't remove the validator
     calls from add_col's definition."""
     import pathlib
-    text = (pathlib.Path(__file__).resolve().parents[2] / "app" / "main.py").read_text()
+    text = (pathlib.Path(__file__).resolve().parents[2] / "app" / "schema.py").read_text()
     # Find the add_col definition
     idx = text.find("def add_col(table, col, typedef):")
     assert idx > 0, "add_col definition not found"
