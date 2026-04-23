@@ -118,7 +118,8 @@ def test_poll_rss_one_matching_item_grabs_once(fresh_db_with_series):
             c.execute("INSERT OR IGNORE INTO seen(torrent_url) VALUES(?)", (it["url"],))
         return True
 
-    with _patch_fetch([item]), patch.object(main, "grab_item", new=_stub_grab):
+    import grab
+    with _patch_fetch([item]), patch.object(grab, "grab_item", new=_stub_grab):
         asyncio.run(main.poll_rss())
 
     assert len(grab_calls) == 1, f"expected 1 grab, got {grab_calls}"
@@ -170,7 +171,8 @@ def test_poll_rss_two_ticks_no_double_grab(fresh_db_with_series):
             c.execute("INSERT OR IGNORE INTO seen(torrent_url) VALUES(?)", (it["url"],))
         return True
 
-    with _patch_fetch([item]), patch.object(main, "grab_item", new=_stub_grab):
+    import grab
+    with _patch_fetch([item]), patch.object(grab, "grab_item", new=_stub_grab):
         asyncio.run(main.poll_rss())
         asyncio.run(main.poll_rss())
 

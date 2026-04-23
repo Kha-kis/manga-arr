@@ -73,8 +73,9 @@ def test_grab_url_timeout_returns_false_and_releases_url(env):
         original = asyncio.wait_for
         async def _short_wait_for(coro, timeout=None):
             return await original(coro, timeout=0.1)
-        with patch.object(main, 'grab_url', _hanging_grab), \
-             patch.object(main.asyncio, 'wait_for', _short_wait_for):
+        import grab
+        with patch.object(grab, 'grab_url', _hanging_grab), \
+             patch.object(grab.asyncio, 'wait_for', _short_wait_for):
             return await main.grab_item(item, series_id=9)
 
     result = asyncio.run(_run())
@@ -106,7 +107,8 @@ def test_successful_grab_still_works(env):
     }
 
     async def _run():
-        with patch.object(main, 'grab_url', _ok_grab):
+        import grab
+        with patch.object(grab, 'grab_url', _ok_grab):
             return await main.grab_item(item, series_id=9)
 
     result = asyncio.run(_run())
