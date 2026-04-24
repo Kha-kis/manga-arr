@@ -23,6 +23,7 @@ from __future__ import annotations
 import httpx
 
 from shared import get_cfg
+from events import log_event
 
 
 async def notify_discord(message: str, embed: dict | None = None,
@@ -61,7 +62,6 @@ async def trigger_komga_scan():
         return
     user = get_cfg('komga_user')
     pw   = get_cfg('komga_pass')
-    from main import log_event  # noqa: WPS433 (lazy to avoid cycle)
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.post(

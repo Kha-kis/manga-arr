@@ -40,6 +40,7 @@ import httpx
 
 from parsing import normalize
 from shared import get_db
+from events import log_event
 
 
 # ── MangaUpdates slug / status helpers ───────────────────────────────────────
@@ -83,9 +84,8 @@ def _norm_status(s: str) -> str:
 
 
 def _log_event(event_type: str, message: str, series_id: int | None = None) -> None:
-    """Lazy wrapper around main.log_event to avoid import cycle."""
+    """Local wrapper kept for call-site stability; log_event swallows its own errors."""
     try:
-        from main import log_event  # noqa: WPS433 (intentional lazy import)
         log_event(event_type, message, series_id)
     except Exception:
         pass

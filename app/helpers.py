@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 
 from shared import get_cfg
+from events import log_event
 
 
 def get_root_folders(db) -> list:
@@ -86,7 +87,6 @@ def _resolve_series_dest_root(db, series_rf_id: int | None, rf_row) -> str:
         fb_row = db.execute(
             "SELECT path FROM root_folders WHERE id=?", (fallback,)
         ).fetchone()
-        from main import log_event  # noqa: WPS433 (lazy to avoid cycle)
         log_event(
             'warning',
             f"series root_folder_id={series_rf_id!r} did not resolve; "

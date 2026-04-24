@@ -43,6 +43,7 @@ import json
 from typing import Any
 
 from shared import get_db
+from events import add_history
 
 
 def _get_chapter_vol_map(db, series_id: int) -> dict[str, Any]:
@@ -302,7 +303,6 @@ def reconcile_series_chapter_map(series_id: int, dry_run: bool = True) -> dict:
         # rollback takes the whole batch down together. Each safe row
         # gets an independent history entry so an operator can audit
         # exactly what moved.
-        from main import add_history  # local import avoids circular
 
         for r in safe_rows:
             db.execute(

@@ -65,11 +65,11 @@ from grab import grab_existing, poll_rss
 from metadata import anilist_search
 from metadata_enrichment import _NON_STANDARD_STUB_EDITIONS, refresh_mangadex_map
 from shared import get_cfg, get_db
+from events import log_event
 from volumes import create_volume_stubs
 
 
 async def rss_loop():
-    from main import log_event  # noqa: WPS433 (lazy to avoid cycle)
     from routers.system import update_task_state
     await asyncio.sleep(5)  # brief startup delay to let lifespan complete
     while True:
@@ -86,7 +86,7 @@ async def rss_loop():
 
 async def status_loop():
     """Check download completion every 5 minutes."""
-    from main import check_download_status, log_event  # noqa: WPS433 (lazy to avoid cycle)
+    from main import check_download_status  # noqa: WPS433 (lazy to avoid cycle)
     from routers.system import update_task_state
     await asyncio.sleep(60)  # initial delay
     while True:
@@ -105,7 +105,6 @@ _THROTTLED_REFRESH_DAYS = 7   # how many days between refreshes for 'throttled' 
 
 async def refresh_ongoing_loop():
     """Daily: check AniList for new volumes on RELEASING series, respecting per-series update_strategy."""
-    from main import log_event  # noqa: WPS433 (lazy to avoid cycle)
     await asyncio.sleep(300)  # initial delay
     while True:
         try:
@@ -313,7 +312,6 @@ def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
 
     Returns a dict of counts for visibility in tests and logs.
     """
-    from main import log_event  # noqa: WPS433 (lazy to avoid cycle)
     # One transaction per phase — not one big transaction for all three.
     # Each phase might process hundreds of rows; keeping each phase its
     # own transaction lets other writers slot in between. The stats dict
@@ -431,7 +429,6 @@ async def _stuck_state_cleanup_loop():
 
 async def backlog_search_loop():
     """Daily: actively search for all wanted volumes that RSS may have missed."""
-    from main import log_event  # noqa: WPS433 (lazy to avoid cycle)
     await asyncio.sleep(600)   # initial delay — let startup settle
     while True:
         try:
@@ -472,7 +469,6 @@ async def backlog_search_loop():
 
 async def backlog_search():
     """One-shot backlog search — search all wanted volumes once. Used by task scheduler 'Run Now'."""
-    from main import log_event  # noqa: WPS433 (lazy to avoid cycle)
     with get_db() as db:
         wanted_series = db.execute(
             "SELECT DISTINCT s.id, s.title, s.search_pattern FROM series s"
@@ -494,7 +490,6 @@ async def backlog_search():
 
 async def import_list_sync():
     """One-shot import list sync — sync all enabled import lists once. Used by task scheduler 'Run Now'."""
-    from main import log_event  # noqa: WPS433 (lazy to avoid cycle)
     try:
         from routers.import_lists import _sync_all_lists as _do_sync
         await _do_sync()
@@ -506,7 +501,6 @@ async def import_list_sync():
 
 async def rescan_loop():
     """Periodic library rescan — walks all series folders and reconciles on-disk state."""
-    from main import log_event  # noqa: WPS433 (lazy to avoid cycle)
     from routers.series_ import _rescan_all_impl  # noqa: WPS433 (lazy to avoid cycle)
     interval_h = int(get_cfg('rescan_interval_hours', '12'))
     # Delay first run so startup tasks finish before hammering disk
@@ -521,7 +515,6 @@ async def rescan_loop():
 
 async def _import_list_loop():
     """Periodic import list sync — runs every 12 hours."""
-    from main import log_event  # noqa: WPS433 (lazy to avoid cycle)
     await asyncio.sleep(300)  # 5 min delay after startup
     while True:
         try:
@@ -539,7 +532,7 @@ async def _import_list_loop():
 
 async def _backup_loop():
     """Auto-backup — interval and retention controlled by settings."""
-    from main import DB_PATH, log_event  # noqa: WPS433 (lazy to avoid cycle)
+    from main import DB_PATH  # noqa: WPS433 (lazy to avoid cycle)
     from routers.system import BACKUP_DIR, update_task_state
     await asyncio.sleep(3600)  # 1h delay after startup
     while True:
