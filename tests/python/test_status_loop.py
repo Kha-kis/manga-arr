@@ -189,8 +189,9 @@ def test_status_loop_survives_check_exception_and_cancels_cleanly(fresh_db):
         await real_sleep(0)
 
     async def _runner():
-        with patch.object(main, "check_download_status", new=_flaky_check), \
-             patch.object(main.asyncio, "sleep", new=_instant):
+        import tasks
+        with patch.object(tasks, "check_download_status", new=_flaky_check), \
+             patch.object(tasks.asyncio, "sleep", new=_instant):
             task = asyncio.create_task(main.status_loop())
             for _ in range(50):
                 await real_sleep(0)

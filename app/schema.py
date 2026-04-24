@@ -11,10 +11,6 @@ creates, alters, or reshapes the SQLite schema at startup:
                                    pattern, gated by PRAGMA user_version
   - _SCHEMA_VERSION_FK_CONSTRAINTS — current migration version
 
-`log_event` is imported lazily inside the migration helpers to avoid
-a circular import (main imports schema at module load; schema only
-needs log_event at migration time, which runs during lifespan).
-
 Pure move — no behaviour changes. Callers in main.py still see
 `init_db()`, `_bootstrap_root_folders()`, and `_migrate_schema_constraints()`
 via a re-export.
@@ -29,15 +25,6 @@ from shared import (
     validate_sql_identifier,
     validate_sql_typedef,
 )
-
-
-def _log_event(event_type: str, message: str, series_id: int | None = None,
-               *, db=None) -> None:
-    """Local wrapper kept for call-site stability; log_event swallows its own errors."""
-    try:
-        log_event(event_type, message, series_id, db=db)
-    except Exception:
-        pass
 
 
 def init_db():
@@ -831,7 +818,7 @@ def _bootstrap_root_folders() -> None:
                     " VALUES(?, 'Manga', 1)",
                     (sp,)
                 )
-                _log_event(
+                log_event(
                     'schema_migration',
                     f"bootstrapped root folder from legacy save_path: {sp!r}",
                     db=db,
@@ -849,7 +836,7 @@ def _bootstrap_root_folders() -> None:
             )
             assigned = cur.rowcount
             if assigned > 0:
-                _log_event(
+                log_event(
                     'schema_migration',
                     f"assigned {assigned} orphan series to root_folder_id={default[0]}",
                     db=db,
@@ -957,7 +944,7 @@ def _migrate_schema_constraints() -> None:
                     f"   AND series_id NOT IN (SELECT id FROM series)"
                 ).fetchone()[0]
                 if orphan_count:
-                    _log_event(
+                    log_event(
                         'schema_migration',
                         f'{name}: {orphan_count} orphan row(s) with stale '
                         f'series_id will be dropped during FK migration',
@@ -1006,7 +993,7 @@ def _migrate_schema_constraints() -> None:
             db.execute("PRAGMA foreign_keys=ON")
 
         db.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_FK_CONSTRAINTS}")
-        _log_event(
+        log_event(
             'schema_migration',
             f'FK constraints added to events, blocklist, seen, '
             f'pending_releases (schema version → {_SCHEMA_VERSION_FK_CONSTRAINTS})',

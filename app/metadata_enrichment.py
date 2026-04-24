@@ -35,8 +35,8 @@ Edition volume-count enrichment:
   - fetch_mu_metadata            — MangaUpdates cross-reference for
                                    standard editions, safe-no-downgrade
 
-log_event and _series_library_dir are imported lazily to break import
-cycles (main / rescan both touch this module at import time).
+_series_library_dir is imported lazily inside refresh_mangadex_map to
+break the rescan ↔ metadata_enrichment cycle.
 """
 from __future__ import annotations
 
@@ -79,14 +79,6 @@ _EDITION_SEARCH_KEYWORDS: dict[str, list[str]] = {
     'special':   ['special edition'],
     'remaster':  ['remaster', 'remastered'],
 }
-
-
-def _log_event(event_type: str, message: str, series_id: int | None = None) -> None:
-    """Local wrapper kept for call-site stability; log_event swallows its own errors."""
-    try:
-        log_event(event_type, message, series_id)
-    except Exception:
-        pass
 
 
 # ── Chapter→volume mapping helpers ───────────────────────────────────────────
@@ -569,7 +561,7 @@ async def fetch_edition_volume_count(series_id: int, title: str, edition_type: s
                     (wiki_count, series_id)
                 )
                 create_volume_stubs(db, series_id, wiki_count)
-            _log_event('metadata',
+            log_event('metadata',
                        f"[Wikipedia] {edition_type} edition: {wiki_count} volumes "
                        f"(Google Books had insufficient data)",
                        series_id)
@@ -588,7 +580,7 @@ async def fetch_edition_volume_count(series_id: int, title: str, edition_type: s
             if al_count > 0:
                 create_volume_stubs(db, series_id, al_count)
         if al_count > 0:
-            _log_event('warning',
+            log_event('warning',
                        f"[GoogleBooks/Wikipedia] Could not find {edition_type} volume count. "
                        f"Using AniList standard count ({al_count}) as provisional fallback — "
                        f"may be inaccurate. Use 'Refresh Edition Metadata' for the correct count.",
@@ -604,7 +596,7 @@ async def fetch_edition_volume_count(series_id: int, title: str, edition_type: s
             (best_count, series_id)
         )
         create_volume_stubs(db, series_id, best_count)
-    _log_event('metadata',
+    log_event('metadata',
                f"[GoogleBooks] {edition_type} edition: {best_count} volumes "
                f"(keywords tried: {keywords[:len(found_volumes)]})",
                series_id)
@@ -676,7 +668,7 @@ async def fetch_mu_metadata(series_id: int, title: str) -> dict | None:
             )
             create_volume_stubs(db, series_id, mu_vol_count)
             updated_vols = True
-            _log_event('metadata',
+            log_event('metadata',
                        f"[MangaUpdates] updated vol count: {current_vols}→{mu_vol_count}",
                        series_id)
             print(f"[MangaUpdates] series {series_id} '{title}': "

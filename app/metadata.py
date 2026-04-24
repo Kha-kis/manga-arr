@@ -24,10 +24,6 @@ Deliberately NOT here:
   - `get_series_chapter_map`, `chapters_to_volume_set` (grab-logic
     helpers — move when grab.py is extracted)
 
-`log_event` is imported lazily from main to avoid an import cycle —
-main imports metadata at module load, but metadata only calls
-log_event at request time.
-
 Pure move — no behaviour changes.
 """
 from __future__ import annotations
@@ -81,14 +77,6 @@ def _norm_status(s: str) -> str:
     if 'cancelled' in sl or 'canceled' in sl:
         return 'CANCELLED'
     return s.upper()
-
-
-def _log_event(event_type: str, message: str, series_id: int | None = None) -> None:
-    """Local wrapper kept for call-site stability; log_event swallows its own errors."""
-    try:
-        log_event(event_type, message, series_id)
-    except Exception:
-        pass
 
 
 # ── AniList ──────────────────────────────────────────────────────────────────
@@ -348,7 +336,7 @@ async def fetch_mangadex_id(title: str, anilist_id: int | None,
             return best_id, best_links
     except Exception as e:
         print(f"[MangaDex] ID lookup error: {e}")
-        _log_event('metadata_fetch_failed',
+        log_event('metadata_fetch_failed',
                    f'mangadex id lookup failed: {type(e).__name__}: {str(e)[:120]}')
     return None, {}
 
@@ -381,7 +369,7 @@ async def fetch_chapter_volume_map(mangadex_id: str) -> dict:
         return mapping
     except Exception as e:
         print(f"[MangaDex] aggregate error: {e}")
-        _log_event('metadata_fetch_failed',
+        log_event('metadata_fetch_failed',
                    f'mangadex aggregate failed for {mangadex_id}: '
                    f'{type(e).__name__}: {str(e)[:120]}')
     return {}
@@ -457,7 +445,7 @@ async def fetch_kitsu_chapter_map(title: str, anilist_id: int | None,
         return mapping
     except Exception as e:
         print(f"[Kitsu] chapter map error: {e}")
-        _log_event('metadata_fetch_failed',
+        log_event('metadata_fetch_failed',
                    f'kitsu chapter-map failed: {type(e).__name__}: {str(e)[:120]}')
     return {}
 
