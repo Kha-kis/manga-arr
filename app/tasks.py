@@ -61,11 +61,12 @@ import os
 import zipfile
 from datetime import datetime, timezone
 
+from events import log_event
 from grab import grab_existing, poll_rss
+from import_pipeline import check_download_status
 from metadata import anilist_search
 from metadata_enrichment import _NON_STANDARD_STUB_EDITIONS, refresh_mangadex_map
 from shared import get_cfg, get_db
-from events import log_event
 from volumes import create_volume_stubs
 
 
@@ -86,7 +87,6 @@ async def rss_loop():
 
 async def status_loop():
     """Check download completion every 5 minutes."""
-    from main import check_download_status  # noqa: WPS433 (lazy to avoid cycle)
     from routers.system import update_task_state
     await asyncio.sleep(60)  # initial delay
     while True:

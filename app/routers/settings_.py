@@ -21,8 +21,7 @@ def _encrypt_settings_secrets_in_place(fields: dict) -> dict:
     encrypted. Plaintext fall-through when the cipher is unavailable;
     the next migration_encrypt_settings_secrets() boot picks them up.
     """
-    # Lazy import to avoid main↔settings_ circular import at module load
-    from main import SETTINGS_SECRET_KEYS
+    from config import SETTINGS_SECRET_KEYS
     out = dict(fields)
     for k in list(out):
         if k in SETTINGS_SECRET_KEYS:

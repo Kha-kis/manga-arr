@@ -32,12 +32,12 @@ from files import (
 from parsing import extract_volume_num, vol_num_to_display
 from shared import get_cfg
 from events import add_history
+from helpers import _resolve_series_dest_root
 from volumes import _cascade_chapters
 
 
 def _series_library_dir(db, series_id: int) -> str | None:
     """Return the library directory path for a series, or None if not configured."""
-    from main import _resolve_series_dest_root  # noqa: WPS433 (lazy to avoid cycle)
     s = db.execute(
         "SELECT title, root_folder_id, pub_year FROM series WHERE id=?", (series_id,)
     ).fetchone()

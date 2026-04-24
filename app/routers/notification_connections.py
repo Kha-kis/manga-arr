@@ -78,9 +78,8 @@ ADVANCED_ONLY_CONNECTION_TYPES = frozenset({"apprise", "pushbullet"})
 
 def _secret_keys_for(ctype: str) -> tuple[str, ...]:
     """Return the tuple of JSON keys whose values are encrypted at rest
-    for the given notification connection type. Lazy-imported from main
-    so the registry stays in one place."""
-    from main import NOTIFICATION_SECRET_KEYS_BY_TYPE
+    for the given notification connection type."""
+    from config import NOTIFICATION_SECRET_KEYS_BY_TYPE
     return NOTIFICATION_SECRET_KEYS_BY_TYPE.get(ctype or "", ())
 
 

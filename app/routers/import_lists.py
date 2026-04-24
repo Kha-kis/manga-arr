@@ -209,10 +209,10 @@ async def _sync_list(lst: dict):
             # Add to library — resolve a root folder or bail for the
             # entire list. If no folders exist we can't place any series
             # from this list, so stop here rather than creating orphans.
-            from main import resolve_root_folder_id as _rrf
+            from helpers import resolve_root_folder_id as _rrf
             rf_id = _rrf(db, preferred_id=lst.get('root_folder_id'))
             if rf_id is None:
-                from main import log_event as _log
+                from events import log_event as _log
                 _log('error',
                      f"import-list {lst.get('name', lst.get('id'))!r}: "
                      f"no root folders configured — add one in Settings "
@@ -235,10 +235,10 @@ async def _sync_list(lst: dict):
             new_id = cur.lastrowid
             if new_id and total_volumes and total_volumes > 0:
                 try:
-                    from main import create_volume_stubs
+                    from volumes import create_volume_stubs
                     create_volume_stubs(db, new_id, total_volumes)
                 except Exception as e:
-                    from main import log_event as _log
+                    from events import log_event as _log
                     _log('error',
                          f'create_volume_stubs failed for new import {title!r}: '
                          f'{type(e).__name__}: {str(e)[:120]}',
