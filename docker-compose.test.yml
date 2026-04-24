@@ -24,6 +24,12 @@ services:
   mangarr-test:
     build: .
     container_name: mangarr-test
+    # Run as the caller's UID/GID so .test-config (owned by the test
+    # runner on the host) is writable. CI runners (UID 1001) and local
+    # devs (UID 1000) both work without chown dances. Override via
+    # TEST_UID / TEST_GID env vars; defaults match the image's baked
+    # mangarr user when unset.
+    user: "${TEST_UID:-1000}:${TEST_GID:-1000}"
     environment:
       - TZ=America/Chicago
       # Deterministic Fernet key — published intentionally; only the test

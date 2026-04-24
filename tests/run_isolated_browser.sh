@@ -99,8 +99,18 @@ if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
 fi
 
 # Fresh /config dir every run so DB starts empty and seeds are deterministic.
-rm -rf "$TEST_CONFIG_DIR"
+# Prior runs may have left root-owned leftovers from when the container ran
+# as root; sudo-fallback to clear those before the user-mode rm -rf so the
+# reset is reliable across upgrade boundaries.
+if ! rm -rf "$TEST_CONFIG_DIR" 2>/dev/null; then
+  sudo rm -rf "$TEST_CONFIG_DIR"
+fi
 mkdir -p "$TEST_CONFIG_DIR/covers"
+
+# Run the test container as the caller's UID/GID so .test-config (owned by
+# us) is writable. Matches docker-compose.test.yml's `user:` directive.
+export TEST_UID="$(id -u)"
+export TEST_GID="$(id -g)"
 
 echo "[isolated-browser] starting test container on $BASE_URL"
 $COMPOSE up -d --build
