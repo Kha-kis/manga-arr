@@ -59,6 +59,7 @@ from metadata import (
 )
 from parsing import normalize
 from shared import get_cfg, get_db
+from events import log_event
 from volumes import create_volume_stubs, populate_chapters
 
 
@@ -81,9 +82,8 @@ _EDITION_SEARCH_KEYWORDS: dict[str, list[str]] = {
 
 
 def _log_event(event_type: str, message: str, series_id: int | None = None) -> None:
-    """Lazy wrapper around main.log_event to avoid import cycle."""
+    """Local wrapper kept for call-site stability; log_event swallows its own errors."""
     try:
-        from main import log_event  # noqa: WPS433 (intentional lazy import)
         log_event(event_type, message, series_id)
     except Exception:
         pass

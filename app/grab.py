@@ -57,9 +57,10 @@ and the download client:
                                   aliases, apply delay profiles,
                                   and grab on the fly.
 
-Cross-module deps that would form cycles (main.log_event,
-main.add_history, main.broadcast_queue_event) are imported lazily
-inside function bodies — same pattern as the prior extractions.
+log_event / add_history / broadcast_queue_event are imported from
+events.py (extracted alongside this module) so they resolve at
+module load time instead of via the prior lazy `from main import`
+pattern — catches typos at import and drops the per-call overhead.
 """
 from __future__ import annotations
 
@@ -92,6 +93,7 @@ from parsing import (
     normalize,
 )
 from evaluation import score_release
+from events import add_history, broadcast_queue_event, log_event
 from shared import get_cfg, get_db
 from volumes import _cascade_chapters
 
@@ -116,7 +118,6 @@ def _log_grab_rejection(series_id: int, title: str, reason: str) -> None:
     score-too-low, not-an-upgrade). Those would drown the debugging
     signal from the rare rejections operators actually care about.
     """
-    from main import log_event  # noqa: WPS433 (lazy to avoid cycle)
     try:
         log_event('rejected_release',
                   f'{reason}: {title[:120]}',
@@ -131,8 +132,6 @@ async def grab_item(item: dict, series_id: int, respect_monitoring: bool = True)
     respect_monitoring=False bypasses per-volume and series monitor_mode checks
     (used for manual interactive grabs).
     """
-    from main import add_history, log_event  # noqa: WPS433 (lazy to avoid cycle)
-    from main import broadcast_queue_event  # noqa: WPS433 (lazy to avoid cycle)
 
     title    = item['title']
     indexer  = item.get('indexer', 'Unknown')
@@ -655,7 +654,6 @@ async def _search_all(title: str) -> list[dict]:
 async def grab_existing(series_id: int, title: str, pattern: str) -> int:
     """Search all sources for all releases; grab unseen matches. Respects aliases.
     For FINISHED series with significant missing coverage, tries a complete pack search first."""
-    from main import log_event  # noqa: WPS433 (lazy to avoid cycle)
     try:
         return await _grab_existing_inner(series_id, title, pattern)
     except Exception as e:
@@ -665,7 +663,6 @@ async def grab_existing(series_id: int, title: str, pattern: str) -> int:
 
 
 async def _grab_existing_inner(series_id: int, title: str, pattern: str) -> int:
-    from main import log_event  # noqa: WPS433 (lazy to avoid cycle)
 
     # ── Complete-pack-first strategy for finished series ─────────────────────
     with get_db() as db:
@@ -769,7 +766,6 @@ async def search_complete_pack(series_id: int, title: str,
     Only grabs items identified as complete or near-complete packs.
     Returns number of items grabbed.
     """
-    from main import log_event  # noqa: WPS433 (lazy to avoid cycle)
 
     with get_db() as db:
         seen_urls    = {r['torrent_url'] for r in db.execute("SELECT torrent_url FROM seen").fetchall()}
@@ -893,7 +889,6 @@ async def search_complete_pack(series_id: int, title: str,
 
 async def poll_rss():
     """Poll all enabled DB indexers for new releases."""
-    from main import log_event  # noqa: WPS433 (lazy to avoid cycle)
     from routers.indexers import fetch_all_rss as _fetch_all_rss_db
     with get_db() as _rdb:
         items = await _fetch_all_rss_db(_rdb)

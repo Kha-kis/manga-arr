@@ -112,6 +112,7 @@ from parsing import (
     normalize,
 )
 from shared import get_cfg, get_db
+from events import add_history, broadcast_queue_event, log_event
 from volumes import _cascade_chapters, _check_volume_completion
 
 
@@ -124,7 +125,6 @@ def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
     needs_review=False means all files mapped cleanly → can auto-import.
     needs_review=True means at least one file is ambiguous → requires user review.
     """
-    from main import log_event  # noqa: WPS433 (lazy to avoid cycle)
     if not content_path:
         log_event('error', f"Import queue: no content_path for {torrent_name}", series_id, db=db)
         return None, False
@@ -417,7 +417,6 @@ async def check_download_status():
 
 async def _check_download_status_impl():
     """Inner body (wrapped for timing instrumentation — issue #31 follow-up A)."""
-    from main import add_history, log_event  # noqa: WPS433 (lazy to avoid cycle)
     from routers import suwayomi_ as _swy_router  # noqa: WPS433 (lazy to avoid cycle)
     # Clean up stale imported/failed entries older than 7 days
     with get_db() as _cdb:
@@ -848,7 +847,6 @@ async def _check_download_status_impl():
 
 def _mark_downloaded(db, series_id, volume_num, torrent_url) -> bool:
     """Mark volume(s) as downloaded. Returns True if any rows were updated."""
-    from main import log_event  # noqa: WPS433 (lazy to avoid cycle)
     if volume_num is not None:
         # Single volume stub
         cur = db.execute(
@@ -1142,7 +1140,6 @@ async def _execute_import(
     skip_ids:          set of file_ids to skip
     Returns True on full success.
     """
-    from main import add_history, broadcast_queue_event, log_event  # noqa: WPS433 (lazy to avoid cycle)
     if volume_overrides is None:
         volume_overrides = {}
     if chapter_overrides is None:
@@ -1939,7 +1936,6 @@ async def _process_auto_import(queue_id: int):
     forever and get retried on every startup. 'importing' is included in
     the WHERE so a row whose claim we won but which raised mid-import is
     still moved to the terminal 'failed' state."""
-    from main import log_event  # noqa: WPS433 (lazy to avoid cycle)
     try:
         await _guarded_execute_import(queue_id)
     except Exception as e:

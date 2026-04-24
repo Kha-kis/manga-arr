@@ -221,37 +221,17 @@ from schema import (  # noqa: F401
     _SCHEMA_VERSION_FK_CONSTRAINTS,
 )
 
-# ── Event logging ─────────────────────────────────────────────────────────────
-def log_event(event_type: str, message: str, series_id: int | None = None,
-              *, db=None):
-    """Insert a row into the events table.
-
-    If `db` is provided, the INSERT is executed on that existing connection
-    — use this when calling from inside an already-open write transaction
-    (e.g. `_execute_import`, `_queue_import`) to avoid opening a second
-    connection that would serialize behind the outer writer and burn the
-    15-second SQLITE_BUSY timeout.
-
-    If `db` is None, opens a fresh connection as before. Normal callers
-    (loops, HTTP handlers, one-shot background tasks) should not pass db.
-
-    Swallows exceptions either way — event logging is best-effort and must
-    not break the caller.
-    """
-    try:
-        if db is not None:
-            db.execute(
-                "INSERT INTO events(event_type, series_id, message) VALUES(?,?,?)",
-                (event_type, series_id, message),
-            )
-        else:
-            with get_db() as _db:
-                _db.execute(
-                    "INSERT INTO events(event_type, series_id, message) VALUES(?,?,?)",
-                    (event_type, series_id, message),
-                )
-    except Exception:
-        pass
+# ── Event logging + history + SSE broadcast moved to events.py ──────────────
+# log_event, add_history, broadcast_queue_event, and _sse_subscribers live in
+# events.py now. Re-exported here so existing call sites that resolve them
+# as `main.log_event` (routers, background loops, tests) keep working
+# unchanged. Extracted modules (grab, tasks, import_pipeline, etc.) now
+# import directly from events at module load time instead of using lazy
+# `from main import log_event` inside function bodies.
+from events import (  # noqa: F401
+    log_event, add_history,
+    _sse_subscribers, broadcast_queue_event,
+)
 
 # ── Volume / chapter stub helpers moved to volumes.py ───────────────────────
 # create_volume_stubs, populate_chapters, _check_volume_completion,
@@ -320,23 +300,6 @@ from files import (  # noqa: F401
     detect_file_type_magic,
     convert_cbr_to_cbz, _maybe_convert_to_cbz,
 )
-
-
-def add_history(db, event_type: str, series_id: int | None, series_title: str,
-                volume_label: str, source_title: str = '',
-                indexer: str = '', protocol: str = '', client: str = '',
-                download_id: str = '', size_bytes: int = 0,
-                release_group: str = '', data: dict | None = None,
-                torrent_url: str = ''):
-    """Insert a history record."""
-    db.execute(
-        "INSERT INTO history(event_type, series_id, series_title, volume_label,"
-        " source_title, indexer, protocol, client, download_id, size_bytes, release_group, data, torrent_url)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (event_type, series_id, series_title, volume_label, source_title,
-         indexer, protocol, client, download_id, size_bytes or 0, release_group,
-         json.dumps(data) if data else None, torrent_url or None)
-    )
 
 
 # ── ComicInfo.xml helpers moved to comicinfo.py ─────────────────────────────
@@ -703,22 +666,10 @@ app.include_router(_mdx_router.router,    tags=["MangaDex"])
 app.include_router(_swy_router.router,    tags=["Suwayomi"])
 
 # ── Server-Sent Events for real-time queue updates ────────────────────────────
-_sse_subscribers: list[asyncio.Queue] = []
-
-async def broadcast_queue_event(event: str, data: dict | None = None):
-    """Push a queue update event to all connected SSE clients."""
-    payload = json.dumps({'event': event, **(data or {})})
-    dead = []
-    for q in _sse_subscribers:
-        try:
-            q.put_nowait(payload)
-        except asyncio.QueueFull:
-            dead.append(q)
-    for q in dead:
-        try:
-            _sse_subscribers.remove(q)
-        except ValueError:
-            pass
+# _sse_subscribers + broadcast_queue_event moved to events.py (re-exported
+# near the top of this file). The route handler stays here because
+# @app.get needs `app`, but its body just touches _sse_subscribers, which
+# it imports via the re-export above.
 
 @app.get("/api/queue-events")
 async def queue_events(request: Request):

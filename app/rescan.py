@@ -31,6 +31,7 @@ from files import (
 )
 from parsing import extract_volume_num, vol_num_to_display
 from shared import get_cfg
+from events import add_history
 from volumes import _cascade_chapters
 
 
@@ -68,7 +69,6 @@ def rescan_series_folder(db, series_id: int) -> dict:
 
     Returns {'found': N, 'recovered': N, 'missing': N, 'lost': N, 'created': N}.
     """
-    from main import add_history  # noqa: WPS433 (lazy to avoid cycle)
 
     series_dir = _series_library_dir(db, series_id)
     _s_row = db.execute("SELECT title FROM series WHERE id=?", (series_id,)).fetchone()

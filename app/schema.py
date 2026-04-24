@@ -21,6 +21,7 @@ via a re-export.
 """
 from __future__ import annotations
 
+from events import log_event
 from parsing import extract_volume_num
 from shared import (
     get_db,
@@ -32,9 +33,8 @@ from shared import (
 
 def _log_event(event_type: str, message: str, series_id: int | None = None,
                *, db=None) -> None:
-    """Lazy wrapper around main.log_event to avoid import cycle."""
+    """Local wrapper kept for call-site stability; log_event swallows its own errors."""
     try:
-        from main import log_event  # noqa: WPS433 (intentional lazy import)
         log_event(event_type, message, series_id, db=db)
     except Exception:
         pass
