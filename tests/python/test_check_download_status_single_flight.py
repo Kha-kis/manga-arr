@@ -42,7 +42,8 @@ def fresh_db():
     main.load_config()
 
     # Reset the lock in case prior test left it in an odd state.
-    main._CHECK_DOWNLOAD_STATUS_LOCK = asyncio.Lock()
+    import import_pipeline
+    import_pipeline._CHECK_DOWNLOAD_STATUS_LOCK = asyncio.Lock()
 
     try:
         yield db.name
@@ -58,8 +59,8 @@ def fresh_db():
 def test_lock_exists_as_module_attribute():
     """Regression guard: the single-flight lock must be a module-level
     asyncio.Lock, not a local or per-call object."""
-    import main
-    assert isinstance(main._CHECK_DOWNLOAD_STATUS_LOCK, asyncio.Lock)
+    import import_pipeline
+    assert isinstance(import_pipeline._CHECK_DOWNLOAD_STATUS_LOCK, asyncio.Lock)
 
 
 def test_second_invocation_skips_while_first_is_running(fresh_db):
@@ -76,7 +77,8 @@ def test_second_invocation_skips_while_first_is_running(fresh_db):
         return None
 
     async def _run():
-        with patch.object(main, "_check_download_status_impl", new=_slow_impl):
+        import import_pipeline
+        with patch.object(import_pipeline, "_check_download_status_impl", new=_slow_impl):
             # Fire two invocations concurrently. The first acquires the
             # lock and starts the impl; the second hits the locked check
             # and returns early.
@@ -105,7 +107,8 @@ def test_sequential_invocations_still_run(fresh_db):
         return None
 
     async def _run():
-        with patch.object(main, "_check_download_status_impl", new=_fast_impl):
+        import import_pipeline
+        with patch.object(import_pipeline, "_check_download_status_impl", new=_fast_impl):
             await main.check_download_status()
             await main.check_download_status()
             await main.check_download_status()
@@ -130,7 +133,8 @@ def test_exception_in_impl_releases_the_lock(fresh_db):
         return None
 
     async def _run():
-        with patch.object(main, "_check_download_status_impl", new=_flaky_impl):
+        import import_pipeline
+        with patch.object(import_pipeline, "_check_download_status_impl", new=_flaky_impl):
             with pytest.raises(RuntimeError):
                 await main.check_download_status()
             # Lock must now be free. Next call should run the impl.
@@ -158,7 +162,8 @@ def test_create_task_amplification_is_bounded(fresh_db):
         return None
 
     async def _run():
-        with patch.object(main, "_check_download_status_impl", new=_very_slow_impl):
+        import import_pipeline
+        with patch.object(import_pipeline, "_check_download_status_impl", new=_very_slow_impl):
             # First caller starts the work.
             task1 = asyncio.create_task(main.check_download_status())
             await impl_calls["inside"].wait()
@@ -177,8 +182,8 @@ def test_create_task_amplification_is_bounded(fresh_db):
 def test_lock_is_a_single_module_level_object():
     """The lock must NOT be recreated on each call — otherwise every
     invocation gets its own lock and the single-flight guard is moot."""
-    import main
-    lock_id_first = id(main._CHECK_DOWNLOAD_STATUS_LOCK)
-    # Trigger the accessor path — importing main already ran module body.
-    lock_id_second = id(main._CHECK_DOWNLOAD_STATUS_LOCK)
+    import import_pipeline
+    lock_id_first = id(import_pipeline._CHECK_DOWNLOAD_STATUS_LOCK)
+    # Trigger the accessor path — importing import_pipeline already ran module body.
+    lock_id_second = id(import_pipeline._CHECK_DOWNLOAD_STATUS_LOCK)
     assert lock_id_first == lock_id_second
