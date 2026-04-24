@@ -2,6 +2,10 @@ services:
   mangarr:
     build: .
     container_name: mangarr
+    # Image default is uid/gid 1000 (matches the typical single-user
+    # Linux host). Uncomment and set to match your host user if /config
+    # is owned by a different uid. See docs/deployment.md for details.
+    # user: "${UID:-1000}:${GID:-1000}"
     env_file:
       - /opt/manga-arr/.env
     environment:

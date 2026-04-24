@@ -96,6 +96,41 @@ def test_deployment_doc_exists_and_covers_three_patterns():
         assert marker in doc, f"docs/deployment.md missing section marker: {marker!r}"
 
 
+def test_dockerfile_runs_as_non_root():
+    """Regression guard: the Dockerfile must switch to a non-root USER
+    before CMD. Running as root in a container turns container-escape
+    CVEs into host-root privilege (Trivy DS-0002). The deployment doc's
+    'Container user and file ownership' section assumes this."""
+    df = _read("Dockerfile")
+    # USER directive must be present, and must not point at root/uid 0.
+    assert re.search(r"^USER\s+(?!(root|0)\s*$)\S+", df, re.MULTILINE), \
+        "Dockerfile must switch to a non-root user before CMD"
+
+
+def test_deployment_doc_documents_uid_override():
+    """The deployment doc must explain how to pick a UID other than
+    1000. Otherwise users whose host uid differs hit opaque write
+    failures when they try to pull the hardened image."""
+    doc = _read("docs/deployment.md")
+    for marker in [
+        "UID",                               # the concept is introduced
+        'user: "${UID:-1000}:${GID:-1000}"', # the exact override line
+        "Container user",                    # the section exists
+    ]:
+        assert marker in doc, \
+            f"docs/deployment.md missing UID-override marker: {marker!r}"
+
+
+def test_compose_shows_user_override_pattern():
+    """docker-compose.yml should expose the `user:` override pattern
+    (commented) so self-hosters on UIDs other than 1000 don't have to
+    dig through docs to find it."""
+    compose = _read("docker-compose.yml")
+    assert "user:" in compose, \
+        "docker-compose.yml should include the `user:` override hint " \
+        "(even commented) so non-default UIDs are discoverable"
+
+
 def test_gitignore_excludes_env_but_not_example():
     """The .env file MUST be gitignored (it holds real secrets); the
     template MUST NOT be gitignored (it's the checked-in example)."""

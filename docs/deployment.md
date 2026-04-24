@@ -140,6 +140,10 @@ Before pointing anything at Mangarr beyond your local machine, verify:
       `docker-compose.yml` maps it to `~/.config/mangarr` on the host —
       check its permissions with `ls -ld ~/.config/mangarr` (should be
       `drwx------`, i.e. mode `0700`).
+- [ ] **`/config` is writable by the container user.** The image runs
+      as UID 1000 by default; host bind mounts must be writable by
+      that UID. See the "Container user and file ownership" section
+      below for the override pattern when your host user differs.
 - [ ] **The `.env` file is in `.gitignore`** and not committed. The
       repo's `.gitignore` already excludes it; `.env.example` is the
       checked-in template.
@@ -150,6 +154,58 @@ Before pointing anything at Mangarr beyond your local machine, verify:
       blocked because it means "the Mangarr container itself."
 - [ ] **A reverse proxy is fronting any internet-facing deployment.**
       See pattern 3 above.
+
+## Container user and file ownership
+
+The image runs as a non-root user: **`mangarr`, UID/GID 1000**. This is
+a plain user with no shell — the only thing it does is run uvicorn on
+port 8000 (>1024, so no capability is needed). Running as root in a
+container is a real risk: a container-escape CVE becomes instant root
+on the host's namespace.
+
+### Default behavior
+
+If the host user creating the bind-mount directories is UID 1000 (the
+default on most single-user Linux machines — `id -u` to check), you
+don't need to do anything. `/config` files will be created as UID 1000
+both inside the container and on the host.
+
+### When your host user is not UID 1000
+
+Override at runtime — `docker-compose.yml` already has the line ready
+to uncomment:
+
+```yaml
+services:
+  mangarr:
+    # Default is uid/gid 1000. Override if your host user differs:
+    # user: "${UID:-1000}:${GID:-1000}"
+```
+
+Or from the CLI:
+
+```bash
+docker run --user "$(id -u):$(id -g)" ... mangarr
+```
+
+Whatever UID you pick, **the host-side bind mounts must be writable by
+that UID**. Fix ownership if needed:
+
+```bash
+sudo chown -R "$(id -u):$(id -g)" ~/.config/mangarr /data/media/manga
+```
+
+### Migrating from a pre-hardening install
+
+If you upgraded from an image that ran as root, your `/config` files
+are owned by UID 0. A new image running as UID 1000 cannot write to
+them until you reassign ownership:
+
+```bash
+sudo chown -R 1000:1000 ~/.config/mangarr
+```
+
+(Or match whatever UID you set via the `user:` override.)
 
 ## Secret-key, backup, and recovery guidance
 
