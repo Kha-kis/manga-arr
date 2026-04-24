@@ -132,6 +132,7 @@ def _install_fake_execute_import(monkeypatch, probe):
         probe['started_ids']  list of queue_ids that actually ran
     """
     import main
+    import import_pipeline
 
     async def _fake_execute_import(queue_id, *a, **kw):
         probe["running"] += 1
@@ -149,7 +150,7 @@ def _install_fake_execute_import(monkeypatch, probe):
             )
         return True
 
-    monkeypatch.setattr(main, "_execute_import", _fake_execute_import)
+    monkeypatch.setattr(import_pipeline, "_execute_import", _fake_execute_import)
 
 
 def test_semaphore_bounds_concurrent_imports_to_two(fresh_db, monkeypatch):
@@ -158,7 +159,8 @@ def test_semaphore_bounds_concurrent_imports_to_two(fresh_db, monkeypatch):
     import main
 
     # Reset the semaphore so earlier tests don't leak state.
-    main._IMPORT_SEM = asyncio.Semaphore(2)
+    import import_pipeline
+    import_pipeline._IMPORT_SEM = asyncio.Semaphore(2)
 
     qids = [_insert_queue_row(fresh_db, download_id=f"dl-{i}") for i in range(10)]
     probe = {"running": 0, "peak": 0, "started_ids": []}
@@ -183,7 +185,8 @@ def test_two_guarded_workers_for_same_queue_id_only_one_runs(fresh_db, monkeypat
     """Fire two _guarded_execute_import coroutines against the same queue_id;
     only one should actually call _execute_import."""
     import main
-    main._IMPORT_SEM = asyncio.Semaphore(2)
+    import import_pipeline
+    import_pipeline._IMPORT_SEM = asyncio.Semaphore(2)
 
     qid = _insert_queue_row(fresh_db)
     probe = {"running": 0, "peak": 0, "started_ids": []}
@@ -212,7 +215,8 @@ def test_retry_during_import_does_not_start_duplicate_worker(fresh_db, monkeypat
     A row currently 'importing' is therefore NOT reset to 'pending', and the
     subsequent _guarded_execute_import call will lose its claim."""
     import main
-    main._IMPORT_SEM = asyncio.Semaphore(2)
+    import import_pipeline
+    import_pipeline._IMPORT_SEM = asyncio.Semaphore(2)
 
     qid = _insert_queue_row(fresh_db, status="pending")
     # Simulate an in-progress import by pre-claiming.
@@ -249,7 +253,8 @@ def test_stuck_retry_and_auto_import_cannot_both_claim(fresh_db, monkeypatch):
     auto-import) calling _guarded_execute_import on the same queue_id at
     roughly the same time. Only one should actually run."""
     import main
-    main._IMPORT_SEM = asyncio.Semaphore(2)
+    import import_pipeline
+    import_pipeline._IMPORT_SEM = asyncio.Semaphore(2)
 
     qid = _insert_queue_row(fresh_db, status="pending")
     probe = {"running": 0, "peak": 0, "started_ids": []}
@@ -279,7 +284,8 @@ def test_single_import_happy_path_still_works(fresh_db, monkeypatch):
     """With no contention, a single _guarded_execute_import call runs
     _execute_import exactly once and leaves the row in 'imported'."""
     import main
-    main._IMPORT_SEM = asyncio.Semaphore(2)
+    import import_pipeline
+    import_pipeline._IMPORT_SEM = asyncio.Semaphore(2)
 
     qid = _insert_queue_row(fresh_db)
     probe = {"running": 0, "peak": 0, "started_ids": []}

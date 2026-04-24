@@ -189,7 +189,7 @@ def test_execute_import_has_no_standalone_log_event_inside_transaction():
     calls that are missing `db=db`.
     """
     import pathlib
-    src = (pathlib.Path(__file__).resolve().parents[2] / "app" / "main.py").read_text()
+    src = (pathlib.Path(__file__).resolve().parents[2] / "app" / "import_pipeline.py").read_text()
 
     # Extract _execute_import body by line scan.
     lines = src.splitlines()
