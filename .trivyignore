@@ -1,0 +1,24 @@
+# Trivy CVE suppressions with rationale.
+#
+# Each entry must include a justification comment so any future scan
+# triage can audit why the CVE is suppressed and re-evaluate when the
+# rationale no longer holds. Format: a comment block, then one CVE id
+# per line.
+
+# ─── libarchive13t64: not reached by Mangarr's import pipeline ───────
+# Mangarr handles RAR archives (manga CBR files) via the Python
+# `rarfile` library. `rarfile` shells out to the `unrar` binary
+# (provided by the Debian `unrar-free` package) — a separate codebase
+# from libarchive. The vulnerable RAR5 / ISO9660 decompression code in
+# libarchive is not on Mangarr's call path.
+#
+# libarchive is still installed because `unrar-free` declares it as a
+# transitive dependency, but no Mangarr code (or the unrar binary
+# itself) invokes it. Re-evaluate if the import pipeline ever switches
+# to a Python binding that links libarchive directly (e.g.
+# python-libarchive-c).
+#
+# Re-check: each Mangarr release; remove a line if Debian ships a fix.
+CVE-2026-4111
+CVE-2026-4424
+CVE-2026-5121
