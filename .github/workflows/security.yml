@@ -31,6 +31,9 @@ on:
 permissions:
   contents: read
   security-events: write   # for SARIF upload to the Security tab
+  pull-requests: read       # gitleaks-action needs this to enumerate
+                            # PR commits — without it the API returns
+                            # 403 "Resource not accessible by integration"
 
 jobs:
   # ── Trivy filesystem scan ──────────────────────────────────────────
@@ -41,7 +44,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Trivy fs scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -76,7 +79,7 @@ jobs:
         run: docker build -t mangarr:${{ github.run_id }} .
 
       - name: Trivy image scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
           image-ref: mangarr:${{ github.run_id }}
