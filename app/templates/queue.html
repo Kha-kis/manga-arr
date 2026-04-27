@@ -19,7 +19,8 @@
             class="btn btn-secondary btn-sm"
             hx-post="/api/queue/refresh"
             hx-target="#queue-status-badge"
-            hx-swap="innerHTML">
+            hx-swap="innerHTML"
+            hx-disabled-elt="this">
       <i class="bi bi-arrow-clockwise me-1"></i>Refresh now
     </button>
   </div>

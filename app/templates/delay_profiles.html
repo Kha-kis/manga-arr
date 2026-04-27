@@ -28,12 +28,14 @@
       {% endfor %}
       <div class="ms-auto d-flex gap-2">
         <button class="btn btn-sm btn-outline-ember" data-bs-toggle="modal"
-                data-bs-target="#editModal{{ p.id }}"><i class="bi bi-pencil"></i></button>
+                data-bs-target="#editModal{{ p.id }}"
+                aria-label="Edit delay profile"><i class="bi bi-pencil"></i></button>
         {% if not p.is_default %}
         <form method="POST" action="/delay-profiles/{{ p.id }}/delete"
               data-confirm="Delete this delay profile?"
               data-confirm-heading="Delete profile" data-confirm-ok="Delete">
-          <button class="btn btn-sm btn-danger-soft"><i class="bi bi-trash"></i></button>
+          <button class="btn btn-sm btn-danger-soft"
+                  aria-label="Delete delay profile"><i class="bi bi-trash"></i></button>
         </form>
         {% endif %}
       </div>

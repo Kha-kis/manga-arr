@@ -1334,6 +1334,16 @@
       .sidebar-overlay { display: none !important; }
     }
 
+    /* ── Skip-link (accessibility) ────────────────────────────────── */
+    .skip-link {
+      position: absolute; left: -9999px; top: 0;
+      z-index: var(--z-toast);
+      background: var(--ember); color: #fff;
+      padding: 8px 16px; border-radius: 6px;
+      text-decoration: none; font-weight: 600;
+    }
+    .skip-link:focus { left: 8px; top: 8px; }
+
     /* ── HTMX loading indicators ──────────────────────────────────── */
     .htmx-indicator          { opacity: 0; transition: opacity 200ms ease; }
     .htmx-request            .htmx-indicator,
@@ -1682,6 +1692,7 @@
   {% block head %}{% endblock %}
 </head>
 <body>
+<a href="#main-content" class="skip-link">Skip to main content</a>
 <div class="app-shell">
 
   <!-- ── Sidebar overlay (mobile) ── -->
@@ -1805,9 +1816,9 @@
     </div>
 
     <!-- Page content -->
-    <div class="page-content">
+    <main class="page-content" id="main-content" tabindex="-1">
       {% block content %}{% endblock %}
-    </div>
+    </main>
 
   </div>
 

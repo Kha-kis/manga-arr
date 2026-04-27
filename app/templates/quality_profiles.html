@@ -29,11 +29,13 @@
           </button>
         </form>
         <button class="btn btn-sm btn-outline-ember" data-bs-toggle="modal"
-                data-bs-target="#editModal{{ p.id }}"><i class="bi bi-pencil"></i></button>
+                data-bs-target="#editModal{{ p.id }}"
+                aria-label="Edit quality profile {{ p.name }}"><i class="bi bi-pencil"></i></button>
         <form method="POST" action="/quality-profiles/{{ p.id }}/delete"
               data-confirm="Delete quality profile &quot;{{ p.name }}&quot;?"
               data-confirm-heading="Delete profile" data-confirm-ok="Delete">
-          <button class="btn btn-sm btn-danger-soft"><i class="bi bi-trash"></i></button>
+          <button class="btn btn-sm btn-danger-soft"
+                  aria-label="Delete quality profile {{ p.name }}"><i class="bi bi-trash"></i></button>
         </form>
       </div>
     </div>

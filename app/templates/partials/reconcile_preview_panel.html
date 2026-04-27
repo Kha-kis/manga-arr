@@ -129,7 +129,8 @@
           hx-target="#reconcile-preview-panel"
           hx-swap="outerHTML"
           hx-confirm="Apply {{ safe_rows|length }} chapter move(s)? Blocked/review rows will be left alone.">
-      <button type="submit" class="btn-grab btn btn-sm px-3">
+      <button type="submit" class="btn-grab btn btn-sm px-3"
+              hx-disabled-elt="this">
         <i class="bi bi-box-arrow-in-down me-1"></i>
         Apply {{ safe_rows|length }} safe move(s)
       </button>
