@@ -1,0 +1,22 @@
+# Paths semgrep should never scan.
+#
+# Format: gitignore-style globs, applied relative to the working dir.
+
+# Vendored / generated / third-party
+app/static/htmx.min.js
+app/static/alpine.min.js
+tests/node_modules/
+tests/.playwright-browsers/
+
+# Runtime / test artifacts
+.test-config/
+.cache/
+
+# Python build output
+*.egg-info/
+__pycache__/
+.pytest_cache/
+
+# IDE / editor
+.vscode/
+.idea/
