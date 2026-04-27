@@ -24,15 +24,7 @@ function fail(name, detail) {
   console.log('  [FAIL] ' + name + (detail ? ': ' + detail : ''));
 }
 
-/** Query the DB directly via docker exec. Returns the parsed JSON result.
- *
- * Test-only helper. `sql` is supplied by tests in this file (hardcoded
- * strings), never user input — there's no inbound channel that lets an
- * attacker reach this function. The two-layer escaping handles
- * `docker exec` shell-quoting; the SQL itself runs inside the test
- * container against an ephemeral `.test-config` DB.
- */
-// nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
+/** Query the DB directly via docker exec. Returns the parsed JSON result. */
 function dbQuery(sql) {
   const escaped = sql.replace(/"/g, '\\"').replace(/\$/g, '\\$');
   const out = execSync(
