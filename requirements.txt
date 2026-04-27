@@ -1,0 +1,32 @@
+# Mangarr runtime dependencies — exact pins.
+#
+# Dependabot owns version bumps. Reproduce locally with:
+#   python3 -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# Editing this file: prefer letting Dependabot open a PR for each
+# upgrade so the bump goes through CI (pip-audit + the full test
+# suite) before merging. Manual edits should still be a single PR
+# per package so a regression is easy to bisect.
+
+# Web framework + ASGI server
+fastapi==0.136.1
+uvicorn[standard]==0.46.0
+
+# Async HTTP client (used by SSRF guard, indexer adapters, etc.)
+httpx==0.28.1
+
+# Templating
+jinja2==3.1.6
+
+# multipart/form-data parser — required for any FastAPI Form() endpoint
+python-multipart==0.0.27
+
+# CBR (RAR-archive) extraction in the import pipeline
+rarfile==4.2
+
+# Defused XML parsing for ComicInfo.xml — blocks XXE / billion-laughs
+defusedxml==0.7.1
+
+# Fernet-based encryption for at-rest secrets in the settings table
+cryptography==47.0.0

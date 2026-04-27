@@ -1,0 +1,7 @@
+# Mangarr test-only dependencies. Kept separate from requirements.txt
+# so the runtime image doesn't carry pytest into production.
+#
+# Install both with:
+#   pip install -r requirements.txt -r requirements-test.txt
+
+pytest==9.0.3

@@ -6,9 +6,12 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends unrar-free \
  && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir \
-    fastapi uvicorn[standard] httpx jinja2 python-multipart \
-    rarfile defusedxml cryptography
+# Pinned Python deps. Copied before the app source so layer caching
+# only re-installs when requirements.txt actually changes — code-only
+# diffs reuse the cached install layer.
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt \
+ && rm /tmp/requirements.txt
 
 # HTMX + Alpine are vendored under app/static (committed to the repo with
 # upstream SHA256 provenance recorded in app/static/PROVENANCE.md). No

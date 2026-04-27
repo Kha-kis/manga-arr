@@ -18,13 +18,20 @@ jobs:
           python-version: "3.12"
 
       - name: Install runtime + test dependencies
-        # Mirror the Dockerfile install list so tests exercise the same
-        # surface as production. python-multipart is required by FastAPI
-        # for any Form() endpoint and the route sweep + CRUD tests POST forms.
+        # Use the same pinned set as the Dockerfile so tests exercise the
+        # exact production resolution. requirements-test.txt adds pytest.
         run: |
           python -m pip install --upgrade pip
-          pip install fastapi 'uvicorn[standard]' httpx jinja2 python-multipart \
-                      rarfile defusedxml cryptography pytest
+          pip install -r requirements.txt -r requirements-test.txt
+
+      - name: pip-audit — fail on known CVEs in pinned deps
+        # Scans requirements.txt against PyPA's advisory database. Fails
+        # the build if any pinned package has a known vulnerability,
+        # surfacing the CVE on the PR before merge. Dependabot then opens
+        # the bump PR; this step gates merging the affected revision.
+        run: |
+          python -m pip install pip-audit==2.10.0
+          pip-audit -r requirements.txt --strict
 
       - name: Run python suite
         run: pytest tests/python/ -q
