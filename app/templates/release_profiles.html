@@ -31,11 +31,13 @@
       {% endfor %}
       <div class="ms-auto d-flex gap-2">
         <button class="btn btn-sm btn-outline-ember" data-bs-toggle="modal"
-                data-bs-target="#editModal{{ p.id }}"><i class="bi bi-pencil"></i></button>
+                data-bs-target="#editModal{{ p.id }}"
+                aria-label="Edit release profile {{ p.name }}"><i class="bi bi-pencil"></i></button>
         <form method="POST" action="/release-profiles/{{ p.id }}/delete"
               data-confirm="Delete release profile &quot;{{ p.name }}&quot;?"
               data-confirm-heading="Delete profile" data-confirm-ok="Delete">
-          <button class="btn btn-sm btn-danger-soft" hx-disabled-elt="this"><i class="bi bi-trash"></i></button>
+          <button class="btn btn-sm btn-danger-soft" hx-disabled-elt="this"
+                  aria-label="Delete release profile {{ p.name }}"><i class="bi bi-trash"></i></button>
         </form>
       </div>
     </div>

@@ -33,11 +33,13 @@
           <i class="bi bi-play-circle"></i>
         </button>
         <button class="btn btn-sm btn-outline-ember" data-bs-toggle="modal"
-                data-bs-target="#editModal{{ f.id }}"><i class="bi bi-pencil"></i></button>
+                data-bs-target="#editModal{{ f.id }}"
+                aria-label="Edit format {{ f.name }}"><i class="bi bi-pencil"></i></button>
         <form method="POST" action="/custom-formats/{{ f.id }}/delete"
               data-confirm="Delete custom format &quot;{{ f.name }}&quot;?"
               data-confirm-heading="Delete format" data-confirm-ok="Delete">
-          <button class="btn btn-sm btn-danger-soft"><i class="bi bi-trash"></i></button>
+          <button class="btn btn-sm btn-danger-soft"
+                  aria-label="Delete format {{ f.name }}"><i class="bi bi-trash"></i></button>
         </form>
       </div>
     </div>

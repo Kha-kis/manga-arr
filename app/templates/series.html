@@ -481,6 +481,7 @@
               hx-post="/series/{{ s['id'] }}/set-monitor-mode"
               hx-trigger="change from:select"
               hx-swap="none"
+              hx-disabled-elt="find select"
               hx-on::after-request="showToast(event.detail.successful ? 'Monitor mode updated' : 'Failed', event.detail.successful ? 'success' : 'error')">
           <label class="form-label"><i class="bi bi-eye me-1 text-ember"></i>Monitor Mode</label>
           <select name="mode" class="form-select form-select-sm">
@@ -510,6 +511,7 @@
               hx-post="/series/{{ s['id'] }}/set-root-folder"
               hx-trigger="change from:select"
               hx-swap="none"
+              hx-disabled-elt="find select"
               hx-on::after-request="showToast(event.detail.successful ? 'Root folder updated' : 'Failed', event.detail.successful ? 'success' : 'error')">
           <label class="form-label"><i class="bi bi-folder2-open me-1 text-ember"></i>Root Folder</label>
           <select name="root_folder_id" class="form-select form-select-sm">
@@ -1117,6 +1119,7 @@ function onEditionChange(edition) {
       <form method="POST" action="/series/{{ s['id'] }}/set-tags"
             hx-post="/series/{{ s['id'] }}/set-tags"
             hx-swap="none"
+            hx-disabled-elt="find button[type=submit]"
             hx-on::after-request="if(event.detail.successful){ bootstrap.Modal.getInstance(document.getElementById('tagsModal'))?.hide(); showToast('Tags saved', 'success'); } else { showToast('Failed to save tags', 'error'); }">
         <div class="modal-body">
           <label class="form-label">Tags (comma-separated)</label>
@@ -1211,6 +1214,7 @@ function onEditionChange(edition) {
                         hx-target="#alias-list"
                         hx-swap="outerHTML"
                         hx-include="#alias-add-input"
+                        hx-disabled-elt="this"
                         hx-on::after-request="if(event.detail.successful){ document.getElementById('alias-add-input').value=''; } else { showToast('Failed to add alias', 'error'); }">
                   <i class="bi bi-plus me-1"></i>Add
                 </button>

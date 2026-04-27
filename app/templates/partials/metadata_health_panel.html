@@ -64,6 +64,7 @@
               hx-post="/api/series/{{ mh['series_id'] }}/reconcile/refresh-then-preview"
               hx-target="#reconcile-preview-panel"
               hx-swap="outerHTML"
+              hx-disabled-elt="this"
               title="Refresh chapter_vol_map from MangaDex, then show preview — recommended for stale series">
         <i class="bi bi-cloud-download me-1"></i>Refresh map + preview
       </button>

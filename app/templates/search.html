@@ -12,7 +12,7 @@
          value="{{ query or '' }}" autofocus>
   <button class="btn btn-ember px-4"><i class="bi bi-search me-1"></i>Search</button>
   {% if query %}
-  <a href="/search" class="btn btn-secondary px-3"><i class="bi bi-x-lg"></i></a>
+  <a href="/search" class="btn btn-secondary px-3" aria-label="Clear search"><i class="bi bi-x-lg"></i></a>
   {% endif %}
 </form>
 
