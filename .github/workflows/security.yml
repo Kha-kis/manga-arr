@@ -1,0 +1,100 @@
+# Security scanning — runs on every push to master and every PR.
+#
+# Three independent jobs:
+#   - trivy-fs      filesystem scan (requirements.txt CVEs, Dockerfile
+#                   misconfigurations). Honors .trivyignore.
+#   - trivy-image   build the image, scan its OS packages + Python deps
+#                   for CVEs. Honors .trivyignore.
+#   - gitleaks      scan git history + working tree for committed secrets.
+#
+# Failure policy
+#   trivy:    INFORMATIONAL ONLY at the moment. Findings print to the
+#             job log for visibility but the steps don't fail the
+#             build. Once GitHub Code Scanning is enabled on this
+#             repo (Settings → Code security → Code scanning), flip
+#             exit-code back to "1" + restore SARIF upload to surface
+#             findings on the Security tab and gate merges on
+#             HIGH/CRITICAL with a fix available.
+#   gitleaks: fail on any leak. .gitleaks.toml allowlists the
+#             test-only Fernet key in docker-compose.test.yml.
+#
+# Why Trivy is non-gating today: the action's bundled vuln DB sources
+# (Trivy DB + GHSA + NVD) sometimes flag CVEs that the upstream Trivy
+# CLI run locally doesn't reproduce, making "fix this finding" not
+# always actionable from a developer's machine. Until findings are
+# both reproducible and Code Scanning is wired up, gating creates
+# noise without a remediation path.
+
+name: Security
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    # Re-scan weekly so newly disclosed CVEs against an unchanged image
+    # surface even if no PR has run since.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+  pull-requests: read   # gitleaks-action enumerates PR commits
+
+jobs:
+  # ── Trivy filesystem scan ──────────────────────────────────────────
+  trivy-fs:
+    name: Trivy filesystem (deps + IaC)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy fs scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          # ignore-unfixed=true skips findings whose Fixed Version is
+          # empty — upstream Debian / PyPA hasn't shipped a fix yet,
+          # so blocking merges on those would just produce noise.
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          # exit-code: "0" — informational. See file header for why.
+          exit-code: "0"
+          format: table
+          skip-dirs: tests/node_modules,tests/.playwright-browsers,.test-config
+
+  # ── Trivy image scan ───────────────────────────────────────────────
+  trivy-image:
+    name: Trivy image (base + python pkgs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t mangarr:${{ github.run_id }} .
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: mangarr:${{ github.run_id }}
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+          format: table
+
+  # ── Gitleaks secret scan ───────────────────────────────────────────
+  gitleaks:
+    name: Gitleaks (committed secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Gitleaks needs full history to scan every commit, not just
+          # the diff.
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
