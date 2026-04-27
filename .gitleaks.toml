@@ -1,0 +1,26 @@
+# Gitleaks configuration — extends the default ruleset with a small
+# allowlist of known-safe values that the generic-api-key rule otherwise
+# flags as a false positive.
+#
+# Each allowlist entry must include a comment explaining why the match
+# is safe. If a future audit can't justify an entry, remove it.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known-safe placeholders / test-only fixtures"
+
+regexes = [
+  # docker-compose.test.yml ships a deterministic Fernet key for the
+  # browser test container. Base64 decodes to "fake-test-key-for-
+  # browser-suite-12" — only the test container ever sees this value;
+  # production auto-generates a real key into /config/.mangarr-secret-key
+  # on first boot. Documented inline at the env line in the compose
+  # file, and in docs/deployment.md's secret-key section.
+  #
+  # Match the literal base64 value rather than the prefixed `KEY=...`
+  # form because gitleaks' generic-api-key rule reports just the value
+  # portion, not the full line.
+  '''ZmFrZS10ZXN0LWtleS1mb3ItYnJvd3Nlci1zdWl0ZS0xMg==''',
+]

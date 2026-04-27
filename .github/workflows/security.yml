@@ -1,0 +1,110 @@
+# Security scanning — runs on every push to master and every PR.
+#
+# Three independent jobs:
+#   - trivy-fs      filesystem scan (requirements.txt CVEs, Dockerfile
+#                   misconfigurations). Honors .trivyignore.
+#   - trivy-image   build the image, scan its OS packages + Python deps
+#                   for CVEs. Honors .trivyignore.
+#   - gitleaks      scan git history + working tree for committed secrets.
+#
+# Failure policy
+#   trivy:    fail only on HIGH/CRITICAL with a fix available
+#             (--ignore-unfixed). Unfixed upstream CVEs in the base
+#             image still surface in the Security tab via SARIF upload
+#             but don't block merge — otherwise we'd be permanently
+#             red on Debian's release cadence.
+#   gitleaks: fail on any leak. .gitleaksignore covers known false
+#             positives (the test-only Fernet key in
+#             docker-compose.test.yml).
+
+name: Security
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    # Re-scan weekly so newly disclosed CVEs against an unchanged image
+    # surface even if no PR has run since.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+  security-events: write   # for SARIF upload to the Security tab
+
+jobs:
+  # ── Trivy filesystem scan ──────────────────────────────────────────
+  trivy-fs:
+    name: Trivy filesystem (deps + IaC)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy fs scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          # Don't fail on findings whose Fixed Version is empty —
+          # upstream Debian packages haven't shipped a fix yet, blocking
+          # merges on those just creates noise. SARIF upload below still
+          # surfaces them.
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          format: sarif
+          output: trivy-fs.sarif
+          # Skip directories that aren't part of the runtime image.
+          skip-dirs: tests/node_modules,tests/.playwright-browsers,.test-config
+
+      - name: Upload SARIF to Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+  # ── Trivy image scan ───────────────────────────────────────────────
+  trivy-image:
+    name: Trivy image (base + python pkgs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        # Tag with the run id so the scan target is unambiguous.
+        run: docker build -t mangarr:${{ github.run_id }} .
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: mangarr:${{ github.run_id }}
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          format: sarif
+          output: trivy-image.sarif
+
+      - name: Upload SARIF to Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+  # ── Gitleaks secret scan ───────────────────────────────────────────
+  gitleaks:
+    name: Gitleaks (committed secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Gitleaks needs full history to scan every commit, not just
+          # the diff.
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
