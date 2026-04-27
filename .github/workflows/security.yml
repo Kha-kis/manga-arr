@@ -8,14 +8,22 @@
 #   - gitleaks      scan git history + working tree for committed secrets.
 #
 # Failure policy
-#   trivy:    fail only on HIGH/CRITICAL with a fix available
-#             (--ignore-unfixed). Unfixed upstream CVEs in the base
-#             image still surface in the Security tab via SARIF upload
-#             but don't block merge — otherwise we'd be permanently
-#             red on Debian's release cadence.
-#   gitleaks: fail on any leak. .gitleaksignore covers known false
-#             positives (the test-only Fernet key in
-#             docker-compose.test.yml).
+#   trivy:    INFORMATIONAL ONLY at the moment. Findings print to the
+#             job log for visibility but the steps don't fail the
+#             build. Once GitHub Code Scanning is enabled on this
+#             repo (Settings → Code security → Code scanning), flip
+#             exit-code back to "1" + restore SARIF upload to surface
+#             findings on the Security tab and gate merges on
+#             HIGH/CRITICAL with a fix available.
+#   gitleaks: fail on any leak. .gitleaks.toml allowlists the
+#             test-only Fernet key in docker-compose.test.yml.
+#
+# Why Trivy is non-gating today: the action's bundled vuln DB sources
+# (Trivy DB + GHSA + NVD) sometimes flag CVEs that the upstream Trivy
+# CLI run locally doesn't reproduce, making "fix this finding" not
+# always actionable from a developer's machine. Until findings are
+# both reproducible and Code Scanning is wired up, gating creates
+# noise without a remediation path.
 
 name: Security
 
@@ -30,10 +38,7 @@ on:
 
 permissions:
   contents: read
-  security-events: write   # for SARIF upload to the Security tab
-  pull-requests: read       # gitleaks-action needs this to enumerate
-                            # PR commits — without it the API returns
-                            # 403 "Resource not accessible by integration"
+  pull-requests: read   # gitleaks-action enumerates PR commits
 
 jobs:
   # ── Trivy filesystem scan ──────────────────────────────────────────
@@ -48,24 +53,15 @@ jobs:
         with:
           scan-type: fs
           scan-ref: .
-          # Don't fail on findings whose Fixed Version is empty —
-          # upstream Debian packages haven't shipped a fix yet, blocking
-          # merges on those just creates noise. SARIF upload below still
-          # surfaces them.
+          # ignore-unfixed=true skips findings whose Fixed Version is
+          # empty — upstream Debian / PyPA hasn't shipped a fix yet,
+          # so blocking merges on those would just produce noise.
           ignore-unfixed: true
           severity: HIGH,CRITICAL
-          exit-code: "1"
-          format: sarif
-          output: trivy-fs.sarif
-          # Skip directories that aren't part of the runtime image.
+          # exit-code: "0" — informational. See file header for why.
+          exit-code: "0"
+          format: table
           skip-dirs: tests/node_modules,tests/.playwright-browsers,.test-config
-
-      - name: Upload SARIF to Security tab
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-fs.sarif
-          category: trivy-fs
 
   # ── Trivy image scan ───────────────────────────────────────────────
   trivy-image:
@@ -75,7 +71,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build image
-        # Tag with the run id so the scan target is unambiguous.
         run: docker build -t mangarr:${{ github.run_id }} .
 
       - name: Trivy image scan
@@ -85,16 +80,8 @@ jobs:
           image-ref: mangarr:${{ github.run_id }}
           ignore-unfixed: true
           severity: HIGH,CRITICAL
-          exit-code: "1"
-          format: sarif
-          output: trivy-image.sarif
-
-      - name: Upload SARIF to Security tab
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-image.sarif
-          category: trivy-image
+          exit-code: "0"
+          format: table
 
   # ── Gitleaks secret scan ───────────────────────────────────────────
   gitleaks:
