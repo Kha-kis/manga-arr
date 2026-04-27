@@ -9,7 +9,7 @@ import secrets
 import shutil
 import sqlite3
 import time
-import xml.etree.ElementTree as ET  # for build (serialize-only); parse uses defusedxml
+import xml.etree.ElementTree as ET  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml — serialize-only; parse uses defusedxml
 from defusedxml.ElementTree import parse as _safe_xml_parse, fromstring as _safe_xml_fromstring
 from defusedxml.ElementTree import ParseError as _SafeXMLParseError
 from defusedxml.common import DefusedXmlException as _DefusedXmlException

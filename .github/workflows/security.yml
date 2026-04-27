@@ -83,6 +83,60 @@ jobs:
           exit-code: "0"
           format: table
 
+  # ── Semgrep SAST ───────────────────────────────────────────────────
+  # CodeQL would be the gold-standard SAST scanner here, but Code Scanning
+  # / SARIF upload requires GitHub Advanced Security on private repos
+  # (paid). Semgrep CE is OSS, has comparable Python coverage for the
+  # OWASP-Top-10 categories Mangarr cares about (SQLi, XSS, path
+  # traversal, hardcoded secrets, deserialization, XXE), and runs without
+  # any GHAS dependency.
+  #
+  # Failure policy: gates on ERROR-severity rules. WARNING-severity
+  # findings print to the job log for triage but don't block merges —
+  # most warnings here flag patterns that need human review (open
+  # redirect via reflected URLs, template attribute interpolation) and
+  # locking gating to those creates noise without helping.
+  #
+  # Triaged false positives stay in source via inline `# nosemgrep`
+  # markers (with rationale comments) rather than path-based ignores.
+  # .semgrepignore handles vendored/generated paths only.
+  semgrep:
+    name: Semgrep (Python SAST)
+    runs-on: ubuntu-latest
+    container:
+      image: returntocorp/semgrep
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Semgrep scan (ERROR-severity gating)
+        # Uses `semgrep scan` (not `semgrep ci`) so we can pass the
+        # severity + error flags directly. `semgrep ci` is the higher-
+        # level wrapper but its CLI surface doesn't accept --severity
+        # or --error — those are scan-only flags.
+        run: |
+          semgrep scan \
+            --config=p/python \
+            --config=p/security-audit \
+            --config=p/owasp-top-ten \
+            --config=p/fastapi \
+            --severity=ERROR \
+            --error \
+            --metrics=off
+
+      - name: Semgrep informational scan (all severities)
+        # Always runs, even if the gating step above failed, so the job
+        # log shows the full landscape (WARNING + INFO findings) for
+        # triage. Doesn't gate on its own.
+        if: always()
+        run: |
+          semgrep scan \
+            --config=p/python \
+            --config=p/security-audit \
+            --config=p/owasp-top-ten \
+            --config=p/fastapi \
+            --metrics=off \
+            --no-error || true
+
   # ── Gitleaks secret scan ───────────────────────────────────────────
   gitleaks:
     name: Gitleaks (committed secrets)

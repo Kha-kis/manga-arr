@@ -1,0 +1,34 @@
+# Paths semgrep should never scan.
+#
+# Format: gitignore-style globs, applied relative to the working dir.
+
+# Vendored / generated / third-party
+app/static/htmx.min.js
+app/static/alpine.min.js
+tests/node_modules/
+tests/.playwright-browsers/
+
+# Test fixtures and harness scripts.
+#
+# The browser-suite tests use docker exec to drive an isolated test
+# container's SQLite DB. Semgrep's javascript detect-child-process and
+# python sql-string-construction rules fire on every helper, none of
+# which are reachable from user input — they're test-only fixtures
+# operating against an ephemeral .test-config DB. Inline suppressions
+# would scatter noise across the file without earning anything.
+#
+# Real production code paths get full SAST coverage via app/.
+tests/
+
+# Runtime / test artifacts
+.test-config/
+.cache/
+
+# Python build output
+*.egg-info/
+__pycache__/
+.pytest_cache/
+
+# IDE / editor
+.vscode/
+.idea/

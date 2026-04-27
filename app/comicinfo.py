@@ -21,7 +21,10 @@ from __future__ import annotations
 
 import os
 import zipfile
-import xml.etree.ElementTree as ET
+# ET is imported only for ParseError (an exception class, not a parser entry
+# point) and for the serialize-only XML write in build_comicinfo_xml. All
+# actual parsing uses _safe_xml_parse from defusedxml below.
+import xml.etree.ElementTree as ET  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 
 from defusedxml.ElementTree import parse as _safe_xml_parse
 from defusedxml.ElementTree import ParseError as _SafeXMLParseError
