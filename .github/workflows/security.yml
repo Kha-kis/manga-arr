@@ -109,8 +109,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Semgrep scan (ERROR-severity gating)
+        # Uses `semgrep scan` (not `semgrep ci`) so we can pass the
+        # severity + error flags directly. `semgrep ci` is the higher-
+        # level wrapper but its CLI surface doesn't accept --severity
+        # or --error — those are scan-only flags.
         run: |
-          semgrep ci \
+          semgrep scan \
             --config=p/python \
             --config=p/security-audit \
             --config=p/owasp-top-ten \
@@ -118,10 +122,6 @@ jobs:
             --severity=ERROR \
             --error \
             --metrics=off
-        env:
-          # Disable auth-prompt; semgrep CE doesn't need a token for
-          # public rule packs.
-          SEMGREP_RULES: ""
 
       - name: Semgrep informational scan (all severities)
         # Always runs, even if the gating step above failed, so the job
