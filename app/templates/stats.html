@@ -227,8 +227,8 @@
             {{ d['used']|format_bytes }} / {{ d['total']|format_bytes }} ({{ d['pct'] }}%)
           </span>
         </div>
-        <div style="height:10px; background:var(--ink-5); border-radius:5px; overflow:hidden">
-          <div style="width:{{ d['pct'] }}%; height:100%; border-radius:5px;
+        <div style="height:10px; background:var(--ink-5); border-radius:var(--radius-xs); overflow:hidden">
+          <div style="width:{{ d['pct'] }}%; height:100%; border-radius:var(--radius-xs);
                 background:{% if d['pct'] > 90 %}var(--ruby){% elif d['pct'] > 75 %}var(--gold){% else %}var(--ember){% endif %}">
           </div>
         </div>

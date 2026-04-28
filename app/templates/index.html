@@ -407,7 +407,7 @@
     {# Monitored toggle — top-right corner #}
     <button class="monitored-toggle"
             style="position:absolute; top:6px; right:6px; background:rgba(8,8,16,0.75); backdrop-filter:blur(4px);
-                   border:1px solid rgba(255,255,255,0.08); border-radius:5px; width:26px; height:26px;
+                   border:1px solid rgba(255,255,255,0.08); border-radius:var(--radius-xs); width:26px; height:26px;
                    display:flex; align-items:center; justify-content:center; cursor:pointer; transition:all 0.15s"
             x-show="!mode"
             @click.stop="mon=!mon; fetch('/series/{{ s['id'] }}/toggle', {method:'POST', headers:{'X-CSRFToken':_csrfToken()}})"
@@ -423,7 +423,7 @@
          tabindex="0"
          :aria-checked="has({{ s['id'] }}) ? 'true' : 'false'"
          aria-label="Select {{ s['title']|e }}"
-         style="display:none; position:absolute; inset:0; border-radius:10px;
+         style="display:none; position:absolute; inset:0; border-radius:var(--radius-lg);
                 border:2px solid transparent; cursor:pointer; transition:all 0.15s"
          :style="has({{ s['id'] }}) ?
            { borderColor: 'var(--ember)', background: 'rgba(240,132,40,0.15)' } :
@@ -432,7 +432,7 @@
          @keydown.space.prevent="pick({{ s['id'] }})"
          @keydown.enter.prevent="pick({{ s['id'] }})">
       <div class="select-check"
-           style="position:absolute; top:7px; left:7px; width:22px; height:22px; border-radius:5px;
+           style="position:absolute; top:7px; left:7px; width:22px; height:22px; border-radius:var(--radius-xs);
                   border:2px solid var(--text-3); display:flex; align-items:center; justify-content:center"
            :style="has({{ s['id'] }}) ?
              { background: 'var(--ember)', borderColor: 'var(--ember)' } :
@@ -531,7 +531,7 @@
 
 {# ── Sticky selection action bar ─────────────────────────────────────────── #}
 <div x-show="sel.length > 0" x-cloak x-transition
-     style="position:fixed; bottom:0; left:0; right:0; z-index:200;
+     style="position:fixed; bottom:0; left:0; right:0; z-index:var(--z-tooltip);
             background:var(--ink-1); border-top:1px solid var(--edge-2);
             padding:12px 24px; display:flex; align-items:center; gap:12px;
             backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px)">
