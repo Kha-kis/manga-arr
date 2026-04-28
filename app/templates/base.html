@@ -118,6 +118,13 @@
       --z-modal: 1000;
       --z-toast: 9000;
       --z-progress: 9500;
+
+      /* radius scale */
+      --radius-xs: 4px;
+      --radius-sm: 6px;
+      --radius-md: 8px;
+      --radius-lg: 10px;
+      --radius-xl: 12px;
       /* ═══ TYPOGRAPHY — Editorial Triple Stack + Inter for chrome ═══ */
       --font-display: 'Fraunces', 'Playfair Display', Georgia, serif;
       --font-serif:   'Source Serif 4', 'Libre Baskerville', Georgia, serif;
@@ -207,7 +214,7 @@
       width: 30px;
       height: 30px;
       background: var(--ember);
-      border-radius: 8px;
+      border-radius: var(--radius-md);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -312,7 +319,7 @@
       font-size: 0.58rem;
       font-weight: 700;
       padding: 1px 5px;
-      border-radius: 10px;
+      border-radius: var(--radius-lg);
       line-height: 1.4;
       margin-left: auto;
       flex-shrink: 0;
@@ -328,7 +335,7 @@
     .sidebar-toggle {
       background: none;
       border: 1px solid var(--edge-2);
-      border-radius: 6px;
+      border-radius: var(--radius-sm);
       color: var(--text-2);
       width: 30px;
       height: 30px;
@@ -352,7 +359,7 @@
       color: var(--text);
       font-size: 0.78rem;
       padding: 4px 10px;
-      border-radius: 6px;
+      border-radius: var(--radius-sm);
       white-space: nowrap;
       pointer-events: none;
       opacity: 0;
@@ -438,7 +445,7 @@
       background: var(--ink-2);
       background-image: linear-gradient(135deg, rgba(240,132,40,0.04) 0%, transparent 60%);
       border: 1px solid var(--edge);
-      border-radius: 12px;
+      border-radius: var(--radius-xl);
       padding: 16px 22px;
       margin-bottom: 20px;
     }
@@ -477,7 +484,7 @@
       aspect-ratio: 2 / 3;
       background: var(--ink-2);
       border: 1px solid var(--edge);
-      border-radius: 4px;  /* tighter — more book-like, less app-like */
+      border-radius: var(--radius-xs);  /* tighter — more book-like, less app-like */
       overflow: hidden;
       position: relative;
       cursor: pointer;
@@ -618,7 +625,7 @@
       text-transform: uppercase;
       letter-spacing: 0.06em;
       padding: 2px 7px;
-      border-radius: 4px;
+      border-radius: var(--radius-xs);
       display: inline-block;
       font-family: var(--font-ui);
     }
@@ -661,7 +668,7 @@
       font-family: var(--font-ui);
       font-weight: 600;
       letter-spacing: 0.01em;
-      border-radius: 6px;
+      border-radius: var(--radius-sm);
       transition: all 0.15s;
     }
 
@@ -778,7 +785,7 @@
       border: 1px solid var(--edge-2) !important;
       color: var(--text) !important;
       font-family: var(--font-ui);
-      border-radius: 6px;
+      border-radius: var(--radius-sm);
       transition: border-color 0.15s, box-shadow 0.15s;
     }
 
@@ -858,7 +865,7 @@
     .table-wrap {
       background: var(--ink-2);
       border: 1px solid var(--edge);
-      border-radius: 8px;
+      border-radius: var(--radius-md);
       overflow-x: auto;
       overflow-y: hidden;
     }
@@ -869,7 +876,7 @@
     .panel {
       background: var(--ink-2);
       border: 1px solid var(--edge);
-      border-radius: 8px;
+      border-radius: var(--radius-md);
       overflow: hidden;
       margin-bottom: 18px;
     }
@@ -894,7 +901,7 @@
     .panel-divider { border: none; border-top: 1px solid var(--edge); margin: 14px 0; }
 
     /* Keep old names for compat */
-    .settings-card { background:var(--ink-2); border:1px solid var(--edge); border-radius:8px; overflow:hidden; margin-bottom:18px; }
+    .settings-card { background:var(--ink-2); border:1px solid var(--edge); border-radius:var(--radius-md); overflow:hidden; margin-bottom:18px; }
     .settings-card-header { display:flex; align-items:center; gap:10px; padding:13px 18px; background:var(--ink-3); border-bottom:1px solid var(--edge); font-size:0.82rem; font-weight:700; color:var(--text); }
     .settings-card-header i { color:var(--ember); font-size:0.95rem; }
     .settings-card-body { padding:18px; }
@@ -948,7 +955,7 @@
     .activity-icon {
       width: 28px;
       height: 28px;
-      border-radius: 6px;
+      border-radius: var(--radius-sm);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -1028,7 +1035,7 @@
     .pill-group .btn {
       font-size: 0.72rem;
       padding: 4px 10px;
-      border-radius: 6px;
+      border-radius: var(--radius-sm);
     }
 
     /* ═══════════════════════════════════════════════════════════════
@@ -1037,7 +1044,7 @@
     .modal-content {
       background: var(--ink-2);
       border: 1px solid var(--edge-2);
-      border-radius: 12px;
+      border-radius: var(--radius-xl);
       color: var(--text);
     }
 
@@ -1085,7 +1092,7 @@
       font-weight: 600;
       color: var(--text-2);
       text-decoration: none;
-      border-radius: 8px 8px 0 0;
+      border-radius: var(--radius-md) var(--radius-md) 0 0;
       border: 1px solid transparent;
       border-bottom: none;
       transition: color .15s, background .15s;
@@ -1106,7 +1113,7 @@
       min-width: 20px;
       height: 18px;
       padding: 0 6px;
-      border-radius: 9px;
+      border-radius: var(--radius-md);
       font-size: .68rem;
       font-weight: 700;
       background: var(--ruby-bg);
@@ -1148,7 +1155,7 @@
     .dropdown-menu {
       background: var(--ink-2);
       border: 1px solid var(--edge-2);
-      border-radius: 10px;
+      border-radius: var(--radius-lg);
       padding: 6px;
       box-shadow: 0 16px 48px rgba(0,0,0,0.5);
     }
@@ -1156,7 +1163,7 @@
     .dropdown-item {
       color: var(--text-2);
       font-size: 0.82rem;
-      border-radius: 6px;
+      border-radius: var(--radius-sm);
       padding: 7px 12px;
       display: flex;
       align-items: center;
@@ -1184,7 +1191,7 @@
        ALERTS / TOASTS
     ═══════════════════════════════════════════════════════════════ */
     .alert {
-      border-radius: 10px;
+      border-radius: var(--radius-lg);
       font-size: 0.82rem;
       border: 1px solid;
     }
@@ -1218,13 +1225,13 @@
     ═══════════════════════════════════════════════════════════════ */
     .progress {
       background: var(--ink-5);
-      border-radius: 4px;
+      border-radius: var(--radius-xs);
       height: 6px;
     }
 
     .progress-bar {
       background: linear-gradient(90deg, var(--ember), var(--ember-hi));
-      border-radius: 4px;
+      border-radius: var(--radius-xs);
     }
 
     .progress-bar.bg-success {
@@ -1234,10 +1241,10 @@
     /* ═══════════════════════════════════════════════════════════════
        CONNECTION STATUS
     ═══════════════════════════════════════════════════════════════ */
-    .connection-ok   { background: var(--jade-bg); color: var(--jade); border: 1px solid rgba(34,200,122,0.2); border-radius: 6px; font-size: 0.75rem; padding: 3px 9px; }
-    .connection-fail { background: var(--ruby-bg); color: var(--ruby); border: 1px solid rgba(240,80,80,0.2); border-radius: 6px; font-size: 0.75rem; padding: 3px 9px; }
-    .connection-wait { background: var(--gold-bg); color: var(--gold); border: 1px solid rgba(240,184,40,0.2); border-radius: 6px; font-size: 0.75rem; padding: 3px 9px; }
-    .connection-status { font-size: 0.75rem; padding: 3px 9px; border-radius: 6px; display: inline-block; }
+    .connection-ok   { background: var(--jade-bg); color: var(--jade); border: 1px solid rgba(34,200,122,0.2); border-radius: var(--radius-sm); font-size: 0.75rem; padding: 3px 9px; }
+    .connection-fail { background: var(--ruby-bg); color: var(--ruby); border: 1px solid rgba(240,80,80,0.2); border-radius: var(--radius-sm); font-size: 0.75rem; padding: 3px 9px; }
+    .connection-wait { background: var(--gold-bg); color: var(--gold); border: 1px solid rgba(240,184,40,0.2); border-radius: var(--radius-sm); font-size: 0.75rem; padding: 3px 9px; }
+    .connection-status { font-size: 0.75rem; padding: 3px 9px; border-radius: var(--radius-sm); display: inline-block; }
 
     /* ═══════════════════════════════════════════════════════════════
        MISC UTILS
@@ -1263,7 +1270,7 @@
     kbd {
       background: var(--ink-4);
       border: 1px solid var(--edge-2);
-      border-radius: 4px;
+      border-radius: var(--radius-xs);
       color: var(--text-2);
       font-family: var(--font-mono);
       font-size: 0.72rem;
@@ -1284,7 +1291,7 @@
     .app-toast {
       background: var(--ink-3);
       border: 1px solid var(--edge-2);
-      border-radius: 8px;
+      border-radius: var(--radius-md);
       padding: 12px 18px;
       font-size: 0.82rem;
       color: var(--text);
@@ -1347,7 +1354,7 @@
       position: absolute; left: -9999px; top: 0;
       z-index: var(--z-toast);
       background: var(--ember); color: #fff;
-      padding: 8px 16px; border-radius: 6px;
+      padding: 8px 16px; border-radius: var(--radius-sm);
       text-decoration: none; font-weight: 600;
     }
     .skip-link:focus { left: 8px; top: 8px; }
@@ -1554,7 +1561,7 @@
     .panel-editorial {
       background: var(--ink-2);
       border: 1px solid var(--edge);
-      border-radius: 4px;
+      border-radius: var(--radius-xs);
       overflow: hidden;
     }
     .panel-editorial > .panel-editorial-head {
@@ -1582,7 +1589,7 @@
       border: none;
       color: var(--text-2);
       padding: 8px 16px;
-      border-radius: 6px;
+      border-radius: var(--radius-sm);
       font-family: var(--font-ui);
       font-weight: 500;
       font-size: 0.82rem;
@@ -1600,7 +1607,7 @@
       background: transparent;
       border: none;
       color: var(--text-2);
-      border-radius: 6px;
+      border-radius: var(--radius-sm);
       font-size: 0.875rem;
       cursor: pointer;
       transition: color 0.15s, background 0.15s;
@@ -1657,7 +1664,7 @@
       background: linear-gradient(90deg, var(--ink-3) 25%, var(--ink-4) 50%, var(--ink-3) 75%);
       background-size: 200% 100%;
       animation: skeleton-pulse 1.5s ease-in-out infinite;
-      border-radius: 4px;
+      border-radius: var(--radius-xs);
     }
     @keyframes skeleton-pulse {
       0%   { background-position: 200% 0; }
@@ -1672,7 +1679,7 @@
     :focus-visible {
       outline: 2px solid var(--ember);
       outline-offset: 2px;
-      border-radius: 4px;
+      border-radius: var(--radius-xs);
     }
 
     /* Form controls already get the ember glow on focus — don't double-ring */
