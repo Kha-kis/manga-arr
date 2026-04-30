@@ -13,7 +13,7 @@
 
 {% if request.query_params.get('error') == 'in-use' %}
 <div class="d-flex align-items-center gap-2 mb-3 px-3 py-2"
-     class="text-sm rounded-lg" style="background:var(--ruby-bg);border:1px solid rgba(240,80,80,0.2);color:var(--ruby)">
+     class="text-sm rounded-lg" style="background:var(--ruby-bg);border:1px solid var(--ruby-soft);color:var(--ruby)">
   <i class="bi bi-exclamation-triangle-fill"></i>Cannot delete this profile — one or more series are using it. Reassign the series first.
 </div>
 {% endif %}
