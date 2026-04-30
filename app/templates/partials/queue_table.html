@@ -126,7 +126,7 @@
         {% elif row.stage == 'pending' %}
         <div class="d-flex gap-1 justify-content-end">
           <button class="btn btn-sm px-2 py-1 text-ember text-xs"
-                  style="border:1px solid var(--ember-medium); background:var(--ember-lo)"
+                  style="border:1px solid var(--ember-medium); background:var(--ember-bg)"
                   title="Force grab now — bypass delay profile"
                   hx-post="/queue/pending/{{ row.pending_id }}/force-grab"
                   hx-target="#queue-body"
@@ -443,7 +443,7 @@
                 {# Keep in client #}
                 <label class="d-flex align-items-start gap-3 p-3 rounded"
                        style="cursor:pointer; border:1px solid var(--edge-2); background:var(--ink-3); transition:border-color 0.15s"
-                       :style="rfc==='0' ? 'border-color:var(--ember); background:var(--ember-lo)' : ''">
+                       :style="rfc==='0' ? 'border-color:var(--ember); background:var(--ember-bg)' : ''">
                   <input type="radio" name="remove_from_client" value="0"
                          class="form-check-input flex-shrink-0 mt-1"
                          @change="rfc='0'; df=false">
@@ -482,7 +482,7 @@
                 {# Remove from client #}
                 <label class="d-flex align-items-start gap-3 p-3 rounded"
                        style="cursor:pointer; border:1px solid var(--edge-2); background:var(--ink-3); transition:border-color 0.15s"
-                       :style="rfc==='1' ? 'border-color:var(--ember); background:var(--ember-lo)' : ''">
+                       :style="rfc==='1' ? 'border-color:var(--ember); background:var(--ember-bg)' : ''">
                   <input type="radio" name="remove_from_client" value="1"
                          class="form-check-input flex-shrink-0 mt-1"
                          checked @change="rfc='1'">
