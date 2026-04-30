@@ -139,8 +139,20 @@ async def grab_item(item: dict, series_id: int, respect_monitoring: bool = True)
 
     # Check seen (already grabbed) — must be a live DB query, not a cached set,
     # to guard against concurrent grabs (RSS poll + manual, or overlapping polls).
+    #
+    # Two-layer dedup: torrent_url is the primary key, but a release served by
+    # two indexers (Prowlarr mirroring + the upstream tracker) often has two
+    # distinct URLs for the same content. The indexer-supplied release_guid
+    # catches that — same content, same guid, regardless of URL. release_guid
+    # is nullable; a missing guid falls back to URL-only behavior.
+    _release_guid = (item.get('guid') or '').strip() or None
     with get_db() as db:
         if db.execute("SELECT 1 FROM seen WHERE torrent_url=?", (item['url'],)).fetchone():
+            return False
+        if _release_guid is not None and db.execute(
+            "SELECT 1 FROM seen WHERE release_guid=? LIMIT 1", (_release_guid,)
+        ).fetchone():
+            _log_grab_rejection(series_id, title, f'duplicate release_guid: {_release_guid}')
             return False
 
     # In-flight dedup: all code between here and `await grab_url` is synchronous,
@@ -388,10 +400,12 @@ async def grab_item(item: dict, series_id: int, respect_monitoring: bool = True)
         db.execute(
             "INSERT OR IGNORE INTO seen"
             "(torrent_url, torrent_name, series_id, volume_num, grabbed_at,"
-            " indexer, protocol, client, download_id, release_group, size_bytes)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            " indexer, protocol, client, download_id, release_group, size_bytes,"
+            " release_guid)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (item['url'], title, series_id, vol_num, now,
-             indexer, protocol, client_name, dl_id, rgroup, size)
+             indexer, protocol, client_name, dl_id, rgroup, size,
+             _release_guid)
         )
 
         _ch_cascade_kw = dict(grabbed_at=now, torrent_name=title, torrent_url=item['url'],
