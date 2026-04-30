@@ -37,9 +37,9 @@
          warning  = gold (yellow)  — non-critical degradation
     #}
     {% set _sev_colors = {
-      'critical': ('var(--ruby)', 'rgba(240,80,80,0.08)', 'var(--ruby-strong)', 'bi-x-circle-fill'),
-      'high':     ('var(--ember)', 'rgba(240,132,40,0.08)', 'var(--ember-strong)', 'bi-exclamation-circle-fill'),
-      'warning':  ('var(--gold)', 'rgba(240,184,40,0.08)', 'var(--gold-strong)', 'bi-exclamation-triangle-fill'),
+      'critical': ('var(--ruby)', 'var(--ruby-tint)', 'var(--ruby-strong)', 'bi-x-circle-fill'),
+      'high':     ('var(--ember)', 'var(--ember-tint)', 'var(--ember-strong)', 'bi-exclamation-circle-fill'),
+      'warning':  ('var(--gold)', 'var(--gold-tint)', 'var(--gold-strong)', 'bi-exclamation-triangle-fill'),
     } %}
     <div class="panel mb-4">
       {% for c in checks %}
