@@ -201,6 +201,11 @@ def init_db():
         add_col('seen',    'download_id',     'TEXT')
         add_col('seen',    'release_group',  'TEXT')
         add_col('seen',    'size_bytes',     'INTEGER')
+        # release_guid: stable per-release identifier from the indexer
+        # (Prowlarr/torznab `<guid>`). Used as a second dedup key alongside
+        # torrent_url so two URLs that point at the same content (mirrors,
+        # redirects, cross-posts) are caught by the second grab attempt.
+        add_col('seen',    'release_guid',   'TEXT')
         add_col('volumes', 'download_id',    'TEXT')
         add_col('series',  'root_folder_id', 'INTEGER')
         add_col('volumes', 'vol_range_start', 'REAL')
@@ -583,6 +588,7 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_volumes_series_volnum ON volumes(series_id, volume_num)",
             "CREATE INDEX IF NOT EXISTS idx_seen_series           ON seen(series_id)",
             "CREATE INDEX IF NOT EXISTS idx_seen_dlid             ON seen(download_id)",
+            "CREATE INDEX IF NOT EXISTS idx_seen_guid             ON seen(release_guid) WHERE release_guid IS NOT NULL",
             "CREATE INDEX IF NOT EXISTS idx_chapters_series       ON chapters(series_id)",
             "CREATE INDEX IF NOT EXISTS idx_chapters_volid        ON chapters(volume_id)",
             "CREATE INDEX IF NOT EXISTS idx_import_queue_dlid     ON import_queue(download_id)",
@@ -900,17 +906,18 @@ def _migrate_schema_constraints() -> None:
             """),
             ('seen', """
                 CREATE TABLE seen_new (
-                    torrent_url  TEXT PRIMARY KEY,
-                    torrent_name TEXT,
-                    series_id    INTEGER REFERENCES series(id) ON DELETE CASCADE,
-                    volume_num   REAL,
-                    grabbed_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    indexer      TEXT,
-                    protocol     TEXT,
-                    client       TEXT,
-                    download_id  TEXT,
+                    torrent_url   TEXT PRIMARY KEY,
+                    torrent_name  TEXT,
+                    series_id     INTEGER REFERENCES series(id) ON DELETE CASCADE,
+                    volume_num    REAL,
+                    grabbed_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    indexer       TEXT,
+                    protocol      TEXT,
+                    client        TEXT,
+                    download_id   TEXT,
                     release_group TEXT,
-                    size_bytes   INTEGER
+                    size_bytes    INTEGER,
+                    release_guid  TEXT
                 )
             """),
             ('pending_releases', """

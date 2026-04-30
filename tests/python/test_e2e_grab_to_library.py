@@ -73,7 +73,7 @@ def env(tmp_path):
         )
         c.execute(
             "INSERT INTO volumes(series_id, volume_num, status, monitored)"
-            " VALUES(1, 1.0, 'wanted', 1)"
+            " VALUES(1, 1.0, 'wanted', 1), (1, 2.0, 'wanted', 1)"
         )
         c.execute(
             "INSERT INTO indexers(name, type, url, enabled, categories)"
@@ -229,6 +229,179 @@ def test_grab_failure_does_not_pollute_seen(env):
             "SELECT status FROM volumes WHERE series_id=1 AND volume_num=1.0"
         ).fetchone()[0]
         assert v_status == 'wanted', "Volume stays wanted after a failed grab"
+
+
+# ───────────────────── GUID dedup (cross-URL same content) ─────────────────────
+
+
+def test_guid_dedup_blocks_same_content_different_url(env):
+    """A release served by two indexers (mirror + upstream) often has two
+    distinct URLs but the same indexer-supplied release_guid. The second
+    grab attempt must be blocked by the GUID check, even though the URL
+    is novel.
+    """
+    import main
+
+    item_a = {
+        'url': 'https://prowlarr-mirror.test/release-A.torrent',
+        'title': 'TestSeries v01 [Group]',
+        'protocol': 'torrent',
+        'guid': 'shared-release-guid-42',
+        'indexer': 'TestIndexer',
+        '_score': 100,
+    }
+    item_b = {
+        'url': 'https://upstream-tracker.test/release-B.torrent',  # different URL
+        'title': 'TestSeries v01 [Group]',
+        'protocol': 'torrent',
+        'guid': 'shared-release-guid-42',  # same GUID
+        'indexer': 'TestIndexer',
+        '_score': 100,
+    }
+
+    grab_url_call_count = {'n': 0}
+
+    async def _counting_grab_url(*a, **kw):
+        grab_url_call_count['n'] += 1
+        return (True, 'TestQbit', f"dl-{grab_url_call_count['n']}")
+
+    async def _run():
+        import grab
+        with patch.object(grab, 'grab_url', _counting_grab_url):
+            r1 = await main.grab_item(item_a, series_id=1)
+            r2 = await main.grab_item(item_b, series_id=1)
+            return r1, r2
+
+    r1, r2 = asyncio.run(_run())
+    assert r1 is True, "first grab should succeed"
+    assert r2 is False, (
+        "second grab with same release_guid (different URL) must be blocked — "
+        "this is exactly the cross-indexer mirror scenario the GUID layer fixes"
+    )
+    assert grab_url_call_count['n'] == 1, (
+        "grab_url must only fire once — the second attempt must short-circuit "
+        "at the GUID check, not reach the download client"
+    )
+
+
+def test_missing_guid_falls_back_to_url_only_dedup(env):
+    """An item without a `guid` field must not crash and must fall back to
+    URL-based dedup unchanged. Backward-compat with indexers that don't
+    populate GUIDs and with rows in `seen` from before the column existed.
+    """
+    import main
+
+    item = {
+        'url': 'https://stub.indexer/no-guid.torrent',
+        'title': 'TestSeries v01 [Group]',
+        'protocol': 'torrent',
+        # No 'guid' field at all
+        'indexer': 'TestIndexer',
+        '_score': 100,
+    }
+
+    async def _ok(*a, **kw):
+        return (True, 'TestQbit', 'dl-no-guid')
+
+    async def _run():
+        import grab
+        with patch.object(grab, 'grab_url', _ok):
+            r1 = await main.grab_item(item, series_id=1)
+            r2 = await main.grab_item(item, series_id=1)
+            return r1, r2
+
+    r1, r2 = asyncio.run(_run())
+    assert r1 is True
+    assert r2 is False, "URL-based dedup still fires when GUID is absent"
+
+    with sqlite3.connect(env['db_path']) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT torrent_url, release_guid FROM seen WHERE torrent_url=?",
+            (item['url'],)
+        ).fetchone()
+        assert row is not None
+        assert row['release_guid'] is None, (
+            "Empty/missing GUID must store NULL, not an empty string — "
+            "the index uses WHERE release_guid IS NOT NULL"
+        )
+
+
+def test_empty_string_guid_treated_as_missing(env):
+    """Some indexers send `guid=""`. Must be normalized to NULL so it
+    doesn't match other empty-guid rows and produce false dedup hits."""
+    import main
+
+    item_a = {
+        'url': 'https://stub.indexer/empty-guid-a.torrent',
+        'title': 'TestSeries v01 [Group]',
+        'protocol': 'torrent',
+        'guid': '',  # empty string
+        'indexer': 'TestIndexer',
+        '_score': 100,
+    }
+    item_b = {
+        'url': 'https://stub.indexer/empty-guid-b.torrent',
+        'title': 'TestSeries v02 [Group]',  # different volume, different URL
+        'protocol': 'torrent',
+        'guid': '',  # also empty
+        'indexer': 'TestIndexer',
+        '_score': 100,
+    }
+
+    async def _ok(*a, **kw):
+        return (True, 'TestQbit', 'dl-empty-guid')
+
+    async def _run():
+        import grab
+        with patch.object(grab, 'grab_url', _ok):
+            r1 = await main.grab_item(item_a, series_id=1)
+            r2 = await main.grab_item(item_b, series_id=1)
+            return r1, r2
+
+    r1, r2 = asyncio.run(_run())
+    assert r1 is True
+    assert r2 is True, (
+        "Two items with empty-string GUIDs at different URLs must both grab — "
+        "empty GUID is treated as 'no GUID', not as a dedup-key match"
+    )
+
+
+def test_guid_dedup_does_not_block_different_guids(env):
+    """Sanity: two items with different non-empty GUIDs at different URLs
+    both grab successfully (no false-positive blocking)."""
+    import main
+
+    item_a = {
+        'url': 'https://stub.indexer/a.torrent',
+        'title': 'TestSeries v01 [Group A]',
+        'protocol': 'torrent',
+        'guid': 'guid-A',
+        'indexer': 'TestIndexer',
+        '_score': 100,
+    }
+    item_b = {
+        'url': 'https://stub.indexer/b.torrent',
+        'title': 'TestSeries v02 [Group B]',  # different volume, different URL
+        'protocol': 'torrent',
+        'guid': 'guid-B',  # different GUID
+        'indexer': 'TestIndexer',
+        '_score': 95,
+    }
+
+    async def _ok(*a, **kw):
+        return (True, 'TestQbit', 'dl-x')
+
+    async def _run():
+        import grab
+        with patch.object(grab, 'grab_url', _ok):
+            r1 = await main.grab_item(item_a, series_id=1)
+            r2 = await main.grab_item(item_b, series_id=1)
+            return r1, r2
+
+    r1, r2 = asyncio.run(_run())
+    assert r1 is True
+    assert r2 is True, "different GUIDs must not block each other"
 
 
 # ───────────────────── grab → import → library ─────────────────────
