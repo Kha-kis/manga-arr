@@ -28,7 +28,7 @@
           </div>
           <div class="col-6">
             <div class="form-label">Uptime</div>
-            <span class="text-ember fw-semibold" style="font-size:0.9rem">{{ uptime }}</span>
+            <span class="text-ember fw-semibold" style="font-size:var(--text-lg)">{{ uptime }}</span>
           </div>
         </div>
       </div>
@@ -45,11 +45,11 @@
         <div class="row g-2">
           <div class="col-6">
             <div class="form-label">OS</div>
-            <span class="text-muted" style="font-size:0.85rem">{{ os_system }} {{ os_release }}</span>
+            <span class="text-muted" style="font-size:var(--text-base)">{{ os_system }} {{ os_release }}</span>
           </div>
           <div class="col-6">
             <div class="form-label">Python</div>
-            <span class="text-muted" style="font-size:0.85rem">{{ python_version }}</span>
+            <span class="text-muted" style="font-size:var(--text-base)">{{ python_version }}</span>
           </div>
         </div>
       </div>
@@ -65,11 +65,11 @@
       <div class="panel-body">
         <div class="mb-2">
           <div class="form-label">Path</div>
-          <code class="text-gold" style="font-size:0.8rem">{{ db_path }}</code>
+          <code class="text-gold" style="font-size:var(--text-base)">{{ db_path }}</code>
         </div>
         <div>
           <div class="form-label">Size</div>
-          <span class="text-muted" style="font-size:0.85rem">{{ db_size }}</span>
+          <span class="text-muted" style="font-size:var(--text-base)">{{ db_size }}</span>
         </div>
       </div>
     </div>
@@ -123,8 +123,8 @@
         {% for rf in root_folders %}
         <div class="{% if not loop.first %}mt-3 pt-3{% endif %}" {% if not loop.last %}style="border-bottom:1px solid var(--edge);padding-bottom:0.75rem"{% endif %}>
           <div class="d-flex align-items-center justify-content-between mb-1">
-            <code class="text-ember" style="font-size:0.8rem">{{ rf.path }}</code>
-            <span class="text-muted" style="font-size:0.78rem">
+            <code class="text-ember" style="font-size:var(--text-base)">{{ rf.path }}</code>
+            <span class="text-muted" style="font-size:var(--text-sm)">
               {{ rf.free_fmt }} free of {{ rf.total_fmt }}
             </span>
           </div>
@@ -137,7 +137,7 @@
               transition: width 0.3s;
             "></div>
           </div>
-          <div class="text-muted" style="font-size:0.72rem; margin-top:2px">{{ rf.used_pct }}% used</div>
+          <div class="text-muted" style="font-size:var(--text-sm); margin-top:2px">{{ rf.used_pct }}% used</div>
         </div>
         {% endfor %}
         {% else %}

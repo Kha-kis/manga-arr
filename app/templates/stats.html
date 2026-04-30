@@ -4,14 +4,14 @@
 
 {% block head_styles %}
 .stats-mini-lbl {
-  font-size: 0.72rem;
+  font-size: var(--text-sm);
   color: var(--text-2);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   font-weight: 600;
 }
 .stats-chart-label {
-  font-size: 0.72rem;
+  font-size: var(--text-sm);
   color: var(--text-2);
   font-variant-numeric: tabular-nums;
 }
@@ -79,12 +79,12 @@
         <div style="height:8px;background:var(--ink-5);border-radius:4px;overflow:hidden">
           <div style="width:{{ pct }}%;height:100%;border-radius:4px;background:{% if pct == 100 %}var(--jade){% else %}var(--ember){% endif %};transition:width .3s"></div>
         </div>
-        <div class="text-center mt-1" style="font-size:0.75rem; color:var(--text-2)">
+        <div class="text-center mt-1" style="font-size:var(--text-sm); color:var(--text-2)">
           {{ pct }}% complete
         </div>
         {% endif %}
         {% if volumes_stats.total_bytes %}
-        <div class="text-center mt-2" style="font-size:0.8rem; color:var(--text-2)">
+        <div class="text-center mt-2" style="font-size:var(--text-base); color:var(--text-2)">
           <i class="bi bi-hdd me-1"></i>{{ volumes_stats.total_bytes|format_bytes }} on disk
         </div>
         {% endif %}
@@ -119,13 +119,13 @@
               <div style="width:{{ bar_pct }}%; height:100%; background:var(--ember); border-radius:3px"></div>
               {% endif %}
             </div>
-            <span style="font-size:0.8rem; color:var(--text-2); min-width:30px; text-align:right">{{ cnt }}</span>
+            <span style="font-size:var(--text-base); color:var(--text-2); min-width:30px; text-align:right">{{ cnt }}</span>
           </div>
           {% endfor %}
         </div>
         <div class="mt-3">
           <a href="/history" class="btn btn-outline-ember btn-sm"><i class="bi bi-clock-history me-1"></i>View Full History</a>
-          <span class="ms-3" style="font-size:0.75rem;color:var(--text-2)">
+          <span class="ms-3" style="font-size:var(--text-sm);color:var(--text-2)">
             <i class="bi bi-hourglass me-1"></i>{{ pending_count }} pending
             &nbsp;·&nbsp;
             <i class="bi bi-x-octagon me-1"></i>{{ bl_count }} blocklisted
@@ -179,7 +179,7 @@
           <div style="flex:1; height:6px; background:var(--ink-5); border-radius:3px; overflow:hidden">
             <div style="width:{{ ((row['cnt'] / max_idx) * 100)|int }}%; height:100%; background:var(--jade); border-radius:3px"></div>
           </div>
-          <span style="font-size:0.78rem; color:var(--text-2); min-width:28px; text-align:right">{{ row['cnt'] }}</span>
+          <span style="font-size:var(--text-sm); color:var(--text-2); min-width:28px; text-align:right">{{ row['cnt'] }}</span>
         </div>
         {% endfor %}
       </div>
@@ -196,12 +196,12 @@
         {% for row in top_series %}
         <div class="d-flex align-items-center gap-2 mb-2">
           <a href="/series/{{ row['id'] }}" class="text-ember"
-             style="font-size:0.8rem; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1"
+             style="font-size:var(--text-base); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1"
              title="{{ row['title'] }}">{{ row['title'] }}</a>
           <div style="width:80px; height:6px; background:var(--ink-5); border-radius:3px; overflow:hidden; flex-shrink:0">
             <div style="width:{{ ((row['cnt'] / max_sc) * 100)|int }}%; height:100%; background:var(--gold); border-radius:3px"></div>
           </div>
-          <span style="font-size:0.75rem; color:var(--text-2); min-width:50px; text-align:right; flex-shrink:0">
+          <span style="font-size:var(--text-sm); color:var(--text-2); min-width:50px; text-align:right; flex-shrink:0">
             {{ row['cnt'] }} grab{% if row['cnt'] != 1 %}s{% endif %}
           </span>
         </div>
@@ -222,8 +222,8 @@
       {% for d in disk_info %}
       <div class="col-12 col-md-6">
         <div class="d-flex justify-content-between mb-1">
-          <span style="font-size:0.82rem; font-weight:600">{{ d['label'] }}</span>
-          <span style="font-size:0.75rem; color:var(--text-2)">
+          <span style="font-size:var(--text-base); font-weight:600">{{ d['label'] }}</span>
+          <span style="font-size:var(--text-sm); color:var(--text-2)">
             {{ d['used']|format_bytes }} / {{ d['total']|format_bytes }} ({{ d['pct'] }}%)
           </span>
         </div>
@@ -232,7 +232,7 @@
                 background:{% if d['pct'] > 90 %}var(--ruby){% elif d['pct'] > 75 %}var(--gold){% else %}var(--ember){% endif %}">
           </div>
         </div>
-        <div style="font-size:0.7rem; color:var(--text-2); margin-top:2px">
+        <div style="font-size:var(--text-xs); color:var(--text-2); margin-top:2px">
           {{ d['free']|format_bytes }} free
         </div>
       </div>

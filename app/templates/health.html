@@ -49,20 +49,20 @@
            style="border-bottom:1px solid var(--edge); {% if not c['ok'] %}background:{{ _colors[1] }}; border-left:3px solid {{ _colors[0] }};{% endif %}">
         <div class="d-flex align-items-center gap-2 flex-grow-1" style="min-width:0">
           {% if c['ok'] %}
-          <i class="bi bi-check-circle-fill text-jade" style="font-size:0.95rem" aria-hidden="true"></i>
+          <i class="bi bi-check-circle-fill text-jade" style="font-size:var(--text-lg)" aria-hidden="true"></i>
           {% else %}
-          <i class="bi {{ _colors[3] }}" style="font-size:0.95rem; color:{{ _colors[0] }}" aria-hidden="true"></i>
+          <i class="bi {{ _colors[3] }}" style="font-size:var(--text-lg); color:{{ _colors[0] }}" aria-hidden="true"></i>
           {% endif %}
-          <span style="font-size:0.85rem; font-weight:600">{{ c['name'] }}</span>
+          <span style="font-size:var(--text-base); font-weight:600">{{ c['name'] }}</span>
           {% if not c['ok'] %}
-          <span class="badge-status" style="font-size:0.6rem; background:{{ _colors[1] }}; color:{{ _colors[0] }}; border:1px solid {{ _colors[2] }}; text-transform:uppercase">{{ _sev }}</span>
+          <span class="badge-status" style="font-size:var(--text-2xs); background:{{ _colors[1] }}; color:{{ _colors[0] }}; border:1px solid {{ _colors[2] }}; text-transform:uppercase">{{ _sev }}</span>
           {% endif %}
         </div>
         <div class="d-flex align-items-center gap-2" style="min-width:0">
-          <span style="font-size:0.78rem; color:{% if not c['ok'] %}{{ _colors[0] }}{% else %}var(--text-2){% endif %}; text-align:right">{{ c['message'] }}</span>
+          <span style="font-size:var(--text-sm); color:{% if not c['ok'] %}{{ _colors[0] }}{% else %}var(--text-2){% endif %}; text-align:right">{{ c['message'] }}</span>
           {% if not c['ok'] and c['fix_url'] %}
           <a href="{{ c['fix_url'] }}" class="btn btn-sm py-0 px-2 flex-shrink-0"
-             style="font-size:0.68rem; color:{{ _colors[0] }}; border:1px solid {{ _colors[2] }}; background:{{ _colors[1] }}"
+             style="font-size:var(--text-xs); color:{{ _colors[0] }}; border:1px solid {{ _colors[2] }}; background:{{ _colors[1] }}"
              aria-label="Go to fix page for {{ c['name'] }}">Fix</a>
           {% endif %}
         </div>
@@ -70,12 +70,12 @@
       {% endfor %}
       <div class="d-flex align-items-center justify-content-between px-3 py-2"
            style="border-bottom:1px solid var(--edge)">
-        <span style="font-size:0.85rem; font-weight:600">Last RSS Poll</span>
-        <span style="font-size:0.78rem; color:var(--text-2)">{{ last_rss | format_date if last_rss else 'Never' }}</span>
+        <span style="font-size:var(--text-base); font-weight:600">Last RSS Poll</span>
+        <span style="font-size:var(--text-sm); color:var(--text-2)">{{ last_rss | format_date if last_rss else 'Never' }}</span>
       </div>
       <div class="d-flex align-items-center justify-content-between px-3 py-2">
-        <span style="font-size:0.85rem; font-weight:600">Last Backlog Search</span>
-        <span style="font-size:0.78rem; color:var(--text-2)" id="last-backlog">{{ last_backlog | format_date if last_backlog else 'Never' }}</span>
+        <span style="font-size:var(--text-base); font-weight:600">Last Backlog Search</span>
+        <span style="font-size:var(--text-sm); color:var(--text-2)" id="last-backlog">{{ last_backlog | format_date if last_backlog else 'Never' }}</span>
       </div>
     </div>
 
@@ -120,7 +120,7 @@
       <div class="panel-body" style="padding:0">
         {% for s in stale_series %}
         <div class="d-flex align-items-center justify-content-between px-3 py-2"
-             style="border-bottom:1px solid var(--edge); font-size:0.8rem">
+             style="border-bottom:1px solid var(--edge); font-size:var(--text-base)">
           <a href="/series/{{ s['id'] }}" class="text-ember">{{ s['title'] }}</a>
           <div class="d-flex align-items-center gap-2">
             <span class="badge-status badge-wanted">{{ s['wanted_count'] }} wanted</span>
@@ -139,7 +139,7 @@
     </div>
     {% else %}
     <div class="panel mb-3">
-      <div class="panel-body" style="font-size:0.85rem; color:var(--jade)">
+      <div class="panel-body" style="font-size:var(--text-base); color:var(--jade)">
         <i class="bi bi-check-circle me-1"></i>All monitored series have at least one grab
       </div>
     </div>
@@ -151,14 +151,14 @@
       <div class="panel-body" style="padding:0">
         {% for v in stale_grabs %}
         <div class="d-flex align-items-center justify-content-between px-3 py-2"
-             style="border-bottom:1px solid var(--edge); font-size:0.8rem">
+             style="border-bottom:1px solid var(--edge); font-size:var(--text-base)">
           <div>
             <a href="/series/{{ v['series_id'] }}" class="text-ember">{{ v['series_title'] }}</a>
             <span style="color:var(--text-2)" class="ms-2">{% if v['volume_num'] %}Vol {{ v['volume_num']|vol_display }}{% else %}Pack{% endif %}</span>
-            <span style="font-size:0.72rem; color:var(--text-3)" class="ms-2">since {{ v['grabbed_at'] | format_date if v['grabbed_at'] else '?' }}</span>
+            <span style="font-size:var(--text-sm); color:var(--text-3)" class="ms-2">since {{ v['grabbed_at'] | format_date if v['grabbed_at'] else '?' }}</span>
           </div>
           <button class="btn btn-sm py-0 px-2"
-                  style="font-size:0.7rem; color:var(--gold); border:1px solid rgba(240,184,40,0.4); background:var(--gold-bg)"
+                  style="font-size:var(--text-xs); color:var(--gold); border:1px solid rgba(240,184,40,0.4); background:var(--gold-bg)"
                   hx-post="/queue/grabbed/{{ v['id'] }}/reset"
                   hx-swap="none"
                   hx-disabled-elt="this"
@@ -177,14 +177,14 @@
       <div class="panel-body" style="padding:0">
         {% for iq in stuck_imports %}
         <div class="d-flex align-items-center justify-content-between px-3 py-2"
-             style="border-bottom:1px solid var(--edge); font-size:0.8rem">
+             style="border-bottom:1px solid var(--edge); font-size:var(--text-base)">
           <div>
             <a href="/series/{{ iq['series_id'] }}" class="text-ember">{{ iq['series_title'] }}</a>
             <span class="badge-status badge-hiatus ms-2">{{ iq['status'] }}</span>
-            <span style="font-size:0.7rem; color:var(--text-3)" class="ms-2">{{ iq['torrent_name'] or '' }}</span>
+            <span style="font-size:var(--text-xs); color:var(--text-3)" class="ms-2">{{ iq['torrent_name'] or '' }}</span>
           </div>
           <a href="/import" class="btn btn-sm py-0 px-2"
-             style="font-size:0.7rem; color:var(--iris); border:1px solid rgba(152,120,248,0.35); background:var(--iris-bg)">
+             style="font-size:var(--text-xs); color:var(--iris); border:1px solid rgba(152,120,248,0.35); background:var(--iris-bg)">
             <i class="bi bi-box-arrow-in-down me-1"></i>Review
           </a>
         </div>
@@ -197,13 +197,13 @@
     <div class="panel mb-0">
       {% if recent_errors %}
         {% for e in recent_errors %}
-        <div class="px-3 py-2" style="border-bottom:1px solid var(--edge); font-size:0.78rem">
-          <span style="font-size:0.7rem; color:var(--text-3)">{{ e['created_at'] | format_date if e['created_at'] else '' }}</span>
+        <div class="px-3 py-2" style="border-bottom:1px solid var(--edge); font-size:var(--text-sm)">
+          <span style="font-size:var(--text-xs); color:var(--text-3)">{{ e['created_at'] | format_date if e['created_at'] else '' }}</span>
           <span class="ms-2 text-ruby">{{ e['message'] }}</span>
         </div>
         {% endfor %}
       {% else %}
-      <div class="px-3 py-2" style="font-size:0.82rem; color:var(--jade)">
+      <div class="px-3 py-2" style="font-size:var(--text-base); color:var(--jade)">
         <i class="bi bi-check-circle me-1"></i>No recent errors
       </div>
       {% endif %}

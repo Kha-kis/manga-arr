@@ -15,8 +15,8 @@
 <div class="panel" style="border-color:rgba(220,53,69,.35)">
   <div class="panel-body">
     <div class="d-flex align-items-start gap-3">
-      <i class="bi bi-exclamation-triangle-fill" style="color:var(--ruby);font-size:1.1rem"></i>
-      <div style="font-size:.85rem;color:var(--text-2)">
+      <i class="bi bi-exclamation-triangle-fill" style="color:var(--ruby);font-size:var(--text-2xl)"></i>
+      <div style="font-size:var(--text-base);color:var(--text-2)">
         Some encrypted credentials could not be decrypted with the active key. Restore the matching key or re-enter the affected credentials before testing integrations.
       </div>
     </div>
@@ -31,13 +31,13 @@
     <div class="panel-header d-flex align-items-center gap-2">
       <i class="bi bi-{% if c.type == 'qbittorrent' %}hdd-fill{% elif c.type == 'sabnzbd' %}archive-fill{% else %}download{% endif %}"></i>
       {{ c.name }}
-      <span class="badge-status badge-unknown" style="font-size:.65rem">{{ c.type }}</span>
+      <span class="badge-status badge-unknown" style="font-size:var(--text-2xs)">{{ c.type }}</span>
       {% if not c.enabled %}
-      <span class="badge-status badge-wanted" style="font-size:.65rem">DISABLED</span>
+      <span class="badge-status badge-wanted" style="font-size:var(--text-2xs)">DISABLED</span>
       {% endif %}
-      <span style="font-size:.78rem;color:var(--text-2)">Priority: {{ c.priority }}</span>
+      <span style="font-size:var(--text-sm);color:var(--text-2)">Priority: {{ c.priority }}</span>
       {% for t in c.tags %}
-      <span class="badge-status badge-indexer" style="font-size:.65rem">{{ t }}</span>
+      <span class="badge-status badge-indexer" style="font-size:var(--text-2xs)">{{ t }}</span>
       {% endfor %}
       <div class="ms-auto d-flex gap-2">
         <button class="btn btn-sm btn-secondary"
@@ -54,7 +54,7 @@
       </div>
     </div>
     <div class="panel-body">
-      <div class="row g-3" style="font-size:.82rem">
+      <div class="row g-3" style="font-size:var(--text-base)">
         <div class="col-auto">
           <span style="color:var(--text-2)">Host: </span><span class="text-ember">{{ c.host or '—' }}</span>
         </div>
@@ -236,7 +236,7 @@
                   <input class="form-check-input" type="checkbox" name="sequential_order" value="1"
                          {% if c.sequential_order %}checked{% endif %} id="seq{{ c.id }}">
                   <label class="form-check-label" for="seq{{ c.id }}">Sequential Order
-                    <small style="display:block;color:var(--text-2);font-size:.75rem">Download first piece first</small>
+                    <small style="display:block;color:var(--text-2);font-size:var(--text-sm)">Download first piece first</small>
                   </label>
                 </div>
               </div>
@@ -245,7 +245,7 @@
                   <input class="form-check-input" type="checkbox" name="first_last_first" value="1"
                          {% if c.first_last_first %}checked{% endif %} id="flf{{ c.id }}">
                   <label class="form-check-label" for="flf{{ c.id }}">First and Last First
-                    <small style="display:block;color:var(--text-2);font-size:.75rem">Prioritize first and last pieces</small>
+                    <small style="display:block;color:var(--text-2);font-size:var(--text-sm)">Prioritize first and last pieces</small>
                   </label>
                 </div>
               </div>
@@ -264,14 +264,14 @@
                 <input class="form-check-input" type="checkbox" name="remove_completed" value="1"
                        {% if c.remove_completed %}checked{% endif %} id="rc{{ c.id }}">
                 <label class="form-check-label" for="rc{{ c.id }}">Remove Completed
-                  <small style="display:block;color:var(--text-2);font-size:.75rem">Remove from client after import when seeding is finished</small>
+                  <small style="display:block;color:var(--text-2);font-size:var(--text-sm)">Remove from client after import when seeding is finished</small>
                 </label>
               </div>
               <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" name="remove_failed" value="1"
                        {% if c.remove_failed %}checked{% endif %} id="rf{{ c.id }}">
                 <label class="form-check-label" for="rf{{ c.id }}">Remove Failed
-                  <small style="display:block;color:var(--text-2);font-size:.75rem">Delete stalled or failed downloads from this client</small>
+                  <small style="display:block;color:var(--text-2);font-size:var(--text-sm)">Delete stalled or failed downloads from this client</small>
                 </label>
               </div>
             </div>
@@ -297,7 +297,7 @@
   <div class="empty-state">
     <div class="empty-icon"><i class="bi bi-hdd-stack"></i></div>
     <p class="fw-semibold">No download clients configured</p>
-    <p style="font-size:0.82rem;color:var(--text-3)">Add qBittorrent, SABnzbd, Deluge, or other clients to enable automatic downloading.</p>
+    <p style="font-size:var(--text-base);color:var(--text-3)">Add qBittorrent, SABnzbd, Deluge, or other clients to enable automatic downloading.</p>
   </div>
 </div>
 {% endif %}
@@ -458,7 +458,7 @@
                   <div class="form-check form-switch">
                     <input class="form-check-input" type="checkbox" name="sequential_order" value="1" id="seq_new">
                     <label class="form-check-label" for="seq_new">Sequential Order
-                      <small style="display:block;color:var(--text-2);font-size:.75rem">Download first piece first</small>
+                      <small style="display:block;color:var(--text-2);font-size:var(--text-sm)">Download first piece first</small>
                     </label>
                   </div>
                 </div>
@@ -466,7 +466,7 @@
                   <div class="form-check form-switch">
                     <input class="form-check-input" type="checkbox" name="first_last_first" value="1" id="flf_new">
                     <label class="form-check-label" for="flf_new">First and Last First
-                      <small style="display:block;color:var(--text-2);font-size:.75rem">Prioritize first and last pieces</small>
+                      <small style="display:block;color:var(--text-2);font-size:var(--text-sm)">Prioritize first and last pieces</small>
                     </label>
                   </div>
                 </div>
@@ -485,13 +485,13 @@
               <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" name="remove_completed" value="1" id="rc_new">
                 <label class="form-check-label" for="rc_new">Remove Completed
-                  <small style="display:block;color:var(--text-2);font-size:.75rem">Remove from client after import when seeding is finished</small>
+                  <small style="display:block;color:var(--text-2);font-size:var(--text-sm)">Remove from client after import when seeding is finished</small>
                 </label>
               </div>
               <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" name="remove_failed" value="1" id="rf_new">
                 <label class="form-check-label" for="rf_new">Remove Failed
-                  <small style="display:block;color:var(--text-2);font-size:.75rem">Delete stalled or failed downloads from this client</small>
+                  <small style="display:block;color:var(--text-2);font-size:var(--text-sm)">Delete stalled or failed downloads from this client</small>
                 </label>
               </div>
             </div>
@@ -517,14 +517,14 @@
     Remote Path Mappings
   </div>
   <div class="panel-body">
-    <p style="font-size:.82rem;color:var(--text-2)" class="mb-3">
+    <p style="font-size:var(--text-base);color:var(--text-2)" class="mb-3">
       Used when the download client and Mangarr use different paths for the same folder.<br>
       <em>Example: qBittorrent saves to <code>/downloads/</code> but Mangarr sees it as <code>/data/downloads/</code></em>
     </p>
 
     {% if mappings %}
     <div class="table-wrap mb-3">
-    <table class="table table-sm mb-0" style="font-size:.85rem">
+    <table class="table table-sm mb-0" style="font-size:var(--text-base)">
       <thead>
         <tr>
           <th>Host</th>
@@ -556,7 +556,7 @@
     </table>
     </div>
     {% else %}
-    <p style="font-size:.82rem;color:var(--text-2)" class="mb-3">No mappings configured.</p>
+    <p style="font-size:var(--text-base);color:var(--text-2)" class="mb-3">No mappings configured.</p>
     {% endif %}
 
     <form method="POST" action="/download-clients/remote-path-mappings" class="row g-2 align-items-end">
@@ -587,7 +587,7 @@
   <div class="panel-header d-flex align-items-center gap-2">
     <i class="bi bi-sliders"></i>
     Completed Download Handling
-    {% if saved %}<span class="badge-status badge-downloaded ms-auto" style="font-size:.65rem">Saved</span>{% endif %}
+    {% if saved %}<span class="badge-status badge-downloaded ms-auto" style="font-size:var(--text-2xs)">Saved</span>{% endif %}
   </div>
   <div class="panel-body">
     <form method="POST" action="/download-clients/options">
@@ -598,7 +598,7 @@
                    value="1" id="opt_cdh" {% if options.completed_download_handling %}checked{% endif %}>
             <label class="form-check-label" for="opt_cdh">
               Enable
-              <small style="display:block;color:var(--text-2);font-size:.8rem">Mangarr monitors for completed downloads and imports them automatically.</small>
+              <small style="display:block;color:var(--text-2);font-size:var(--text-base)">Mangarr monitors for completed downloads and imports them automatically.</small>
             </label>
           </div>
         </div>
@@ -608,7 +608,7 @@
                    value="1" id="opt_fdh" {% if options.failed_download_handling %}checked{% endif %}>
             <label class="form-check-label" for="opt_fdh">
               Redownload Failed
-              <small style="display:block;color:var(--text-2);font-size:.8rem">Blocklist and automatically re-search when a download enters a failed state. Whether to remove the file from the client is configured per-client.</small>
+              <small style="display:block;color:var(--text-2);font-size:var(--text-base)">Blocklist and automatically re-search when a download enters a failed state. Whether to remove the file from the client is configured per-client.</small>
             </label>
           </div>
         </div>
@@ -618,7 +618,7 @@
                    value="1" id="opt_rfi" {% if options.redownload_failed_interactive %}checked{% endif %}>
             <label class="form-check-label" for="opt_rfi">
               Redownload Failed from Interactive Search
-              <small style="display:block;color:var(--text-2);font-size:.8rem">When a download fails, skip the automatic re-grab and leave the series for manual selection via interactive search.</small>
+              <small style="display:block;color:var(--text-2);font-size:var(--text-base)">When a download fails, skip the automatic re-grab and leave the series for manual selection via interactive search.</small>
             </label>
           </div>
         </div>

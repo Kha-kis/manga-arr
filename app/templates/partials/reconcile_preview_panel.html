@@ -53,7 +53,7 @@
 
   <div class="panel-body" style="padding:14px 16px">
     {% if just_applied is defined and just_applied > 0 %}
-    <div class="alert alert-info mb-3" style="font-size:0.85rem">
+    <div class="alert alert-info mb-3" style="font-size:var(--text-base)">
       <i class="bi bi-check-circle-fill me-1 text-jade"></i>
       Applied <strong>{{ just_applied }}</strong> safe chapter move(s).
       The panel now shows the fresh post-apply state.

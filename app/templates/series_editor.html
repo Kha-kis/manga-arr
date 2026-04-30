@@ -75,11 +75,11 @@
   <div class="page-heading mb-0">
     <i class="bi bi-pencil-square"></i>Series Editor
     {% if series %}
-    <span class="ms-1" style="font-size:0.75rem;vertical-align:middle;background:var(--ember-lo);color:var(--ember);border-radius:var(--radius-lg);padding:1px 8px">{{ series|length }}</span>
+    <span class="ms-1" style="font-size:var(--text-sm);vertical-align:middle;background:var(--ember-lo);color:var(--ember);border-radius:var(--radius-lg);padding:1px 8px">{{ series|length }}</span>
     {% endif %}
   </div>
   <div class="d-flex gap-2 flex-wrap align-items-center">
-    <span x-show="sel.length > 0" class="text-muted" style="font-size:0.8rem" x-text="sel.length + ' selected'"></span>
+    <span x-show="sel.length > 0" class="text-muted" style="font-size:var(--text-base)" x-text="sel.length + ' selected'"></span>
     <button class="btn btn-outline-ember btn-sm" @click="setAll(true)">
       <i class="bi bi-check-all me-1"></i>Select All
     </button>
@@ -166,9 +166,9 @@
         </td>
         <td>
           <a href="/series/{{ s['id'] }}" class="text-ember fw-semibold"
-             style="font-size:0.85rem" @click.stop>{{ s['title'] }}</a>
+             style="font-size:var(--text-base)" @click.stop>{{ s['title'] }}</a>
           {% if s['edition_type'] and s['edition_type'] != 'standard' %}
-          <span class="badge-status badge-edition-{{ s['edition_type'] }} ms-1" style="font-size:0.6rem">
+          <span class="badge-status badge-edition-{{ s['edition_type'] }} ms-1" style="font-size:var(--text-2xs)">
             {{ s['edition_type']|replace('_',' ')|title }}
           </span>
           {% endif %}
@@ -179,13 +179,13 @@
         </td>
         <td>
           {% if s['monitored'] %}
-          <span class="text-ember" style="font-size:0.78rem"><i class="bi bi-eye me-1"></i>Yes</span>
+          <span class="text-ember" style="font-size:var(--text-sm)"><i class="bi bi-eye me-1"></i>Yes</span>
           {% else %}
-          <span style="font-size:0.78rem; color:var(--text-3)"><i class="bi bi-eye-slash me-1"></i>No</span>
+          <span style="font-size:var(--text-sm); color:var(--text-3)"><i class="bi bi-eye-slash me-1"></i>No</span>
           {% endif %}
         </td>
         <td>
-          <span class="text-muted" style="font-size:0.75rem">{{ s['monitor_mode'] or 'all' }}</span>
+          <span class="text-muted" style="font-size:var(--text-sm)">{{ s['monitor_mode'] or 'all' }}</span>
         </td>
         <td>
           {% set have  = s['downloaded_count'] or 0 %}
@@ -195,14 +195,14 @@
           <div class="vol-bar mb-1">
             <div class="fill {% if pct == 100 %}complete{% endif %}" style="width:{{ pct }}%"></div>
           </div>
-          <span style="font-size:0.72rem; color:var(--text-3)">{{ have }}/{{ total }}</span>
+          <span style="font-size:var(--text-sm); color:var(--text-3)">{{ have }}/{{ total }}</span>
           {% else %}
-          <span style="font-size:0.72rem; color:var(--text-3)">{{ have }} dl</span>
+          <span style="font-size:var(--text-sm); color:var(--text-3)">{{ have }} dl</span>
 
           {% endif %}
         </td>
         <td>
-          <span class="text-muted" style="font-size:0.78rem">{{ s['quality_profile_name'] or '—' }}</span>
+          <span class="text-muted" style="font-size:var(--text-sm)">{{ s['quality_profile_name'] or '—' }}</span>
         </td>
       </tr>
       {% endfor %}
@@ -250,12 +250,12 @@
         <h6 class="modal-title text-ember">
           <i class="bi bi-pencil-square me-2"></i>Bulk Edit
           <span x-text="'(' + $store?.sel?.length + ' series)'" class="ms-1 text-muted"
-                style="font-size:0.8rem"></span>
+                style="font-size:var(--text-base)"></span>
         </h6>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
-        <p class="text-muted" style="font-size:0.8rem">Only fields with a selection will be changed. Leave as <em>— no change —</em> to skip.</p>
+        <p class="text-muted" style="font-size:var(--text-base)">Only fields with a selection will be changed. Leave as <em>— no change —</em> to skip.</p>
         <div class="row g-3">
           <div class="col-md-6">
             <label class="form-label">Monitored</label>

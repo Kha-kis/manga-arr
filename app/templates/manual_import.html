@@ -15,7 +15,7 @@
 <div class="panel mb-4">
   <div class="panel-header"><i class="bi bi-search"></i>Scan Directory</div>
   <div class="panel-body">
-    <p class="text-muted mb-3" style="font-size:0.83rem">
+    <p class="text-muted mb-3" style="font-size:var(--text-base)">
       Scan a folder for manga files (.cbz, .cbr, .zip, .epub, .pdf, .mobi).
       Mangarr will attempt to match files to series in your library and detect volume numbers.
     </p>
@@ -29,7 +29,7 @@
         <i class="bi bi-search me-1"></i>Scan
       </button>
     </div>
-    <div id="scan-error" class="text-ruby mt-2" style="display:none; font-size:0.82rem"></div>
+    <div id="scan-error" class="text-ruby mt-2" style="display:none; font-size:var(--text-base)"></div>
   </div>
 </div>
 
@@ -154,8 +154,8 @@ function renderResults(files) {
       <td><input type="checkbox" class="file-chk" data-idx="${idx}"
                  ${matchedId ? 'checked' : ''} onchange="updateImportBtn()"></td>
       <td>
-        <span style="font-size:0.8rem; font-family:var(--font-mono); word-break:break-all">${escHtml(f.filename)}</span>
-        <div style="font-size:0.68rem; color:var(--text-3)">${escHtml(f.path)}</div>
+        <span style="font-size:var(--text-base); font-family:var(--font-mono); word-break:break-all">${escHtml(f.filename)}</span>
+        <div style="font-size:var(--text-xs); color:var(--text-3)">${escHtml(f.path)}</div>
       </td>
       <td>
         <select class="form-select form-select-sm series-sel" data-idx="${idx}" onchange="updateImportBtn()">
@@ -167,7 +167,7 @@ function renderResults(files) {
                value="${f.proposed_volume !== null && f.proposed_volume !== undefined ? f.proposed_volume : ''}"
                placeholder="e.g. 3" min="0" step="0.5" style="width:80px">
       </td>
-      <td style="font-size:0.75rem; color:var(--text-2)">${escHtml(f.size)}</td>
+      <td style="font-size:var(--text-sm); color:var(--text-2)">${escHtml(f.size)}</td>
       <td id="status-${idx}">
         ${matchedId
           ? '<span class="badge-status badge-downloaded">Matched</span>'
@@ -224,7 +224,7 @@ async function doImport() {
   const progSection = document.getElementById('import-progress');
   const progEl      = document.getElementById('import-results');
   progSection.style.display = 'block';
-  progEl.innerHTML = '<div class="text-muted" style="font-size:0.82rem">Importing…</div>';
+  progEl.innerHTML = '<div class="text-muted" style="font-size:var(--text-base)">Importing…</div>';
 
   try {
     const resp = await fetch('/api/manual-import/import', {
@@ -234,7 +234,7 @@ async function doImport() {
     });
     const data = await resp.json();
 
-    let html = `<div class="mb-2 fw-semibold" style="font-size:0.85rem">
+    let html = `<div class="mb-2 fw-semibold" style="font-size:var(--text-base)">
       Imported ${data.imported} / ${data.total} file${data.total !== 1 ? 's' : ''}
     </div>`;
     for (const r of (data.results || [])) {
@@ -242,14 +242,14 @@ async function doImport() {
       if (r.ok) {
         html += `<div class="d-flex align-items-center gap-2 mb-1">
           <span class="badge-status badge-downloaded"><i class="bi bi-check"></i></span>
-          <span style="font-size:0.78rem">${escHtml(fname)}</span>
-          <span style="font-size:0.72rem; color:var(--text-3)">→ ${escHtml(r.dst || '')}</span>
+          <span style="font-size:var(--text-sm)">${escHtml(fname)}</span>
+          <span style="font-size:var(--text-sm); color:var(--text-3)">→ ${escHtml(r.dst || '')}</span>
         </div>`;
       } else {
         html += `<div class="d-flex align-items-center gap-2 mb-1">
           <span class="badge-status badge-wanted"><i class="bi bi-x"></i></span>
-          <span style="font-size:0.78rem">${escHtml(fname)}</span>
-          <span style="font-size:0.72rem; color:var(--ruby)">${escHtml(r.message || 'Failed')}</span>
+          <span style="font-size:var(--text-sm)">${escHtml(fname)}</span>
+          <span style="font-size:var(--text-sm); color:var(--ruby)">${escHtml(r.message || 'Failed')}</span>
         </div>`;
       }
     }

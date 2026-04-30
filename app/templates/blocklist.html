@@ -7,9 +7,9 @@
 <div class="d-flex align-items-center justify-content-between mb-4">
   <div class="page-heading mb-0"><i class="bi bi-slash-circle-fill"></i>Blocklist</div>
   <div class="d-flex align-items-center gap-3">
-    {% if rows %}<span class="text-muted" style="font-size:0.8rem">{{ rows|length }} entr{{ 'ies' if rows|length != 1 else 'y' }}</span>{% endif %}
+    {% if rows %}<span class="text-muted" style="font-size:var(--text-base)">{{ rows|length }} entr{{ 'ies' if rows|length != 1 else 'y' }}</span>{% endif %}
     {% if blocklist_ttl_days and blocklist_ttl_days|int > 0 %}
-    <span style="font-size:0.75rem; color:var(--text-3)"><i class="bi bi-clock me-1"></i>Auto-expires after {{ blocklist_ttl_days }}d</span>
+    <span style="font-size:var(--text-sm); color:var(--text-3)"><i class="bi bi-clock me-1"></i>Auto-expires after {{ blocklist_ttl_days }}d</span>
     {% endif %}
     {% if rows %}
     <button class="btn btn-danger-soft btn-sm"
@@ -43,10 +43,10 @@
       <tr>
         <td>
           {% if r['series_id'] %}
-          <a href="/series/{{ r['series_id'] }}" class="fw-semibold text-ember" style="font-size:0.82rem">{{ r['series_title'] or '—' }}</a>
-          {% else %}<span style="font-size:0.82rem; color:var(--text-3)">—</span>{% endif %}
+          <a href="/series/{{ r['series_id'] }}" class="fw-semibold text-ember" style="font-size:var(--text-base)">{{ r['series_title'] or '—' }}</a>
+          {% else %}<span style="font-size:var(--text-base); color:var(--text-3)">—</span>{% endif %}
         </td>
-        <td class="text-muted" style="font-size:0.78rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:380px"
+        <td class="text-muted" style="font-size:var(--text-sm); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:380px"
             title="{{ r['torrent_name'] or r['torrent_url'] or '' }}">
           {{ r['torrent_name'] or r['torrent_url'] or '—' }}
         </td>
@@ -56,11 +56,11 @@
             {% if r['protocol'] %}<span class="badge-status badge-{{ r['protocol'] }}">{{ r['protocol']|format_protocol }}</span>{% endif %}
           </div>
         </td>
-        <td class="text-muted" style="font-size:0.75rem">{{ r['size_bytes']|format_bytes if r['size_bytes'] else '—' }}</td>
-        <td class="text-muted" style="font-size:0.75rem">{{ r['reason'] or '—' }}</td>
-        <td class="text-muted" style="font-size:0.72rem; white-space:nowrap">{{ r['added_at'] | format_date }}</td>
+        <td class="text-muted" style="font-size:var(--text-sm)">{{ r['size_bytes']|format_bytes if r['size_bytes'] else '—' }}</td>
+        <td class="text-muted" style="font-size:var(--text-sm)">{{ r['reason'] or '—' }}</td>
+        <td class="text-muted" style="font-size:var(--text-sm); white-space:nowrap">{{ r['added_at'] | format_date }}</td>
         {% if blocklist_ttl_days > 0 %}
-        <td style="font-size:0.72rem; color:var(--text-3); white-space:nowrap">
+        <td style="font-size:var(--text-sm); color:var(--text-3); white-space:nowrap">
           {{ r['expires_at'] | format_date if r['expires_at'] else '—' }}
         </td>
         {% endif %}
@@ -82,7 +82,7 @@
 <div class="empty-state">
   <div class="empty-icon"><i class="bi bi-slash-circle"></i></div>
   <p class="fw-semibold">Blocklist is empty</p>
-  <p style="font-size:0.82rem; color:var(--text-3)">
+  <p style="font-size:var(--text-base); color:var(--text-3)">
     Releases marked as failed in <a href="/history" class="text-ember">History</a> appear here.<br>
     Blocked releases are skipped during grabs{% if blocklist_ttl_days > 0 %} and auto-expire after {{ blocklist_ttl_days }} days{% endif %}.
   </p>
