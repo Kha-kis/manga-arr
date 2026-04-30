@@ -260,6 +260,28 @@ def vol_num_to_display(vol_num) -> str:
     return f"{float(vol_num):g}"
 
 
+def vol_num_to_search(vol_num) -> str:
+    """Format a float volume number for indexer search queries.
+    Real-world torrent titles for half/quarter volumes use decimal notation
+    ("v3.5", "vol 3.25"), so half/quarter values keep their fractional form.
+    Sub-volume markers (3.01→a, 3.02→b) and decimals indexers don't use are
+    truncated to the integer base for a broader search.
+    None->''  3.0->'3'  3.01->'3'  3.5->'3.5'  3.25->'3.25'  3.75->'3.75'
+    """
+    if vol_num is None:
+        return ''
+    try:
+        base = int(vol_num)
+        frac = round((float(vol_num) - base) * 100)
+    except (TypeError, ValueError):
+        return str(vol_num)
+    if frac == 0:
+        return str(base)
+    if frac in (50, 25, 75):
+        return f"{float(vol_num):g}"
+    return str(base)
+
+
 def build_volume_label(vol_num, vol_range, pack_type) -> str:
     """Build a human-readable label like 'Vol 5', 'Vol 1–5', 'Complete Series', 'Pack'."""
     if vol_num is not None:

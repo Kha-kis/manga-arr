@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from routers._templates import templates
 from shared import (
     build_order_by, cascade_chapters, get_cfg, get_db, get_root_folders,
-    quality_rank, vol_num_to_display, with_flash,
+    quality_rank, vol_num_to_display, vol_num_to_search, with_flash,
 )
 
 router = APIRouter()
@@ -1892,17 +1892,17 @@ async def search_volume_releases(series_id: int, volume_id: int):
         return JSONResponse({"error": "Not found"}, status_code=404)
 
     vol_num = v['volume_num']
-    query   = f"{s['title']} v{int(vol_num)}" if vol_num else s['title']
+    query   = f"{s['title']} v{vol_num_to_search(vol_num)}" if vol_num else s['title']
     all_match_patterns = list({s['search_pattern'], s['title']} | {a['alias'] for a in alias_rows})
 
     queries = [query]
     if query != s['title']:
         queries.append(s['title'])
     if s['search_pattern'] not in (query, s['title']):
-        sp_q = f"{s['search_pattern']} v{int(vol_num)}" if vol_num else s['search_pattern']
+        sp_q = f"{s['search_pattern']} v{vol_num_to_search(vol_num)}" if vol_num else s['search_pattern']
         queries.append(sp_q)
     for a in alias_rows[:3]:
-        alias_q = f"{a['alias']} v{int(vol_num)}" if vol_num else a['alias']
+        alias_q = f"{a['alias']} v{vol_num_to_search(vol_num)}" if vol_num else a['alias']
         queries.append(alias_q)
 
     seen_q: set[str] = set()

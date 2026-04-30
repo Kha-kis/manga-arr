@@ -94,7 +94,7 @@ from parsing import (
 )
 from evaluation import score_release
 from events import add_history, broadcast_queue_event, log_event
-from shared import get_cfg, get_db
+from shared import get_cfg, get_db, vol_num_to_search
 from volumes import _cascade_chapters
 
 
@@ -861,7 +861,7 @@ async def search_complete_pack(series_id: int, title: str,
     # Cap gap-fill to 10 individual searches to avoid flooding the indexer
     gap_grabbed = 0
     for vol_num in sorted(gaps)[:10]:
-        query = f"{title} vol {int(vol_num)}"
+        query = f"{title} vol {vol_num_to_search(vol_num)}"
         for item in await _search_all(query):
             if item['url'] in seen_urls or item['url'] in blocked_urls:
                 continue
