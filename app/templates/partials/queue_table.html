@@ -238,7 +238,7 @@
               {# Volume cell prefers the range start when a range is set — that's the operator's anchor #}
               {% set vol_input_val = vol_rs if vol_rs is not none else vol_start %}
               {% set unmapped = not vol_start and not chap_start and not vol_rs and not chap_re %}
-              <tr id="mr_{{ f['id'] }}" {% if unmapped %}style="background:rgba(240,80,80,0.06)"{% endif %}>
+              <tr id="mr_{{ f['id'] }}" {% if unmapped %}style="background:var(--ruby-tint)"{% endif %}>
                 <td style="font-size:var(--text-base); font-family:var(--font-mono); word-break:break-all">
                   {{ f['filename'] }}
                   {% if is_chapter %}<span class="badge-status badge-sky ms-1" style="font-size:var(--text-2xs)">chapter</span>{% endif %}

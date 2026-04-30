@@ -122,6 +122,14 @@
       --sky-soft:     rgba(88,168,248,0.20);
       --sky-medium:   rgba(88,168,248,0.30);
       --sky-strong:   rgba(88,168,248,0.40);
+
+      /* low-alpha tints (subtle backgrounds, hover hints, selected rows) */
+      --ember-tint:   rgba(240,132,40,0.07);
+      --ruby-tint:    rgba(240,80,80,0.07);
+      --jade-tint:    rgba(34,200,122,0.07);
+      --gold-tint:    rgba(240,184,40,0.07);
+      --iris-tint:    rgba(152,120,248,0.07);
+      --sky-tint:     rgba(88,168,248,0.07);
       /* Layout */
       --sidebar-w:  228px;
       --sidebar-collapsed: 60px;
@@ -1610,21 +1618,8 @@
     .panel-editorial > .panel-editorial-body { padding: 24px; }
 
     /* ═══════════════════════════════════════════════════════════════
-       BUTTON VARIANTS — ghost, icon-only, action
+       BUTTON VARIANTS — icon-only, action
     ═══════════════════════════════════════════════════════════════ */
-    .btn-ghost {
-      background: transparent;
-      border: none;
-      color: var(--text-2);
-      padding: 8px 16px;
-      border-radius: var(--radius-sm);
-      font-family: var(--font-ui);
-      font-weight: 500;
-      font-size: var(--text-base);
-      transition: color 0.15s;
-    }
-    .btn-ghost:hover { text-decoration: underline; color: var(--text); }
-
     .btn-icon {
       width: 32px;
       height: 32px;

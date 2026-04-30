@@ -427,7 +427,7 @@
                 border:2px solid transparent; cursor:pointer; transition:all 0.15s"
          :style="has({{ s['id'] }}) ?
            { borderColor: 'var(--ember)', background: 'rgba(240,132,40,0.15)' } :
-           { borderColor: 'transparent', background: 'rgba(240,132,40,0.08)' }"
+           { borderColor: 'transparent', background: 'var(--ember-tint)' }"
          @click="pick({{ s['id'] }})"
          @keydown.space.prevent="pick({{ s['id'] }})"
          @keydown.enter.prevent="pick({{ s['id'] }})">

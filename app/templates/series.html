@@ -118,11 +118,11 @@
 }
 .action-btn.primary { background: var(--ember); border-color: var(--ember); color: #fff; }
 .action-btn.primary:hover { background: var(--ember-hi); border-color: var(--ember-hi); box-shadow: 0 4px 20px var(--ember-soft); transform: translateY(-1px); }
-.action-btn.danger { border-color: var(--ruby-soft); color: var(--ruby); background: rgba(240,80,80,0.06); }
+.action-btn.danger { border-color: var(--ruby-soft); color: var(--ruby); background: var(--ruby-tint); }
 .action-btn.danger:hover { background: var(--ruby-bg); border-color: var(--ruby); }
-.action-btn.success { border-color: var(--jade-soft); color: var(--jade); background: rgba(34,200,122,0.06); }
+.action-btn.success { border-color: var(--jade-soft); color: var(--jade); background: var(--jade-tint); }
 .action-btn.success:hover { background: var(--jade-bg); border-color: var(--jade); }
-.action-btn.sky { border-color: var(--sky-soft); color: var(--sky); background: rgba(88,168,248,0.06); }
+.action-btn.sky { border-color: var(--sky-soft); color: var(--sky); background: var(--sky-tint); }
 .action-btn.sky:hover { background: var(--sky-bg); border-color: var(--sky); }
 .meta-row { font-size: var(--text-base); color: rgba(228,228,240,0.8); display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
 .meta-row i { color: rgba(228,228,240,0.4); width: 14px; text-align: center; }
@@ -953,13 +953,13 @@ function _renderSrchTable(results) {
     const disabled  = r.seen || r.blocked || noSeeders;
     const btnStyle  = disabled
       ? 'color:var(--text-3); border:1px solid var(--edge-2); background:transparent'
-      : 'color:var(--jade); border:1px solid var(--jade-medium); background:rgba(34,200,122,0.08)';
+      : 'color:var(--jade); border:1px solid var(--jade-medium); background:var(--jade-tint)';
     const btnLabel  = r.seen ? 'Seen' : r.blocked ? 'Blocked' : noSeeders ? 'No seeds' : '<i class="bi bi-cloud-download me-1"></i>Grab';
     const origIdx   = _searchResults.indexOf(r);
     const grabIdx   = origIdx >= 0 ? origIdx : idx;
     let statusBadge;
     if (r.status === 'would_grab')      statusBadge = '<span class="badge-status badge-downloading">Would Grab</span>';
-    else if (r.status === 'low_score')  statusBadge = '<span class="badge-status badge-grabbed" style="color:var(--gold);background:rgba(240,184,40,0.1)">Low Score</span>';
+    else if (r.status === 'low_score')  statusBadge = '<span class="badge-status badge-grabbed" style="color:var(--gold);background:var(--gold-bg)">Low Score</span>';
     else                                statusBadge = '<span class="badge-status badge-wanted">Rejected</span>';
     const sc = r.score > 0 ? 'var(--jade)' : r.score < 0 ? 'var(--ruby)' : 'var(--text-3)';
     const ss = r.score > 0 ? `+${r.score}` : `${r.score}`;
@@ -1040,7 +1040,7 @@ async function grabDDL(btn) {
     const resp = await fetch(`/api/series/${_searchSeriesId}/volumes/${_searchVolumeId}/grab-ddl`, {method: 'POST'});
     const d = await resp.json();
     if (d.ok) {
-      btn.style.color = 'var(--jade)'; btn.style.borderColor = 'var(--jade-strong)'; btn.style.background = 'rgba(34,200,122,0.08)';
+      btn.style.color = 'var(--jade)'; btn.style.borderColor = 'var(--jade-strong)'; btn.style.background = 'var(--jade-tint)';
       btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Queued';
       setTimeout(() => { bootstrap.Modal.getInstance(document.getElementById('searchModal'))?.hide(); location.reload(); }, 1200);
     } else {
