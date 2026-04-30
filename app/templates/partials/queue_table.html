@@ -113,7 +113,7 @@
         {% if row.stage == 'review' %}
         <div class="d-flex gap-1 justify-content-end">
           <button class="btn btn-sm px-2 py-1 text-xs"
-                  style="color:var(--iris); border:1px solid rgba(152,120,248,0.3); background:var(--iris-bg)"
+                  style="color:var(--iris); border:1px solid var(--iris-medium); background:var(--iris-bg)"
                   data-bs-toggle="modal" data-bs-target="#review-{{ row.queue_id }}">
             <i class="bi bi-box-arrow-in-down me-1"></i>Import
           </button>
@@ -126,7 +126,7 @@
         {% elif row.stage == 'pending' %}
         <div class="d-flex gap-1 justify-content-end">
           <button class="btn btn-sm px-2 py-1 text-ember text-xs"
-                  style="border:1px solid rgba(240,132,40,0.3); background:var(--ember-lo)"
+                  style="border:1px solid var(--ember-medium); background:var(--ember-lo)"
                   title="Force grab now — bypass delay profile"
                   hx-post="/queue/pending/{{ row.pending_id }}/force-grab"
                   hx-target="#queue-body"
@@ -148,7 +148,7 @@
         {% elif row.stage == 'warning' %}
         <div class="d-flex gap-1 justify-content-end">
           <button class="btn btn-sm px-2 py-1 text-gold text-xs"
-                  style="border:1px solid rgba(240,184,40,0.3); background:var(--gold-bg)"
+                  style="border:1px solid var(--gold-medium); background:var(--gold-bg)"
                   title="Reset volumes to wanted and re-search"
                   hx-post="/queue/grabbed/{{ row.hash }}/reset-all"
                   hx-target="#queue-body"
@@ -161,7 +161,7 @@
         {% elif row.hash %}
         <div class="d-flex gap-1 justify-content-end">
           <button class="btn btn-sm px-2 py-1 text-xs"
-                  style="color:var(--ruby); border:1px solid rgba(240,80,80,0.25); background:var(--ruby-bg)"
+                  style="color:var(--ruby); border:1px solid var(--ruby-soft); background:var(--ruby-bg)"
                   data-bs-toggle="modal" data-bs-target="#rm-{{ row.hash }}">
             <i class="bi bi-x-circle me-1"></i>Remove
           </button>
@@ -369,7 +369,7 @@
           <div class="d-flex gap-1 justify-content-end">
             {% if job.status == 'error' %}
             <button class="btn btn-sm px-2 py-1 text-xs"
-                    style="color:var(--jade); border:1px solid rgba(34,200,122,0.25); background:var(--jade-bg)"
+                    style="color:var(--jade); border:1px solid var(--jade-soft); background:var(--jade-bg)"
                     title="Retry this download"
                     hx-post="/api/suwayomi/jobs/{{ job.job_id }}/retry"
                     hx-swap="none"
@@ -543,7 +543,7 @@
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
             <button type="submit" class="btn btn-sm"
-                    style="background:var(--ruby-bg); border:1px solid rgba(240,80,80,0.35); color:var(--ruby); font-weight:600">
+                    style="background:var(--ruby-bg); border:1px solid var(--ruby-strong); color:var(--ruby); font-weight:600">
               <i class="bi bi-x-circle me-1"></i>Remove
             </button>
           </div>
