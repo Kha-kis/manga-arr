@@ -128,7 +128,7 @@
           {% set _tracked = ed_val in tracked_editions %}
           <button type="button" class="btn btn-xs ed-btn {% if loop.first %}active{% endif %}" data-ed="{{ ed_val }}"
                   style="font-size:var(--text-2xs); padding:2px 6px; border-radius:4px;
-                         {% if loop.first %}background:var(--ember-lo); border:1px solid var(--ember); color:var(--ember)
+                         {% if loop.first %}background:var(--ember-bg); border:1px solid var(--ember); color:var(--ember)
                          {% else %}background:transparent; border:1px solid var(--edge-2); color:var(--text-2){% endif %}"
                   onclick="setEd({{ card_idx }}, '{{ ed_val }}', this)">
             {% if _tracked %}<i class="bi bi-check-circle-fill me-1" style="font-size:var(--text-2xs)"></i>{% endif %}{{ ed_label }}
@@ -239,7 +239,7 @@
 </style>
 <script>
 var ED_COLORS = {
-  standard:       ['var(--ember)',    'var(--ember-lo)',            '1px solid var(--ember)'],
+  standard:       ['var(--ember)',    'var(--ember-bg)',            '1px solid var(--ember)'],
   official_color: ['var(--gold)',     'var(--gold-bg)',               '1px solid var(--gold)'],
   colored:        ['var(--iris)',     'var(--iris-bg)',              '1px solid var(--iris)'],
   omnibus:        ['var(--ember-hi)', 'rgba(255,171,94,0.12)',       '1px solid var(--ember-hi)'],
