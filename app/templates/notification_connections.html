@@ -37,7 +37,7 @@
 {%- endmacro %}
 
 {% macro advanced_json_help() -%}
-<div class="form-text mt-2" style="font-size:.78rem">
+<div class="form-text mt-2" style="font-size:var(--text-sm)">
   Discord: <code>{"webhook_url":"..."}</code><br>
   Telegram: <code>{"bot_token":"...","chat_id":"..."}</code><br>
   Ntfy: <code>{"server":"https://ntfy.sh","topic":"...","token":"..."}</code><br>
@@ -60,10 +60,10 @@
 <div class="panel" style="border-color:rgba(220,53,69,.35)">
   <div class="panel-body">
     <div class="d-flex align-items-start gap-3">
-      <i class="bi bi-exclamation-triangle-fill" style="color:var(--ruby);font-size:1.1rem"></i>
+      <i class="bi bi-exclamation-triangle-fill" style="color:var(--ruby);font-size:var(--text-2xl)"></i>
       <div>
         <div class="fw-semibold mb-1">Some notification secrets could not be decrypted</div>
-        <div style="font-size:.85rem;color:var(--text-2)">
+        <div style="font-size:var(--text-base);color:var(--text-2)">
           Restore the matching secret key or re-enter the affected credentials before testing or saving these connections.
         </div>
       </div>
@@ -79,8 +79,8 @@
     <div class="panel-header d-flex align-items-center gap-2">
       <i class="bi bi-{% if conn.type == 'discord' %}discord{% elif conn.type == 'telegram' %}telegram{% elif conn.type == 'slack' %}slack{% elif conn.type == 'email' %}envelope-fill{% else %}bell-fill{% endif %}"></i>
       {{ conn.name }}
-      <span class="badge-status badge-unknown" style="font-size:.65rem">{{ conn.type }}</span>
-      {% if not conn.enabled %}<span class="badge-status badge-wanted" style="font-size:.65rem">DISABLED</span>{% endif %}
+      <span class="badge-status badge-unknown" style="font-size:var(--text-2xs)">{{ conn.type }}</span>
+      {% if not conn.enabled %}<span class="badge-status badge-wanted" style="font-size:var(--text-2xs)">DISABLED</span>{% endif %}
       <div class="ms-auto d-flex gap-2">
         <button class="btn btn-sm btn-secondary"
                 onclick="testConn({{ conn.id }}, this)" title="Send test notification" aria-label="Test notification">
@@ -152,7 +152,7 @@
             </button>
           </div>
 
-          <div class="alert alert-secondary py-2 px-3 mb-3" data-advanced-only-notice style="display:none;font-size:.82rem">
+          <div class="alert alert-secondary py-2 px-3 mb-3" data-advanced-only-notice style="display:none;font-size:var(--text-base)">
             This provider stays on Advanced JSON for now. Mangarr will preserve unknown keys already stored in the settings blob.
           </div>
 
@@ -175,7 +175,7 @@
               <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" name="{{ flag }}" value="1"
                        {% if conn[flag] %}checked{% endif %} id="{{ flag }}_{{ conn.id }}">
-                <label class="form-check-label" for="{{ flag }}_{{ conn.id }}" style="font-size:.85rem">
+                <label class="form-check-label" for="{{ flag }}_{{ conn.id }}" style="font-size:var(--text-base)">
                   {{ label }}
                 </label>
               </div>
@@ -200,7 +200,7 @@
 <div class="empty-state">
   <div class="empty-icon"><i class="bi bi-bell"></i></div>
   <p class="fw-semibold">No notification connections</p>
-  <p style="font-size:0.82rem;color:var(--text-3)">Add Discord, Telegram, Ntfy, Gotify, email, or webhook connections.</p>
+  <p style="font-size:var(--text-base);color:var(--text-3)">Add Discord, Telegram, Ntfy, Gotify, email, or webhook connections.</p>
 </div>
 {% endif %}
 </div>
@@ -248,7 +248,7 @@
             </button>
           </div>
 
-          <div class="alert alert-secondary py-2 px-3 mb-3" data-advanced-only-notice style="display:none;font-size:.82rem">
+          <div class="alert alert-secondary py-2 px-3 mb-3" data-advanced-only-notice style="display:none;font-size:var(--text-base)">
             This provider stays on Advanced JSON for now. Use the JSON editor below.
           </div>
 
@@ -272,7 +272,7 @@
                 <input class="form-check-input" type="checkbox" name="{{ flag }}" value="1"
                        {% if 'health' not in flag %}checked{% endif %}
                        id="{{ flag }}_new">
-                <label class="form-check-label" for="{{ flag }}_new" style="font-size:.85rem">{{ label }}</label>
+                <label class="form-check-label" for="{{ flag }}_new" style="font-size:var(--text-base)">{{ label }}</label>
               </div>
               {% endfor %}
             </div>

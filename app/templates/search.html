@@ -20,11 +20,11 @@
 <div class="section-label mb-3">
   Results for "{{ query }}" — {{ search_results|length }} found
   {% if source_used == 'mangaupdates' %}
-  <span class="badge-status badge-src-mangaupdates ms-2" style="text-transform:none; letter-spacing:0; font-size:0.7rem">
+  <span class="badge-status badge-src-mangaupdates ms-2" style="text-transform:none; letter-spacing:0; font-size:var(--text-xs)">
     <i class="bi bi-database me-1"></i>MangaUpdates fallback
   </span>
   {% else %}
-  <span class="badge-status badge-src-anilist ms-2" style="text-transform:none; letter-spacing:0; font-size:0.7rem">
+  <span class="badge-status badge-src-anilist ms-2" style="text-transform:none; letter-spacing:0; font-size:var(--text-xs)">
     <i class="bi bi-database me-1"></i>AniList
   </span>
   {% endif %}
@@ -60,7 +60,7 @@
         <span class="badge-status badge-format-{{ fmt }}">{{ r.format|replace('_',' ')|title }}</span>
         {% endif %}
         {% if r.source == 'mangaupdates' %}
-        <span class="badge-status badge-src-mangaupdates" style="font-size:0.58rem">MU</span>
+        <span class="badge-status badge-src-mangaupdates" style="font-size:var(--text-2xs)">MU</span>
         {% endif %}
       </div>
 
@@ -70,9 +70,9 @@
 
       {% if tracked_editions %}
       <div class="d-flex flex-wrap gap-1 mt-1">
-        <span style="font-size:0.62rem; color:var(--text-3)">Tracked:</span>
+        <span style="font-size:var(--text-2xs); color:var(--text-3)">Tracked:</span>
         {% for ed in tracked_editions %}
-        <span class="badge-status badge-edition-{{ ed }}" style="font-size:0.58rem">
+        <span class="badge-status badge-edition-{{ ed }}" style="font-size:var(--text-2xs)">
           <i class="bi bi-check me-1"></i>{{ ed|replace('_',' ')|title if ed != 'standard' else 'B&W' }}
         </span>
         {% endfor %}
@@ -83,7 +83,7 @@
     {# ── Actions ── #}
     <div class="search-result-actions">
       {% if already %}
-      <div class="text-center text-jade" style="font-size:0.8rem">
+      <div class="text-center text-jade" style="font-size:var(--text-base)">
         <i class="bi bi-check-circle me-1"></i>In library
       </div>
       {% else %}
@@ -100,7 +100,7 @@
         <input type="hidden" name="total_chapters" value="{{ r.chapters or 0 }}">
         <input type="hidden" name="pub_year"       value="{{ r.pub_year or 0 }}">
         {% if root_folders|length > 1 %}
-        <select name="root_folder_id" class="form-select form-select-sm mb-2" style="font-size:0.75rem">
+        <select name="root_folder_id" class="form-select form-select-sm mb-2" style="font-size:var(--text-sm)">
           {% for rf in root_folders %}
           <option value="{{ rf['id'] }}" {% if rf['is_default'] %}selected{% endif %}>
             {{ rf['label'] or rf['path'] }}
@@ -127,17 +127,17 @@
           {% for ed_val, ed_label in _eds %}
           {% set _tracked = ed_val in tracked_editions %}
           <button type="button" class="btn btn-xs ed-btn {% if loop.first %}active{% endif %}" data-ed="{{ ed_val }}"
-                  style="font-size:0.65rem; padding:2px 6px; border-radius:4px;
+                  style="font-size:var(--text-2xs); padding:2px 6px; border-radius:4px;
                          {% if loop.first %}background:var(--ember-lo); border:1px solid var(--ember); color:var(--ember)
                          {% else %}background:transparent; border:1px solid var(--edge-2); color:var(--text-2){% endif %}"
                   onclick="setEd({{ card_idx }}, '{{ ed_val }}', this)">
-            {% if _tracked %}<i class="bi bi-check-circle-fill me-1" style="font-size:0.58rem"></i>{% endif %}{{ ed_label }}
+            {% if _tracked %}<i class="bi bi-check-circle-fill me-1" style="font-size:var(--text-2xs)"></i>{% endif %}{{ ed_label }}
           </button>
           {% endfor %}
         </div>
         {% endif %}
 
-        <div class="d-flex align-items-center gap-2 mb-2" style="font-size:0.72rem">
+        <div class="d-flex align-items-center gap-2 mb-2" style="font-size:var(--text-sm)">
           <label class="d-flex align-items-center gap-1" style="cursor:pointer; color:var(--text-2)" title="Monitor for new releases">
             <input type="checkbox" name="monitored" value="1" checked
                    style="accent-color:var(--ember); width:14px; height:14px">
@@ -177,8 +177,8 @@
 <div class="empty-state">
   <div class="empty-icon"><i class="bi bi-plus-circle"></i></div>
   <p class="fw-semibold">Search for manga to add to your library.</p>
-  <p style="font-size:0.82rem; color:var(--text-3); max-width:480px; text-align:center">
-    Search by title, or paste an AniList URL (<code style="font-size:0.75rem">anilist.co/manga/123</code>) or bare numeric ID.<br>
+  <p style="font-size:var(--text-base); color:var(--text-3); max-width:480px; text-align:center">
+    Search by title, or paste an AniList URL (<code style="font-size:var(--text-sm)">anilist.co/manga/123</code>) or bare numeric ID.<br>
     Falls back to MangaUpdates when AniList returns no results.
   </p>
 </div>
@@ -217,7 +217,7 @@
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
 }
 .search-result-desc {
-  font-size:0.75rem; color:var(--text-2); margin:4px 0 0;
+  font-size:var(--text-sm); color:var(--text-2); margin:4px 0 0;
   overflow:hidden; display:-webkit-box; -webkit-line-clamp:2;
   -webkit-box-orient:vertical; line-height:1.45;
 }

@@ -15,16 +15,16 @@
 <div class="panel" style="border-color:rgba(220,53,69,.35)">
   <div class="panel-body">
     <div class="d-flex align-items-start gap-3">
-      <i class="bi bi-exclamation-triangle-fill" style="color:var(--ruby);font-size:1.1rem"></i>
+      <i class="bi bi-exclamation-triangle-fill" style="color:var(--ruby);font-size:var(--text-2xl)"></i>
       <div>
         <div class="fw-semibold mb-1">Encrypted credentials could not be unlocked</div>
-        <div style="font-size:.85rem;color:var(--text-2)">
+        <div style="font-size:var(--text-base);color:var(--text-2)">
           Mangarr found {{ secret_health.affected_count }} encrypted credential{% if secret_health.affected_count != 1 %}s{% endif %} that do not match the active secret key.
           Restore the matching {% if secret_key_source == 'environment' %}<code>MANGARR_SECRET_KEY</code>{% else %}<code>/config/.mangarr-secret-key</code>{% endif %}
           or re-enter the affected credentials below.
         </div>
         {% if secret_health.affected_items %}
-        <div class="mt-2" style="font-size:.78rem;color:var(--text-3)">
+        <div class="mt-2" style="font-size:var(--text-sm);color:var(--text-3)">
           Affected examples: {{ secret_health.affected_items | join(', ') }}
         </div>
         {% endif %}
@@ -38,8 +38,8 @@
 <div class="panel">
   <div class="panel-body">
     <div class="d-flex align-items-start gap-3">
-      <i class="bi bi-info-circle-fill" style="color:var(--sky);font-size:1.1rem"></i>
-      <div style="font-size:.85rem;color:var(--text-2)">
+      <i class="bi bi-info-circle-fill" style="color:var(--sky);font-size:var(--text-2xl)"></i>
+      <div style="font-size:var(--text-base);color:var(--text-2)">
         First boot generated an API key and {% if secret_key_source == 'environment' %}expects <code>MANGARR_SECRET_KEY</code> from your deployment{% else %}created <code>/config/.mangarr-secret-key</code>{% endif %} for secret encryption.
         Back up the database and the active key source together before adding integrations.
       </div>
@@ -55,7 +55,7 @@
     <div class="panel h-100" style="min-height:auto; margin-bottom:0">
       <div class="panel-body p-2">
 
-        <div class="mb-1 px-2" style="font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Mangarr</div>
+        <div class="mb-1 px-2" style="font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Mangarr</div>
         <a href="#media" class="settings-sidebar-item active" data-tab="media">
           <i class="bi bi-folder2-open me-2"></i>Media Management
         </a>
@@ -70,7 +70,7 @@
         </a>
 
         <div class="settings-divider"></div>
-        <div class="mb-1 px-2 mt-2" style="font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Profiles</div>
+        <div class="mb-1 px-2 mt-2" style="font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Profiles</div>
         <a href="/quality-profiles" class="settings-sidebar-item settings-sidebar-link">
           <i class="bi bi-trophy me-2"></i>Quality Profiles
         </a>
@@ -91,7 +91,7 @@
         </a>
 
         <div class="settings-divider"></div>
-        <div class="mb-1 px-2 mt-2" style="font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Sources</div>
+        <div class="mb-1 px-2 mt-2" style="font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Sources</div>
         <a href="/indexers" class="settings-sidebar-item settings-sidebar-link">
           <i class="bi bi-search me-2"></i>Indexers
         </a>
@@ -106,7 +106,7 @@
         </a>
 
         <div class="settings-divider"></div>
-        <div class="mb-1 px-2 mt-2" style="font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Notifications</div>
+        <div class="mb-1 px-2 mt-2" style="font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Notifications</div>
         <a href="/notifications" class="settings-sidebar-item settings-sidebar-link">
           <i class="bi bi-bell me-2"></i>Connect
         </a>
@@ -135,8 +135,8 @@
             <tbody>
               {% for rf in root_folders %}
               <tr>
-                <td style="font-size:0.82rem;font-family:var(--font-mono)">{{ rf['path'] }}</td>
-                <td style="font-size:0.82rem">{{ rf['label'] or '—' }}</td>
+                <td style="font-size:var(--text-base);font-family:var(--font-mono)">{{ rf['path'] }}</td>
+                <td style="font-size:var(--text-base)">{{ rf['label'] or '—' }}</td>
                 <td>
                   {% if rf['is_default'] %}
                   <span class="badge-status badge-downloaded"><i class="bi bi-star-fill me-1"></i>Default</span>
@@ -163,7 +163,7 @@
           </table>
           </div>
           {% else %}
-          <p style="font-size:.82rem;color:var(--text-2)" class="mb-3"><i class="bi bi-info-circle me-1"></i>No root folders — downloads fall back to the path in File Management below.</p>
+          <p style="font-size:var(--text-base);color:var(--text-2)" class="mb-3"><i class="bi bi-info-circle me-1"></i>No root folders — downloads fall back to the path in File Management below.</p>
           {% endif %}
 
           <form method="POST" action="/settings/root-folders/add" class="d-flex gap-2 flex-wrap align-items-end">
@@ -257,11 +257,11 @@
       <div class="panel">
         <div class="panel-header"><i class="bi bi-input-cursor-text"></i>File Naming</div>
         <div class="panel-body">
-          <p style="font-size:.82rem;color:var(--text-2)" class="mb-2">
+          <p style="font-size:var(--text-base);color:var(--text-2)" class="mb-2">
             Tokens: <code>{Series Title}</code>&nbsp;<code>{Series.Title}</code>&nbsp;<code>{Volume}</code>&nbsp;<code>{Volume:02d}</code>&nbsp;<code>{Chapter}</code>&nbsp;<code>{Chapter:04d}</code>&nbsp;<code>{Year}</code>
           </p>
           <div class="d-flex gap-2 mb-3 flex-wrap">
-            <span style="font-size:.82rem;color:var(--text-2);line-height:2">Presets:</span>
+            <span style="font-size:var(--text-base);color:var(--text-2);line-height:2">Presets:</span>
             <button type="button" class="btn btn-secondary btn-sm"
               onclick="applyPreset('{Series Title} v{Volume:02d}','{Series Title} c{Chapter:04d}','{Series Title}')">
               Default
@@ -304,7 +304,7 @@
       <div class="panel">
         <div class="panel-header"><i class="bi bi-cloud-arrow-down"></i>Direct Downloads (DDL)</div>
         <div class="panel-body">
-          <div class="alert py-2 mb-3" style="font-size:.82rem;background:var(--ink-4);border:1px solid var(--edge-2);color:var(--text-2);border-radius:var(--radius-md)">
+          <div class="alert py-2 mb-3" style="font-size:var(--text-base);background:var(--ink-4);border:1px solid var(--edge-2);color:var(--text-2);border-radius:var(--radius-md)">
             <i class="bi bi-info-circle me-1"></i>
             DDL downloads chapters directly from MangaDex or via a configured
             <a href="/download-clients" class="text-ember">Suwayomi client</a>.
@@ -540,7 +540,7 @@
       <div class="panel">
         <div class="panel-header"><i class="bi bi-funnel"></i>Global Release Filters</div>
         <div class="panel-body">
-          <div class="alert py-2 mb-3" style="font-size:.82rem;background:var(--ink-4);border:1px solid var(--edge-2);color:var(--text-2);border-radius:var(--radius-md)">
+          <div class="alert py-2 mb-3" style="font-size:var(--text-base);background:var(--ink-4);border:1px solid var(--edge-2);color:var(--text-2);border-radius:var(--radius-md)">
             <i class="bi bi-info-circle me-1"></i>
             These are global fallbacks. For per-series filtering, use <a href="/release-profiles" class="text-ember">Release Profiles</a>.
           </div>
@@ -595,7 +595,7 @@
             <div class="col-12 col-sm-7">
               <label class="form-label">
                 Google Books API Key
-                <span class="ms-1" style="background:var(--sky-bg);color:var(--sky);border-radius:4px;font-size:0.65rem;padding:1px 6px">optional</span>
+                <span class="ms-1" style="background:var(--sky-bg);color:var(--sky);border-radius:4px;font-size:var(--text-2xs);padding:1px 6px">optional</span>
               </label>
               <input type="text" name="google_books_api_key" class="form-control"
                      value="{{ cfg.google_books_api_key or '' }}"
@@ -641,7 +641,7 @@
                 <input class="form-check-input" type="checkbox" name="komga_scan_enabled"
                        id="komga_scan_enabled" value="1"
                        {% if cfg.komga_scan_enabled == 'true' %}checked{% endif %}>
-                <label class="form-check-label" for="komga_scan_enabled" style="font-size:.85rem">Trigger scan on download complete</label>
+                <label class="form-check-label" for="komga_scan_enabled" style="font-size:var(--text-base)">Trigger scan on download complete</label>
               </div>
             </div>
           </div>
@@ -674,7 +674,7 @@
   border-radius: .4rem;
   color: var(--text-2);
   text-decoration: none;
-  font-size: .875rem;
+  font-size: var(--text-base);
   cursor: pointer;
   transition: background .15s, color .15s;
   margin-bottom: 2px;

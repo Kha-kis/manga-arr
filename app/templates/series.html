@@ -2,8 +2,8 @@
 {% block title %}{{ s['title'] }} — Mangarr{% endblock %}
 {% block title_short %}{{ s['title'] }}{% endblock %}
 {% block topbar_title %}
-  <a href="/" style="color:var(--text-2); font-size:0.82rem">Library</a>
-  <i class="bi bi-chevron-right mx-2" style="font-size:0.65rem; color:var(--text-3)"></i>
+  <a href="/" style="color:var(--text-2); font-size:var(--text-base)">Library</a>
+  <i class="bi bi-chevron-right mx-2" style="font-size:var(--text-2xs); color:var(--text-3)"></i>
   <strong>{{ s['title'] }}</strong>
 {% endblock %}
 {% block nav_library %}active{% endblock %}
@@ -82,7 +82,7 @@
 }
 .series-stat-lbl {
   font-family: var(--font-ui);
-  font-size: 0.6875rem;
+  font-size: var(--text-2xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.12em;
@@ -94,7 +94,7 @@
   align-items: center;
   gap: 7px;
   padding: 7px 13px;
-  font-size: 0.78rem;
+  font-size: var(--text-sm);
   font-weight: 600;
   border-radius: 8px;
   border: 1px solid rgba(255,255,255,0.08);
@@ -124,10 +124,10 @@
 .action-btn.success:hover { background: var(--jade-bg); border-color: var(--jade); }
 .action-btn.sky { border-color: rgba(88,168,248,0.25); color: var(--sky); background: rgba(88,168,248,0.06); }
 .action-btn.sky:hover { background: var(--sky-bg); border-color: var(--sky); }
-.meta-row { font-size: 0.8rem; color: rgba(228,228,240,0.8); display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+.meta-row { font-size: var(--text-base); color: rgba(228,228,240,0.8); display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
 .meta-row i { color: rgba(228,228,240,0.4); width: 14px; text-align: center; }
 .ch-pill {
-  padding: 2px 6px; border-radius: 4px; font-size: 0.68rem; font-weight: 600; white-space: nowrap;
+  padding: 2px 6px; border-radius: 4px; font-size: var(--text-xs); font-weight: 600; white-space: nowrap;
 }
 .ch-pill.dl  { background: rgba(34,200,122,0.15); color: var(--jade); border: 1px solid rgba(34,200,122,0.3); cursor: default; }
 .ch-pill.gr  { background: rgba(240,132,40,0.15); color: var(--ember); border: 1px solid rgba(240,132,40,0.3); cursor: pointer; }
@@ -152,7 +152,7 @@
 .edit-tab {
   flex: 0 0 auto;
   padding: 9px 14px;
-  font-size: 0.78rem;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text-2);
   background: transparent;
@@ -192,7 +192,7 @@
     <div class="no-cover"><i class="bi bi-book"></i></div>
     {% endif %}
     <button onclick="refreshCover({{ s['id'] }})"
-            class="action-btn w-100 mt-2" style="justify-content:center; font-size:0.72rem">
+            class="action-btn w-100 mt-2" style="justify-content:center; font-size:var(--text-sm)">
       <i class="bi bi-arrow-clockwise"></i>Refresh Cover
     </button>
   </div>
@@ -218,16 +218,16 @@
     } %}
     {% set _ed = _ed_styles.get(_et, ('Edition', 'var(--text-2)', 'var(--ink-4)', 'bi-bookmark')) %}
     <div class="d-inline-flex align-items-center gap-2 mb-3 px-3 py-1 rounded-pill"
-         style="background:{{ _ed[2] }}; border:1px solid {{ _ed[1] }}44; font-size:0.78rem">
+         style="background:{{ _ed[2] }}; border:1px solid {{ _ed[1] }}44; font-size:var(--text-sm)">
       <i class="bi {{ _ed[3] }}" style="color:{{ _ed[1] }}"></i>
       <span style="color:{{ _ed[1] }}; font-weight:700">{{ _ed[0] }}</span>
-      <span style="color:var(--text-3); font-size:0.7rem">· Only {{ _et|replace('_',' ') }} releases grabbed</span>
+      <span style="color:var(--text-3); font-size:var(--text-xs)">· Only {{ _et|replace('_',' ') }} releases grabbed</span>
     </div>
     {% endif %}
 
     {# Description #}
     {% if s['description'] %}
-    <p class="font-serif" style="font-size:0.95rem; color:rgba(245,240,232,0.72); max-width:680px; line-height:1.65; margin-bottom:16px; text-shadow:0 1px 4px rgba(0,0,0,0.5)">
+    <p class="font-serif" style="font-size:var(--text-lg); color:rgba(245,240,232,0.72); max-width:680px; line-height:1.65; margin-bottom:16px; text-shadow:0 1px 4px rgba(0,0,0,0.5)">
       {{ s['description'] }}
     </p>
     {% endif %}
@@ -238,7 +238,7 @@
     <div class="d-flex gap-3 mb-3 flex-wrap">
       <div>
         <div class="series-stat-num text-ember">
-          {{ stats.total }}{% if s['total_volumes'] and s['total_volumes'] != stats.total %}<span style="font-size:0.9rem; color:var(--text-3)"> / {{ s['total_volumes'] }}</span>{% endif %}
+          {{ stats.total }}{% if s['total_volumes'] and s['total_volumes'] != stats.total %}<span style="font-size:var(--text-lg); color:var(--text-3)"> / {{ s['total_volumes'] }}</span>{% endif %}
         </div>
         <div class="series-stat-lbl">Tracked</div>
       </div>
@@ -305,12 +305,12 @@
         <button class="action-btn" type="button" data-bs-toggle="dropdown" aria-expanded="false">
           <i class="bi bi-three-dots"></i>More
         </button>
-        <ul class="dropdown-menu dropdown-menu-dark" style="font-size:0.82rem; min-width:200px">
+        <ul class="dropdown-menu dropdown-menu-dark" style="font-size:var(--text-base); min-width:200px">
           <li>
             <button class="dropdown-item d-flex align-items-center gap-2" id="complete-pack-btn"
                     onclick="searchCompletePack({{ s['id'] }})">
               <i class="bi bi-collection-fill" style="width:14px; text-align:center"></i>Search Series Pack
-              {% if s['status'] == 'FINISHED' %}<span class="badge-status badge-downloaded ms-auto" style="font-size:0.55rem">FINISHED</span>{% endif %}
+              {% if s['status'] == 'FINISHED' %}<span class="badge-status badge-downloaded ms-auto" style="font-size:var(--text-2xs)">FINISHED</span>{% endif %}
             </button>
           </li>
           {% if s['edition_type'] in ('omnibus','deluxe','special','collector','remaster') %}
@@ -417,7 +417,7 @@
         <div class="meta-row">
           <i class="bi bi-link-45deg"></i>
           AniList <a href="https://anilist.co/manga/{{ s['anilist_id'] }}" target="_blank"
-                     class="text-ember ms-1">{{ s['anilist_id'] }} <i class="bi bi-box-arrow-up-right" style="font-size:0.6rem"></i></a>
+                     class="text-ember ms-1">{{ s['anilist_id'] }} <i class="bi bi-box-arrow-up-right" style="font-size:var(--text-2xs)"></i></a>
         </div>
         {% endif %}
 
@@ -427,7 +427,7 @@
           <i class="bi bi-collection"></i>
           {{ s['total_volumes'] }} volumes
           <span class="badge-status badge-src-{{ _vsrc }}" title="Volume count source: {{ _vsrc|replace('_',' ')|title }}">
-            {% if _vsrc == 'manual' %}<i class="bi bi-pencil" style="font-size:0.55rem"></i> {% endif %}{{ _vsrc|replace('_',' ')|title }}
+            {% if _vsrc == 'manual' %}<i class="bi bi-pencil" style="font-size:var(--text-2xs)"></i> {% endif %}{{ _vsrc|replace('_',' ')|title }}
           </span>
         </div>
         {% endif %}
@@ -449,7 +449,7 @@
 
         <div class="meta-row"><i class="bi bi-calendar-plus"></i>Added {{ s['added_at'] | format_date if s['added_at'] else '—' }}</div>
         {% if s['last_metadata_refresh'] %}
-        <div class="meta-row" style="font-size:0.73rem"><i class="bi bi-arrow-repeat"></i>Refreshed {{ s['last_metadata_refresh'] | format_date }}</div>
+        <div class="meta-row" style="font-size:var(--text-sm)"><i class="bi bi-arrow-repeat"></i>Refreshed {{ s['last_metadata_refresh'] | format_date }}</div>
         {% endif %}
 
         {% set _strat = s['update_strategy'] or 'always' %}
@@ -497,10 +497,10 @@
           {% for t in series_tags %}
           <a href="/?filter_tag={{ t }}" class="badge-status badge-indexer" style="text-decoration:none">{{ t }}</a>
           {% else %}
-          <span style="font-size:0.72rem; color:var(--text-3)">None</span>
+          <span style="font-size:var(--text-sm); color:var(--text-3)">None</span>
           {% endfor %}
         </div>
-        <button class="action-btn w-100" style="justify-content:center; font-size:0.72rem"
+        <button class="action-btn w-100" style="justify-content:center; font-size:var(--text-sm)"
                 data-bs-toggle="modal" data-bs-target="#tagsModal">
           <i class="bi bi-tags"></i>Edit Tags
         </button>
@@ -551,7 +551,7 @@
 
     {# Alerts #}
     {% if not s['total_volumes'] and not volumes %}
-    <div class="alert alert-warning d-flex align-items-center gap-2 mb-3" style="font-size:0.82rem">
+    <div class="alert alert-warning d-flex align-items-center gap-2 mb-3" style="font-size:var(--text-base)">
       <i class="bi bi-exclamation-triangle-fill"></i>
       Volume count unknown — click <strong>Refresh</strong> to load metadata.
     </div>
@@ -559,7 +559,7 @@
 
     {% if s['edition_type'] in ('omnibus','deluxe','special','collector','remaster')
        and (s['vol_count_source'] or 'anilist') == 'anilist' and s['total_volumes'] %}
-    <div class="alert alert-info d-flex align-items-start gap-2 mb-3" style="font-size:0.82rem">
+    <div class="alert alert-info d-flex align-items-start gap-2 mb-3" style="font-size:var(--text-base)">
       <i class="bi bi-info-circle-fill mt-1 flex-shrink-0"></i>
       <div>Volume count (<strong>{{ s['total_volumes'] }}</strong>) from AniList reflects the <em>standard</em> edition.
       Use <strong>More → Refresh Edition Meta</strong> for the correct <strong>{{ s['edition_type'] }}</strong> count,
@@ -578,7 +578,7 @@
     {% set grabbed_count = volumes | selectattr('status', 'equalto', 'grabbed') | list | length %}
     <div class="section-label mb-3">
       <i class="bi bi-list-ol text-ember me-1"></i>Volumes
-      <span style="font-size:0.7rem; font-weight:400; text-transform:none; letter-spacing:0; color:var(--text-3)">
+      <span style="font-size:var(--text-xs); font-weight:400; text-transform:none; letter-spacing:0; color:var(--text-3)">
         {{ volumes|length }}{% if s['total_volumes'] %} of {{ s['total_volumes'] }}{% endif %}
       </span>
       {% if grabbed_count > 0 %}
@@ -618,7 +618,7 @@
     <div class="empty-state">
       <div class="empty-icon"><i class="bi bi-layers"></i></div>
       <p class="fw-semibold">No volumes tracked yet.</p>
-      <p style="font-size:0.82rem; color:var(--text-3)">Click <strong>Search & Grab All</strong> to find releases.</p>
+      <p style="font-size:var(--text-base); color:var(--text-3)">Click <strong>Search & Grab All</strong> to find releases.</p>
     </div>
     {% endif %}
 
@@ -640,12 +640,12 @@
                       hx-disabled-elt="this"
                       hx-on::after-request="showToast(event.detail.successful ? 'Updated' : 'Failed', event.detail.successful ? 'success' : 'error')">
                 <i class="bi bi-eye{% if not uc_monitored %}-slash{% endif %}"
-                   style="font-size:0.88rem; color:{% if uc_monitored %}var(--ember){% else %}var(--text-3){% endif %}"></i>
+                   style="font-size:var(--text-lg); color:{% if uc_monitored %}var(--ember){% else %}var(--text-3){% endif %}"></i>
               </button>
             </td>
             <td style="width:90px">
               <div class="d-flex align-items-center gap-1">
-                <i class="bi bi-chevron-right" id="exp-icon-uncollected" style="font-size:0.65rem; color:var(--text-3)"></i>
+                <i class="bi bi-chevron-right" id="exp-icon-uncollected" style="font-size:var(--text-2xs); color:var(--text-3)"></i>
                 <span class="fw-semibold" style="color:var(--text-2)">Uncollected</span>
               </div>
               <div style="margin-top:4px; padding-left:14px">
@@ -655,7 +655,7 @@
                   <div style="width:{{ (uc_grabbed / uc_total * 100)|int }}%; background:var(--ember)"></div>
                   {% endif %}
                 </div>
-                <div style="font-size:0.58rem; color:var(--text-3); margin-top:2px">
+                <div style="font-size:var(--text-2xs); color:var(--text-3); margin-top:2px">
                   {% if uc_downloaded == uc_total %}<span class="text-jade"><i class="bi bi-check-lg"></i> {{ uc_total }} ch</span>
                   {% else %}<span class="text-jade">{{ uc_downloaded }}</span>/{{ uc_total }} ch{% if uc_wanted %}<span class="text-ruby"> · {{ uc_wanted }}w</span>{% endif %}
                   {% endif %}
@@ -663,7 +663,7 @@
               </div>
             </td>
             <td><span class="badge-status badge-unknown">serialized only</span></td>
-            <td colspan="2" style="color:var(--text-3); font-size:0.75rem">Chapters not yet collected into volumes</td>
+            <td colspan="2" style="color:var(--text-3); font-size:var(--text-sm)">Chapters not yet collected into volumes</td>
             <td></td>
             <td onclick="event.stopPropagation()">
               {% if uc_wanted > 0 %}
@@ -675,7 +675,7 @@
                         hx-on::after-request="showToast(event.detail.successful ? 'Search queued' : 'Failed', event.detail.successful ? 'success' : 'error')">
                   <i class="bi bi-cloud-download me-1"></i>Grab All
                 </button>
-                <button class="btn btn-sm py-0 px-2 text-jade" style="border:1px solid rgba(34,200,122,0.3); background:transparent; font-size:0.7rem"
+                <button class="btn btn-sm py-0 px-2 text-jade" style="border:1px solid rgba(34,200,122,0.3); background:transparent; font-size:var(--text-xs)"
                         hx-post="/series/{{ s['id'] }}/uncollected/mark-downloaded"
                         hx-swap="none"
                         hx-disabled-elt="this"
@@ -705,12 +705,12 @@
                 <div class="ch-pill wt ch-pill-wanted {% if not ch['monitored'] %}opacity-50{% endif %}" title="Ch {{ ch_num }} · wanted">
                   {{ ch_num }}
                   <span class="ch-pill-actions">
-                    <button style="background:none;border:none;padding:0;color:var(--ember);font-size:0.7rem;cursor:pointer;line-height:1"
+                    <button style="background:none;border:none;padding:0;color:var(--ember);font-size:var(--text-xs);cursor:pointer;line-height:1"
                             hx-post="/series/{{ s['id'] }}/chapters/{{ ch['id'] }}/grab"
                             hx-swap="none"
                             hx-disabled-elt="this"
                             hx-on::after-request="showToast(event.detail.successful ? 'Search queued' : 'Failed', event.detail.successful ? 'success' : 'error')"><i class="bi bi-cloud-download"></i></button>
-                    <button style="background:none;border:none;padding:0;color:var(--jade);font-size:0.7rem;cursor:pointer;line-height:1"
+                    <button style="background:none;border:none;padding:0;color:var(--jade);font-size:var(--text-xs);cursor:pointer;line-height:1"
                             hx-post="/series/{{ s['id'] }}/chapters/{{ ch['id'] }}/mark-downloaded"
                             hx-swap="none"
                             hx-disabled-elt="this"
@@ -732,7 +732,7 @@
     {% set superseded_count = packs | selectattr('superseded') | list | length %}
     <div class="section-label mt-2 mb-3">
       <i class="bi bi-collection text-ember me-1"></i>Omnibus &amp; Packs
-      <span style="font-size:0.7rem; font-weight:400; text-transform:none; letter-spacing:0; color:var(--text-3)">
+      <span style="font-size:var(--text-xs); font-weight:400; text-transform:none; letter-spacing:0; color:var(--text-3)">
         {{ packs|length }}{% if superseded_count %} · {{ superseded_count }} superseded{% endif %}
       </span>
       <button class="ms-auto action-btn btn-action"
@@ -742,7 +742,7 @@
     </div>
     <div class="collapse show" id="packsTable">
     <div class="table-wrap mb-4">
-      <table class="table table-sm mb-0" style="font-size:0.82rem">
+      <table class="table table-sm mb-0" style="font-size:var(--text-base)">
         <thead>
           <tr>
             <th style="width:160px">Contents</th>
@@ -767,26 +767,26 @@
               <span style="color:var(--text-2)" title="{{ tn }}">{{ tn[:40] }}{% if tn|length > 40 %}…{% endif %}</span>
               {% endif %}
               {% if p['superseded'] %}
-              <div style="font-size:0.62rem; color:var(--text-3)">covered by complete</div>
+              <div style="font-size:var(--text-2xs); color:var(--text-3)">covered by complete</div>
               {% endif %}
             </td>
-            <td style="font-size:0.75rem; color:var(--text-2)">
+            <td style="font-size:var(--text-sm); color:var(--text-2)">
               {% if p['pack_type'] == 'complete' %}All
               {% elif p['vol_label'] and p['ch_label'] %}
               <span class="{% if not p['superseded'] %}text-ember{% endif %}">{{ p['vol_label'] }}</span>{% if not p['covers'] %}<span style="color:var(--text-3)"> (approx)</span>{% endif %}
               {% else %}—{% endif %}
             </td>
-            <td style="font-size:0.75rem">
+            <td style="font-size:var(--text-sm)">
               {% if p['dup_count'] > 1 %}<span class="badge-status badge-wanted">×{{ p['dup_count'] }}</span>
               {% else %}<span style="color:var(--text-3)">1</span>{% endif %}
             </td>
-            <td style="font-size:0.75rem; color:var(--text-2); white-space:nowrap">{{ p['grabbed_at'] | format_date if p['grabbed_at'] else '—' }}</td>
+            <td style="font-size:var(--text-sm); color:var(--text-2); white-space:nowrap">{{ p['grabbed_at'] | format_date if p['grabbed_at'] else '—' }}</td>
             <td>
               <div class="pill-badges mb-1">
                 {% if p['indexer'] %}<span class="badge-status badge-indexer">{{ p['indexer'] }}</span>{% endif %}
                 {% if p['protocol'] %}<span class="badge-status badge-{{ p['protocol'] }}">{{ p['protocol']|format_protocol }}</span>{% endif %}
               </div>
-              <div style="font-size:0.68rem; color:var(--text-2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:260px"
+              <div style="font-size:var(--text-xs); color:var(--text-2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:260px"
                    title="{{ p['torrent_name'] or '' }}">{{ p['torrent_name'] or '—' }}</div>
               {%- set pack_dl = (p['download_id'] or '')|lower -%}
               {% if pack_dl and pack_dl in review_dl_ids %}
@@ -866,7 +866,7 @@ function openSearch(seriesId, volumeId, volLabel) {
   _searchResults  = [];
   document.getElementById('srch-vol-label').textContent = volLabel;
   document.getElementById('srch-body').innerHTML =
-    '<div class="text-center py-5" style="color:var(--text-2); font-size:0.85rem">' +
+    '<div class="text-center py-5" style="color:var(--text-2); font-size:var(--text-base)">' +
     '<i class="bi bi-arrow-repeat me-2"></i>Searching…</div>';
   document.getElementById('srch-query').textContent = '';
   new bootstrap.Modal(document.getElementById('searchModal')).show();
@@ -888,11 +888,11 @@ function renderSearchResults(data) {
     prefix = `<div style="padding:10px 16px 8px; border-bottom:1px solid var(--edge-2); background:rgba(0,170,255,0.04)">
       <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap">
         <div>
-          <div style="font-size:0.8rem; font-weight:600; color:var(--sky, #38bdf8)"><i class="bi bi-cloud-arrow-down me-1"></i>Suwayomi DDL</div>
-          <div style="font-size:0.68rem; color:var(--text-3); margin-top:1px">Direct download via Suwayomi — no indexer needed</div>
+          <div style="font-size:var(--text-base); font-weight:600; color:var(--sky, #38bdf8)"><i class="bi bi-cloud-arrow-down me-1"></i>Suwayomi DDL</div>
+          <div style="font-size:var(--text-xs); color:var(--text-3); margin-top:1px">Direct download via Suwayomi — no indexer needed</div>
         </div>
         <button class="btn btn-sm px-3" id="ddl-grab-btn"
-                style="font-size:0.72rem; color:var(--sky,#38bdf8); border:1px solid rgba(56,189,248,0.35); background:rgba(56,189,248,0.08); white-space:nowrap; margin-left:auto"
+                style="font-size:var(--text-sm); color:var(--sky,#38bdf8); border:1px solid rgba(56,189,248,0.35); background:rgba(56,189,248,0.08); white-space:nowrap; margin-left:auto"
                 onclick="grabDDL(this)">
           <i class="bi bi-cloud-download me-1"></i>Grab via DDL
         </button>
@@ -902,7 +902,7 @@ function renderSearchResults(data) {
 
   if (!_searchResults.length) {
     document.getElementById('srch-body').innerHTML = prefix +
-      '<div class="text-center py-5" style="color:var(--text-2); font-size:0.85rem"><i class="bi bi-search me-2"></i>No indexer results found</div>';
+      '<div class="text-center py-5" style="color:var(--text-2); font-size:var(--text-base)"><i class="bi bi-search me-2"></i>No indexer results found</div>';
     return;
   }
   document.getElementById('srch-body').innerHTML = prefix;
@@ -947,8 +947,8 @@ function _renderSrchTable(results) {
       ? '<span class="badge-status badge-nzb">NZB</span>'
       : '<span class="badge-status badge-torrent">Torrent</span>';
     const seeds = r.seeders > 0
-      ? `<span style="font-size:0.78rem; color:${r.seeders>=5?'var(--jade)':'var(--gold)'}">${r.seeders}</span>`
-      : '<span style="font-size:0.78rem; color:var(--ruby)">0</span>';
+      ? `<span style="font-size:var(--text-sm); color:${r.seeders>=5?'var(--jade)':'var(--gold)'}">${r.seeders}</span>`
+      : '<span style="font-size:var(--text-sm); color:var(--ruby)">0</span>';
     const noSeeders = r.protocol !== 'nzb' && r.seeders === 0;
     const disabled  = r.seen || r.blocked || noSeeders;
     const btnStyle  = disabled
@@ -966,9 +966,9 @@ function _renderSrchTable(results) {
     let rejectHtml = '';
     if (r.rejections?.length) {
       const rid   = `rej-${grabIdx}`;
-      const items = r.rejections.map(s => `<li style="font-size:0.72rem">${escHtml(s)}</li>`).join('');
+      const items = r.rejections.map(s => `<li style="font-size:var(--text-sm)">${escHtml(s)}</li>`).join('');
       rejectHtml = `<div class="mt-1">
-        <button class="btn btn-sm p-0 px-1 text-ruby" style="border:none;background:transparent;font-size:0.65rem"
+        <button class="btn btn-sm p-0 px-1 text-ruby" style="border:none;background:transparent;font-size:var(--text-2xs)"
                 onclick="document.getElementById('${rid}').style.display==='none'?document.getElementById('${rid}').style.display='block':document.getElementById('${rid}').style.display='none'">
           <i class="bi bi-exclamation-triangle me-1"></i>${r.rejections.length} rejection${r.rejections.length>1?'s':''}
         </button>
@@ -985,17 +985,17 @@ function _renderSrchTable(results) {
     }
     html += `<tr style="${r.status==='rejected'?'opacity:0.55':''}">
       <td style="max-width:320px">
-        <div style="font-size:0.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(r.title)}">${escHtml(r.title)}</div>
-        <div class="mt-1">${proto}${seen}${blocked}${r.quality&&r.quality!=='unknown'?`<span class="badge-status badge-indexer ms-1" style="font-size:0.58rem">${escHtml(r.quality.toUpperCase())}</span>`:''}</div>
+        <div style="font-size:var(--text-sm);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(r.title)}">${escHtml(r.title)}</div>
+        <div class="mt-1">${proto}${seen}${blocked}${r.quality&&r.quality!=='unknown'?`<span class="badge-status badge-indexer ms-1" style="font-size:var(--text-2xs)">${escHtml(r.quality.toUpperCase())}</span>`:''}</div>
         ${rejectHtml}${cfHtml}
       </td>
       <td>${statusBadge}</td>
       <td><span class="badge-status badge-indexer">${escHtml(r.indexer)}</span></td>
       <td class="text-center">${r.protocol==='nzb'?'<span style="color:var(--text-3)">—</span>':seeds}</td>
-      <td style="color:var(--text-2);font-size:0.75rem;white-space:nowrap">${r.size||'—'}</td>
-      <td><span style="font-size:0.78rem;color:${sc};font-weight:600">${ss}</span></td>
+      <td style="color:var(--text-2);font-size:var(--text-sm);white-space:nowrap">${r.size||'—'}</td>
+      <td><span style="font-size:var(--text-sm);color:${sc};font-weight:600">${ss}</span></td>
       <td class="text-end pe-2">
-        <button class="btn btn-sm px-2 py-0" style="font-size:0.72rem;white-space:nowrap;${btnStyle}" ${disabled?'disabled':''}
+        <button class="btn btn-sm px-2 py-0" style="font-size:var(--text-sm);white-space:nowrap;${btnStyle}" ${disabled?'disabled':''}
                 onclick="grabRelease(${grabIdx}, this)">${btnLabel}</button>
       </td>
     </tr>`;
@@ -1144,13 +1144,13 @@ function onEditionChange(edition) {
       <div class="modal-header">
         <div>
           <div class="fw-bold text-ember"><i class="bi bi-search me-2"></i>Interactive Search — <span id="srch-vol-label"></span></div>
-          <div class="text-muted" style="font-size:0.72rem; margin-top:2px">Query: <span id="srch-query" class="text-main"></span></div>
+          <div class="text-muted" style="font-size:var(--text-sm); margin-top:2px">Query: <span id="srch-query" class="text-main"></span></div>
         </div>
         <button type="button" class="btn-close ms-3" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body p-0" id="srch-body"></div>
       <div class="modal-footer">
-        <span class="text-muted" style="font-size:0.72rem">Scored and filtered by your search pattern.</span>
+        <span class="text-muted" style="font-size:var(--text-sm)">Scored and filtered by your search pattern.</span>
         <button type="button" class="btn btn-secondary btn-sm ms-auto" data-bs-dismiss="modal">Close</button>
       </div>
     </div>
@@ -1229,7 +1229,7 @@ function onEditionChange(edition) {
             <div class="mb-3" id="source_type_row">
               <label class="form-label d-flex align-items-center gap-2">
                 Source Type
-                {% if _implied_src %}<span class="badge text-bg-secondary" style="font-size:0.65rem; font-weight:400">auto — set by edition</span>{% endif %}
+                {% if _implied_src %}<span class="badge text-bg-secondary" style="font-size:var(--text-2xs); font-weight:400">auto — set by edition</span>{% endif %}
               </label>
               <select name="source_type" class="form-select form-select-sm" id="source_type_select" {% if _implied_src %}disabled{% endif %}>
                 <option value="any"           {% if (s['source_type'] or 'any') == 'any'           %}selected{% endif %}>Any — official and fan releases (default)</option>
@@ -1248,19 +1248,19 @@ function onEditionChange(edition) {
               {% endif %}
             </div>
             <div class="mb-3">
-              <label class="form-label">Required Source <span class="text-muted fw-normal" style="font-size:0.8rem">(strict name match)</span></label>
+              <label class="form-label">Required Source <span class="text-muted fw-normal" style="font-size:var(--text-base)">(strict name match)</span></label>
               <input type="text" name="required_scanlator" class="form-control form-control-sm"
                      value="{{ s['required_scanlator'] or '' }}" placeholder="e.g. Viz Media, LuCaZ, Seven Seas">
               <div class="small text-muted mt-1">If set, only releases containing this exact string are grabbed.</div>
             </div>
             <div class="mb-3">
-              <label class="form-label">Preferred Groups <span class="text-muted fw-normal" style="font-size:0.8rem">(comma-separated)</span></label>
+              <label class="form-label">Preferred Groups <span class="text-muted fw-normal" style="font-size:var(--text-base)">(comma-separated)</span></label>
               <input type="text" name="preferred_groups_input" class="form-control form-control-sm"
                      value="{{ (s['preferred_groups'] or '[]')|from_json|join(', ') }}" placeholder="e.g. LuCaZ, 1r0n, danke">
               <div class="small text-muted mt-1">Releases from these groups get a score bonus (+15 each).</div>
             </div>
             <div class="mb-3">
-              <label class="form-label">Blocked Groups <span class="text-muted fw-normal" style="font-size:0.8rem">(comma-separated)</span></label>
+              <label class="form-label">Blocked Groups <span class="text-muted fw-normal" style="font-size:var(--text-base)">(comma-separated)</span></label>
               <input type="text" name="blocked_groups_input" class="form-control form-control-sm"
                      value="{{ (s['blocked_groups'] or '[]')|from_json|join(', ') }}" placeholder="e.g. SomeGroup">
               <div class="small text-muted mt-1">Releases from these groups are always skipped.</div>
@@ -1324,7 +1324,7 @@ function onEditionChange(edition) {
             </div>
             {% if suwayomi_enabled %}
             <div class="mb-3">
-              <label class="form-label">DDL Language <span class="text-muted fw-normal" style="font-size:0.8rem">(ISO 639-1 code)</span></label>
+              <label class="form-label">DDL Language <span class="text-muted fw-normal" style="font-size:var(--text-base)">(ISO 639-1 code)</span></label>
               <input type="text" name="ddl_language" class="form-control form-control-sm"
                      value="{{ s['ddl_language'] or '' }}" placeholder="Leave blank to use global default">
               <div class="small text-muted mt-1">Overrides the global DDL preferred language for this series only. Examples: <code>en</code>, <code>ja</code>, <code>fr</code>, <code>es</code>.</div>
@@ -1339,7 +1339,7 @@ function onEditionChange(edition) {
               <label class="form-label d-flex align-items-center gap-2">
                 Total Volumes
                 <span class="badge-status badge-src-{{ _vsrc }}">
-                  {% if _vsrc == 'manual' %}<i class="bi bi-pencil" style="font-size:0.55rem"></i> {% endif %}{{ _vsrc|replace('_',' ')|title }}
+                  {% if _vsrc == 'manual' %}<i class="bi bi-pencil" style="font-size:var(--text-2xs)"></i> {% endif %}{{ _vsrc|replace('_',' ')|title }}
                 </span>
               </label>
               <input type="number" name="total_volumes" class="form-control form-control-sm"
@@ -1359,7 +1359,7 @@ function onEditionChange(edition) {
                 {% else %}<span class="badge-status badge-wanted">not set</span>{% endif %}
               </label>
               <textarea name="chapter_map_text" class="form-control" rows="8"
-                        style="font-family:var(--font-mono); font-size:0.78rem"
+                        style="font-family:var(--font-mono); font-size:var(--text-sm)"
                         placeholder="One volume per line, e.g.:&#10;1-7&#10;8-16&#10;17-24&#10;&#10;Leave blank to keep existing map.">{{ chapter_map_text }}</textarea>
               <div class="small text-muted mt-1">
                 Each line = one volume. Format: <code>start-end</code> or single chapter. Leave blank to keep existing.

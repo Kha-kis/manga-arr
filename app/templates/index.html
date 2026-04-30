@@ -308,7 +308,7 @@
           </div>
         </td>
         <td>
-          <a href="/series/{{ s['id'] }}" class="text-main fw-semibold" style="font-size:0.88rem" onclick="event.stopPropagation()">
+          <a href="/series/{{ s['id'] }}" class="text-main fw-semibold" style="font-size:var(--text-lg)" onclick="event.stopPropagation()">
             {{ s['title'] }}
           </a>
           {% if s['edition_type'] and s['edition_type'] != 'standard' %}
@@ -393,7 +393,7 @@
           </div>
           <div class="vol-count">
             {{ st.have }}/{{ st.total }} vol{% if st.total != 1 %}s{% endif %}
-            {% if pct == 100 %}&nbsp;<i class="bi bi-check-circle-fill text-jade" style="font-size:0.62rem"></i>{% endif %}
+            {% if pct == 100 %}&nbsp;<i class="bi bi-check-circle-fill text-jade" style="font-size:var(--text-2xs)"></i>{% endif %}
           </div>
           {% elif s['total_volumes'] %}
           <div class="vol-count">{{ s['total_volumes'] }} volumes</div>
@@ -413,7 +413,7 @@
             @click.stop="mon=!mon; fetch('/series/{{ s['id'] }}/toggle', {method:'POST', headers:{'X-CSRFToken':_csrfToken()}})"
             :title="mon ? 'Monitored — click to unmonitor' : 'Unmonitored — click to monitor'">
       <i :class="mon ? 'bi bi-bookmark-fill' : 'bi bi-bookmark'"
-         :style="'font-size:0.75rem; color:' + (mon ? 'var(--ember)' : 'var(--text-3)')"></i>
+         :style="'font-size:var(--text-sm); color:' + (mon ? 'var(--ember)' : 'var(--text-3)')"></i>
     </button>
 
     {# Selection overlay — Alpine-managed: shown only in select mode #}
@@ -437,7 +437,7 @@
            :style="has({{ s['id'] }}) ?
              { background: 'var(--ember)', borderColor: 'var(--ember)' } :
              { background: 'rgba(8,8,16,0.8)', borderColor: 'var(--text-3)' }">
-        <i class="bi bi-check" x-show="has({{ s['id'] }})" style="font-size:0.85rem; color:white" aria-hidden="true"></i>
+        <i class="bi bi-check" x-show="has({{ s['id'] }})" style="font-size:var(--text-base); color:white" aria-hidden="true"></i>
       </div>
     </div>
   </div>
@@ -467,7 +467,7 @@
 {% if total_pages > 1 %}
 {% set _base = 'q=' ~ (q|urlencode) ~ '&sort=' ~ sort ~ '&filter_status=' ~ filter_status ~ '&filter_tag=' ~ (filter_tag|urlencode) ~ '&filter_monitored=' ~ filter_monitored ~ '&filter_missing=' ~ filter_missing ~ '&view=' ~ view %}
 <div class="d-flex align-items-center justify-content-between mt-2 mb-5">
-  <span style="font-size:0.8rem; color:var(--text-3)">{{ total_count }} series · Page {{ page }} of {{ total_pages }}</span>
+  <span style="font-size:var(--text-base); color:var(--text-3)">{{ total_count }} series · Page {{ page }} of {{ total_pages }}</span>
   <div class="pill-group">
     {% if page > 1 %}
     <a href="/?{{ _base }}&page={{ page - 1 }}" class="btn btn-sm btn-secondary">
@@ -492,10 +492,10 @@
   </span>
 </div>
 <div class="d-flex align-items-center justify-content-between mb-3">
-  <p class="font-serif" style="font-style:italic; color:var(--text-2); font-size:0.95rem; margin:0">
+  <p class="font-serif" style="font-style:italic; color:var(--text-2); font-size:var(--text-lg); margin:0">
     The most recent additions to the archive.
   </p>
-  <a href="/activity" class="font-ui" style="font-size:0.75rem; color:var(--text-2); text-decoration:none; border-bottom:1px solid var(--edge-3); padding-bottom:2px">
+  <a href="/activity" class="font-ui" style="font-size:var(--text-sm); color:var(--text-2); text-decoration:none; border-bottom:1px solid var(--edge-3); padding-bottom:2px">
     View full chronicle <i class="bi bi-arrow-right ms-1"></i>
   </a>
 </div>
@@ -516,7 +516,7 @@
         {% endif %}
       </div>
       {% if a['vol_count'] == 1 %}
-      <div class="activity-name" style="font-size:0.7rem">{{ a['source_title'] }}</div>
+      <div class="activity-name" style="font-size:var(--text-xs)">{{ a['source_title'] }}</div>
       {% endif %}
     </div>
     <div class="pill-badges">
@@ -535,7 +535,7 @@
             background:var(--ink-1); border-top:1px solid var(--edge-2);
             padding:12px 24px; display:flex; align-items:center; gap:12px;
             backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px)">
-  <span style="font-size:0.85rem; font-weight:600; color:var(--ember)"
+  <span style="font-size:var(--text-base); font-weight:600; color:var(--ember)"
         x-text="sel.length + ' series selected'"></span>
   <div class="ms-auto d-flex gap-2 flex-wrap">
     <button class="btn btn-secondary btn-sm" :disabled="saving"
@@ -563,12 +563,12 @@
       <div class="modal-header">
         <h6 class="modal-title text-ember">
           <i class="bi bi-pencil-square me-2"></i>Edit Selected
-          <span x-text="'(' + sel.length + ' series)'" class="ms-1" style="font-size:0.8rem; color:var(--text-2)"></span>
+          <span x-text="'(' + sel.length + ' series)'" class="ms-1" style="font-size:var(--text-base); color:var(--text-2)"></span>
         </h6>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
-        <p class="text-muted" style="font-size:0.8rem">Only fields you change will be applied. Leave <em>— no change —</em> to skip a field.</p>
+        <p class="text-muted" style="font-size:var(--text-base)">Only fields you change will be applied. Leave <em>— no change —</em> to skip a field.</p>
         <div class="row g-3">
           <div class="col-md-6">
             <label class="form-label">Monitored</label>
@@ -637,11 +637,11 @@
             </select>
           </div>
           <div class="col-md-6">
-            <label class="form-label">Add Tags <span class="text-muted fw-normal" style="font-size:0.78rem">(comma-separated)</span></label>
+            <label class="form-label">Add Tags <span class="text-muted fw-normal" style="font-size:var(--text-sm)">(comma-separated)</span></label>
             <input type="text" x-model="be_tags_add" class="form-control form-control-sm" placeholder="e.g. shonen, completed">
           </div>
           <div class="col-md-6">
-            <label class="form-label">Remove Tags <span class="text-muted fw-normal" style="font-size:0.78rem">(comma-separated)</span></label>
+            <label class="form-label">Remove Tags <span class="text-muted fw-normal" style="font-size:var(--text-sm)">(comma-separated)</span></label>
             <input type="text" x-model="be_tags_rem" class="form-control form-control-sm" placeholder="e.g. old-tag">
           </div>
         </div>

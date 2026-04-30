@@ -235,12 +235,12 @@
              title="Ch {{ ch_num }}{% if ch['title'] %} · {{ ch['title'] }}{% endif %} · wanted">
           {{ ch_num }}
           <span class="ch-pill-actions">
-            <button class="btn-icon" style="width:18px;height:18px;color:var(--ember);font-size:0.7rem" title="Grab" aria-label="Grab chapter {{ ch_num }}"
+            <button class="btn-icon" style="width:18px;height:18px;color:var(--ember);font-size:var(--text-xs)" title="Grab" aria-label="Grab chapter {{ ch_num }}"
                     hx-post="/series/{{ s['id'] }}/chapters/{{ ch['id'] }}/grab"
                     hx-target="{{ _hx_target }}"
                     hx-swap="outerHTML"
                     hx-disabled-elt="this"><i class="bi bi-cloud-download"></i></button>
-            <button class="btn-icon" style="width:18px;height:18px;color:var(--jade);font-size:0.7rem" title="Mark downloaded" aria-label="Mark chapter {{ ch_num }} downloaded"
+            <button class="btn-icon" style="width:18px;height:18px;color:var(--jade);font-size:var(--text-xs)" title="Mark downloaded" aria-label="Mark chapter {{ ch_num }} downloaded"
                     hx-post="/series/{{ s['id'] }}/chapters/{{ ch['id'] }}/mark-downloaded"
                     hx-target="{{ _hx_target }}"
                     hx-swap="outerHTML"

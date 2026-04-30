@@ -24,7 +24,7 @@
       <i class="bi bi-arrow-counterclockwise me-1"></i>Reset to MangaDex
     </button>
   </form>
-  <span class="text-muted align-self-center ms-2" style="font-size:0.8rem">
+  <span class="text-muted align-self-center ms-2" style="font-size:var(--text-base)">
     <i class="bi bi-info-circle me-1"></i>
     Overridden rows are highlighted. Changes apply immediately to future scoring and imports.
   </span>
@@ -32,7 +32,7 @@
 
 {% if not ch_map %}
 <div class="panel">
-  <div class="panel-body text-muted" style="font-size:0.85rem">
+  <div class="panel-body text-muted" style="font-size:var(--text-base)">
     No chapter map loaded yet — use <strong>Refresh Chapter Map</strong> on the series page to fetch data from MangaDex.
   </div>
 </div>
@@ -53,7 +53,7 @@
       <tr class="chmap-row {% if is_overridden %}overridden-row{% endif %}"
           data-chapter="{{ ch_str }}"
           {% if is_overridden %}style="background:var(--gold-bg); border-left:3px solid var(--gold)"{% endif %}>
-        <td class="fw-semibold" style="font-size:0.85rem">
+        <td class="fw-semibold" style="font-size:var(--text-base)">
           Ch&nbsp;{% if ch_str.replace('.','',1).isdigit() and '.' not in ch_str %}{{ ch_str|int }}{% else %}{{ ch_str }}{% endif %}
         </td>
         <td>
@@ -75,7 +75,7 @@
         </td>
         <td>
           {% if is_overridden %}
-          <span class="badge-status" style="background:var(--gold-bg); color:var(--gold); font-size:0.7rem">
+          <span class="badge-status" style="background:var(--gold-bg); color:var(--gold); font-size:var(--text-xs)">
             <i class="bi bi-pencil me-1"></i>Overridden
           </span>
           {% endif %}
@@ -87,7 +87,7 @@
 </div>
 {% endif %}
 
-<div id="save-status" class="mt-2" style="display:none; font-size:0.82rem;"></div>
+<div id="save-status" class="mt-2" style="display:none; font-size:var(--text-base);"></div>
 {% endblock %}
 
 {% block scripts %}
