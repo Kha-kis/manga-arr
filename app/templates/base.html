@@ -965,13 +965,6 @@
       background: var(--edge);
     }
 
-    /* Legacy alias */
-    .section-header {
-      font-size:var(--text-2xs); font-weight:700; letter-spacing:0.1em; text-transform:uppercase;
-      color:var(--ember); margin-bottom:12px; display:flex; align-items:center; gap:8px;
-    }
-    .section-header::after { content:''; flex:1; height:1px; background:var(--edge); }
-
     /* ═══════════════════════════════════════════════════════════════
        ACTIVITY FEED
     ═══════════════════════════════════════════════════════════════ */
@@ -1008,11 +1001,6 @@
     .activity-vol    { color: var(--gold); font-size: var(--text-sm); }
     .activity-name   { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
     .activity-date   { color: var(--text-3); font-size: var(--text-xs); white-space: nowrap; }
-
-    /* Legacy aliases */
-    .activity-row { display:flex; align-items:center; gap:12px; padding:10px 16px; border-bottom:1px solid var(--edge); font-size:var(--text-base); transition:background 0.12s; }
-    .activity-row:last-child { border-bottom:none; }
-    .activity-row:hover { background:var(--ink-3); }
 
     /* ═══════════════════════════════════════════════════════════════
        EMPTY STATE
@@ -1426,7 +1414,6 @@
     .font-serif   { font-family: var(--font-serif);   font-optical-sizing: auto; }
     .font-ui      { font-family: var(--font-ui); }
     .font-mono    { font-family: var(--font-mono); font-feature-settings: 'tnum' 1, 'lnum' 1; }
-    .font-italic  { font-family: var(--font-italic); font-style: italic; }
     .tabular-num  { font-feature-settings: 'tnum' 1, 'lnum' 1; }
 
     /* ── .page-head — the masthead ─────────────────────────────────── */
@@ -1531,33 +1518,6 @@
       font-size: var(--text-lg);
     }
 
-    /* ── .pull-quote — editorial callout ───────────────────────────── */
-    .pull-quote {
-      position: relative;
-      padding: 16px 20px 16px 24px;
-      border-left: 3px solid var(--ember);
-      background: rgba(240,132,40,0.04);
-      border-radius: 0 4px 4px 0;
-      margin: 24px 0;
-    }
-    .pull-quote .pq-body {
-      font-family: var(--font-serif);
-      font-style: italic;
-      font-size: var(--text-xl);
-      line-height: 1.5;
-      color: var(--text);
-    }
-    .pull-quote .pq-cite {
-      display: block;
-      margin-top: 8px;
-      font-family: var(--font-ui);
-      font-size: var(--text-sm);
-      font-weight: 500;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--text-3);
-    }
-
     /* ── .marginalia — small metadata annotation ──────────────────── */
     .marginalia {
       font-family: var(--font-ui);
@@ -1569,29 +1529,6 @@
       line-height: 1.4;
     }
     .marginalia strong { color: var(--text-2); font-weight: 600; }
-
-    /* ── .drop-cap — rare editorial flourish for first paragraph ──── */
-    .drop-cap::first-letter {
-      float: left;
-      font-family: var(--font-display);
-      font-weight: 800;
-      font-size: 3.6rem;
-      line-height: 0.85;
-      padding: 4px 8px 0 0;
-      color: var(--ember);
-      font-optical-sizing: auto;
-    }
-
-    /* ── .page-number — "01 / 12" paginator ───────────────────────── */
-    .page-number {
-      font-family: var(--font-mono);
-      font-feature-settings: 'tnum' 1;
-      font-size: var(--text-sm);
-      color: var(--text-3);
-      letter-spacing: 0.05em;
-    }
-    .page-number .current { color: var(--text); font-weight: 500; }
-    .page-number .sep     { color: var(--text-4); margin: 0 4px; }
 
     /* ── Editorial panel treatment (tighter radius, refined header) ─ */
     .panel-editorial {
@@ -1681,18 +1618,6 @@
 
     .bar-hover { opacity: 0.75; transition: opacity 0.15s; }
     .bar-hover:hover { opacity: 1; }
-
-    /* Skeleton loading placeholder */
-    .skeleton {
-      background: linear-gradient(90deg, var(--ink-3) 25%, var(--ink-4) 50%, var(--ink-3) 75%);
-      background-size: 200% 100%;
-      animation: skeleton-pulse 1.5s ease-in-out infinite;
-      border-radius: var(--radius-xs);
-    }
-    @keyframes skeleton-pulse {
-      0%   { background-position: 200% 0; }
-      100% { background-position: -200% 0; }
-    }
 
     {% block head_styles %}{% endblock %}
 
