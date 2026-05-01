@@ -372,6 +372,157 @@ async def prowlarr_sub_indexers(request: Request, indexer_id: int):
     )
 
 
+# ── Prowlarr sub-import (Sonarr/Radarr-style per-sub indexer rows) ────────────
+@router.get("/indexers/{indexer_id}/sync-prowlarr-preview", response_class=HTMLResponse)
+async def prowlarr_sync_preview(request: Request, indexer_id: int):
+    """Render the modal preview of Prowlarr sub-indexers for selective import.
+
+    Flow: user clicks 'Sync indexers' on a Prowlarr row → this endpoint fetches
+    the live sub-list with already-imported state marked → user picks which
+    ones to import → POST /indexers/{id}/sync-prowlarr commits as torznab rows."""
+    with get_db() as db:
+        idx = db.execute("SELECT * FROM indexers WHERE id=?", (indexer_id,)).fetchone()
+        if not idx or idx['type'] != 'prowlarr':
+            return templates.TemplateResponse(
+                request, "partials/prowlarr_sync_modal.html",
+                {"error": "This action is only available for Prowlarr indexers.",
+                 "subs": [], "indexer": None, "manga_cats": []},
+                status_code=400 if idx else 404,
+            )
+        # Existing imports keyed by (parent_prowlarr_id, prowlarr_indexer_id)
+        already_imported = {
+            r['prowlarr_indexer_id']: dict(r)
+            for r in db.execute(
+                "SELECT id, name, prowlarr_indexer_id, enabled"
+                " FROM indexers"
+                " WHERE parent_prowlarr_id=? AND prowlarr_indexer_id IS NOT NULL",
+                (indexer_id,)
+            ).fetchall()
+        }
+
+    decrypted = _row_decrypted(idx)
+    cats = from_json(decrypted.get('categories'), [7000, 7010, 7020])
+    url = (decrypted.get('url') or '').rstrip('/')
+    key = decrypted.get('api_key') or ''
+    if not url:
+        return templates.TemplateResponse(
+            request, "partials/prowlarr_sync_modal.html",
+            {"error": "No URL configured for this Prowlarr indexer.",
+             "subs": [], "indexer": dict(idx), "manga_cats": cats},
+        )
+
+    subs = await _list_prowlarr_subs_for_ui(url, key, cats)
+    # Annotate each sub with import state so the template can disable the
+    # checkbox / show "already imported" + a link to the existing row.
+    for s in subs:
+        existing = already_imported.get(s['id'])
+        s['already_imported'] = bool(existing)
+        s['imported_row_id'] = existing['id'] if existing else None
+        s['imported_row_name'] = existing['name'] if existing else None
+
+    return templates.TemplateResponse(
+        request, "partials/prowlarr_sync_modal.html",
+        {"subs": subs, "indexer": dict(idx), "manga_cats": cats, "error": None},
+    )
+
+
+@router.post("/indexers/{indexer_id}/sync-prowlarr")
+async def prowlarr_sync_commit(request: Request, indexer_id: int):
+    """Commit selected Prowlarr sub-indexers as new torznab rows.
+
+    Each imported sub becomes a `type='torznab'` indexer with:
+      - url:  <prowlarr-base>/<sub-id>            (Prowlarr's per-indexer torznab façade)
+      - api_key: copied from the parent Prowlarr row
+      - categories: the sub's manga-relevant capability subset
+      - parent_prowlarr_id: this Prowlarr row's id (for grouping in UI + dedup)
+      - prowlarr_indexer_id: the sub's id within Prowlarr (for dedup on re-sync)
+
+    Idempotent: subs already imported (matched by parent + sub id) are skipped.
+    Form fields: `selected` = repeated form field of integer sub-ids to import."""
+    form = await request.form()
+    raw_selected = form.getlist("selected")
+    try:
+        selected_sub_ids = [int(s) for s in raw_selected if str(s).strip().lstrip('-').isdigit()]
+    except (TypeError, ValueError):
+        selected_sub_ids = []
+
+    if not selected_sub_ids:
+        return RedirectResponse("/indexers?prowlarr_sync=none", status_code=303)
+
+    with get_db() as db:
+        parent_row = db.execute(
+            "SELECT * FROM indexers WHERE id=?", (indexer_id,)
+        ).fetchone()
+        if not parent_row or parent_row['type'] != 'prowlarr':
+            return RedirectResponse("/indexers?prowlarr_sync=invalid", status_code=303)
+        parent = dict(parent_row)  # sqlite3.Row has no .get(); convert before .get() use
+
+    decrypted = _row_decrypted(parent_row)
+    parent_url = (decrypted.get('url') or '').rstrip('/')
+    parent_key = decrypted.get('api_key') or ''
+    parent_cats = from_json(decrypted.get('categories'), [7000, 7010, 7020])
+    if not parent_url or not parent_key:
+        return RedirectResponse("/indexers?prowlarr_sync=missing_credentials", status_code=303)
+
+    live_subs = await _list_prowlarr_subs_for_ui(parent_url, parent_key, parent_cats)
+    by_sub_id = {s['id']: s for s in live_subs}
+
+    imported, skipped = 0, 0
+    with get_db() as db:
+        # Determine the next priority slot once, then bump per row to keep
+        # imported indexers slightly behind the parent (so the user can
+        # reorder later without surprise).
+        max_pri = db.execute(
+            "SELECT COALESCE(MAX(priority), 25) FROM indexers"
+        ).fetchone()[0]
+        next_pri = max_pri + 1
+
+        for sub_id in selected_sub_ids:
+            sub = by_sub_id.get(sub_id)
+            if not sub:
+                # Sub vanished between preview and commit (rare race / Prowlarr
+                # config change). Skip silently rather than fail the whole batch.
+                continue
+
+            existing = db.execute(
+                "SELECT id FROM indexers WHERE parent_prowlarr_id=? AND prowlarr_indexer_id=?",
+                (indexer_id, sub_id)
+            ).fetchone()
+            if existing:
+                skipped += 1
+                continue
+
+            # Per-sub URL is <parent>/<sub-id>; the existing torznab fetcher
+            # appends "/api" so the final call is <parent>/<sub-id>/api which
+            # is Prowlarr's per-indexer torznab façade.
+            sub_url = f"{parent_url}/{sub_id}"
+            # Filter sub categories to manga overlap (parent_cats); fall back
+            # to parent_cats if the sub didn't declare capabilities.
+            sub_cats_full = sub.get('categories') or []
+            manga_overlap = sorted(set(sub_cats_full) & set(parent_cats))
+            cats_for_row = manga_overlap or parent_cats
+
+            db.execute(
+                "INSERT INTO indexers"
+                "(name, type, url, api_key, priority, enabled, categories,"
+                " min_seeders, seed_ratio, parent_prowlarr_id, prowlarr_indexer_id)"
+                " VALUES(?, 'torznab', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (sub['name'], sub_url, parent_key, next_pri,
+                 1 if sub.get('will_be_polled') else 0,
+                 json.dumps(cats_for_row),
+                 parent.get('min_seeders') or 0,
+                 parent.get('seed_ratio') or 0.0,
+                 indexer_id, sub_id)
+            )
+            next_pri += 1
+            imported += 1
+
+    return RedirectResponse(
+        f"/indexers?prowlarr_sync=ok&imported={imported}&skipped={skipped}",
+        status_code=303,
+    )
+
+
 # ── Test ──────────────────────────────────────────────────────────────────────
 @router.post("/api/indexers/{indexer_id}/test")
 async def test_indexer(indexer_id: int):

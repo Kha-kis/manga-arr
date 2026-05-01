@@ -13,6 +13,31 @@
 </div>
 <script>setTimeout(()=>{const el=document.getElementById('saved-toast');if(el)el.style.display='none';},4000);</script>
 {% endif %}
+{% if request.query_params.get('prowlarr_sync') %}
+{% set _ps = request.query_params.get('prowlarr_sync') %}
+{% set _imp = request.query_params.get('imported', '0') %}
+{% set _skp = request.query_params.get('skipped', '0') %}
+<div class="d-flex align-items-center gap-2 mb-3 px-3 py-2 rounded-lg"
+     style="background:{% if _ps == 'ok' %}var(--jade-bg);border:1px solid var(--jade-soft);color:var(--jade){% else %}var(--gold-bg);border:1px solid var(--gold-soft);color:var(--gold){% endif %}"
+     id="sync-toast">
+  {% if _ps == 'ok' %}
+    <i class="bi bi-check-circle-fill"></i>
+    Imported {{ _imp }} indexer(s) from Prowlarr{% if _skp != '0' %}; {{ _skp }} already-imported skipped{% endif %}.
+    {% if _imp != '0' %}
+    <span style="color:var(--text-2); margin-left:auto; font-size:var(--text-xs)">
+      Tip: disable the parent Prowlarr indexer to avoid duplicate fetches.
+    </span>
+    {% endif %}
+  {% elif _ps == 'none' %}
+    <i class="bi bi-info-circle-fill"></i>No sub-indexers were selected.
+  {% elif _ps == 'invalid' %}
+    <i class="bi bi-exclamation-triangle-fill"></i>That indexer is not a Prowlarr instance.
+  {% elif _ps == 'missing_credentials' %}
+    <i class="bi bi-exclamation-triangle-fill"></i>Prowlarr indexer is missing URL or API key — fix it first then re-sync.
+  {% endif %}
+</div>
+<script>setTimeout(()=>{const el=document.getElementById('sync-toast');if(el)el.style.display='none';},6000);</script>
+{% endif %}
 <div class="d-flex align-items-center justify-content-between mb-4">
   <div class="page-heading mb-0"><i class="bi bi-search"></i>Indexers</div>
   <button class="btn btn-outline-ember btn-sm" data-bs-toggle="modal" data-bs-target="#newModal">
@@ -41,16 +66,32 @@
       <i class="bi bi-{% if idx.type == 'prowlarr' %}binoculars-fill{% else %}rss-fill{% endif %}"></i>
       {{ idx.name }}
       <span class="badge-status badge-unknown" style="font-size:var(--text-2xs)">{{ idx.type }}</span>
+      {% if idx.parent_prowlarr_id %}
+        {% set parent = (indexers | selectattr('id', 'equalto', idx.parent_prowlarr_id) | list | first) %}
+        <span class="badge-status badge-grabbed" style="font-size:var(--text-2xs)" title="Imported from Prowlarr instance{% if parent %}: {{ parent.name }}{% endif %}">
+          <i class="bi bi-cloud-download"></i> from Prowlarr{% if parent %} ({{ parent.name }}){% endif %}
+        </span>
+      {% endif %}
       {% if not idx.enabled %}<span class="badge-status badge-wanted" style="font-size:var(--text-2xs)">DISABLED</span>{% endif %}
       <span style="font-size:var(--text-sm);color:var(--text-2)">Priority: {{ idx.priority }}</span>
       <div class="ms-auto d-flex gap-2">
         {% if idx.type == 'prowlarr' %}
+        <button class="btn btn-sm btn-outline-ember"
+                hx-get="/indexers/{{ idx.id }}/sync-prowlarr-preview"
+                hx-target="#prowlarr-sync-modal-body-{{ idx.id }}"
+                hx-swap="innerHTML"
+                data-bs-toggle="modal"
+                data-bs-target="#prowlarrSyncModal{{ idx.id }}"
+                title="Import indexers from this Prowlarr instance"
+                aria-label="Sync indexers from Prowlarr">
+          <i class="bi bi-cloud-download"></i>
+        </button>
         <button class="btn btn-sm btn-secondary"
                 hx-get="/indexers/{{ idx.id }}/prowlarr-subs"
                 hx-target="#prowlarr-subs-{{ idx.id }}"
                 hx-swap="innerHTML"
                 hx-disabled-elt="this"
-                title="View Prowlarr sub-indexers"
+                title="View Prowlarr sub-indexers (read-only diagnostic)"
                 aria-label="View Prowlarr sub-indexers"
                 onclick="document.getElementById('prowlarr-subs-{{ idx.id }}').style.display='block'">
           <i class="bi bi-binoculars"></i>
@@ -87,6 +128,28 @@
     </div>
   </div>
 </div>
+
+{% if idx.type == 'prowlarr' %}
+<!-- Prowlarr sub-indexer import modal -->
+<div class="modal fade" id="prowlarrSyncModal{{ idx.id }}" tabindex="-1" aria-labelledby="prowlarrSyncTitle{{ idx.id }}" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title text-ember" id="prowlarrSyncTitle{{ idx.id }}">
+          <i class="bi bi-cloud-download me-2"></i>Import indexers from {{ idx.name }}
+        </h6>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="prowlarr-sync-modal-body-{{ idx.id }}">
+        <div class="d-flex align-items-center gap-2" style="font-size:var(--text-sm); color:var(--text-3)">
+          <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+          <span>Loading sub-indexers from Prowlarr…</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
 
 <!-- Edit Modal -->
 <div class="modal fade" id="editModal{{ idx.id }}" tabindex="-1">

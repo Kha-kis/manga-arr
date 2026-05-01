@@ -517,6 +517,14 @@ def init_db():
         add_col('indexers', 'client_id',         'INTEGER REFERENCES download_clients(id)')
         add_col('indexers', 'min_seeders',        'INTEGER DEFAULT 0')
         add_col('indexers', 'seed_ratio',         'REAL DEFAULT 0')
+        # Prowlarr sub-indexer attribution (PR #117). When the user uses
+        # the "Sync indexers from Prowlarr" flow, each imported sub-indexer
+        # becomes its own top-level torznab row. These columns track which
+        # Prowlarr instance the row came from + the sub-indexer id within
+        # Prowlarr, so a re-sync can dedup ((parent_prowlarr_id, prowlarr_indexer_id)
+        # is the natural key) and the UI can group them visually.
+        add_col('indexers', 'parent_prowlarr_id',  'INTEGER')
+        add_col('indexers', 'prowlarr_indexer_id', 'INTEGER')
         add_col('download_clients', 'post_import_category', 'TEXT DEFAULT ""')
         add_col('download_clients', 'recent_priority',      'TEXT DEFAULT "last"')
         add_col('download_clients', 'older_priority',       'TEXT DEFAULT "last"')
