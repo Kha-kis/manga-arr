@@ -9,12 +9,19 @@ If a test here fails, READ the failure message. The fix is almost never
 "loosen the test"; it's "use the documented helper instead of the raw
 operation that triggered the failure."
 """
+import asyncio
 import pathlib
 import re
 import subprocess
+import sys
+from unittest.mock import patch
 
 APP_DIR = pathlib.Path(__file__).resolve().parents[2] / "app"
 ROUTERS_DIR = APP_DIR / "routers"
+
+sys.path.insert(0, "tests/python")
+sys.path.insert(0, "app")
+import conftest  # noqa: F401,E402
 
 
 # ───────────────────── int(vol_num) silent truncation ─────────────────────
@@ -204,4 +211,142 @@ def test_no_route_order_violations():
         + "  Fix: move the literal-path decorator above the parameterized one "
         + "in the same file. Add a comment if the order is non-obvious so a "
         + "future refactor doesn't re-sort them.\n"
+    )
+
+
+# ───────────────────── Prowlarr per-indexer enable filter ─────────────────────
+
+# CLAUDE.md hard invariant (and the user-facing promise of the indexers
+# integration): toggling an indexer OFF in Prowlarr's own UI must stop
+# Mangarr from polling it via RSS or search. The filter that enforces
+# this lives at routers/indexers.py:483 inside _get_prowlarr_indexers:
+#
+#     for idx in indexers:
+#         if not idx.get('enable', True):
+#             continue
+#
+# A future refactor that drops or inverts this line would silently start
+# pulling from Prowlarr-disabled indexers — exactly the kind of bug the
+# user wouldn't notice until unwanted releases started showing up. This
+# behavioral test mocks Prowlarr's /api/v1/indexer response and asserts
+# the filter still fires.
+
+
+class _MockProwlarrResponse:
+    def __init__(self, status_code, json_data):
+        self.status_code = status_code
+        self._json = json_data
+
+    def json(self):
+        return self._json
+
+
+def _mock_prowlarr_client(indexers_response):
+    """Returns a stand-in for httpx.AsyncClient whose .get() always
+    returns indexers_response from /api/v1/indexer."""
+
+    class _C:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, headers=None):
+            return _MockProwlarrResponse(200, indexers_response)
+
+    return _C
+
+
+def test_prowlarr_filter_skips_disabled_subindexers():
+    """Tripwire: _get_prowlarr_indexers must filter out sub-indexers where
+    Prowlarr reports `enable: false`. If this check is removed, Mangarr
+    starts polling indexers the user explicitly disabled in Prowlarr's UI.
+    """
+    from routers.indexers import _get_prowlarr_indexers
+
+    # Three sub-indexers: one enabled, one disabled, one with enable missing
+    # (Prowlarr default is enabled — we should INCLUDE these).
+    fake_response = [
+        {
+            'id': 1, 'name': 'NyaaActive', 'enable': True,
+            'protocol': 'torrent',
+            'capabilities': {'categories': [{'id': 7000}, {'id': 7020}]},
+        },
+        {
+            'id': 2, 'name': 'NyaaDisabled', 'enable': False,
+            'protocol': 'torrent',
+            'capabilities': {'categories': [{'id': 7000}]},
+        },
+        {
+            'id': 3, 'name': 'AnimeBytesNoEnableKey',
+            # 'enable' key intentionally absent — must default to True
+            'protocol': 'torrent',
+            'capabilities': {'categories': [{'id': 7000}, {'id': 7010}]},
+        },
+    ]
+
+    with patch('httpx.AsyncClient', new=_mock_prowlarr_client(fake_response)):
+        result = asyncio.run(
+            _get_prowlarr_indexers('http://prowlarr.test', 'fake-key', [7000, 7010, 7020])
+        )
+
+    names = [name for _id, name, _proto in result]
+    assert 'NyaaActive' in names, "enabled sub-indexer must be included"
+    assert 'AnimeBytesNoEnableKey' in names, (
+        "missing-enable-key sub-indexer must default to enabled (Prowlarr's "
+        "own default behavior)"
+    )
+    assert 'NyaaDisabled' not in names, (
+        "Prowlarr-disabled sub-indexer leaked through the filter at "
+        "routers/indexers.py:483 — RSS and search would silently pull "
+        "from indexers the user has explicitly disabled in Prowlarr's UI. "
+        "Re-add `if not idx.get('enable', True): continue` to "
+        "_get_prowlarr_indexers."
+    )
+
+
+def test_prowlarr_filter_skips_subindexers_without_manga_categories():
+    """Companion check: sub-indexers whose declared categories don't intersect
+    with the requested manga set must also be skipped. CLAUDE.md hard
+    invariant: 'Prowlarr manga categories: 7000 + 7010 + 7020.' A non-manga
+    indexer (movies-only, music-only) would otherwise be polled and return
+    junk for every search."""
+    from routers.indexers import _get_prowlarr_indexers
+
+    fake_response = [
+        {
+            'id': 10, 'name': 'MangaIndexer', 'enable': True,
+            'protocol': 'torrent',
+            'capabilities': {'categories': [{'id': 7000}]},
+        },
+        {
+            'id': 11, 'name': 'MoviesOnlyIndexer', 'enable': True,
+            'protocol': 'torrent',
+            'capabilities': {'categories': [{'id': 2000}, {'id': 2010}]},
+        },
+        {
+            'id': 12, 'name': 'NoCapsListed', 'enable': True,
+            'protocol': 'torrent',
+            'capabilities': {},  # no categories listed — included (unknown caps)
+        },
+    ]
+
+    with patch('httpx.AsyncClient', new=_mock_prowlarr_client(fake_response)):
+        result = asyncio.run(
+            _get_prowlarr_indexers('http://prowlarr.test', 'fake-key', [7000, 7010, 7020])
+        )
+
+    names = {name for _id, name, _proto in result}
+    assert 'MangaIndexer' in names
+    assert 'MoviesOnlyIndexer' not in names, (
+        "non-manga indexer leaked through category-intersection filter at "
+        "routers/indexers.py:486"
+    )
+    assert 'NoCapsListed' in names, (
+        "indexer with no declared capabilities must be included (we don't "
+        "know what it supports, give it the benefit of the doubt)"
     )
