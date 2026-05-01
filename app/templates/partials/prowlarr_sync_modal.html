@@ -21,8 +21,10 @@
       <i class="bi bi-info-circle"></i>
       <span>
         Each selected indexer becomes its own row in <a href="/indexers" class="text-ember">Indexers</a> —
-        you can then enable/disable, prioritize, and set per-indexer min-seeders independently.
-        Prowlarr's API key is copied to each row; updating it later requires re-syncing.
+        independently editable for priority, min-seeders, categories, and enabled state.
+        On first import, this Prowlarr row is auto-disabled to prevent double-polling
+        (the connection details stay so you can re-sync later when Prowlarr adds new indexers).
+        Per-indexer changes here never affect Prowlarr's own configuration.
       </span>
     </div>
 

@@ -517,8 +517,28 @@ async def prowlarr_sync_commit(request: Request, indexer_id: int):
             next_pri += 1
             imported += 1
 
+        # Auto-disable the parent Prowlarr row on first successful import.
+        # Reasoning: the imported sub rows fetch directly from Prowlarr's
+        # per-indexer torznab façade, and the parent's fan-out path would
+        # ALSO fetch the same subs — leading to double-polling of every
+        # upstream tracker. Mangarr's seen + release_guid dedup catches
+        # the duplicate releases, but the wasted HTTP requests still hit
+        # rate limits and burn bandwidth. We disable rather than delete
+        # so the URL+API key stay around for future re-syncs (the sync
+        # endpoint reads the parent regardless of `enabled`).
+        # If the user explicitly wants fan-out + per-sub control, they
+        # can re-enable the parent manually — accepting the double-poll.
+        parent_was_disabled = False
+        if imported > 0:
+            cur = db.execute(
+                "UPDATE indexers SET enabled=0 WHERE id=? AND enabled=1",
+                (indexer_id,)
+            )
+            parent_was_disabled = cur.rowcount > 0
+
+    parent_flag = "&parent_disabled=1" if parent_was_disabled else ""
     return RedirectResponse(
-        f"/indexers?prowlarr_sync=ok&imported={imported}&skipped={skipped}",
+        f"/indexers?prowlarr_sync=ok&imported={imported}&skipped={skipped}{parent_flag}",
         status_code=303,
     )
 
