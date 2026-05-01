@@ -57,6 +57,22 @@ async def create_delay_profile(
     return RedirectResponse("/delay-profiles", status_code=303)
 
 
+# ── Reorder ───────────────────────────────────────────────────────────────────
+# NOTE: must be declared BEFORE /delay-profiles/{profile_id} — Starlette
+# first-match wins, and the parameterized edit route would otherwise eat
+# /delay-profiles/reorder (parsing 'reorder' as profile_id and 422'ing).
+# Hard invariant enforced by tests/python/test_hard_invariants.py.
+@router.post("/delay-profiles/reorder")
+async def reorder_delay_profiles(request: Request):
+    """Body: {"order": [id1, id2, ...]}"""
+    body = await request.json()
+    ids = body.get("order", [])
+    with get_db() as db:
+        for i, pid in enumerate(ids):
+            db.execute("UPDATE delay_profiles SET order_num=? WHERE id=?", (i, pid))
+    return JSONResponse({"ok": True})
+
+
 # ── Edit ─────────────────────────────────────────────────────────────────────
 @router.post("/delay-profiles/{profile_id}")
 async def edit_delay_profile(
@@ -81,18 +97,6 @@ async def edit_delay_profile(
             db.execute("INSERT OR IGNORE INTO delay_profile_tags(profile_id,tag) VALUES(?,?)",
                        (profile_id, tag))
     return RedirectResponse("/delay-profiles", status_code=303)
-
-
-# ── Reorder ───────────────────────────────────────────────────────────────────
-@router.post("/delay-profiles/reorder")
-async def reorder_delay_profiles(request: Request):
-    """Body: {"order": [id1, id2, ...]}"""
-    body = await request.json()
-    ids = body.get("order", [])
-    with get_db() as db:
-        for i, pid in enumerate(ids):
-            db.execute("UPDATE delay_profiles SET order_num=? WHERE id=?", (i, pid))
-    return JSONResponse({"ok": True})
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────

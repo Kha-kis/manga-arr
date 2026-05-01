@@ -14,6 +14,7 @@ import re
 import subprocess
 
 APP_DIR = pathlib.Path(__file__).resolve().parents[2] / "app"
+ROUTERS_DIR = APP_DIR / "routers"
 
 
 # ───────────────────── int(vol_num) silent truncation ─────────────────────
@@ -125,4 +126,82 @@ def test_seen_table_has_release_guid_column():
     )
     assert "add_col('seen'" in text and "release_guid" in text, (
         "release_guid must be added via add_col on the seen table"
+    )
+
+
+# ───────────────────── route order: literal before parameterized ─────────────
+
+# CLAUDE.md hard invariant: "literal paths must precede parameterized siblings
+# in the same module. Starlette first-match wins. Grep before adding any new
+# path." Bug class: /import-lists/{list_id} declared before /import-lists/sync
+# means /import-lists/sync is unreachable — the parameterized route eats it.
+#
+# This tripwire walks every app/routers/*.py, parses the decorator paths in
+# source order, and asserts that no earlier declaration would shadow a later
+# one with the same HTTP method.
+
+_DECORATOR_RE = re.compile(
+    r'^\s*@router\.(get|post|patch|delete|put)\(\s*["\']([^"\']+)["\']',
+    re.MULTILINE,
+)
+
+
+def _earlier_shadows_later(earlier_path: str, later_path: str) -> bool:
+    """True if a request to later_path would be matched by earlier_path
+    (treating {param} in earlier as a wildcard segment). When that's true,
+    later_path is unreachable in source order."""
+    e_segs = earlier_path.strip('/').split('/')
+    l_segs = later_path.strip('/').split('/')
+    if len(e_segs) != len(l_segs):
+        return False
+    for e, l in zip(e_segs, l_segs):
+        if e == l:
+            continue
+        if e.startswith('{') and e.endswith('}'):
+            continue  # earlier matches anything → including the literal in later
+        return False
+    return True
+
+
+def test_no_route_order_violations():
+    """Tripwire: in each router module, no earlier @router decorator may
+    shadow a later one with the same HTTP method.
+
+    The pattern that caused real bugs: a parameterized path declared before
+    a literal sibling renders the literal unreachable. Starlette doesn't
+    warn about this — the route just silently never fires."""
+    violations = []
+    for router_file in sorted(ROUTERS_DIR.glob("*.py")):
+        if router_file.name.startswith('_'):
+            continue
+        content = router_file.read_text()
+        decls = []
+        for m in _DECORATOR_RE.finditer(content):
+            line = content[:m.start()].count('\n') + 1
+            method = m.group(1).upper()
+            path = m.group(2)
+            decls.append((line, method, path))
+
+        for i in range(len(decls)):
+            e_line, e_method, e_path = decls[i]
+            for j in range(i + 1, len(decls)):
+                l_line, l_method, l_path = decls[j]
+                if e_method != l_method:
+                    continue
+                if _earlier_shadows_later(e_path, l_path):
+                    violations.append(
+                        f"{router_file.name}:{l_line}  "
+                        f"{l_method} {l_path!r} is shadowed by "
+                        f"{e_path!r} at line {e_line}"
+                    )
+
+    assert not violations, (
+        "\n\n  ROUTE ORDER VIOLATIONS — these routes are unreachable:\n\n    "
+        + "\n    ".join(violations)
+        + "\n\n  Starlette dispatches first-match-wins on registration order. "
+        + "When a parameterized path (`/foo/{id}`) is declared before a "
+        + "literal sibling (`/foo/sync`), the literal never matches.\n\n"
+        + "  Fix: move the literal-path decorator above the parameterized one "
+        + "in the same file. Add a comment if the order is non-obvious so a "
+        + "future refactor doesn't re-sort them.\n"
     )

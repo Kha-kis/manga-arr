@@ -307,6 +307,47 @@ def test_delay_profile_delete(env):
     assert gone is None
 
 
+def test_delay_profile_reorder_endpoint_is_reachable(env):
+    """Regression: /delay-profiles/reorder used to be shadowed by
+    /delay-profiles/{profile_id} (declared earlier), making the reorder
+    endpoint silently 422 on every request. Caught by the route-order
+    tripwire in test_hard_invariants.py and fixed by re-ordering the
+    decorators. This test confirms the endpoint actually persists the
+    new order on POST."""
+    client = _client()
+    csrf = _csrf("dp-reorder")
+
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute(
+            "INSERT INTO delay_profiles(id, name, enable_usenet, enable_torrent,"
+            " usenet_delay, torrent_delay, order_num)"
+            " VALUES(830, 'A', 1, 1, 0, 0, 5),"
+            "       (831, 'B', 1, 1, 0, 0, 10)"
+        )
+
+    r = client.post(
+        "/delay-profiles/reorder",
+        json={'order': [831, 830]},
+        **csrf,
+    )
+    assert r.status_code == 200, (
+        f"reorder must reach the JSON handler, got {r.status_code}: {r.text[:200]!r}"
+    )
+    assert r.json() == {"ok": True}
+
+    with sqlite3.connect(env['db_path']) as c:
+        c.row_factory = sqlite3.Row
+        rows = c.execute(
+            "SELECT id, order_num FROM delay_profiles WHERE id IN (830, 831)"
+            " ORDER BY id"
+        ).fetchall()
+    by_id = {r['id']: r['order_num'] for r in rows}
+    assert by_id == {830: 1, 831: 0}, (
+        f"reorder should set order_num to the position in the array; "
+        f"got {by_id!r} (expected 831 first → 0, 830 second → 1)"
+    )
+
+
 def test_delay_profile_default_cannot_be_deleted(env):
     """Default delay profile is protected — DELETE returns 400."""
     client = _client()
