@@ -323,7 +323,7 @@ async def _list_prowlarr_subs_for_ui(url: str, key: str, cats: list) -> list[dic
         return []
 
 
-@router.get("/api/indexers/{indexer_id}/prowlarr-subs", response_class=HTMLResponse)
+@router.get("/indexers/{indexer_id}/prowlarr-subs", response_class=HTMLResponse)
 async def prowlarr_sub_indexers(request: Request, indexer_id: int):
     """Return the Prowlarr sub-indexer list as a rendered partial, for HTMX
     progressive disclosure on the indexers page.
@@ -331,7 +331,12 @@ async def prowlarr_sub_indexers(request: Request, indexer_id: int):
     UX gap this closes: Mangarr stores ONE indexer row per Prowlarr instance,
     so the indexers page only shows 'Prowlarr' as a single entry. Operators
     debugging 'is X being polled?' had to bounce to Prowlarr's own UI to check.
-    This endpoint surfaces the live sub-indexer state inline."""
+    This endpoint surfaces the live sub-indexer state inline.
+
+    NOT under the /api/ prefix on purpose: the /api/ prefix gates GETs on
+    X-Api-Key, which the browser-side HTMX call doesn't carry. This is a
+    progressive-disclosure HTMX partial for an authenticated browser session,
+    not a programmatic API surface. GET → CSRF middleware doesn't apply."""
     with get_db() as db:
         idx = db.execute("SELECT * FROM indexers WHERE id=?", (indexer_id,)).fetchone()
     if not idx:
