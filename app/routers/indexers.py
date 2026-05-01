@@ -281,6 +281,92 @@ async def delete_indexer(indexer_id: int):
     return RedirectResponse("/indexers", status_code=303)
 
 
+# ── Prowlarr sub-indexer visibility ───────────────────────────────────────────
+async def _list_prowlarr_subs_for_ui(url: str, key: str, cats: list) -> list[dict]:
+    """Return the FULL Prowlarr sub-indexer list with status flags for UI display.
+
+    Differs from `_get_prowlarr_indexers` (which filters out disabled/non-manga
+    sub-indexers before returning) — this helper preserves the entire list and
+    annotates each entry with `enable`, `manga_compatible`, and `will_be_polled`
+    so the UI can show why each sub-indexer is or isn't being used.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10) as cli:
+            r = await cli.get(f"{url}/api/v1/indexer", headers={"X-Api-Key": key})
+        if r.status_code != 200:
+            return []
+        manga_cats = set(cats)
+        result = []
+        for idx in r.json():
+            idx_cats_int = {
+                int(c.get('id', 0))
+                for c in idx.get('capabilities', {}).get('categories', [])
+            }
+            # Empty caps = unknown caps → benefit of the doubt (mirrors
+            # _get_prowlarr_indexers behavior).
+            manga_compatible = bool(idx_cats_int & manga_cats) if idx_cats_int else True
+            enabled = idx.get('enable', True)
+            result.append({
+                'id': idx['id'],
+                'name': idx.get('name', str(idx['id'])),
+                'enable': enabled,
+                'protocol': idx.get('protocol', 'torrent'),
+                'categories': sorted(idx_cats_int),
+                'manga_compatible': manga_compatible,
+                'will_be_polled': enabled and manga_compatible,
+            })
+        # Sort: polled first (so the active set is at top), then alpha
+        result.sort(key=lambda r: (not r['will_be_polled'], r['name'].lower()))
+        return result
+    except Exception as e:
+        print(f"[Prowlarr] sub-indexer list failed for UI: {e}")
+        return []
+
+
+@router.get("/api/indexers/{indexer_id}/prowlarr-subs", response_class=HTMLResponse)
+async def prowlarr_sub_indexers(request: Request, indexer_id: int):
+    """Return the Prowlarr sub-indexer list as a rendered partial, for HTMX
+    progressive disclosure on the indexers page.
+
+    UX gap this closes: Mangarr stores ONE indexer row per Prowlarr instance,
+    so the indexers page only shows 'Prowlarr' as a single entry. Operators
+    debugging 'is X being polled?' had to bounce to Prowlarr's own UI to check.
+    This endpoint surfaces the live sub-indexer state inline."""
+    with get_db() as db:
+        idx = db.execute("SELECT * FROM indexers WHERE id=?", (indexer_id,)).fetchone()
+    if not idx:
+        return templates.TemplateResponse(
+            request, "partials/prowlarr_subs.html",
+            {"error": "Indexer not found.", "subs": [], "indexer": None},
+            status_code=404,
+        )
+    if idx['type'] != 'prowlarr':
+        return templates.TemplateResponse(
+            request, "partials/prowlarr_subs.html",
+            {
+                "error": f"Sub-indexer listing is only available for Prowlarr-type indexers (this one is `{idx['type']}`).",
+                "subs": [], "indexer": dict(idx),
+            },
+        )
+
+    decrypted = _row_decrypted(idx)
+    cats = from_json(decrypted.get('categories'), [7000, 7010, 7020])
+    url = (decrypted.get('url') or '').rstrip('/')
+    key = decrypted.get('api_key') or ''
+    if not url:
+        return templates.TemplateResponse(
+            request, "partials/prowlarr_subs.html",
+            {"error": "No URL configured for this Prowlarr indexer.",
+             "subs": [], "indexer": dict(idx)},
+        )
+
+    subs = await _list_prowlarr_subs_for_ui(url, key, cats)
+    return templates.TemplateResponse(
+        request, "partials/prowlarr_subs.html",
+        {"subs": subs, "indexer": dict(idx), "manga_cats": cats, "error": None},
+    )
+
+
 # ── Test ──────────────────────────────────────────────────────────────────────
 @router.post("/api/indexers/{indexer_id}/test")
 async def test_indexer(indexer_id: int):
