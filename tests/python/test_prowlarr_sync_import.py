@@ -106,18 +106,22 @@ def _mock_prowlarr(indexers_response):
 _FAKE_PROWLARR_RESPONSE = [
     {
         'id': 1, 'name': 'Nyaa', 'enable': True, 'protocol': 'torrent',
+        'priority': 10,
         'capabilities': {'categories': [{'id': 7000}, {'id': 7020}]},
     },
     {
         'id': 2, 'name': 'AnimeBytes', 'enable': True, 'protocol': 'torrent',
+        'priority': 5,  # higher priority than Nyaa
         'capabilities': {'categories': [{'id': 7000}, {'id': 7010}]},
     },
     {
         'id': 3, 'name': 'OldDisabledIndexer', 'enable': False, 'protocol': 'torrent',
+        'priority': 25,
         'capabilities': {'categories': [{'id': 7000}]},
     },
     {
         'id': 4, 'name': 'MoviesOnly', 'enable': True, 'protocol': 'torrent',
+        'priority': 25,
         'capabilities': {'categories': [{'id': 2000}, {'id': 2010}]},
     },
 ]
@@ -330,6 +334,78 @@ def test_sync_skips_subs_that_vanished_between_preview_and_commit(env):
             "SELECT prowlarr_indexer_id FROM indexers WHERE parent_prowlarr_id=101"
         ).fetchall()]
     assert ids == [1], f"only sub-id 1 should have a row, got {ids}"
+
+
+def test_sync_copies_per_sub_priority_from_prowlarr(env):
+    """Each imported row must get the priority value Prowlarr reports for
+    that sub-indexer — admins tune priorities in Prowlarr deliberately
+    (higher-priority indexers serve faster results, paid trackers vs
+    public, etc.) and Mangarr should honor the same ordering.
+
+    The fixture has Nyaa at priority=10 and AnimeBytes at priority=5;
+    after import, the rows must carry those exact priorities (NOT
+    sequential max+1 values like before this change)."""
+    client = _client()
+    csrf = _csrf("sync-priority")
+
+    with patch('httpx.AsyncClient', new=_mock_prowlarr(_FAKE_PROWLARR_RESPONSE)):
+        client.post(
+            "/indexers/101/sync-prowlarr",
+            data={'csrf_token': csrf['headers']['X-CSRFToken'],
+                  'selected': ['1', '2']},
+            **csrf, follow_redirects=False,
+        )
+
+    with sqlite3.connect(env['db_path']) as c:
+        c.row_factory = sqlite3.Row
+        rows = c.execute(
+            "SELECT name, priority FROM indexers"
+            " WHERE parent_prowlarr_id=101 ORDER BY prowlarr_indexer_id"
+        ).fetchall()
+    by_name = {r['name']: r['priority'] for r in rows}
+    assert by_name == {'Nyaa': 10, 'AnimeBytes': 5}, (
+        f"imported rows must carry Prowlarr's per-sub priority verbatim, "
+        f"got {by_name!r} (expected Nyaa=10, AnimeBytes=5)"
+    )
+
+
+def test_sync_clamps_invalid_priority_to_default(env):
+    """Defensive: if Prowlarr returns a malformed priority (string,
+    out-of-range, missing key), the import must still succeed using
+    Prowlarr's documented default of 25 — not crash, not 500."""
+    weird_subs = [
+        {'id': 50, 'name': 'StrPriority', 'enable': True, 'protocol': 'torrent',
+         'priority': 'high',  # not an int
+         'capabilities': {'categories': [{'id': 7000}]}},
+        {'id': 51, 'name': 'OutOfRange', 'enable': True, 'protocol': 'torrent',
+         'priority': 999,  # outside [1,50]
+         'capabilities': {'categories': [{'id': 7000}]}},
+        {'id': 52, 'name': 'NoPriorityKey', 'enable': True, 'protocol': 'torrent',
+         # 'priority' key missing entirely
+         'capabilities': {'categories': [{'id': 7000}]}},
+    ]
+
+    client = _client()
+    csrf = _csrf("sync-pri-clamp")
+
+    with patch('httpx.AsyncClient', new=_mock_prowlarr(weird_subs)):
+        r = client.post(
+            "/indexers/101/sync-prowlarr",
+            data={'csrf_token': csrf['headers']['X-CSRFToken'],
+                  'selected': ['50', '51', '52']},
+            **csrf, follow_redirects=False,
+        )
+    assert r.status_code == 303, r.text
+
+    with sqlite3.connect(env['db_path']) as c:
+        c.row_factory = sqlite3.Row
+        rows = c.execute(
+            "SELECT name, priority FROM indexers WHERE parent_prowlarr_id=101"
+        ).fetchall()
+    by_name = {r['name']: r['priority'] for r in rows}
+    assert by_name['StrPriority'] == 25, "non-int priority falls back to 25"
+    assert by_name['OutOfRange'] == 50, "999 clamps to upper bound 50"
+    assert by_name['NoPriorityKey'] == 25, "missing priority key falls back to 25"
 
 
 def test_sync_auto_disables_parent_on_first_import(env):

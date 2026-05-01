@@ -306,12 +306,22 @@ async def _list_prowlarr_subs_for_ui(url: str, key: str, cats: list) -> list[dic
             # _get_prowlarr_indexers behavior).
             manga_compatible = bool(idx_cats_int & manga_cats) if idx_cats_int else True
             enabled = idx.get('enable', True)
+            # Prowlarr exposes per-indexer priority (1–50, lower = higher
+            # priority, default 25). Mangarr's priority semantics match,
+            # so copy the value directly on import — admins who tuned
+            # priorities in Prowlarr expect Mangarr to honor them.
+            try:
+                idx_priority = int(idx.get('priority', 25))
+            except (TypeError, ValueError):
+                idx_priority = 25
+            idx_priority = max(1, min(50, idx_priority))
             result.append({
                 'id': idx['id'],
                 'name': idx.get('name', str(idx['id'])),
                 'enable': enabled,
                 'protocol': idx.get('protocol', 'torrent'),
                 'categories': sorted(idx_cats_int),
+                'priority': idx_priority,
                 'manga_compatible': manga_compatible,
                 'will_be_polled': enabled and manga_compatible,
             })
@@ -469,14 +479,6 @@ async def prowlarr_sync_commit(request: Request, indexer_id: int):
 
     imported, skipped = 0, 0
     with get_db() as db:
-        # Determine the next priority slot once, then bump per row to keep
-        # imported indexers slightly behind the parent (so the user can
-        # reorder later without surprise).
-        max_pri = db.execute(
-            "SELECT COALESCE(MAX(priority), 25) FROM indexers"
-        ).fetchone()[0]
-        next_pri = max_pri + 1
-
         for sub_id in selected_sub_ids:
             sub = by_sub_id.get(sub_id)
             if not sub:
@@ -502,19 +504,22 @@ async def prowlarr_sync_commit(request: Request, indexer_id: int):
             manga_overlap = sorted(set(sub_cats_full) & set(parent_cats))
             cats_for_row = manga_overlap or parent_cats
 
+            # Honor Prowlarr's per-indexer priority — admin tuned it for
+            # a reason. _list_prowlarr_subs_for_ui already clamped to [1,50].
+            sub_priority = sub.get('priority') or 25
+
             db.execute(
                 "INSERT INTO indexers"
                 "(name, type, url, api_key, priority, enabled, categories,"
                 " min_seeders, seed_ratio, parent_prowlarr_id, prowlarr_indexer_id)"
                 " VALUES(?, 'torznab', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (sub['name'], sub_url, parent_key, next_pri,
+                (sub['name'], sub_url, parent_key, sub_priority,
                  1 if sub.get('will_be_polled') else 0,
                  json.dumps(cats_for_row),
                  parent.get('min_seeders') or 0,
                  parent.get('seed_ratio') or 0.0,
                  indexer_id, sub_id)
             )
-            next_pri += 1
             imported += 1
 
         # Auto-disable the parent Prowlarr row on first successful import.

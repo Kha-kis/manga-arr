@@ -78,8 +78,11 @@
           <span class="badge-status badge-downloaded" style="font-size:var(--text-2xs)">ELIGIBLE</span>
         {% endif %}
 
+        <span class="ms-auto" style="font-size:var(--text-2xs); color:var(--text-3)" title="Priority from Prowlarr — copied as-is on import">
+          pri {{ sub.priority }}
+        </span>
         {% if sub.categories %}
-        <span class="ms-auto" style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-3)">
+        <span style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-3)">
           {{ sub.categories | join(' ') }}
         </span>
         {% endif %}
