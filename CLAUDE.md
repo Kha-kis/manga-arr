@@ -41,12 +41,50 @@ Paste the relevant tail of test output into the response. "Tests passed" without
   - **Explore** — codebase questions that'd take >3 searches ("where is `score_release` called from?", "how does the import pipeline flow?").
   - **Plan** — designing a new feature from the parity roadmap before touching code. Hand it the relevant memory file as context.
   - **general-purpose** — parallel test runs, multi-file refactors, or anything where the main session shouldn't carry the intermediate tokens.
+  - **When NOT to dispatch**: 1–3 file reads, a single targeted edit, or anything that fits in a couple of Bash commands — the dispatch overhead (briefing, parsing the report) costs more tokens than the inline work would. Subagents earn their keep on bounded mechanical fan-out, not on quick lookups.
 
-- **Memory**: `~/.claude/projects/-opt-manga-arr/memory/` holds prior-session context. Check `mangarr-bugs.md`, `mangarr-htmx-migration.md`, and `mangarr-feature-parity-roadmap.md` (and the auto-curated `MEMORY.md` index) before guessing on patterns or planning new work — they're authoritative for past decisions.
+- **Memory**: `~/.claude/projects/-opt-manga-arr/memory/` holds prior-session context. The auto-curated `MEMORY.md` index lists all entries; current files include `project_overview.md`, `project_ui_audit.md`, `project_scripted_api_access.md`, `project_editor_form_clobbers.md`, `feedback_token_economy.md`, `feedback_branch_lifecycle.md`, `feedback_preview_before_apply.md`, `reference_git_remotes.md`. Read the index first, then dive into the specific files relevant to your task — they're authoritative for past decisions.
 
 ## Model selection
 
 Default to **Opus 4.7** in this project. Mangarr's failure modes are mostly silent-correctness bugs (sqlite3.Row, route order, dual-mode HTMX, get_db scope) where a wrong call passes tests but breaks at runtime — careful reasoning > speed. Drop to **Sonnet** only for narrow in-file edits (single-line fixes, CSS tweaks, copy-paste boilerplate, template-only changes). Avoid Haiku here unless the task is a one-shot lookup.
+
+## Design tokens — use the variables, don't hardcode values
+
+The `<style>` block in `app/templates/base.html` `:root` defines a complete design-token vocabulary. New CSS (in `base.html`, in template `<style>` blocks, or inline `style="..."` attrs) must reference these vars rather than hardcode raw values — see PRs #94–#101 for the migration history and `tests/python/test_hard_invariants.py` for the enforcement.
+
+- **Radius scale**: `--radius-xs` 4px, `--radius-sm` 6px, `--radius-md` 8px, `--radius-lg` 10px, `--radius-xl` 12px. Plus `50%` (circles), `999px` (pills), and the deliberately tighter `2px`/`3px` for thin progress bars / scrollbar — those stay raw.
+- **Type scale**: `--text-2xs` 0.65rem, `--text-xs` 0.7rem, `--text-sm` 0.75rem, `--text-base` 0.82rem, `--text-lg` 0.95rem, `--text-xl` 1rem, `--text-2xl` 1.1rem. Display sizes (`1.25rem+`, `clamp(...)`, `14px`/`15px` foundation) stay raw.
+- **Color tokens** for ember / ruby / jade / gold / iris / sky (and `--ember-hi` for the brand-bright accent):
+  - solid: `var(--ember)` etc.
+  - 5-step alpha ladder per color: `--{color}-tint` (0.07), `--{color}-bg` (0.10), `--{color}-soft` (0.20), `--{color}-medium` (0.30), `--{color}-strong` (0.40)
+  - rose / amber have only solid + `-bg` so far.
+- **Z-index scale**: `--z-base` through `--z-progress` (0–9500). Don't hardcode magic numbers — `var(--z-tooltip)` etc.
+- **Text-color contrast**: `--text-3` is `#80806e` (WCAG AA over `--ink-2`); don't darken without re-checking the contrast ratio. PR #101 has the math.
+
+## Test backbone — where to look + extend
+
+Mangarr has 79 Python test files; the load-bearing integration tests cluster around the production-readiness work:
+
+| File | What it covers |
+|---|---|
+| `tests/python/test_e2e_grab_to_library.py` | Core search → grab → seen dedup (URL + GUID) → import → library. Stubs at I/O boundaries only. |
+| `tests/python/test_route_destructive_ops.py` | Series delete + blocklist mutations (cascade correctness). |
+| `tests/python/test_route_state_changes.py` | Volume actions, chapter map, history, queue actions, tag rename/delete, import-list CRUD. |
+| `tests/python/test_route_profile_crud.py` | Quality / delay / release / language / custom-format / remote-path-mappings CRUD. |
+| `tests/python/test_route_backup_and_import_queue.py` | Backup zip integrity + import-queue actions (skip / dismiss / retry / clear-old). |
+| `tests/python/test_hard_invariants.py` | Tripwires for the silent-correctness invariants in this CLAUDE.md. |
+| `tests/python/test_import_atomicity.py` + `test_import_mapping.py` | Deep coverage of the file-staging / chapter-volume mapping logic. |
+| `tests/python/test_route_sweep.py` | Auto-renders every parameter-free GET page. |
+| `tests/python/test_main_py_split_invariants.py` | Architecture invariants (main.py size ceiling, no `from main import X` for extracted symbols). |
+
+Adding new mutation routes? Either extend the most appropriate file above or create a new `test_route_<area>.py` following the same `TestClient` + CSRF + DB-state-assertion pattern.
+
+## Skill relevance for this project
+
+- **accessibility** — relevant; we've used it for a11y sweeps and WCAG contrast (PRs #91, #101). Reach for it on UI work.
+- **frontend-design** — marginally relevant; the skill biases toward "distinctive new UI from scratch", but Mangarr's aesthetic is established and recent work has been *cohesion* (token migration). Use it as inspiration for patterns, not as a license to redesign.
+- **seo** — N/A for this project. Mangarr is self-hosted behind auth; no public surface to optimize. Ignore the autoskills listing for SEO.
 
 ## Project documentation hazard — autoskills
 
