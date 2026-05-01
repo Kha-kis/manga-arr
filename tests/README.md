@@ -7,7 +7,7 @@ suite that never runs in CI.
 ## TL;DR
 
 ```bash
-make test                    # PR gate. Hermetic, ~30s. Run before every push.
+make test                    # PR gate. Hermetic, ~2.5min. Run before every push.
 make test-browser-isolated   # Pre-release. Spins up isolated container, ~3min.
 make test-release-safe       # Both of the above.
 ```
@@ -135,50 +135,131 @@ There is no `--apply` mode in this version. Operators read the plan,
 decide per row, and run targeted SQL or use the web UI to act on what
 they confirm.
 
-## Test files
+## Test files — by category
 
-```
-tests/
-├── browser_e2e.js                        24 Playwright assertions, real DB mutations
-├── browser_integration.js                19 Playwright HTMX/confirm flow assertions
-├── browser_smoke.js                      27 Playwright presence/structure assertions
-├── mock_qbit.py                          stdlib HTTP server stand-in for qBittorrent
-├── seed_test_db.{py,sh}                  fixtures the isolated browser suite needs
-├── run_isolated_browser.sh               isolated test runner (safety-checked)
-└── python/
-    ├── conftest.py                       redirects /config and sqlite paths to tmp
-    ├── test_api_key_middleware.py        12 tests
-    ├── test_background_tasks.py          7 tests
-    ├── test_crud_roundtrip.py            4 tests
-    ├── test_csrf_cookie.py               14 tests
-    ├── test_docs_consistency.py          6 tests
-    ├── test_fstring_input_shape.py       16 tests
-    ├── test_handoff_sab_nzbget_blackhole.py    10 tests (mocked)
-    ├── test_import_atomicity.py          17 tests
-    ├── test_import_concurrency.py        9 tests
-    ├── test_indexer_dlclient_secret_migration.py    23 tests
-    ├── test_init_db.py                   3 tests
-    ├── test_live_integrations.py         5 opt-in probes
-    ├── test_log_event.py                 6 tests
-    ├── test_mangadex_adapter.py          14 tests (mocked httpx)
-    ├── test_notification_secret_migration.py    33 tests
-    ├── test_order_by.py                  14 tests
-    ├── test_pipeline_mocked.py           5 tests (search → grab → qBit handoff)
-    ├── test_reconcile.py                 18 tests (dry-run repair planner)
-    ├── test_regex_safety.py              21 tests
-    ├── test_route_sweep.py               10 tests (auto-derived page sweep)
-    ├── test_runner_safety.py             12 static guards on the isolated runner
-    ├── test_scheduler_rss.py             6 tests (rss_loop tick)
-    ├── test_secret_cipher.py             17 tests
-    ├── test_security.py                  10 tests
-    ├── test_settings_secret_migration.py 17 tests
-    ├── test_silent_except_logging.py     7 tests
-    ├── test_ssrf.py                      30 tests
-    ├── test_state_diagnostics.py         12 tests (verify_e2e library)
-    ├── test_status_loop.py               6 tests (status_loop tick + auto-reset)
-    ├── test_suwayomi_adapter.py          22 tests (mocked GraphQL)
-    └── test_suwayomi_filesystem.py       22 tests (tmpdir + cbz fixtures)
-```
+77 Python test files (920 individual cases). The alphabetical view below previously listed ~30; the categorized map is the better navigation tool now that the suite is larger.
+
+### End-to-end & route integration
+
+Real HTTP → router → DB path against a test-isolated database. `TestClient` + CSRF cookie + header pair, assert via direct `sqlite3` queries.
+
+| File | Covers |
+|---|---|
+| `test_e2e_grab_to_library.py` | Search → grab → seen dedup (URL + GUID) → import → library |
+| `test_route_destructive_ops.py` | Series delete + blocklist mutations (cascade correctness) |
+| `test_route_state_changes.py` | Volume actions, chapter map editor, history mutations, queue actions, tags, import-list CRUD |
+| `test_route_profile_crud.py` | Quality / delay / release / language / custom-format / remote-path-mappings CRUD |
+| `test_route_backup_and_import_queue.py` | Backup zip integrity + import-queue actions (skip / dismiss / retry / clear-old) |
+| `test_route_sweep.py` | Auto-renders every parameter-free GET page |
+| `test_metadata_health_panel.py` | Health-panel route round-trip |
+| `test_reconcile.py` / `test_reconcile_ui.py` / `test_reconcile_refresh_then_preview.py` | Metadata-reconcile flow |
+| `test_crud_roundtrip.py` | Indexer + download-client + connection CRUD |
+| `test_series_patch_endpoint.py` / `test_series_patch_lock_handling.py` | `PATCH /api/series/{id}` + concurrency |
+| `test_editor_stub_reconciliation.py` | Series editor recreates missing volume stubs |
+| `test_root_folder_required_at_creation.py` | Series-add must resolve a root_folder_id |
+
+### Pipeline, jobs, schedulers
+
+Background loops and async tasks.
+
+| File | Covers |
+|---|---|
+| `test_grab_timeout_wrap.py` | `grab_item` releases the in-flight URL on timeout |
+| `test_check_download_status_single_flight.py` | Status-loop single-flight lock |
+| `test_status_loop.py` | Status loop top-level behavior |
+| `test_scheduler_rss.py` | RSS poll loop + idempotency |
+| `test_circuit_breaker_persistence.py` | Download-client CB survives restart |
+| `test_indexer_backoff.py` | Indexer error backoff |
+| `test_mangadex_backfill_backoff.py` | MangaDex 429 / network backoff |
+| `test_pipeline_mocked.py` | Older mocked pipeline (prefer `test_e2e_*` for new work) |
+| `test_background_tasks.py` | Misc background-task helpers |
+| `test_queue_upstream_timeout.py` | qBit/SAB upstream timeout on `/queue` |
+| `test_status_cache.py` | Queue render cache invalidation |
+| `test_stuck_state_cleanup.py` | Auto-reset of stuck `grabbed` volumes + import queue |
+
+### Import pipeline (file staging)
+
+| File | Covers |
+|---|---|
+| `test_import_atomicity.py` | Two-phase staged import (stage / commit_all / rollback) |
+| `test_import_concurrency.py` | Bounded import semaphore + atomic claim |
+| `test_import_mapping.py` | Filename → volume parser + mapping decisions |
+| `test_execute_import_event_loop.py` | `_execute_import` event-loop interaction |
+| `test_torrent_save_path_split.py` | Split-vs-shared download client `save_path` |
+| `test_handoff_sab_nzbget_blackhole.py` | Non-qBit adapters (SAB, NZBGet, blackhole) |
+
+### Parsers & helpers
+
+| File | Covers |
+|---|---|
+| `test_release_mapping_parser.py` | Release-title → metadata parser |
+| `test_chapter_range.py` | Chapter-range expansion / contraction |
+| `test_chapter_key_candidates.py` | Chapter-number normalization |
+| `test_vol_num_to_search.py` | `vol_num_to_search` helper (PR #102) |
+| `test_cvm_trim_out_of_range.py` | Chapter-volume-map trimming |
+| `test_regex_safety.py` | Catastrophic backtracking guards |
+| `test_fstring_input_shape.py` | f-string parser tolerance |
+
+### Schema, DB, and migrations
+
+| File | Covers |
+|---|---|
+| `test_init_db.py` | First-boot DB initialization |
+| `test_db_connection_unified.py` | All DB writes go through `get_db()` |
+| `test_db_busy_timeout.py` | SQLite `BUSY_TIMEOUT` set on every connection |
+| `test_schema_fk_migration.py` | FK constraint migration (events / blocklist / seen / pending_releases) |
+| `test_migration_drift_guard.py` | Drift guard catches missing columns in rebuild DDL |
+| `test_root_folder_bootstrap.py` | Root-folder migration |
+| `test_indexer_dlclient_secret_migration.py` | Encrypt-at-rest for indexer + DL-client secrets |
+| `test_notification_secret_migration.py` | Encrypt-at-rest for notification secrets |
+| `test_settings_secret_migration.py` | Encrypt-at-rest for settings keys |
+| `test_settings_validator.py` | Settings JSON validator |
+
+### Architecture & invariants
+
+| File | Covers |
+|---|---|
+| `test_hard_invariants.py` | Tripwires for the silent-correctness invariants in CLAUDE.md |
+| `test_main_py_split_invariants.py` | `main.py` line ceiling + extracted-module import boundaries |
+| `test_order_by.py` | `build_order_by` allowlist (SQL-injection guard) |
+| `test_static_assets_provenance.py` | All static assets are committed |
+| `test_docs_consistency.py` | Docstrings stay aligned with route shapes |
+
+### Security
+
+| File | Covers |
+|---|---|
+| `test_security.py` | General security guards |
+| `test_secret_cipher.py` | Fernet key bootstrap + envelope encryption |
+| `test_csrf_cookie.py` | CSRF middleware + `/api/` bypass |
+| `test_api_key_middleware.py` | API-key auth |
+| `test_ssrf.py` | SSRF guards on user-supplied URLs |
+| `test_runner_safety.py` | Subprocess / runner safety |
+| `test_silent_except_logging.py` | `except Exception: pass` is logged |
+| `test_observability_events.py` | Grab-rejection / failure events emitted |
+| `test_log_event.py` | `log_event` helper behavior |
+
+### Adapters (external services)
+
+| File | Covers |
+|---|---|
+| `test_mangadex_adapter.py` | MangaDex API client |
+| `test_suwayomi_adapter.py` / `test_suwayomi_jobs.py` / `test_suwayomi_job_retry.py` / `test_suwayomi_filesystem.py` | Suwayomi DDL adapter |
+| `test_live_integrations.py` | Live-network smoke tests (skipped by default) |
+
+### Library / health / wanted
+
+| File | Covers |
+|---|---|
+| `test_wanted_coverage.py` | `/wanted` and `/cutoff-unmet` data shape |
+| `test_health_classifier_surfaces_blockers.py` | Health classifier surfaces real blockers |
+| `test_health_performance.py` | Health classifier under realistic library size |
+| `test_metadata_readiness.py` | Series metadata-readiness signals |
+| `test_phantom_stub_detection.py` | Phantom volume-stub detection |
+| `test_populate_chapters_relinks_unlinked.py` | `populate_chapters` re-links orphans |
+| `test_map_drift_reconcile.py` | MangaDex chapter-map drift detection |
+| `test_state_diagnostics.py` | `/state` diagnostic page |
+| `test_patch_total_volumes_validation.py` | `total_volumes` PATCH validates non-negative + cascades |
 
 ## Adding a new test
 
