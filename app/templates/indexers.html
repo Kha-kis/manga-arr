@@ -46,7 +46,7 @@
       <div class="ms-auto d-flex gap-2">
         {% if idx.type == 'prowlarr' %}
         <button class="btn btn-sm btn-secondary"
-                hx-get="/api/indexers/{{ idx.id }}/prowlarr-subs"
+                hx-get="/indexers/{{ idx.id }}/prowlarr-subs"
                 hx-target="#prowlarr-subs-{{ idx.id }}"
                 hx-swap="innerHTML"
                 hx-disabled-elt="this"

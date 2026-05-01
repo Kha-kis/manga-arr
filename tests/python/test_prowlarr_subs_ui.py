@@ -1,6 +1,6 @@
 """HTTP-level tests for the Prowlarr sub-indexer visibility endpoint.
 
-The /api/indexers/{id}/prowlarr-subs endpoint returns a rendered HTML
+The /indexers/{id}/prowlarr-subs endpoint returns a rendered HTML
 partial with the live sub-indexer list, so operators can see inline
 which Prowlarr sub-indexers Mangarr is actually polling — without
 bouncing to Prowlarr's own UI to check.
@@ -79,14 +79,6 @@ def _client():
     return TestClient(main.app)
 
 
-def _api_kwargs():
-    """Auth kwargs for /api/* GET requests — these need X-Api-Key
-    (the CSRF-cookie exemption only fires on mutation methods)."""
-    import main
-    api_key = main.get_cfg('api_key', '')
-    return {'headers': {'X-Api-Key': api_key}}
-
-
 class _MockResp:
     def __init__(self, status_code, json_data):
         self.status_code = status_code
@@ -134,7 +126,7 @@ def test_endpoint_renders_subs_with_correct_status_badges(env):
     client = _client()
 
     with patch('httpx.AsyncClient', new=_mock_prowlarr(fake_subs)):
-        r = client.get("/api/indexers/101/prowlarr-subs", **_api_kwargs())
+        r = client.get("/indexers/101/prowlarr-subs")
 
     assert r.status_code == 200, r.text
     body = r.text
@@ -175,7 +167,7 @@ def test_endpoint_sorts_polled_first(env):
 
     client = _client()
     with patch('httpx.AsyncClient', new=_mock_prowlarr(fake_subs)):
-        r = client.get("/api/indexers/101/prowlarr-subs", **_api_kwargs())
+        r = client.get("/indexers/101/prowlarr-subs")
 
     body = r.text
     # BetaPolled (active) must appear before AlphaDisabled (despite alpha order)
@@ -189,7 +181,7 @@ def test_endpoint_sorts_polled_first(env):
 
 def test_endpoint_returns_404_for_unknown_indexer(env):
     client = _client()
-    r = client.get("/api/indexers/99999/prowlarr-subs", **_api_kwargs())
+    r = client.get("/indexers/99999/prowlarr-subs")
     assert r.status_code == 404
     assert 'not found' in r.text.lower()
 
@@ -199,7 +191,7 @@ def test_endpoint_rejects_non_prowlarr_indexer(env):
     clear message rather than try to call /api/v1/indexer (which only
     Prowlarr exposes)."""
     client = _client()
-    r = client.get("/api/indexers/102/prowlarr-subs", **_api_kwargs())
+    r = client.get("/indexers/102/prowlarr-subs")
     assert r.status_code == 200, r.text
     body = r.text.lower()
     assert 'only available for prowlarr' in body
@@ -209,7 +201,7 @@ def test_endpoint_rejects_non_prowlarr_indexer(env):
 def test_endpoint_handles_missing_url_gracefully(env):
     """Prowlarr indexer with empty URL: error partial, no httpx call attempted."""
     client = _client()
-    r = client.get("/api/indexers/103/prowlarr-subs", **_api_kwargs())
+    r = client.get("/indexers/103/prowlarr-subs")
     assert r.status_code == 200, r.text
     assert 'no url configured' in r.text.lower()
 
@@ -230,9 +222,44 @@ def test_endpoint_handles_prowlarr_failure(env):
 
     client = _client()
     with patch('httpx.AsyncClient', new=_FailingClient):
-        r = client.get("/api/indexers/101/prowlarr-subs", **_api_kwargs())
+        r = client.get("/indexers/101/prowlarr-subs")
     assert r.status_code == 200
     assert 'no sub-indexers' in r.text.lower()
+
+
+# ───────────────────── auth regression ─────────────────────
+
+
+def test_endpoint_does_not_require_api_key(env):
+    """Regression: this endpoint is hit by HTMX from an authenticated
+    BROWSER session, not a programmatic API client. The browser doesn't
+    send X-Api-Key. If the endpoint moves back under /api/ (the original
+    location, fixed in #116), HTMX calls would 401 silently — the user
+    would click the binoculars button and see nothing happen.
+
+    Asserts a plain GET with no auth headers and no cookies returns 200
+    (the response body itself depends on whether Prowlarr is reachable;
+    we just assert the auth layer didn't reject the request)."""
+    fake_subs = [{
+        'id': 1, 'name': 'AnyIndexer', 'enable': True, 'protocol': 'torrent',
+        'capabilities': {'categories': [{'id': 7000}]},
+    }]
+
+    client = _client()
+    with patch('httpx.AsyncClient', new=_mock_prowlarr(fake_subs)):
+        # No headers, no cookies — exactly what an HTMX request from a
+        # browser would look like at the auth layer (HTMX does inject
+        # csrftoken on POSTs but this is a GET).
+        r = client.get("/indexers/101/prowlarr-subs")
+
+    assert r.status_code == 200, (
+        f"endpoint must work without X-Api-Key — moving it back to /api/* "
+        f"would re-introduce the silent 401 bug from #115. Got {r.status_code}: "
+        f"{r.text[:200]!r}"
+    )
+    # Verify the response actually rendered the partial (not just a 200 from
+    # something else like a redirect).
+    assert 'AnyIndexer' in r.text
 
 
 # ───────────────────── helper isolation ─────────────────────
