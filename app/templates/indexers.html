@@ -44,6 +44,18 @@
       {% if not idx.enabled %}<span class="badge-status badge-wanted" style="font-size:var(--text-2xs)">DISABLED</span>{% endif %}
       <span style="font-size:var(--text-sm);color:var(--text-2)">Priority: {{ idx.priority }}</span>
       <div class="ms-auto d-flex gap-2">
+        {% if idx.type == 'prowlarr' %}
+        <button class="btn btn-sm btn-secondary"
+                hx-get="/api/indexers/{{ idx.id }}/prowlarr-subs"
+                hx-target="#prowlarr-subs-{{ idx.id }}"
+                hx-swap="innerHTML"
+                hx-disabled-elt="this"
+                title="View Prowlarr sub-indexers"
+                aria-label="View Prowlarr sub-indexers"
+                onclick="document.getElementById('prowlarr-subs-{{ idx.id }}').style.display='block'">
+          <i class="bi bi-binoculars"></i>
+        </button>
+        {% endif %}
         <button class="btn btn-sm btn-secondary"
                 onclick="testIndexer({{ idx.id }}, this)" title="Test connection" aria-label="Test connection">
           <i class="bi bi-plug"></i>
@@ -68,6 +80,10 @@
         </div>
         <div class="col-auto" id="test-result-{{ idx.id }}"></div>
       </div>
+      {% if idx.type == 'prowlarr' %}
+      {# HTMX progressive load — populated when the binoculars button fires #}
+      <div id="prowlarr-subs-{{ idx.id }}" style="display:none"></div>
+      {% endif %}
     </div>
   </div>
 </div>
