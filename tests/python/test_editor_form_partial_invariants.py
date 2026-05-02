@@ -42,10 +42,7 @@ ROUTERS_DIR = pathlib.Path(__file__).resolve().parents[2] / "app" / "routers"
 # Format: (file_basename, route_method, route_path)
 # Removed entry-by-entry as the conversion PRs land.
 _KNOWN_CLOBBER_ROUTES: set[tuple[str, str, str]] = {
-    # CRITICAL — PR-B
-    ('series_.py',                'POST', '/series/{series_id}/edit'),
-    ('indexers.py',               'POST', '/indexers/{indexer_id}'),
-    ('download_clients.py',       'POST', '/download-clients/{client_id}'),
+    # CRITICAL — PR-B (CONVERTED, removed from allowlist)
     # HIGH — PR-C
     ('quality_profiles.py',       'POST', '/quality-profiles/{profile_id}'),
     ('release_profiles.py',       'POST', '/release-profiles/{profile_id}'),
@@ -275,9 +272,9 @@ def test_form_helpers_module_exposes_expected_surface():
     from routers import _form_helpers as fh
     expected = {
         'submitted_subset', 'str_or_none', 'stripped_str',
-        'int_or_none', 'int_default_zero', 'float_default_zero',
-        'bool_int', 'csv_to_json_array', 'csv_to_int_set_str',
-        'parsed_json_str', 'parsed_tag_csv',
+        'int_or_none', 'fk_id_or_none', 'int_default_zero',
+        'float_default_zero', 'bool_int', 'csv_to_json_array',
+        'csv_to_int_set_str', 'parsed_json_str', 'parsed_tag_csv',
     }
     missing = expected - set(dir(fh))
     assert not missing, f"_form_helpers missing helpers: {missing}"

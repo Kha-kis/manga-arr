@@ -232,8 +232,16 @@ def test_create_form_defaults_all_three_toggles_to_on(env):
 
 
 def test_edit_form_persists_unchecked_toggles_as_zero(env):
-    """When a user unchecks a toggle in the edit modal, the form submits
-    without that field, and FastAPI defaults to 0 → row stores 0."""
+    """When a user unchecks a toggle in the edit modal, the HTML form
+    now submits the paired hidden-input-first idiom (`<hidden value=0>`
+    + `<checkbox value=1>`) so the field always carries an unambiguous
+    value: unchecked = only hidden fires (0); checked = both fire,
+    Starlette's FormData returns the last (1).
+
+    The bare-checkbox-only pattern (unchecked = field absent) was
+    incompatible with partial-POST safety, since an absent toggle now
+    means "leave column unchanged" — the opposite of the user's intent.
+    """
     with sqlite3.connect(env['db_path']) as c:
         c.execute(
             "INSERT INTO indexers(id, name, type, url, api_key, enabled,"
@@ -244,20 +252,23 @@ def test_edit_form_persists_unchecked_toggles_as_zero(env):
     client = _client()
     csrf = _csrf("edit-uncheck")
 
-    # Submit only enabled+use_interactive_search; the other two unchecked
+    # The hidden+checkbox idiom in the HTML page resolves to a single
+    # value per key in FormData (last-wins): unchecked → '0', checked →
+    # '1'. This test sends those final values directly — the template
+    # mechanism is exercised by the test_indexer_template_*.py tests.
     r = client.post(
         "/indexers/40",
         data={
             'csrf_token': csrf['headers']['X-CSRFToken'],
-            'name': 'EditMe',
-            'type': 'torznab',
-            'url': 'http://t',
-            'priority': '25',
-            'enabled': '1',
+            'name':       'EditMe',
+            'type':       'torznab',
+            'url':        'http://t',
+            'priority':   '25',
+            'enabled':    '1',    # checked
             'categories': '7000',
-            'keep_api_key': '1',
-            # use_rss + use_auto_search OMITTED (unchecked → not submitted)
-            'use_interactive_search': '1',
+            'use_rss':                '0',  # unchecked
+            'use_auto_search':        '0',  # unchecked
+            'use_interactive_search': '1',  # checked
         },
         **csrf, follow_redirects=False,
     )

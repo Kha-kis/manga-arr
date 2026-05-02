@@ -83,16 +83,29 @@ def stripped_str(v: Any) -> str:
 
 
 def int_or_none(v: Any) -> int | None:
-    """Parse to int; empty / unparseable → None.
+    """Parse to int; empty / unparseable → None. Zero is preserved.
 
-    Used for foreign-key columns like `quality_profile_id` where 0/empty
-    means "unset" — historically these were stored as NULL."""
+    For columns where the raw int matters (port numbers, sizes, deltas).
+    For foreign-key columns where 0 means "unset", use `fk_id_or_none`
+    instead — that variant maps 0 to None to avoid FK violations."""
     if v in (None, '', 'null'):
         return None
     try:
         return int(v)
     except (TypeError, ValueError):
         return None
+
+
+def fk_id_or_none(v: Any) -> int | None:
+    """Parse to int for an FK column; 0 / empty / unparseable → None.
+
+    Used for `quality_profile_id`, `language_profile_id`, etc. — columns
+    where the auto-increment id space starts at 1 and 0 is the
+    application's "unset" sentinel from form submissions. Writing
+    quality_profile_id=0 would violate the FK; writing NULL is the
+    correct "unset" representation."""
+    n = int_or_none(v)
+    return n if (n is not None and n > 0) else None
 
 
 def int_default_zero(v: Any) -> int:
