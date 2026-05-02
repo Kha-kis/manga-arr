@@ -51,6 +51,83 @@ async def custom_formats_page(request: Request):
     })
 
 
+# ── Per-profile score matrix (PR #125) ───────────────────────────────────────
+# Sonarr's #1 unfixed CF UX pain (issue #7284, open since 2023): editing
+# 30 CFs across 4 profiles = 120 clicks. The matrix view solves this with
+# a single page where rows are CFs, columns are profiles, cells are
+# editable scores. One form-submit saves all changes.
+
+@router.get("/custom-formats/scores", response_class=HTMLResponse)
+async def cf_score_matrix_page(request: Request):
+    """Render the CF × Profile score matrix.
+
+    Empty cells (no row in quality_profile_custom_formats for that pair)
+    render as 0. Saving a cell with value=0 deletes any existing row to
+    keep the join table sparse.
+    """
+    with get_db() as db:
+        formats = db.execute(
+            "SELECT id, name FROM custom_formats ORDER BY name"
+        ).fetchall()
+        profiles = db.execute(
+            "SELECT id, name FROM quality_profiles ORDER BY name"
+        ).fetchall()
+        # Existing scores keyed by (profile_id, format_id)
+        scores: dict = {}
+        for r in db.execute(
+            "SELECT profile_id, format_id, score FROM quality_profile_custom_formats"
+        ).fetchall():
+            scores[(r['profile_id'], r['format_id'])] = r['score']
+    return templates.TemplateResponse(
+        request, "custom_format_scores.html",
+        {
+            'formats':  [dict(f) for f in formats],
+            'profiles': [dict(p) for p in profiles],
+            'scores':   scores,
+        }
+    )
+
+
+@router.post("/custom-formats/scores")
+async def cf_score_matrix_save(request: Request):
+    """Bulk-save the matrix. Form fields named `score__<profile_id>__<format_id>`
+    with integer values. Values of 0 (or missing) delete the row from the
+    join table — keeps the table sparse for unrelated pairs.
+
+    Works as a single round-trip: scan the form, group by (profile, format),
+    UPSERT non-zero scores, DELETE zero scores."""
+    form = await request.form()
+    updates: list[tuple[int, int, int]] = []
+    for key, value in form.items():
+        if not key.startswith('score__'):
+            continue
+        try:
+            _, pid_s, fid_s = key.split('__', 2)
+            pid = int(pid_s)
+            fid = int(fid_s)
+            score = int(value or 0)
+        except (ValueError, TypeError):
+            continue
+        updates.append((pid, fid, score))
+
+    with get_db() as db:
+        for pid, fid, score in updates:
+            if score == 0:
+                db.execute(
+                    "DELETE FROM quality_profile_custom_formats"
+                    " WHERE profile_id=? AND format_id=?",
+                    (pid, fid)
+                )
+            else:
+                db.execute(
+                    "INSERT INTO quality_profile_custom_formats(profile_id, format_id, score)"
+                    " VALUES(?, ?, ?)"
+                    " ON CONFLICT(profile_id, format_id) DO UPDATE SET score=excluded.score",
+                    (pid, fid, score)
+                )
+    return RedirectResponse("/custom-formats/scores?saved=1", status_code=303)
+
+
 # ── Create ────────────────────────────────────────────────────────────────────
 @router.post("/custom-formats")
 async def create_custom_format(
