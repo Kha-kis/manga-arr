@@ -58,6 +58,48 @@
 </div>
 {% endif %}
 
+{# Health-check banners — kills the #1 Sonarr/Radarr support-ticket class.
+   "Why doesn't search return anything?" is almost always one of these. #}
+{% set _enabled = indexers | selectattr('enabled') | list %}
+{% if _enabled %}
+  {% set _rss_on = _enabled | selectattr('use_rss', 'ne', 0) | list %}
+  {% set _auto_on = _enabled | selectattr('use_auto_search', 'ne', 0) | list %}
+  {% set _interactive_on = _enabled | selectattr('use_interactive_search', 'ne', 0) | list %}
+  {% if not _rss_on %}
+  <div class="panel mb-3" style="border-color:rgba(240,184,40,.5)">
+    <div class="panel-body d-flex align-items-start gap-3" style="font-size:var(--text-sm)">
+      <i class="bi bi-exclamation-triangle-fill" style="color:var(--gold);font-size:var(--text-2xl)"></i>
+      <div>
+        <div class="fw-semibold" style="color:var(--gold)">No indexer has RSS Sync enabled</div>
+        <div style="color:var(--text-2)">The RSS poll loop has nothing to fetch. New releases won't be auto-grabbed until at least one indexer has RSS Sync turned on.</div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+  {% if not _auto_on %}
+  <div class="panel mb-3" style="border-color:rgba(240,184,40,.5)">
+    <div class="panel-body d-flex align-items-start gap-3" style="font-size:var(--text-sm)">
+      <i class="bi bi-exclamation-triangle-fill" style="color:var(--gold);font-size:var(--text-2xl)"></i>
+      <div>
+        <div class="fw-semibold" style="color:var(--gold)">No indexer has Automatic Search enabled</div>
+        <div style="color:var(--text-2)">The background grab loop won't search anywhere — backlog/wanted volumes can't be filled.</div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+  {% if not _interactive_on %}
+  <div class="panel mb-3" style="border-color:rgba(240,184,40,.5)">
+    <div class="panel-body d-flex align-items-start gap-3" style="font-size:var(--text-sm)">
+      <i class="bi bi-exclamation-triangle-fill" style="color:var(--gold);font-size:var(--text-2xl)"></i>
+      <div>
+        <div class="fw-semibold" style="color:var(--gold)">No indexer has Interactive Search enabled</div>
+        <div style="color:var(--text-2)">The "find releases" button on series pages and per-volume manual searches will return nothing.</div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+{% endif %}
+
 <div class="row g-3">
 {% for idx in indexers %}
 <div class="col-12">
@@ -73,6 +115,14 @@
         </span>
       {% endif %}
       {% if not idx.enabled %}<span class="badge-status badge-wanted" style="font-size:var(--text-2xs)">DISABLED</span>{% endif %}
+      {# Per-purpose toggle badges. NULL/missing → on (backward-compat). #}
+      {% if idx.enabled %}
+      <span class="d-inline-flex gap-1" style="font-size:var(--text-2xs)" title="Which flows poll this indexer">
+        <span class="badge-status {% if idx.use_rss is none or idx.use_rss %}badge-downloaded{% else %}badge-wanted{% endif %}" title="RSS Sync">RSS</span>
+        <span class="badge-status {% if idx.use_auto_search is none or idx.use_auto_search %}badge-downloaded{% else %}badge-wanted{% endif %}" title="Automatic Search (background grab loop)">AS</span>
+        <span class="badge-status {% if idx.use_interactive_search is none or idx.use_interactive_search %}badge-downloaded{% else %}badge-wanted{% endif %}" title="Interactive Search (user-initiated)">IS</span>
+      </span>
+      {% endif %}
       <span style="font-size:var(--text-sm);color:var(--text-2)">Priority: {{ idx.priority }}</span>
       <div class="ms-auto d-flex gap-2">
         {% if idx.type == 'prowlarr' %}
@@ -185,14 +235,37 @@
               <input type="hidden" name="keep_api_key" value="0">
             </div>
             <div class="col-4">
-              <label class="form-label">Priority</label>
+              <label class="form-label" title="Tiebreaker only — applies after Quality, Custom Format Score, Protocol, and pack-shape have already chosen between releases. Lower = preferred. Ties are valid.">
+                Priority <i class="bi bi-info-circle" style="color:var(--text-3); font-size:var(--text-2xs)"></i>
+              </label>
               <input type="number" name="priority" class="form-control" value="{{ idx.priority }}" min="1" max="50">
+              <small style="color:var(--text-3); font-size:var(--text-2xs)">Lower = preferred. Tiebreaker only — see tooltip.</small>
             </div>
             <div class="col-4">
               <div class="form-check form-switch mt-4">
                 <input class="form-check-input" type="checkbox" name="enabled" value="1"
                        {% if idx.enabled %}checked{% endif %} id="en{{ idx.id }}">
                 <label class="form-check-label" for="en{{ idx.id }}">Enabled</label>
+              </div>
+            </div>
+            <div class="col-12">
+              <label class="form-label">Used for <small style="color:var(--text-2)">(per-flow toggles, like Sonarr/Radarr)</small></label>
+              <div class="d-flex flex-wrap gap-3" style="font-size:var(--text-sm)">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="use_rss" value="1"
+                         {% if idx.use_rss is none or idx.use_rss %}checked{% endif %} id="urss{{ idx.id }}">
+                  <label class="form-check-label" for="urss{{ idx.id }}" title="Include this indexer in the RSS poll loop (auto-grab of newly-released items)">RSS Sync</label>
+                </div>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="use_auto_search" value="1"
+                         {% if idx.use_auto_search is none or idx.use_auto_search %}checked{% endif %} id="uas{{ idx.id }}">
+                  <label class="form-check-label" for="uas{{ idx.id }}" title="Use this indexer in the background grab loop (backlog / wanted volume search)">Automatic Search</label>
+                </div>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="use_interactive_search" value="1"
+                         {% if idx.use_interactive_search is none or idx.use_interactive_search %}checked{% endif %} id="uis{{ idx.id }}">
+                  <label class="form-check-label" for="uis{{ idx.id }}" title="Use this indexer when the user clicks 'find releases' or grabs a specific volume">Interactive Search</label>
+                </div>
               </div>
             </div>
             <div class="col-12">
@@ -325,6 +398,23 @@
             <div class="col-4">
               <label class="form-label">Priority</label>
               <input type="number" name="priority" class="form-control" value="25">
+            </div>
+            <div class="col-12">
+              <label class="form-label">Used for</label>
+              <div class="d-flex flex-wrap gap-3" style="font-size:var(--text-sm)">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="use_rss" value="1" checked id="new_use_rss">
+                  <label class="form-check-label" for="new_use_rss" title="Include this indexer in the RSS poll loop">RSS Sync</label>
+                </div>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="use_auto_search" value="1" checked id="new_use_as">
+                  <label class="form-check-label" for="new_use_as" title="Use this indexer in the background grab loop">Automatic Search</label>
+                </div>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="use_interactive_search" value="1" checked id="new_use_is">
+                  <label class="form-check-label" for="new_use_is" title="Use this indexer for user-initiated searches">Interactive Search</label>
+                </div>
+              </div>
             </div>
             <div class="col-12">
               <label class="form-label">Categories</label>

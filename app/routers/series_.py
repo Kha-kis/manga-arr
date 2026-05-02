@@ -163,8 +163,8 @@ async def _get_volume_row_ctx(series_id: int, volume_id: int) -> dict:
 
 async def _grab_volume_task(series_id: int, s, v, query: str):
     import main as _m
-    specific = await _m._search_all(query)
-    general  = await _m._search_all(s['title']) if query != s['title'] else []
+    specific = await _m._search_all(query, purpose='interactive')
+    general  = await _m._search_all(s['title'], purpose='interactive') if query != s['title'] else []
     seen_urls_all = {i['url'] for i in specific}
     all_items = list(specific) + [i for i in general if i['url'] not in seen_urls_all]
     all_items.sort(key=lambda x: x.get('_score', 0), reverse=True)
@@ -201,8 +201,8 @@ async def _grab_volume_task_sync(series_id: int, s, v, query: str) -> bool:
     """Same as _grab_volume_task but returns True if something was grabbed.
     Used by grab_volume() in 'fallback' mode to decide whether to try DDL."""
     import main as _m
-    specific = await _m._search_all(query)
-    general  = await _m._search_all(s['title']) if query != s['title'] else []
+    specific = await _m._search_all(query, purpose='interactive')
+    general  = await _m._search_all(s['title'], purpose='interactive') if query != s['title'] else []
     seen_urls_all = {i['url'] for i in specific}
     all_items = list(specific) + [i for i in general if i['url'] not in seen_urls_all]
     all_items.sort(key=lambda x: x.get('_score', 0), reverse=True)

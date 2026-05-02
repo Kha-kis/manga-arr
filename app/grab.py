@@ -654,11 +654,19 @@ def _collect_and_score(items: list[dict], seen_in_results: set[str]) -> list[dic
     return out
 
 
-async def _search_all(title: str) -> list[dict]:
-    """Search all enabled DB indexers, deduplicate, score, and sort by score desc."""
+async def _search_all(title: str, *, purpose: str = 'auto') -> list[dict]:
+    """Search all enabled DB indexers (filtered to those participating in
+    `purpose`), deduplicate, score, and sort by score desc.
+
+    purpose='auto'        — background grab loop. Filters by use_auto_search.
+    purpose='interactive' — user-initiated search (series-page find-releases,
+                            per-volume grab button). Filters by use_interactive_search.
+
+    Default is 'auto' since most call sites are background-driven; explicit
+    'interactive' for the UI-triggered paths."""
     from routers.indexers import search_all_indexers as _search_db_indexers
     with get_db() as _sdb:
-        raw_items = await _search_db_indexers(_sdb, title)
+        raw_items = await _search_db_indexers(_sdb, title, purpose=purpose)
     seen_in_results: set[str] = set()
     all_items = _collect_and_score(raw_items, seen_in_results)
     all_items.sort(key=lambda x: x.get('_score', 0), reverse=True)

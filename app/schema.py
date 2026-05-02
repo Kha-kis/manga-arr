@@ -525,6 +525,20 @@ def init_db():
         # is the natural key) and the UI can group them visually.
         add_col('indexers', 'parent_prowlarr_id',  'INTEGER')
         add_col('indexers', 'prowlarr_indexer_id', 'INTEGER')
+        # Per-purpose indexer toggles (PR #119) — Sonarr/Radarr-style
+        # independent control over which flows use this indexer:
+        #   use_rss                — included in the RSS poll (`fetch_all_rss`)
+        #   use_auto_search        — included in the background grab loop
+        #                            (grab_existing, search_complete_pack)
+        #   use_interactive_search — included in user-initiated search
+        #                            (series-page "find releases", per-volume
+        #                             grab button)
+        # Default ON so existing indexers keep all-modes behavior; user can
+        # narrow per-row in the edit modal. Backward-compat: fetch helpers
+        # interpret NULL/missing as 1.
+        add_col('indexers', 'use_rss',                'INTEGER DEFAULT 1')
+        add_col('indexers', 'use_auto_search',        'INTEGER DEFAULT 1')
+        add_col('indexers', 'use_interactive_search', 'INTEGER DEFAULT 1')
         add_col('download_clients', 'post_import_category', 'TEXT DEFAULT ""')
         add_col('download_clients', 'recent_priority',      'TEXT DEFAULT "last"')
         add_col('download_clients', 'older_priority',       'TEXT DEFAULT "last"')

@@ -220,6 +220,9 @@ async def create_indexer(
     client_id: str = Form(""),
     min_seeders: int = Form(0),
     seed_ratio: float = Form(0.0),
+    use_rss: int = Form(1),
+    use_auto_search: int = Form(1),
+    use_interactive_search: int = Form(1),
 ):
     cats = json.dumps([int(c.strip()) for c in categories.split(',') if c.strip().isdigit()])
     cid  = int(client_id) if client_id.strip().isdigit() else None
@@ -227,10 +230,12 @@ async def create_indexer(
     with get_db() as db:
         db.execute(
             "INSERT INTO indexers(name,type,url,api_key,priority,enabled,categories,settings,"
-            " client_id,min_seeders,seed_ratio)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            " client_id,min_seeders,seed_ratio,"
+            " use_rss,use_auto_search,use_interactive_search)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (name.strip(), type, url.strip() or None, stored_key,
-             priority, enabled, cats, settings or '{}', cid, min_seeders, seed_ratio)
+             priority, enabled, cats, settings or '{}', cid, min_seeders, seed_ratio,
+             use_rss, use_auto_search, use_interactive_search)
         )
     return RedirectResponse("/indexers", status_code=303)
 
@@ -251,6 +256,9 @@ async def edit_indexer(
     client_id: str = Form(""),
     min_seeders: int = Form(0),
     seed_ratio: float = Form(0.0),
+    use_rss: int = Form(0),
+    use_auto_search: int = Form(0),
+    use_interactive_search: int = Form(0),
 ):
     cats = json.dumps([int(c.strip()) for c in categories.split(',') if c.strip().isdigit()])
     cid  = int(client_id) if client_id.strip().isdigit() else None
@@ -258,17 +266,23 @@ async def edit_indexer(
         if keep_api_key:
             db.execute(
                 "UPDATE indexers SET name=?,type=?,url=?,priority=?,enabled=?,categories=?,settings=?,"
-                " client_id=?,min_seeders=?,seed_ratio=? WHERE id=?",
+                " client_id=?,min_seeders=?,seed_ratio=?,"
+                " use_rss=?,use_auto_search=?,use_interactive_search=? WHERE id=?",
                 (name.strip(), type, url.strip() or None, priority, enabled, cats, settings or '{}',
-                 cid, min_seeders, seed_ratio, indexer_id)
+                 cid, min_seeders, seed_ratio,
+                 use_rss, use_auto_search, use_interactive_search,
+                 indexer_id)
             )
         else:
             stored_key = encrypt_if_cipher_available(api_key.strip()) if api_key.strip() else None
             db.execute(
                 "UPDATE indexers SET name=?,type=?,url=?,api_key=?,priority=?,enabled=?,"
-                " categories=?,settings=?,client_id=?,min_seeders=?,seed_ratio=? WHERE id=?",
+                " categories=?,settings=?,client_id=?,min_seeders=?,seed_ratio=?,"
+                " use_rss=?,use_auto_search=?,use_interactive_search=? WHERE id=?",
                 (name.strip(), type, url.strip() or None, stored_key,
-                 priority, enabled, cats, settings or '{}', cid, min_seeders, seed_ratio, indexer_id)
+                 priority, enabled, cats, settings or '{}', cid, min_seeders, seed_ratio,
+                 use_rss, use_auto_search, use_interactive_search,
+                 indexer_id)
             )
     return RedirectResponse("/indexers", status_code=303)
 
@@ -622,12 +636,21 @@ async def _test_indexer(idx: dict) -> tuple[bool, str]:
 # ── Fetch RSS from all enabled indexers ──────────────────────────────────────
 async def fetch_all_rss(db) -> list[dict]:
     """
-    Fetch RSS from all enabled indexers and return deduplicated list of items.
+    Fetch RSS from all enabled indexers that have RSS sync enabled, returning
+    a deduplicated list of items.
     Uses the indexer-specific fetch logic.
     Results are sorted by indexer priority (lower number = higher priority).
     Per-indexer min_seeders, global indexer_max_size and indexer_min_age filters applied.
+
+    The `use_rss=1 OR use_rss IS NULL` clause keeps backward-compat: rows
+    that pre-date the column default to RSS-on. New rows default to 1
+    via the column DEFAULT.
     """
-    indexers = db.execute("SELECT * FROM indexers WHERE enabled=1 ORDER BY priority").fetchall()
+    indexers = db.execute(
+        "SELECT * FROM indexers WHERE enabled=1"
+        " AND (use_rss=1 OR use_rss IS NULL)"
+        " ORDER BY priority"
+    ).fetchall()
     if not indexers:
         return []
 
@@ -822,13 +845,30 @@ def _parse_torznab_rss(xml_text: str, indexer: str, default_protocol: str = 'tor
 
 
 # ── Search across all enabled indexers ───────────────────────────────────────
-async def search_all_indexers(db, query: str) -> list[dict]:
+async def search_all_indexers(db, query: str, purpose: str = 'auto') -> list[dict]:
     """
-    Search across all enabled indexers and return deduplicated results.
-    Results are sorted by indexer priority (lower number = higher priority).
+    Search across all enabled indexers that participate in `purpose` and return
+    deduplicated results.
+
+    purpose='auto'        — background grab loop (grab_existing, pack search).
+                            Filters by use_auto_search.
+    purpose='interactive' — user-initiated search (series-page find-releases,
+                            volume-row grab button). Filters by
+                            use_interactive_search.
+
+    Results are sorted by indexer priority (lower = higher priority).
     Per-indexer min_seeders and global indexer_max_size filters applied.
+
+    NULL-tolerant: rows that predate the toggle columns default to participating.
     """
-    indexers = db.execute("SELECT * FROM indexers WHERE enabled=1 ORDER BY priority").fetchall()
+    if purpose == 'interactive':
+        toggle_clause = "(use_interactive_search=1 OR use_interactive_search IS NULL)"
+    else:
+        # 'auto' or any unknown purpose → default to auto-search filter.
+        toggle_clause = "(use_auto_search=1 OR use_auto_search IS NULL)"
+    indexers = db.execute(
+        f"SELECT * FROM indexers WHERE enabled=1 AND {toggle_clause} ORDER BY priority"
+    ).fetchall()
     if not indexers:
         return []
 
