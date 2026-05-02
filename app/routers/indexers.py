@@ -145,7 +145,24 @@ MANGA_CATEGORIES = [
 
 
 def _all_indexers(db):
-    return db.execute("SELECT * FROM indexers ORDER BY priority, id").fetchall()
+    """Return enriched indexer rows with their tag list attached.
+
+    Each row is a dict (Jinja's attribute access falls back to dict lookup).
+    The `tags` field is a sorted list of strings — empty list means the
+    indexer applies to all series (Sonarr semantics, see indexer_tags table).
+    """
+    rows = db.execute("SELECT * FROM indexers ORDER BY priority, id").fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        d['tags'] = [
+            t['tag'] for t in db.execute(
+                "SELECT tag FROM indexer_tags WHERE indexer_id=? ORDER BY tag",
+                (r['id'],)
+            ).fetchall()
+        ]
+        result.append(d)
+    return result
 
 
 def _friendly_indexer_error(exc: Exception) -> str:
@@ -223,12 +240,14 @@ async def create_indexer(
     use_rss: int = Form(1),
     use_auto_search: int = Form(1),
     use_interactive_search: int = Form(1),
+    tags: str = Form(""),
 ):
     cats = json.dumps([int(c.strip()) for c in categories.split(',') if c.strip().isdigit()])
     cid  = int(client_id) if client_id.strip().isdigit() else None
     stored_key = encrypt_if_cipher_available(api_key.strip()) if api_key.strip() else None
+    tag_list = [t.strip() for t in tags.split(',') if t.strip()]
     with get_db() as db:
-        db.execute(
+        cur = db.execute(
             "INSERT INTO indexers(name,type,url,api_key,priority,enabled,categories,settings,"
             " client_id,min_seeders,seed_ratio,"
             " use_rss,use_auto_search,use_interactive_search)"
@@ -237,6 +256,12 @@ async def create_indexer(
              priority, enabled, cats, settings or '{}', cid, min_seeders, seed_ratio,
              use_rss, use_auto_search, use_interactive_search)
         )
+        new_id = cur.lastrowid
+        for tag in tag_list:
+            db.execute(
+                "INSERT OR IGNORE INTO indexer_tags(indexer_id, tag) VALUES(?, ?)",
+                (new_id, tag)
+            )
     return RedirectResponse("/indexers", status_code=303)
 
 
@@ -259,9 +284,11 @@ async def edit_indexer(
     use_rss: int = Form(0),
     use_auto_search: int = Form(0),
     use_interactive_search: int = Form(0),
+    tags: str = Form(""),
 ):
     cats = json.dumps([int(c.strip()) for c in categories.split(',') if c.strip().isdigit()])
     cid  = int(client_id) if client_id.strip().isdigit() else None
+    tag_list = [t.strip() for t in tags.split(',') if t.strip()]
     with get_db() as db:
         if keep_api_key:
             db.execute(
@@ -283,6 +310,14 @@ async def edit_indexer(
                  priority, enabled, cats, settings or '{}', cid, min_seeders, seed_ratio,
                  use_rss, use_auto_search, use_interactive_search,
                  indexer_id)
+            )
+        # Tag set is fully replaced on edit (not merged) — same pattern as
+        # delay/release-profile tags. Empty submitted tags = remove all.
+        db.execute("DELETE FROM indexer_tags WHERE indexer_id=?", (indexer_id,))
+        for tag in tag_list:
+            db.execute(
+                "INSERT OR IGNORE INTO indexer_tags(indexer_id, tag) VALUES(?, ?)",
+                (indexer_id, tag)
             )
     return RedirectResponse("/indexers", status_code=303)
 
@@ -844,8 +879,39 @@ def _parse_torznab_rss(xml_text: str, indexer: str, default_protocol: str = 'tor
 
 
 
+# ── Indexer tag rule (Sonarr semantics, PR #120) ──────────────────────────────
+def _indexer_allowed_for_series(db, indexer_id: int, series_id: int | None) -> bool:
+    """Apply Sonarr's per-indexer-tag filter for a given series.
+
+    Rule (verbatim from Servarr docs / forums):
+      - Indexer with ZERO tags applies to all series.
+      - Indexer with one or more tags applies only to series whose own tag set
+        intersects this indexer's tag set.
+
+    If `series_id` is None (e.g., RSS poll context), tag filtering is skipped
+    — matching happens later at grab time when the item is matched to a series.
+    """
+    if series_id is None:
+        return True
+    has_tags = db.execute(
+        "SELECT 1 FROM indexer_tags WHERE indexer_id=? LIMIT 1",
+        (indexer_id,)
+    ).fetchone() is not None
+    if not has_tags:
+        return True  # untagged indexer → applies to all series
+    intersection = db.execute(
+        "SELECT 1 FROM indexer_tags it"
+        " JOIN series_tags st ON it.tag = st.tag"
+        " WHERE it.indexer_id=? AND st.series_id=? LIMIT 1",
+        (indexer_id, series_id)
+    ).fetchone() is not None
+    return intersection
+
+
 # ── Search across all enabled indexers ───────────────────────────────────────
-async def search_all_indexers(db, query: str, purpose: str = 'auto') -> list[dict]:
+async def search_all_indexers(
+    db, query: str, purpose: str = 'auto', series_id: int | None = None
+) -> list[dict]:
     """
     Search across all enabled indexers that participate in `purpose` and return
     deduplicated results.
@@ -855,6 +921,10 @@ async def search_all_indexers(db, query: str, purpose: str = 'auto') -> list[dic
     purpose='interactive' — user-initiated search (series-page find-releases,
                             volume-row grab button). Filters by
                             use_interactive_search.
+
+    series_id (optional) — when provided, also applies the Sonarr-style
+                           indexer-tag filter: untagged indexer = applies to
+                           all series; tagged = only series sharing ≥1 tag.
 
     Results are sorted by indexer priority (lower = higher priority).
     Per-indexer min_seeders and global indexer_max_size filters applied.
@@ -866,9 +936,24 @@ async def search_all_indexers(db, query: str, purpose: str = 'auto') -> list[dic
     else:
         # 'auto' or any unknown purpose → default to auto-search filter.
         toggle_clause = "(use_auto_search=1 OR use_auto_search IS NULL)"
-    indexers = db.execute(
-        f"SELECT * FROM indexers WHERE enabled=1 AND {toggle_clause} ORDER BY priority"
-    ).fetchall()
+    if series_id is not None:
+        # Sonarr-style indexer-tag filter: indexer with no tags OR series shares
+        # at least one tag with this indexer.
+        tag_clause = (
+            " AND (NOT EXISTS (SELECT 1 FROM indexer_tags WHERE indexer_id=indexers.id)"
+            "      OR EXISTS (SELECT 1 FROM indexer_tags it"
+            "                 JOIN series_tags st ON it.tag = st.tag"
+            "                 WHERE it.indexer_id=indexers.id AND st.series_id=?))"
+        )
+        indexers = db.execute(
+            f"SELECT * FROM indexers WHERE enabled=1 AND {toggle_clause}"
+            f"{tag_clause} ORDER BY priority",
+            (series_id,)
+        ).fetchall()
+    else:
+        indexers = db.execute(
+            f"SELECT * FROM indexers WHERE enabled=1 AND {toggle_clause} ORDER BY priority"
+        ).fetchall()
     if not indexers:
         return []
 

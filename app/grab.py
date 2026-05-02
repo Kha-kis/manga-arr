@@ -654,19 +654,29 @@ def _collect_and_score(items: list[dict], seen_in_results: set[str]) -> list[dic
     return out
 
 
-async def _search_all(title: str, *, purpose: str = 'auto') -> list[dict]:
+async def _search_all(
+    title: str, *, purpose: str = 'auto', series_id: int | None = None
+) -> list[dict]:
     """Search all enabled DB indexers (filtered to those participating in
-    `purpose`), deduplicate, score, and sort by score desc.
+    `purpose`, and to those allowed by the indexer-tag rule for series_id
+    when provided), deduplicate, score, and sort by score desc.
 
     purpose='auto'        — background grab loop. Filters by use_auto_search.
     purpose='interactive' — user-initiated search (series-page find-releases,
                             per-volume grab button). Filters by use_interactive_search.
 
+    series_id (optional)  — when provided, applies Sonarr's per-indexer-tag
+                            rule (indexer with no tags = all series; with tags
+                            = only series sharing ≥1 tag). When None, no tag
+                            filter (RSS poll context).
+
     Default is 'auto' since most call sites are background-driven; explicit
     'interactive' for the UI-triggered paths."""
     from routers.indexers import search_all_indexers as _search_db_indexers
     with get_db() as _sdb:
-        raw_items = await _search_db_indexers(_sdb, title, purpose=purpose)
+        raw_items = await _search_db_indexers(
+            _sdb, title, purpose=purpose, series_id=series_id
+        )
     seen_in_results: set[str] = set()
     all_items = _collect_and_score(raw_items, seen_in_results)
     all_items.sort(key=lambda x: x.get('_score', 0), reverse=True)
@@ -707,7 +717,7 @@ async def _grab_existing_inner(series_id: int, title: str, pattern: str) -> int:
                     return grabbed
 
     # ── Normal per-volume/release search ─────────────────────────────────────
-    all_items = await _search_all(title)
+    all_items = await _search_all(title, series_id=series_id)
 
     with get_db() as db:
         seen_urls    = {r['torrent_url'] for r in db.execute("SELECT torrent_url FROM seen").fetchall()}
@@ -720,7 +730,7 @@ async def _grab_existing_inner(series_id: int, title: str, pattern: str) -> int:
 
     # Also search aliases that may differ significantly from the main title
     for alias in [a['alias'] for a in alias_rows]:
-        extra = await _search_all(alias)
+        extra = await _search_all(alias, series_id=series_id)
         for it in extra:
             if it['url'] not in {x['url'] for x in all_items}:
                 all_items.append(it)
@@ -833,7 +843,7 @@ async def search_complete_pack(series_id: int, title: str,
     all_items: list[dict] = []
 
     async def _add_results(query: str):
-        for item in await _search_all(query):
+        for item in await _search_all(query, series_id=series_id):
             if item['url'] not in seen_item_urls:
                 seen_item_urls.add(item['url'])
                 all_items.append(item)
@@ -884,7 +894,7 @@ async def search_complete_pack(series_id: int, title: str,
     gap_grabbed = 0
     for vol_num in sorted(gaps)[:10]:
         query = f"{title} vol {vol_num_to_search(vol_num)}"
-        for item in await _search_all(query):
+        for item in await _search_all(query, series_id=series_id):
             if item['url'] in seen_urls or item['url'] in blocked_urls:
                 continue
             if not any(matches(p, item['title']) for p in all_patterns):
