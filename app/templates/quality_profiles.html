@@ -115,7 +115,29 @@
             <label class="form-label">Minimum Custom Format Score</label>
             <input type="number" name="minimum_custom_format_score" class="form-control"
                    value="{{ p.minimum_custom_format_score or 0 }}">
-            <div class="form-text">Releases scoring below this are rejected.</div>
+            <div class="form-text">Releases scoring below this are rejected outright.</div>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-6">
+              <label class="form-label">Upgrade Until Custom Format Score</label>
+              <input type="number" name="cutoff_format_score" class="form-control"
+                     value="{{ p.cutoff_format_score if p.cutoff_format_score is not none else 10000 }}">
+              <div class="form-text">
+                Stop chasing CF-driven upgrades once the existing release's score reaches this.
+                Default 10000 = effectively unbounded (always upgrade for any score gain).
+                Lower this to opt into a ceiling.
+              </div>
+            </div>
+            <div class="col-6">
+              <label class="form-label">Minimum Upgrade Score Delta</label>
+              <input type="number" name="min_upgrade_format_score" class="form-control"
+                     value="{{ p.min_upgrade_format_score if p.min_upgrade_format_score is not none else 10 }}">
+              <div class="form-text">
+                Reject upgrades where (new_score − old_score) is less than this.
+                Default 10 prevents the "+1 score loop" — same release re-grabbed
+                forever for trivial improvements. Set to 0 to allow any positive delta.
+              </div>
+            </div>
           </div>
         </div>
         <div class="modal-footer">
@@ -174,6 +196,19 @@
           <div class="mb-3">
             <label class="form-label">Minimum Custom Format Score</label>
             <input type="number" name="minimum_custom_format_score" class="form-control" value="0">
+            <div class="form-text">Releases scoring below this are rejected outright.</div>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-6">
+              <label class="form-label">Upgrade Until CF Score</label>
+              <input type="number" name="cutoff_format_score" class="form-control" value="10000">
+              <div class="form-text">10000 = unbounded.</div>
+            </div>
+            <div class="col-6">
+              <label class="form-label">Min Upgrade Score Delta</label>
+              <input type="number" name="min_upgrade_format_score" class="form-control" value="10">
+              <div class="form-text">10 prevents +1 loops.</div>
+            </div>
           </div>
         </div>
         <div class="modal-footer">

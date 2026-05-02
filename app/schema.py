@@ -561,6 +561,26 @@ def init_db():
         # tighter of the two applies.
         add_col('indexers', 'min_size_mb', 'INTEGER DEFAULT 0')
         add_col('indexers', 'max_size_mb', 'INTEGER DEFAULT 0')
+        # Quality-profile upgrade controls (PR #124) — Sonarr v4 / Radarr v5
+        # equivalents. Without these, the upgrade engine cannot express
+        # "stop CF-driven upgrades at score X" or "ignore tiny score
+        # improvements" — leading to either no CF-based upgrades at all,
+        # or download loops where the same release re-grabs forever for a
+        # +1 score gain.
+        #
+        #   cutoff_format_score      — once existing release's CF score is
+        #                              >= this, no more CF-driven upgrades.
+        #                              Default 10000 (effectively unbounded —
+        #                              matches TRaSH-Guides recommendation;
+        #                              users opt INTO ceilings by lowering).
+        #   min_upgrade_format_score — minimum delta (new_score - old_score)
+        #                              required to trigger a CF upgrade.
+        #                              Default 10. Sonarr's universal answer
+        #                              to "I'm in a download loop." Default
+        #                              non-zero ships loop-prevention without
+        #                              user intervention.
+        add_col('quality_profiles', 'cutoff_format_score',      'INTEGER DEFAULT 10000')
+        add_col('quality_profiles', 'min_upgrade_format_score', 'INTEGER DEFAULT 10')
         add_col('download_clients', 'post_import_category', 'TEXT DEFAULT ""')
         add_col('download_clients', 'recent_priority',      'TEXT DEFAULT "last"')
         add_col('download_clients', 'older_priority',       'TEXT DEFAULT "last"')
