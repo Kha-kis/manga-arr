@@ -451,6 +451,18 @@ def init_db():
                 PRIMARY KEY (series_id, tag)
             );
 
+            -- Indexer Tags (PR #120) — Sonarr-style per-indexer tag filter.
+            -- Rule: an indexer with ZERO tags applies to all series. An
+            -- indexer with one or more tags applies only to series whose
+            -- own tag set intersects this indexer's tag set. The shared
+            -- vocabulary (TEXT tag values) is the same as series_tags so
+            -- intersection is a plain SQL JOIN.
+            CREATE TABLE IF NOT EXISTS indexer_tags (
+                indexer_id INTEGER NOT NULL REFERENCES indexers(id) ON DELETE CASCADE,
+                tag        TEXT NOT NULL,
+                PRIMARY KEY (indexer_id, tag)
+            );
+
             -- Auto-tagging rules
             CREATE TABLE IF NOT EXISTS auto_tag_rules (
                 id                        INTEGER PRIMARY KEY AUTOINCREMENT,
