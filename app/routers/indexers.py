@@ -323,20 +323,27 @@ async def create_indexer(
     use_auto_search: int = Form(1),
     use_interactive_search: int = Form(1),
     tags: str = Form(""),
+    min_size_mb: int = Form(0),
+    max_size_mb: int = Form(0),
 ):
     cats = json.dumps([int(c.strip()) for c in categories.split(',') if c.strip().isdigit()])
     cid  = int(client_id) if client_id.strip().isdigit() else None
     stored_key = encrypt_if_cipher_available(api_key.strip()) if api_key.strip() else None
     tag_list = [t.strip() for t in tags.split(',') if t.strip()]
+    # Clamp size limits to non-negative; 0 = no limit.
+    min_size_mb = max(0, min_size_mb)
+    max_size_mb = max(0, max_size_mb)
     with get_db() as db:
         cur = db.execute(
             "INSERT INTO indexers(name,type,url,api_key,priority,enabled,categories,settings,"
             " client_id,min_seeders,seed_ratio,"
-            " use_rss,use_auto_search,use_interactive_search)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " use_rss,use_auto_search,use_interactive_search,"
+            " min_size_mb,max_size_mb)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (name.strip(), type, url.strip() or None, stored_key,
              priority, enabled, cats, settings or '{}', cid, min_seeders, seed_ratio,
-             use_rss, use_auto_search, use_interactive_search)
+             use_rss, use_auto_search, use_interactive_search,
+             min_size_mb, max_size_mb)
         )
         new_id = cur.lastrowid
         for tag in tag_list:
@@ -367,19 +374,25 @@ async def edit_indexer(
     use_auto_search: int = Form(0),
     use_interactive_search: int = Form(0),
     tags: str = Form(""),
+    min_size_mb: int = Form(0),
+    max_size_mb: int = Form(0),
 ):
     cats = json.dumps([int(c.strip()) for c in categories.split(',') if c.strip().isdigit()])
     cid  = int(client_id) if client_id.strip().isdigit() else None
     tag_list = [t.strip() for t in tags.split(',') if t.strip()]
+    min_size_mb = max(0, min_size_mb)
+    max_size_mb = max(0, max_size_mb)
     with get_db() as db:
         if keep_api_key:
             db.execute(
                 "UPDATE indexers SET name=?,type=?,url=?,priority=?,enabled=?,categories=?,settings=?,"
                 " client_id=?,min_seeders=?,seed_ratio=?,"
-                " use_rss=?,use_auto_search=?,use_interactive_search=? WHERE id=?",
+                " use_rss=?,use_auto_search=?,use_interactive_search=?,"
+                " min_size_mb=?,max_size_mb=? WHERE id=?",
                 (name.strip(), type, url.strip() or None, priority, enabled, cats, settings or '{}',
                  cid, min_seeders, seed_ratio,
                  use_rss, use_auto_search, use_interactive_search,
+                 min_size_mb, max_size_mb,
                  indexer_id)
             )
         else:
@@ -387,10 +400,12 @@ async def edit_indexer(
             db.execute(
                 "UPDATE indexers SET name=?,type=?,url=?,api_key=?,priority=?,enabled=?,"
                 " categories=?,settings=?,client_id=?,min_seeders=?,seed_ratio=?,"
-                " use_rss=?,use_auto_search=?,use_interactive_search=? WHERE id=?",
+                " use_rss=?,use_auto_search=?,use_interactive_search=?,"
+                " min_size_mb=?,max_size_mb=? WHERE id=?",
                 (name.strip(), type, url.strip() or None, stored_key,
                  priority, enabled, cats, settings or '{}', cid, min_seeders, seed_ratio,
                  use_rss, use_auto_search, use_interactive_search,
+                 min_size_mb, max_size_mb,
                  indexer_id)
             )
         # Tag set is fully replaced on edit (not merged) — same pattern as
@@ -785,6 +800,9 @@ async def fetch_all_rss(db) -> list[dict]:
     for idx, batch in zip(idx_list, results):
         min_seeders       = idx.get('min_seeders') or 0
         preferred_client  = idx.get('client_id')
+        # Per-indexer size limits (PR #123). Both stored as megabytes; 0 = none.
+        idx_min_size_bytes = (idx.get('min_size_mb') or 0) * 1024 * 1024
+        idx_max_size_bytes = (idx.get('max_size_mb') or 0) * 1024 * 1024
         for item in batch:
             if item['url'] in seen:
                 continue
@@ -792,8 +810,17 @@ async def fetch_all_rss(db) -> list[dict]:
             if item.get('protocol') == 'torrent' and min_seeders > 0:
                 if (item.get('seeders') or 0) < min_seeders:
                     continue
-            # Global max size
-            if max_size_bytes > 0 and (item.get('size_bytes') or 0) > max_size_bytes:
+            item_size = item.get('size_bytes') or 0
+            # Per-indexer min size — release smaller than the configured floor
+            # is rejected (e.g., chapter-pack-only on a complete-volume tracker).
+            if idx_min_size_bytes > 0 and item_size > 0 and item_size < idx_min_size_bytes:
+                continue
+            # Per-indexer max size — release larger than the configured ceiling.
+            if idx_max_size_bytes > 0 and item_size > idx_max_size_bytes:
+                continue
+            # Global max size (independent of the per-indexer ceiling — the
+            # tighter of the two applies effectively).
+            if max_size_bytes > 0 and item_size > max_size_bytes:
                 continue
             # Global min age (item must carry 'age_minutes' if available; skip check if absent)
             if min_age_min > 0 and 'age_minutes' in item:
@@ -1051,13 +1078,21 @@ async def search_all_indexers(
     for idx, batch in zip(idx_list, results):
         min_seeders      = idx.get('min_seeders') or 0
         preferred_client = idx.get('client_id')
+        # Per-indexer size limits (PR #123). Same logic as fetch_all_rss.
+        idx_min_size_bytes = (idx.get('min_size_mb') or 0) * 1024 * 1024
+        idx_max_size_bytes = (idx.get('max_size_mb') or 0) * 1024 * 1024
         for item in batch:
             if item['url'] in seen:
                 continue
             if item.get('protocol') == 'torrent' and min_seeders > 0:
                 if (item.get('seeders') or 0) < min_seeders:
                     continue
-            if max_size_bytes > 0 and (item.get('size_bytes') or 0) > max_size_bytes:
+            item_size = item.get('size_bytes') or 0
+            if idx_min_size_bytes > 0 and item_size > 0 and item_size < idx_min_size_bytes:
+                continue
+            if idx_max_size_bytes > 0 and item_size > idx_max_size_bytes:
+                continue
+            if max_size_bytes > 0 and item_size > max_size_bytes:
                 continue
             seen.add(item['url'])
             if preferred_client:

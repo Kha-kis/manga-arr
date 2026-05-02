@@ -551,6 +551,16 @@ def init_db():
         add_col('indexers', 'use_rss',                'INTEGER DEFAULT 1')
         add_col('indexers', 'use_auto_search',        'INTEGER DEFAULT 1')
         add_col('indexers', 'use_interactive_search', 'INTEGER DEFAULT 1')
+        # Per-indexer release-size limits (PR #123) — most-asked-for Sonarr
+        # feature that Sonarr doesn't actually have. Some trackers (private
+        # premium) only have huge complete-series packs; others only have
+        # tiny single-chapter releases. Per-indexer floors/ceilings let the
+        # user keep both kinds of trackers active without polluting results.
+        # Both stored as megabytes; 0 (or NULL) = no limit on that side.
+        # Layered on top of the global indexer_max_size setting — the
+        # tighter of the two applies.
+        add_col('indexers', 'min_size_mb', 'INTEGER DEFAULT 0')
+        add_col('indexers', 'max_size_mb', 'INTEGER DEFAULT 0')
         add_col('download_clients', 'post_import_category', 'TEXT DEFAULT ""')
         add_col('download_clients', 'recent_priority',      'TEXT DEFAULT "last"')
         add_col('download_clients', 'older_priority',       'TEXT DEFAULT "last"')
