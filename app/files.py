@@ -330,6 +330,13 @@ _EDITION_PATTERNS = [
     (r'\bcanonical\s+edition\b',                        'special'),
     (r'\bremaster(?:ed)?\b',                            'remaster'),
     (r'\bhd\s+edition\b',                               'remaster'),
+    # Japanese print formats (PR #126). Tankobon = standard volume, Bunkoban
+    # = pocket-size, Kanzenban / Aizoban = "complete" / collector reprints
+    # roughly equivalent to omnibus but distinct in collector circles.
+    (r'\baizoban\b|\b愛蔵版\b',                            'aizoban'),
+    (r'\bkanzenban\b|\b完全版\b',                          'kanzenban'),
+    (r'\bbunkoban\b|\b文庫版\b',                           'bunkoban'),
+    (r'\btankoubon\b|\btankobon\b|\b単行本\b',             'tankobon'),
 ]
 
 _LANGUAGE_PATTERNS = [
