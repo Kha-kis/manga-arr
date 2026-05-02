@@ -284,67 +284,73 @@ async def save_download_client_options(
 
 # ── Edit ──────────────────────────────────────────────────────────────────────
 @router.post("/download-clients/{client_id}")
-async def edit_download_client(
-    client_id: int,
-    name: str = Form(...),
-    type: str = Form(...),
-    host: str = Form(""),
-    port: int = Form(0),
-    use_ssl: int = Form(0),
-    url_base: str = Form(""),
-    username: str = Form(""),
-    password: str = Form(""),
-    category: str = Form("manga"),
-    post_import_category: str = Form(""),
-    recent_priority: str = Form("last"),
-    older_priority: str = Form("last"),
-    initial_state: str = Form("normal"),
-    sequential_order: int = Form(0),
-    first_last_first: int = Form(0),
-    content_layout: str = Form("original"),
-    priority: int = Form(1),
-    enabled: int = Form(1),
-    remove_completed: int = Form(0),
-    remove_failed: int = Form(0),
-    tags: str = Form(""),
-    keep_password: int = Form(0),
-    download_path: str = Form(""),
-    merge_chapters: int = Form(0),
-):
-    _shared = (name.strip(), type, host.strip(), port or None, use_ssl, url_base.strip() or None,
-               username.strip() or None, category.strip() or 'manga',
-               post_import_category.strip() or None, recent_priority, older_priority,
-               initial_state, sequential_order, first_last_first, content_layout,
-               priority, enabled, remove_completed, remove_failed,
-               download_path.strip() or None, merge_chapters, client_id)
+async def edit_download_client(request: Request, client_id: int):
+    """Edit a download client. Partial-POST safe: only columns whose
+    form key is present in the request body are written. The password
+    field is only written if the form carries it AND it's non-empty —
+    this replaces the legacy `keep_password` checkbox marker, since
+    "field absent" now naturally means "leave the existing password
+    alone". Tags are only rebuilt if the `tags` field is in the form.
+    """
+    from routers._form_helpers import (
+        submitted_subset, str_or_none, int_or_none,
+        int_default_zero, bool_int,
+    )
+    submitted = await request.form()
+
+    plain_fields = {
+        'name':                 ('name',                 lambda v: str(v or '').strip()),
+        'type':                 ('type',                 lambda v: str(v or '').strip()),
+        'host':                 ('host',                 lambda v: str(v or '').strip()),
+        'port':                 ('port',                 lambda v: int_or_none(v) or None),
+        'use_ssl':              ('use_ssl',              bool_int),
+        'url_base':             ('url_base',             str_or_none),
+        'username':             ('username',             str_or_none),
+        'category':             ('category',             lambda v: str(v or '').strip() or 'manga'),
+        'post_import_category': ('post_import_category', str_or_none),
+        'recent_priority':      ('recent_priority',      lambda v: str(v or '').strip() or 'last'),
+        'older_priority':       ('older_priority',       lambda v: str(v or '').strip() or 'last'),
+        'initial_state':        ('initial_state',        lambda v: str(v or '').strip() or 'normal'),
+        'sequential_order':     ('sequential_order',     bool_int),
+        'first_last_first':     ('first_last_first',     bool_int),
+        'content_layout':       ('content_layout',       lambda v: str(v or '').strip() or 'original'),
+        'priority':             ('priority',             int_default_zero),
+        'enabled':              ('enabled',              bool_int),
+        'remove_completed':     ('remove_completed',     bool_int),
+        'remove_failed':        ('remove_failed',        bool_int),
+        'download_path':        ('download_path',        str_or_none),
+        'merge_chapters':       ('merge_chapters',       bool_int),
+    }
+
     with get_db() as db:
-        if keep_password:
+        updates, params = submitted_subset(submitted, plain_fields)
+
+        # password: only update if the form carries it AND it's non-empty.
+        # The legacy `keep_password=1` checkbox marker is no longer needed
+        # — the HTML page submits password only when the user has typed
+        # a new one.
+        if 'password' in submitted:
+            pw_raw = str(submitted['password'] or '')
+            if pw_raw:
+                updates.append('password=?')
+                params.append(encrypt_if_cipher_available(pw_raw))
+
+        if updates:
+            params.append(client_id)
             db.execute(
-                "UPDATE download_clients SET name=?,type=?,host=?,port=?,use_ssl=?,url_base=?,"
-                " username=?,category=?,post_import_category=?,recent_priority=?,older_priority=?,"
-                " initial_state=?,sequential_order=?,first_last_first=?,content_layout=?,"
-                " priority=?,enabled=?,remove_completed=?,remove_failed=?,"
-                " download_path=?,merge_chapters=? WHERE id=?",
-                _shared
+                f"UPDATE download_clients SET {', '.join(updates)} WHERE id=?",
+                params
             )
-        else:
-            stored_password = encrypt_if_cipher_available(password) if password else None
-            db.execute(
-                "UPDATE download_clients SET name=?,type=?,host=?,port=?,use_ssl=?,url_base=?,"
-                " username=?,password=?,category=?,post_import_category=?,recent_priority=?,"
-                " older_priority=?,initial_state=?,sequential_order=?,first_last_first=?,"
-                " content_layout=?,priority=?,enabled=?,remove_completed=?,remove_failed=?,"
-                " download_path=?,merge_chapters=? WHERE id=?",
-                (name.strip(), type, host.strip(), port or None, use_ssl, url_base.strip() or None,
-                 username.strip() or None, stored_password, category.strip() or 'manga',
-                 post_import_category.strip() or None, recent_priority, older_priority,
-                 initial_state, sequential_order, first_last_first, content_layout,
-                 priority, enabled, remove_completed, remove_failed,
-                 download_path.strip() or None, merge_chapters, client_id)
-            )
-        db.execute("DELETE FROM download_client_tags WHERE client_id=?", (client_id,))
-        for tag in [t.strip() for t in tags.split(',') if t.strip()]:
-            db.execute("INSERT OR IGNORE INTO download_client_tags(client_id,tag) VALUES(?,?)", (client_id, tag))
+
+        # Tag set is only rebuilt if the form carries `tags`.
+        if 'tags' in submitted:
+            tag_list = [t.strip() for t in str(submitted['tags'] or '').split(',') if t.strip()]
+            db.execute("DELETE FROM download_client_tags WHERE client_id=?", (client_id,))
+            for tag in tag_list:
+                db.execute(
+                    "INSERT OR IGNORE INTO download_client_tags(client_id,tag) VALUES(?,?)",
+                    (client_id, tag)
+                )
     return RedirectResponse("/download-clients", status_code=303)
 
 

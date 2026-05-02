@@ -355,67 +355,81 @@ async def create_indexer(
 
 
 # ── Edit ──────────────────────────────────────────────────────────────────────
+def _categories_to_json(v) -> str:
+    """Comma-separated category ints → JSON-encoded array string."""
+    raw = str(v or '').strip()
+    return json.dumps([int(c.strip()) for c in raw.split(',') if c.strip().isdigit()])
+
+
+def _client_id_or_none(v) -> int | None:
+    s = str(v or '').strip()
+    return int(s) if s.isdigit() else None
+
+
 @router.post("/indexers/{indexer_id}")
-async def edit_indexer(
-    indexer_id: int,
-    name: str = Form(...),
-    type: str = Form("prowlarr"),
-    url: str = Form(""),
-    api_key: str = Form(""),
-    priority: int = Form(25),
-    enabled: int = Form(1),
-    categories: str = Form("7000,7010,7020"),
-    settings: str = Form("{}"),
-    keep_api_key: int = Form(0),
-    client_id: str = Form(""),
-    min_seeders: int = Form(0),
-    seed_ratio: float = Form(0.0),
-    use_rss: int = Form(0),
-    use_auto_search: int = Form(0),
-    use_interactive_search: int = Form(0),
-    tags: str = Form(""),
-    min_size_mb: int = Form(0),
-    max_size_mb: int = Form(0),
-):
-    cats = json.dumps([int(c.strip()) for c in categories.split(',') if c.strip().isdigit()])
-    cid  = int(client_id) if client_id.strip().isdigit() else None
-    tag_list = [t.strip() for t in tags.split(',') if t.strip()]
-    min_size_mb = max(0, min_size_mb)
-    max_size_mb = max(0, max_size_mb)
+async def edit_indexer(request: Request, indexer_id: int):
+    """Edit an indexer. Partial-POST safe: only columns whose form key
+    is present in the request body are written. The api_key field is
+    only written if the form actually carries it AND it's non-empty —
+    this replaces the legacy `keep_api_key` checkbox marker, since
+    "field absent" now naturally means "leave the existing key alone".
+    Tags are only rebuilt if the `tags` field is in the form.
+    """
+    from routers._form_helpers import (
+        submitted_subset, str_or_none, int_or_none,
+        int_default_zero, float_default_zero, bool_int, parsed_json_str,
+    )
+    submitted = await request.form()
+
+    plain_fields = {
+        'name':         ('name',         lambda v: str(v or '').strip()),
+        'type':         ('type',         lambda v: str(v or '').strip() or 'prowlarr'),
+        'url':          ('url',          str_or_none),
+        'priority':     ('priority',     int_default_zero),
+        'enabled':      ('enabled',      bool_int),
+        'categories':   ('categories',   _categories_to_json),
+        'settings':     ('settings',     lambda v: parsed_json_str(v, default='{}')),
+        'client_id':    ('client_id',    _client_id_or_none),
+        'min_seeders':  ('min_seeders',  int_default_zero),
+        'seed_ratio':   ('seed_ratio',   float_default_zero),
+        'use_rss':                ('use_rss',                bool_int),
+        'use_auto_search':        ('use_auto_search',        bool_int),
+        'use_interactive_search': ('use_interactive_search', bool_int),
+        'min_size_mb':  ('min_size_mb',  lambda v: max(0, int_default_zero(v))),
+        'max_size_mb':  ('max_size_mb',  lambda v: max(0, int_default_zero(v))),
+    }
+
     with get_db() as db:
-        if keep_api_key:
+        updates, params = submitted_subset(submitted, plain_fields)
+
+        # api_key: only update if the form carries the field AND it's
+        # non-empty. The legacy `keep_api_key=1` checkbox marker is no
+        # longer needed — the HTML page submits api_key only when the
+        # user has typed a new one, which naturally maps to "absent =
+        # leave alone, present = encrypt and store".
+        if 'api_key' in submitted:
+            api_raw = str(submitted['api_key'] or '').strip()
+            if api_raw:
+                updates.append('api_key=?')
+                params.append(encrypt_if_cipher_available(api_raw))
+
+        if updates:
+            params.append(indexer_id)
             db.execute(
-                "UPDATE indexers SET name=?,type=?,url=?,priority=?,enabled=?,categories=?,settings=?,"
-                " client_id=?,min_seeders=?,seed_ratio=?,"
-                " use_rss=?,use_auto_search=?,use_interactive_search=?,"
-                " min_size_mb=?,max_size_mb=? WHERE id=?",
-                (name.strip(), type, url.strip() or None, priority, enabled, cats, settings or '{}',
-                 cid, min_seeders, seed_ratio,
-                 use_rss, use_auto_search, use_interactive_search,
-                 min_size_mb, max_size_mb,
-                 indexer_id)
+                f"UPDATE indexers SET {', '.join(updates)} WHERE id=?",
+                params
             )
-        else:
-            stored_key = encrypt_if_cipher_available(api_key.strip()) if api_key.strip() else None
-            db.execute(
-                "UPDATE indexers SET name=?,type=?,url=?,api_key=?,priority=?,enabled=?,"
-                " categories=?,settings=?,client_id=?,min_seeders=?,seed_ratio=?,"
-                " use_rss=?,use_auto_search=?,use_interactive_search=?,"
-                " min_size_mb=?,max_size_mb=? WHERE id=?",
-                (name.strip(), type, url.strip() or None, stored_key,
-                 priority, enabled, cats, settings or '{}', cid, min_seeders, seed_ratio,
-                 use_rss, use_auto_search, use_interactive_search,
-                 min_size_mb, max_size_mb,
-                 indexer_id)
-            )
-        # Tag set is fully replaced on edit (not merged) — same pattern as
-        # delay/release-profile tags. Empty submitted tags = remove all.
-        db.execute("DELETE FROM indexer_tags WHERE indexer_id=?", (indexer_id,))
-        for tag in tag_list:
-            db.execute(
-                "INSERT OR IGNORE INTO indexer_tags(indexer_id, tag) VALUES(?, ?)",
-                (indexer_id, tag)
-            )
+
+        # Tag set is only rebuilt if the form actually carries `tags`.
+        # Empty `tags=""` is an explicit clear; absent means leave alone.
+        if 'tags' in submitted:
+            tag_list = [t.strip() for t in str(submitted['tags'] or '').split(',') if t.strip()]
+            db.execute("DELETE FROM indexer_tags WHERE indexer_id=?", (indexer_id,))
+            for tag in tag_list:
+                db.execute(
+                    "INSERT OR IGNORE INTO indexer_tags(indexer_id, tag) VALUES(?, ?)",
+                    (indexer_id, tag)
+                )
     return RedirectResponse("/indexers", status_code=303)
 
 

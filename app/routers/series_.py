@@ -1394,86 +1394,116 @@ async def reset_chapter_map(series_id: int):
 
 # ── Series edit ───────────────────────────────────────────────────────────────
 
+_VALID_OMNIBUS_PREFS  = {'prefer_individual', 'prefer_omnibus', 'only_individual', 'only_omnibus'}
+_VALID_QUALITY_CUTOFFS = {'', 'cbz', 'cbr', 'epub', 'pdf', 'zip', 'mobi'}
+_VALID_UPDATE_STRATEGIES = {'always', 'once', 'throttled'}
+_VALID_EDITIONS = {
+    'standard', 'official_color', 'colored', 'omnibus', 'deluxe', 'digital',
+    'raw', 'special', 'collector', 'remaster', 'unlocalized'
+}
+_VALID_SOURCE_TYPES = {'any', 'official_only', 'fan_only'}
+# An edition that strongly implies a source: e.g. official_color is
+# necessarily an official release. When edition_type is submitted with
+# a value in this map, source_type is overridden regardless of the
+# submitted source_type value (preserves prior behaviour).
+_EDITION_IMPLIED_SOURCE = {
+    'official_color': 'official_only',
+    'colored':        'fan_only',
+    'unlocalized':    'fan_only',
+}
+
+
 @router.post("/series/{series_id}/edit")
-async def edit_series(
-    request:                Request,
-    series_id:              int,
-    title:                  str = Form(""),
-    search_pattern:         str = Form(""),
-    chapter_map_text:       str = Form(""),
-    preferred_groups_input: str = Form(""),
-    blocked_groups_input:   str = Form(""),
-    omnibus_preference:     str = Form("prefer_individual"),
-    quality_profile_id:     int = Form(0),
-    language_profile_id:    int = Form(0),
-    quality_cutoff:         str = Form(""),
-    update_strategy:        str = Form("always"),
-    required_scanlator:     str = Form(""),
-    source_type:            str = Form("any"),
-    edition_type:           str = Form("standard"),
-    total_volumes:          int = Form(0),
-    ddl_language:           str = Form(""),
-):
+async def edit_series(request: Request, series_id: int):
+    """Edit a series. Partial-POST safe: only columns whose form key is
+    present in the request body are written. The HTML page submits every
+    input so its behaviour is unchanged; scripted callers can now PATCH
+    a single field without clobbering the rest of the row.
+    """
+    from routers._form_helpers import (
+        submitted_subset, str_or_none, fk_id_or_none, csv_to_json_array
+    )
     import main as _m
+    submitted = await request.form()
     map_updated = False
-    preferred_groups = json.dumps(
-        [g.strip() for g in preferred_groups_input.split(',') if g.strip()]
-    )
-    blocked_groups = json.dumps(
-        [g.strip() for g in blocked_groups_input.split(',') if g.strip()]
-    )
+
+    plain_fields = {
+        'title':                  ('title',              str_or_none),
+        'search_pattern':         ('search_pattern',     str_or_none),
+        'preferred_groups_input': ('preferred_groups',   csv_to_json_array),
+        'blocked_groups_input':   ('blocked_groups',     csv_to_json_array),
+        'omnibus_preference': (
+            'omnibus_preference',
+            lambda v: v if (v := str(v or '').strip()) in _VALID_OMNIBUS_PREFS
+                      else 'prefer_individual',
+        ),
+        'quality_profile_id':  ('quality_profile_id',  fk_id_or_none),
+        'language_profile_id': ('language_profile_id', fk_id_or_none),
+        'quality_cutoff': (
+            'quality_cutoff',
+            lambda v: v if (v := str(v or '').strip()) in _VALID_QUALITY_CUTOFFS else '',
+        ),
+        'update_strategy': (
+            'update_strategy',
+            lambda v: v if (v := str(v or '').strip()) in _VALID_UPDATE_STRATEGIES
+                      else 'always',
+        ),
+        'required_scanlator': ('required_scanlator', str_or_none),
+        'ddl_language': (
+            'ddl_language',
+            lambda v: (str(v or '').strip().lower()[:5] or None),
+        ),
+    }
+
     with get_db() as db:
-        updates, params = [], []
-        if title:
-            updates.append("title=?"); params.append(title)
-        if search_pattern:
-            updates.append("search_pattern=?"); params.append(search_pattern)
-        if chapter_map_text.strip():
+        updates, params = submitted_subset(submitted, plain_fields)
+
+        # edition_type with implied source_type: writing edition may
+        # also force source_type, regardless of whether source_type was
+        # in the form. Otherwise source_type is independent.
+        if 'edition_type' in submitted:
+            ed_raw = str(submitted.get('edition_type') or '').strip()
+            ed = ed_raw if ed_raw in _VALID_EDITIONS else 'standard'
+            updates.append('edition_type=?'); params.append(ed)
+            if ed in _EDITION_IMPLIED_SOURCE:
+                updates.append('source_type=?')
+                params.append(_EDITION_IMPLIED_SOURCE[ed])
+            elif 'source_type' in submitted:
+                src_raw = str(submitted.get('source_type') or '').strip()
+                src = src_raw if src_raw in _VALID_SOURCE_TYPES else 'any'
+                updates.append('source_type=?'); params.append(src)
+        elif 'source_type' in submitted:
+            src_raw = str(submitted.get('source_type') or '').strip()
+            src = src_raw if src_raw in _VALID_SOURCE_TYPES else 'any'
+            updates.append('source_type=?'); params.append(src)
+
+        # chapter_map_text — empty string from the form means "no
+        # change" (the submit form leaves the textarea empty unless
+        # the user explicitly types a map); a non-empty value that
+        # parses successfully replaces the column.
+        chapter_map_text = str(submitted.get('chapter_map_text') or '').strip()
+        if chapter_map_text:
             new_map = _parse_chapter_ranges(chapter_map_text)
             if new_map:
                 updates.append("chapter_vol_map=?")
                 params.append(json.dumps(new_map))
                 map_updated = True
-        updates.append("preferred_groups=?"); params.append(preferred_groups)
-        updates.append("blocked_groups=?");   params.append(blocked_groups)
-        valid_prefs = {'prefer_individual', 'prefer_omnibus', 'only_individual', 'only_omnibus'}
-        pref = omnibus_preference if omnibus_preference in valid_prefs else 'prefer_individual'
-        updates.append("omnibus_preference=?"); params.append(pref)
-        updates.append("quality_profile_id=?")
-        params.append(int(quality_profile_id) if quality_profile_id else None)
-        updates.append("language_profile_id=?")
-        params.append(int(language_profile_id) if language_profile_id else None)
-        valid_cutoffs = {'', 'cbz', 'cbr', 'epub', 'pdf', 'zip', 'mobi'}
-        updates.append("quality_cutoff=?")
-        params.append(quality_cutoff if quality_cutoff in valid_cutoffs else '')
-        valid_strategies = {'always', 'once', 'throttled'}
-        updates.append("update_strategy=?")
-        params.append(update_strategy if update_strategy in valid_strategies else 'always')
-        updates.append("required_scanlator=?")
-        params.append(required_scanlator.strip() or None)
-        valid_editions = {
-            'standard', 'official_color', 'colored', 'omnibus', 'deluxe', 'digital',
-            'raw', 'special', 'collector', 'remaster', 'unlocalized'
-        }
-        _edition = edition_type if edition_type in valid_editions else 'standard'
-        updates.append("edition_type=?"); params.append(_edition)
-        _implied_source = {'official_color': 'official_only', 'colored': 'fan_only', 'unlocalized': 'fan_only'}
-        valid_source_types = {'any', 'official_only', 'fan_only'}
-        _source = _implied_source.get(_edition) or (source_type if source_type in valid_source_types else 'any')
-        updates.append("source_type=?"); params.append(_source)
-        # DDL language override — store None to clear (fall back to global default)
-        _ddl_lang = ddl_language.strip().lower()[:5] if ddl_language.strip() else None
-        updates.append("ddl_language=?"); params.append(_ddl_lang)
 
+        # total_volumes
         _manual_new = _manual_old = None
-        if total_volumes and total_volumes > 0:
-            tv_row = db.execute(
-                "SELECT total_volumes FROM series WHERE id=?", (series_id,)
-            ).fetchone()
-            _manual_old = (tv_row['total_volumes'] or 0) if tv_row else 0
-            _manual_new = total_volumes
-            updates.append("total_volumes=?"); params.append(_manual_new)
-            updates.append("vol_count_source=?"); params.append('manual')
+        if 'total_volumes' in submitted:
+            try:
+                tv = int(str(submitted['total_volumes']) or '0')
+            except (TypeError, ValueError):
+                tv = 0
+            if tv > 0:
+                tv_row = db.execute(
+                    "SELECT total_volumes FROM series WHERE id=?", (series_id,)
+                ).fetchone()
+                _manual_old = (tv_row['total_volumes'] or 0) if tv_row else 0
+                _manual_new = tv
+                updates.append("total_volumes=?"); params.append(_manual_new)
+                updates.append("vol_count_source=?"); params.append('manual')
 
         if updates:
             params.append(series_id)

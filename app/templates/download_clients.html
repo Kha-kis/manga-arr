@@ -114,6 +114,8 @@
             </div>
             <div class="col-2 d-flex align-items-end pb-1">
               <div class="form-check form-switch">
+                {# hidden-input-first idiom for partial-POST safety; see edit_download_client #}
+                <input type="hidden" name="enabled" value="0">
                 <input class="form-check-input" type="checkbox" name="enabled" value="1"
                        {% if c.enabled %}checked{% endif %} id="en{{ c.id }}">
                 <label class="form-check-label" for="en{{ c.id }}">Enabled</label>
@@ -138,6 +140,7 @@
             </div>
             <div class="col-12 mt-2" x-show="isSuwayomi()" x-cloak>
               <div class="form-check form-switch">
+                <input type="hidden" name="merge_chapters" value="0">
                 <input class="form-check-input" type="checkbox" name="merge_chapters" value="1"
                        {% if c.merge_chapters != 0 %}checked{% endif %} id="mc{{ c.id }}">
                 <label class="form-check-label" for="mc{{ c.id }}">Merge chapters into volume CBZ</label>
@@ -150,6 +153,7 @@
             </div>
             <div class="col-2 d-flex align-items-end pb-1" x-show="!isSuwayomi()" x-cloak>
               <div class="form-check form-switch">
+                <input type="hidden" name="use_ssl" value="0">
                 <input class="form-check-input" type="checkbox" name="use_ssl" value="1"
                        {% if c.use_ssl %}checked{% endif %} id="ssl{{ c.id }}">
                 <label class="form-check-label" for="ssl{{ c.id }}">Use SSL</label>
@@ -233,6 +237,7 @@
               </div>
               <div class="col-4 d-flex align-items-end pb-1">
                 <div class="form-check form-switch">
+                  <input type="hidden" name="sequential_order" value="0">
                   <input class="form-check-input" type="checkbox" name="sequential_order" value="1"
                          {% if c.sequential_order %}checked{% endif %} id="seq{{ c.id }}">
                   <label class="form-check-label" for="seq{{ c.id }}">Sequential Order
@@ -242,6 +247,7 @@
               </div>
               <div class="col-4 d-flex align-items-end pb-1">
                 <div class="form-check form-switch">
+                  <input type="hidden" name="first_last_first" value="0">
                   <input class="form-check-input" type="checkbox" name="first_last_first" value="1"
                          {% if c.first_last_first %}checked{% endif %} id="flf{{ c.id }}">
                   <label class="form-check-label" for="flf{{ c.id }}">First and Last First
@@ -261,6 +267,7 @@
             </div>
             <div class="col-9 d-flex align-items-end gap-4 pb-1" x-show="!isSuwayomi()" x-cloak>
               <div class="form-check form-switch">
+                <input type="hidden" name="remove_completed" value="0">
                 <input class="form-check-input" type="checkbox" name="remove_completed" value="1"
                        {% if c.remove_completed %}checked{% endif %} id="rc{{ c.id }}">
                 <label class="form-check-label" for="rc{{ c.id }}">Remove Completed
@@ -268,6 +275,7 @@
                 </label>
               </div>
               <div class="form-check form-switch">
+                <input type="hidden" name="remove_failed" value="0">
                 <input class="form-check-input" type="checkbox" name="remove_failed" value="1"
                        {% if c.remove_failed %}checked{% endif %} id="rf{{ c.id }}">
                 <label class="form-check-label" for="rf{{ c.id }}">Remove Failed
