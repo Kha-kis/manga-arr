@@ -6,9 +6,14 @@
 {% block content %}
 <div class="d-flex align-items-center justify-content-between mb-4">
   <div class="page-heading mb-0"><i class="bi bi-patch-check-fill"></i>Custom Formats</div>
-  <button class="btn btn-outline-ember btn-sm" data-bs-toggle="modal" data-bs-target="#newModal">
-    <i class="bi bi-plus me-1"></i>New Format
-  </button>
+  <div class="d-flex gap-2">
+    <a href="/custom-formats/scores" class="btn btn-secondary btn-sm" title="Edit per-profile CF scores in a single matrix view">
+      <i class="bi bi-grid-3x3-gap me-1"></i>Score Matrix
+    </a>
+    <button class="btn btn-outline-ember btn-sm" data-bs-toggle="modal" data-bs-target="#newModal">
+      <i class="bi bi-plus me-1"></i>New Format
+    </button>
+  </div>
 </div>
 <p class="text-sm mb-4" style="color:var(--text-2)">
   Custom formats score releases based on regex patterns. Assign scores per format in each quality profile.
