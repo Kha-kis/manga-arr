@@ -23,9 +23,9 @@
   {% if _ps == 'ok' %}
     <i class="bi bi-check-circle-fill"></i>
     Imported {{ _imp }} indexer(s) from Prowlarr{% if _skp != '0' %}; {{ _skp }} already-imported skipped{% endif %}.
-    {% if _imp != '0' %}
+    {% if request.query_params.get('parent_disabled') == '1' %}
     <span style="color:var(--text-2); margin-left:auto; font-size:var(--text-xs)">
-      Tip: disable the parent Prowlarr indexer to avoid duplicate fetches.
+      Parent Prowlarr row auto-disabled to prevent duplicate fetches. Re-enable it from /indexers if you want fan-out for non-imported subs (will double-poll the imported ones).
     </span>
     {% endif %}
   {% elif _ps == 'none' %}
