@@ -94,7 +94,10 @@
               Types: <code>release_title_contains</code>, <code>release_title_not_contains</code>,
               <code>release_group_contains</code>, <code>release_group_not_contains</code>,
               <code>indexer_is</code>, <code>indexer_contains</code>, <code>language_is</code>,
-              <code>size_minimum</code>, <code>size_maximum</code>
+              <code>edition_contains</code>, <code>edition_is</code>, <code>source_is</code>,
+              <code>size_minimum</code>, <code>size_maximum</code><br>
+              <strong>edition_is</strong> values: <code>{{ ', '.join(edition_values) }}</code><br>
+              <strong>source_is</strong> values: <code>{{ ', '.join(source_values) }}</code>
             </div>
           </div>
         </div>
@@ -136,6 +139,13 @@
             <textarea name="specifications" class="form-control font-monospace text-sm" rows="6">[
   {"type": "release_title_contains", "value": "digital|viz|kodansha", "negate": false}
 ]</textarea>
+            <div class="form-text text-xs">
+              Manga-native types: <code>edition_is</code> (value one of
+              <code>{{ ', '.join(edition_values) }}</code>),
+              <code>source_is</code> (value one of
+              <code>{{ ', '.join(source_values) }}</code>).
+              See an existing format for full type list.
+            </div>
           </div>
         </div>
         <div class="modal-footer">

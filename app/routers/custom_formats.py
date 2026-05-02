@@ -7,6 +7,12 @@ from routers._templates import templates
 
 from shared import get_db, from_json
 from security import safe_regex_search
+from files import (
+    detect_edition_type,
+    detect_language,
+    is_official_release,
+    is_quality_fan_release,
+)
 
 router = APIRouter()
 
@@ -18,10 +24,57 @@ SPEC_TYPES = [
     "indexer_is",                    # exact match on indexer name
     "indexer_contains",              # substring match on indexer name
     "language_is",                   # matches detected language code
-    "edition_contains",              # matches edition keywords (Deluxe, Omnibus, etc.)
+    "edition_contains",              # free-text edition keyword match (legacy)
+    "edition_is",                    # PR #126 — strict enum match on detected edition type
+    "source_is",                     # PR #126 — Official Digital / Scanlation / Raw
     "size_minimum",
     "size_maximum",
 ]
+
+# Manga-native enum values for edition_is (mirrors detect_edition_type's outputs).
+EDITION_VALUES = [
+    "single",          # nothing detected (default volume)
+    "omnibus",         # 2-in-1, 3-in-1, perfect-edition, vizbig, complete-collection
+    "deluxe",          # hardcover, anniversary
+    "tankobon",        # Japanese standard volume
+    "kanzenban",       # Japanese "complete" reprint
+    "bunkoban",        # Japanese pocket-size
+    "aizoban",         # Japanese collector edition
+    "official_color",  # publisher full-color
+    "colored",         # fan-colored
+    "collector",
+    "special",
+    "remaster",
+]
+
+# Manga-native enum values for source_is. Inferred from publisher patterns
+# (official) / scanlation group patterns (scanlation) / Japanese-language
+# absent-of-group (raw).
+SOURCE_VALUES = [
+    "official_digital",  # licensed publisher: Viz, Kodansha, Yen Press, Manga+, etc.
+    "scanlation",        # known fan-scanlation group OR group-tag with non-official lang
+    "raw",               # Japanese language with no group/publisher attribution
+]
+
+
+def detect_source_type(title: str, release_group: str = '') -> str:
+    """Classify a release into one of SOURCE_VALUES.
+
+    Order matters: a Viz release tagged with a fan-group acronym still
+    classifies as official_digital because the publisher signal is the
+    stronger signal for "where this came from". Falls through to 'raw'
+    only when Japanese language is detected with no other signal —
+    everything else without a publisher or group defaults to 'scanlation'
+    since that's overwhelmingly what untagged English manga torrents are.
+    """
+    if is_official_release(title):
+        return 'official_digital'
+    rg = (release_group or '').strip().lower()
+    if is_quality_fan_release(title) or (rg and rg != 'unknown'):
+        return 'scanlation'
+    if detect_language(title) == 'ja':
+        return 'raw'
+    return 'scanlation'
 
 
 def _all_formats(db):
@@ -45,9 +98,11 @@ async def custom_formats_page(request: Request):
             ).fetchall():
                 profile_scores[r['format_id']] = r['score']
     return templates.TemplateResponse(request, "custom_formats.html", {
-        "formats":       formats,
-        "spec_types":    SPEC_TYPES,
-        "profile_scores": profile_scores,
+        "formats":         formats,
+        "spec_types":      SPEC_TYPES,
+        "edition_values":  EDITION_VALUES,
+        "source_values":   SOURCE_VALUES,
+        "profile_scores":  profile_scores,
     })
 
 
@@ -285,6 +340,24 @@ def evaluate_custom_format(
             hit = safe_regex_search(value, title, re.IGNORECASE)
             if hit is None:
                 hit = val_lower in title_lower
+            if negate:
+                hit = not hit
+            if not hit:
+                return False
+
+        elif spec_type == 'edition_is':
+            # Strict enum match against the edition detected by
+            # files.detect_edition_type. Empty (None) → 'single'.
+            detected = detect_edition_type(title) or 'single'
+            hit = (detected == val_lower)
+            if negate:
+                hit = not hit
+            if not hit:
+                return False
+
+        elif spec_type == 'source_is':
+            detected = detect_source_type(title, release_group)
+            hit = (detected == val_lower)
             if negate:
                 hit = not hit
             if not hit:
