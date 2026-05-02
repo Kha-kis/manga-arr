@@ -565,3 +565,244 @@ def test_edit_dlclient_tags_untouched_when_field_absent(env):
             "SELECT tag FROM download_client_tags WHERE client_id=?", (cid,)
         ).fetchall()]
     assert tags == ['dlc-seed-tag']
+
+
+# ═════════════════════════════════════════════════════════════════════
+# edit_quality_profile — POST /quality-profiles/{profile_id}
+# ═════════════════════════════════════════════════════════════════════
+
+
+def test_edit_quality_profile_partial_post(env):
+    """Submit only `name` — qualities, cutoff, score thresholds untouched."""
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute("DELETE FROM quality_profiles")
+        c.execute(
+            "INSERT INTO quality_profiles(id, name, qualities, cutoff,"
+            " upgrades_allowed, minimum_custom_format_score,"
+            " cutoff_format_score, min_upgrade_format_score, is_default)"
+            " VALUES(50, 'Seeded QP', '[\"epub\",\"cbr\"]', 'epub', 0, 100, 5000, 25, 1)"
+        )
+
+    csrf = _csrf("qp-partial")
+    r = _client().post(
+        "/quality-profiles/50",
+        data={
+            'csrf_token': csrf['headers']['X-CSRFToken'],
+            'name':       'Renamed QP',
+        },
+        **csrf, follow_redirects=False,
+    )
+    assert r.status_code in (200, 303), r.text
+
+    with sqlite3.connect(env['db_path']) as c:
+        c.row_factory = sqlite3.Row
+        row = dict(c.execute(
+            "SELECT * FROM quality_profiles WHERE id=50"
+        ).fetchone())
+    assert row['name']                        == 'Renamed QP'
+    assert row['qualities']                   == '["epub","cbr"]'
+    assert row['cutoff']                      == 'epub'
+    assert row['upgrades_allowed']            == 0
+    assert row['minimum_custom_format_score'] == 100
+    assert row['cutoff_format_score']         == 5000
+    assert row['min_upgrade_format_score']    == 25
+
+
+# ═════════════════════════════════════════════════════════════════════
+# edit_release_profile — POST /release-profiles/{profile_id}
+# ═════════════════════════════════════════════════════════════════════
+
+
+def test_edit_release_profile_partial_post(env):
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute(
+            "INSERT INTO release_profiles(id, name, enabled, required, ignored,"
+            " preferred, include_preferred_when_renaming)"
+            " VALUES(60, 'Seeded RP', 0, 'must-have', 'must-not',"
+            "        '[{\"term\":\"x265\",\"score\":100}]', 1)"
+        )
+        c.execute(
+            "INSERT OR IGNORE INTO release_profile_tags(profile_id, tag)"
+            " VALUES(60, 'rp-seed-tag')"
+        )
+
+    csrf = _csrf("rp-partial")
+    _client().post(
+        "/release-profiles/60",
+        data={
+            'csrf_token': csrf['headers']['X-CSRFToken'],
+            'enabled':    '1',
+        },
+        **csrf, follow_redirects=False,
+    )
+
+    with sqlite3.connect(env['db_path']) as c:
+        c.row_factory = sqlite3.Row
+        row = dict(c.execute(
+            "SELECT * FROM release_profiles WHERE id=60"
+        ).fetchone())
+        tags = [r[0] for r in c.execute(
+            "SELECT tag FROM release_profile_tags WHERE profile_id=60"
+        ).fetchall()]
+
+    assert row['enabled']  == 1
+    # Everything else preserved
+    assert row['name']                            == 'Seeded RP'
+    assert row['required']                        == 'must-have'
+    assert row['ignored']                         == 'must-not'
+    assert row['preferred']                       == '[{"term":"x265","score":100}]'
+    assert row['include_preferred_when_renaming'] == 1
+    assert tags == ['rp-seed-tag']
+
+
+# ═════════════════════════════════════════════════════════════════════
+# edit_delay_profile — POST /delay-profiles/{profile_id}
+# ═════════════════════════════════════════════════════════════════════
+
+
+def test_edit_delay_profile_partial_post(env):
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute(
+            "INSERT INTO delay_profiles(id, name, enable_usenet, enable_torrent,"
+            " usenet_delay, torrent_delay, bypass_if_highest_quality, order_num)"
+            " VALUES(70, 'Seeded DP', 0, 0, 60, 30, 1, 5)"
+        )
+        c.execute(
+            "INSERT OR IGNORE INTO delay_profile_tags(profile_id, tag)"
+            " VALUES(70, 'dp-seed-tag')"
+        )
+
+    csrf = _csrf("dp-partial")
+    _client().post(
+        "/delay-profiles/70",
+        data={
+            'csrf_token':    csrf['headers']['X-CSRFToken'],
+            'usenet_delay':  '120',
+        },
+        **csrf, follow_redirects=False,
+    )
+
+    with sqlite3.connect(env['db_path']) as c:
+        c.row_factory = sqlite3.Row
+        row = dict(c.execute(
+            "SELECT * FROM delay_profiles WHERE id=70"
+        ).fetchone())
+        tags = [r[0] for r in c.execute(
+            "SELECT tag FROM delay_profile_tags WHERE profile_id=70"
+        ).fetchall()]
+
+    assert row['usenet_delay']               == 120
+    assert row['name']                       == 'Seeded DP'
+    assert row['enable_usenet']              == 0
+    assert row['enable_torrent']             == 0
+    assert row['torrent_delay']              == 30
+    assert row['bypass_if_highest_quality']  == 1
+    assert tags == ['dp-seed-tag']
+
+
+# ═════════════════════════════════════════════════════════════════════
+# update_language_profile — POST /language-profiles/{profile_id}
+# ═════════════════════════════════════════════════════════════════════
+
+
+def test_edit_language_profile_partial_post(env):
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute(
+            "INSERT INTO language_profiles(id, name, languages, allow_any)"
+            " VALUES(80, 'Seeded LP', '[\"ja\",\"ko\"]', 0)"
+        )
+
+    csrf = _csrf("lp-partial")
+    _client().post(
+        "/language-profiles/80",
+        data={
+            'csrf_token': csrf['headers']['X-CSRFToken'],
+            'name':       'Renamed LP',
+        },
+        **csrf, follow_redirects=False,
+    )
+
+    with sqlite3.connect(env['db_path']) as c:
+        row = c.execute(
+            "SELECT name, languages, allow_any FROM language_profiles WHERE id=80"
+        ).fetchone()
+    assert row[0] == 'Renamed LP'
+    assert row[1] == '["ja","ko"]'
+    assert row[2] == 0
+
+
+# ═════════════════════════════════════════════════════════════════════
+# edit_custom_format — POST /custom-formats/{format_id}
+# ═════════════════════════════════════════════════════════════════════
+
+
+def test_edit_custom_format_partial_post(env):
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute(
+            "INSERT INTO custom_formats(id, name, specifications,"
+            " include_custom_format_when_renaming)"
+            " VALUES(90, 'Seeded CF',"
+            "        '[{\"type\":\"release_title_contains\",\"value\":\"x265\"}]', 1)"
+        )
+
+    csrf = _csrf("cf-partial")
+    _client().post(
+        "/custom-formats/90",
+        data={
+            'csrf_token': csrf['headers']['X-CSRFToken'],
+            'name':       'Renamed CF',
+        },
+        **csrf, follow_redirects=False,
+    )
+
+    with sqlite3.connect(env['db_path']) as c:
+        row = c.execute(
+            "SELECT name, specifications, include_custom_format_when_renaming"
+            " FROM custom_formats WHERE id=90"
+        ).fetchone()
+    assert row[0] == 'Renamed CF'
+    # specifications JSON re-serialized but content preserved (it wasn't submitted)
+    # Most importantly, it's NOT empty:
+    assert '"type"' in row[1]
+    assert '"value"' in row[1]
+    assert 'x265' in row[1]
+    assert row[2] == 1
+
+
+# ═════════════════════════════════════════════════════════════════════
+# edit_import_list — POST /import-lists/{list_id}
+# ═════════════════════════════════════════════════════════════════════
+
+
+def test_edit_import_list_partial_post(env):
+    """Import-list edit must not clobber settings JSON, monitor_mode,
+    or quality/root-folder FK columns when only `name` is submitted."""
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute(
+            "INSERT INTO import_lists(id, name, type, enabled,"
+            " quality_profile_id, root_folder_id, monitor_mode, settings)"
+            " VALUES(110, 'Seeded IL', 'mal', 0, NULL, NULL, 'future',"
+            "        '{\"endpoint\":\"x\",\"interval\":3600}')"
+        )
+
+    csrf = _csrf("il-partial")
+    _client().post(
+        "/import-lists/110",
+        data={
+            'csrf_token': csrf['headers']['X-CSRFToken'],
+            'name':       'Renamed IL',
+        },
+        **csrf, follow_redirects=False,
+    )
+
+    with sqlite3.connect(env['db_path']) as c:
+        c.row_factory = sqlite3.Row
+        row = dict(c.execute(
+            "SELECT * FROM import_lists WHERE id=110"
+        ).fetchone())
+    assert row['name']         == 'Renamed IL'
+    assert row['type']         == 'mal'
+    assert row['enabled']      == 0
+    assert row['monitor_mode'] == 'future'
+    assert '"endpoint"' in row['settings'] and 'x' in row['settings']
+    assert '"interval"' in row['settings']

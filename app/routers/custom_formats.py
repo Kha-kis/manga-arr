@@ -205,23 +205,36 @@ async def create_custom_format(
 
 
 # ── Edit ─────────────────────────────────────────────────────────────────────
-@router.post("/custom-formats/{format_id}")
-async def edit_custom_format(
-    format_id: int,
-    name: str = Form(...),
-    specifications: str = Form("[]"),
-    include_custom_format_when_renaming: int = Form(0),
-):
+def _validated_spec_json(v) -> str:
+    """Re-serialize JSON specs after parsing; on parse failure store '[]'."""
+    raw = str(v or '').strip()
     try:
-        specs = json.loads(specifications)
-    except Exception:
-        specs = []
+        parsed = json.loads(raw) if raw else []
+    except (TypeError, ValueError):
+        parsed = []
+    return json.dumps(parsed)
+
+
+@router.post("/custom-formats/{format_id}")
+async def edit_custom_format(request: Request, format_id: int):
+    """Edit a custom format. Partial-POST safe."""
+    from routers._form_helpers import submitted_subset, bool_int
+    submitted = await request.form()
+
+    plain_fields = {
+        'name':                                ('name',                                lambda v: str(v or '').strip()),
+        'specifications':                      ('specifications',                      _validated_spec_json),
+        'include_custom_format_when_renaming': ('include_custom_format_when_renaming', bool_int),
+    }
+
     with get_db() as db:
-        db.execute(
-            "UPDATE custom_formats SET name=?,specifications=?,include_custom_format_when_renaming=?"
-            " WHERE id=?",
-            (name.strip(), json.dumps(specs), include_custom_format_when_renaming, format_id)
-        )
+        updates, params = submitted_subset(submitted, plain_fields)
+        if updates:
+            params.append(format_id)
+            db.execute(
+                f"UPDATE custom_formats SET {', '.join(updates)} WHERE id=?",
+                params
+            )
     return RedirectResponse("/custom-formats", status_code=303)
 
 

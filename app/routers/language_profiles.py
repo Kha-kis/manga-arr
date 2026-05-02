@@ -121,18 +121,25 @@ async def create_language_profile(
 # ── Update ────────────────────────────────────────────────────────────────────
 
 @router.post("/language-profiles/{profile_id}")
-async def update_language_profile(
-    profile_id: int,
-    name:       str = Form(...),
-    languages:  str = Form('any'),
-    allow_any:  int = Form(0),
-):
-    langs_json = _parse_languages(languages)
+async def update_language_profile(request: Request, profile_id: int):
+    """Edit a language profile. Partial-POST safe."""
+    from routers._form_helpers import submitted_subset, bool_int
+    submitted = await request.form()
+
+    plain_fields = {
+        'name':      ('name',      lambda v: str(v or '').strip()),
+        'languages': ('languages', lambda v: _parse_languages(str(v or ''))),
+        'allow_any': ('allow_any', bool_int),
+    }
+
     with get_db() as db:
-        db.execute(
-            "UPDATE language_profiles SET name=?, languages=?, allow_any=? WHERE id=?",
-            (name.strip(), langs_json, allow_any, profile_id)
-        )
+        updates, params = submitted_subset(submitted, plain_fields)
+        if updates:
+            params.append(profile_id)
+            db.execute(
+                f"UPDATE language_profiles SET {', '.join(updates)} WHERE id=?",
+                params
+            )
     return RedirectResponse("/language-profiles", status_code=303)
 
 

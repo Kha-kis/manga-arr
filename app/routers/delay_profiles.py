@@ -75,27 +75,35 @@ async def reorder_delay_profiles(request: Request):
 
 # ── Edit ─────────────────────────────────────────────────────────────────────
 @router.post("/delay-profiles/{profile_id}")
-async def edit_delay_profile(
-    profile_id: int,
-    name: str = Form(""),
-    enable_usenet: int = Form(1),
-    enable_torrent: int = Form(1),
-    usenet_delay: int = Form(0),
-    torrent_delay: int = Form(0),
-    bypass_if_highest_quality: int = Form(0),
-    tags: str = Form(""),
-):
+async def edit_delay_profile(request: Request, profile_id: int):
+    """Edit a delay profile. Partial-POST safe."""
+    from routers._form_helpers import submitted_subset, int_default_zero, bool_int
+    submitted = await request.form()
+
+    plain_fields = {
+        'name':                      ('name',                      lambda v: str(v or '').strip() or 'Custom'),
+        'enable_usenet':             ('enable_usenet',             bool_int),
+        'enable_torrent':            ('enable_torrent',            bool_int),
+        'usenet_delay':              ('usenet_delay',              int_default_zero),
+        'torrent_delay':             ('torrent_delay',             int_default_zero),
+        'bypass_if_highest_quality': ('bypass_if_highest_quality', bool_int),
+    }
+
     with get_db() as db:
-        db.execute(
-            "UPDATE delay_profiles SET name=?,enable_usenet=?,enable_torrent=?,"
-            " usenet_delay=?,torrent_delay=?,bypass_if_highest_quality=? WHERE id=?",
-            (name.strip() or "Custom", enable_usenet, enable_torrent, usenet_delay,
-             torrent_delay, bypass_if_highest_quality, profile_id)
-        )
-        db.execute("DELETE FROM delay_profile_tags WHERE profile_id=?", (profile_id,))
-        for tag in [t.strip() for t in tags.split(',') if t.strip()]:
-            db.execute("INSERT OR IGNORE INTO delay_profile_tags(profile_id,tag) VALUES(?,?)",
-                       (profile_id, tag))
+        updates, params = submitted_subset(submitted, plain_fields)
+        if updates:
+            params.append(profile_id)
+            db.execute(
+                f"UPDATE delay_profiles SET {', '.join(updates)} WHERE id=?",
+                params
+            )
+        if 'tags' in submitted:
+            db.execute("DELETE FROM delay_profile_tags WHERE profile_id=?", (profile_id,))
+            for tag in [t.strip() for t in str(submitted['tags'] or '').split(',') if t.strip()]:
+                db.execute(
+                    "INSERT OR IGNORE INTO delay_profile_tags(profile_id,tag) VALUES(?,?)",
+                    (profile_id, tag)
+                )
     return RedirectResponse("/delay-profiles", status_code=303)
 
 

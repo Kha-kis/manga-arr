@@ -42,14 +42,8 @@ ROUTERS_DIR = pathlib.Path(__file__).resolve().parents[2] / "app" / "routers"
 # Format: (file_basename, route_method, route_path)
 # Removed entry-by-entry as the conversion PRs land.
 _KNOWN_CLOBBER_ROUTES: set[tuple[str, str, str]] = {
-    # CRITICAL — PR-B (CONVERTED, removed from allowlist)
-    # HIGH — PR-C
-    ('quality_profiles.py',       'POST', '/quality-profiles/{profile_id}'),
-    ('release_profiles.py',       'POST', '/release-profiles/{profile_id}'),
-    ('delay_profiles.py',         'POST', '/delay-profiles/{profile_id}'),
-    ('language_profiles.py',      'POST', '/language-profiles/{profile_id}'),
-    ('custom_formats.py',         'POST', '/custom-formats/{format_id}'),
-    ('import_lists.py',           'POST', '/import-lists/{list_id}'),
+    # CRITICAL — PR-B (CONVERTED)
+    # HIGH      — PR-C (CONVERTED)
     # HIGH/MEDIUM — PR-D
     ('notification_connections.py', 'POST', '/notifications/{conn_id}'),
     ('settings_.py',              'POST', '/settings/general'),
