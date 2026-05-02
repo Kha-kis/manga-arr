@@ -81,25 +81,32 @@ async def edit_quality_profile_page(request: Request, profile_id: int):
 
 # ── Edit (POST) ───────────────────────────────────────────────────────────────
 @router.post("/quality-profiles/{profile_id}")
-async def edit_quality_profile(
-    profile_id: int,
-    name: str = Form(...),
-    qualities: str = Form('["cbz","epub","cbr","pdf"]'),
-    cutoff: str = Form(""),
-    upgrades_allowed: int = Form(1),
-    minimum_custom_format_score: int = Form(0),
-    cutoff_format_score: int = Form(10000),
-    min_upgrade_format_score: int = Form(10),
-):
+async def edit_quality_profile(request: Request, profile_id: int):
+    """Edit a quality profile. Partial-POST safe: only columns whose
+    form key is present in the request body are written."""
+    from routers._form_helpers import (
+        submitted_subset, str_or_none, int_default_zero, bool_int,
+    )
+    submitted = await request.form()
+
+    plain_fields = {
+        'name':                        ('name',                        lambda v: str(v or '').strip()),
+        'qualities':                   ('qualities',                   lambda v: str(v or '')),
+        'cutoff':                      ('cutoff',                      str_or_none),
+        'upgrades_allowed':            ('upgrades_allowed',            bool_int),
+        'minimum_custom_format_score': ('minimum_custom_format_score', int_default_zero),
+        'cutoff_format_score':         ('cutoff_format_score',         int_default_zero),
+        'min_upgrade_format_score':    ('min_upgrade_format_score',    int_default_zero),
+    }
+
     with get_db() as db:
-        db.execute(
-            "UPDATE quality_profiles SET name=?, qualities=?, cutoff=?, upgrades_allowed=?,"
-            " minimum_custom_format_score=?, cutoff_format_score=?,"
-            " min_upgrade_format_score=? WHERE id=?",
-            (name.strip(), qualities, cutoff or None, upgrades_allowed,
-             minimum_custom_format_score, cutoff_format_score,
-             min_upgrade_format_score, profile_id)
-        )
+        updates, params = submitted_subset(submitted, plain_fields)
+        if updates:
+            params.append(profile_id)
+            db.execute(
+                f"UPDATE quality_profiles SET {', '.join(updates)} WHERE id=?",
+                params
+            )
     return RedirectResponse("/quality-profiles", status_code=303)
 
 

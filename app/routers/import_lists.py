@@ -94,30 +94,42 @@ async def sync_import_lists(request: Request):
 
 
 # ── Edit ──────────────────────────────────────────────────────────────────────
-@router.post("/import-lists/{list_id}")
-async def edit_import_list(
-    list_id: int,
-    name: str = Form(...),
-    type: str = Form(...),
-    enabled: int = Form(1),
-    quality_profile_id: str = Form(""),
-    root_folder_id: str = Form(""),
-    monitor_mode: str = Form("all"),
-    settings: str = Form("{}"),
-):
+def _settings_json_passthrough(v) -> str:
+    """Re-encode submitted settings JSON; replace malformed with '{}'."""
+    raw = str(v or '').strip()
     try:
-        settings_dict = json.loads(settings)
-    except Exception:
-        settings_dict = {}
+        parsed = json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        parsed = {}
+    return json.dumps(parsed)
+
+
+@router.post("/import-lists/{list_id}")
+async def edit_import_list(request: Request, list_id: int):
+    """Edit an import list. Partial-POST safe."""
+    from routers._form_helpers import (
+        submitted_subset, fk_id_or_none, bool_int,
+    )
+    submitted = await request.form()
+
+    plain_fields = {
+        'name':               ('name',               lambda v: str(v or '').strip()),
+        'type':               ('type',               lambda v: str(v or '').strip()),
+        'enabled':            ('enabled',            bool_int),
+        'quality_profile_id': ('quality_profile_id', fk_id_or_none),
+        'root_folder_id':     ('root_folder_id',     fk_id_or_none),
+        'monitor_mode':       ('monitor_mode',       lambda v: str(v or '').strip() or 'all'),
+        'settings':           ('settings',           _settings_json_passthrough),
+    }
+
     with get_db() as db:
-        db.execute(
-            "UPDATE import_lists SET name=?,type=?,enabled=?,quality_profile_id=?,"
-            " root_folder_id=?,monitor_mode=?,settings=? WHERE id=?",
-            (name.strip(), type, enabled,
-             int(quality_profile_id) if quality_profile_id.isdigit() else None,
-             int(root_folder_id) if root_folder_id.isdigit() else None,
-             monitor_mode, json.dumps(settings_dict), list_id)
-        )
+        updates, params = submitted_subset(submitted, plain_fields)
+        if updates:
+            params.append(list_id)
+            db.execute(
+                f"UPDATE import_lists SET {', '.join(updates)} WHERE id=?",
+                params
+            )
     return RedirectResponse("/import-lists", status_code=303)
 
 

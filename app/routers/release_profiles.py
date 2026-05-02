@@ -61,27 +61,39 @@ async def create_release_profile(
 
 # ── Edit (POST) ───────────────────────────────────────────────────────────────
 @router.post("/release-profiles/{profile_id}")
-async def edit_release_profile(
-    profile_id: int,
-    name: str = Form(...),
-    enabled: int = Form(1),
-    required: str = Form(""),
-    ignored: str = Form(""),
-    preferred: str = Form("[]"),
-    tags: str = Form(""),
-    include_preferred_when_renaming: int = Form(0),
-):
+async def edit_release_profile(request: Request, profile_id: int):
+    """Edit a release profile. Partial-POST safe: only columns whose
+    form key is present in the request body are written. Tag set is
+    only rebuilt if `tags` is in the form (empty string clears,
+    absent leaves alone).
+    """
+    from routers._form_helpers import submitted_subset, bool_int
+    submitted = await request.form()
+
+    plain_fields = {
+        'name':                            ('name',                            lambda v: str(v or '').strip()),
+        'enabled':                         ('enabled',                         bool_int),
+        'required':                        ('required',                        lambda v: str(v or '').strip()),
+        'ignored':                         ('ignored',                         lambda v: str(v or '').strip()),
+        'preferred':                       ('preferred',                       lambda v: str(v or '')),
+        'include_preferred_when_renaming': ('include_preferred_when_renaming', bool_int),
+    }
+
     with get_db() as db:
-        db.execute(
-            "UPDATE release_profiles SET name=?,enabled=?,required=?,ignored=?,preferred=?,"
-            " include_preferred_when_renaming=? WHERE id=?",
-            (name.strip(), enabled, required.strip(), ignored.strip(),
-             preferred, include_preferred_when_renaming, profile_id)
-        )
-        db.execute("DELETE FROM release_profile_tags WHERE profile_id=?", (profile_id,))
-        for tag in [t.strip() for t in tags.split(',') if t.strip()]:
-            db.execute("INSERT OR IGNORE INTO release_profile_tags(profile_id,tag) VALUES(?,?)",
-                       (profile_id, tag))
+        updates, params = submitted_subset(submitted, plain_fields)
+        if updates:
+            params.append(profile_id)
+            db.execute(
+                f"UPDATE release_profiles SET {', '.join(updates)} WHERE id=?",
+                params
+            )
+        if 'tags' in submitted:
+            db.execute("DELETE FROM release_profile_tags WHERE profile_id=?", (profile_id,))
+            for tag in [t.strip() for t in str(submitted['tags'] or '').split(',') if t.strip()]:
+                db.execute(
+                    "INSERT OR IGNORE INTO release_profile_tags(profile_id,tag) VALUES(?,?)",
+                    (profile_id, tag)
+                )
     return RedirectResponse("/release-profiles", status_code=303)
 
 
