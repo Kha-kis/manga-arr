@@ -175,17 +175,33 @@ def _indexer_grab_stats(db) -> dict:
 
 
 def _all_indexers(db):
-    """Return enriched indexer rows with their tag list + 30-day grab stats
-    attached.
+    """Return enriched indexer rows with tag list + 30-day grab stats +
+    current backoff/health state attached.
 
     Each row is a dict (Jinja's attribute access falls back to dict lookup).
-    The `tags` field is a sorted list of strings — empty list means the
-    indexer applies to all series (Sonarr semantics, see indexer_tags table).
-    Stats fields: `grabs_30d`, `failures_30d`, `last_grab_at` (ISO string
-    or None) — joined by indexer name from the history table.
+
+    Health fields (joined from `indexer_backoff`):
+      backoff_active     — bool, True if `retry_after` is in the future
+      backoff_until      — ISO timestamp (UTC) of next allowed poll, or None
+      backoff_seconds    — int seconds remaining, or 0
+      consecutive_failures — int, last-recorded streak of failures
+      last_status        — int HTTP status of last failure, or None
+      last_reason        — TEXT reason of last failure, or None
+      updated_at         — ISO timestamp of the last failure record
     """
+    import time as _time
+    from datetime import datetime as _dt, timezone as _tz
+
     rows = db.execute("SELECT * FROM indexers ORDER BY priority, id").fetchall()
     stats = _indexer_grab_stats(db)
+    backoff_rows = {
+        r['indexer_id']: dict(r) for r in db.execute(
+            "SELECT indexer_id, retry_after, consecutive_failures,"
+            " last_status, last_reason, updated_at"
+            " FROM indexer_backoff"
+        ).fetchall()
+    }
+    now_ts = _time.time()
     result = []
     for r in rows:
         d = dict(r)
@@ -199,6 +215,34 @@ def _all_indexers(db):
         d['grabs_30d'] = s.get('grabs_30d', 0)
         d['failures_30d'] = s.get('failures_30d', 0)
         d['last_grab_at'] = s.get('last_grab_at')
+
+        # Backoff state — surface even when not currently in backoff so the
+        # user can see "this indexer has 2 recent failures" before it auto-
+        # disables on the next poll.
+        bo = backoff_rows.get(r['id'])
+        if bo:
+            retry_after = bo.get('retry_after') or 0
+            d['backoff_active'] = retry_after > now_ts
+            if d['backoff_active']:
+                d['backoff_seconds'] = int(retry_after - now_ts)
+                d['backoff_until'] = _dt.fromtimestamp(
+                    retry_after, tz=_tz.utc
+                ).isoformat(timespec='seconds')
+            else:
+                d['backoff_seconds'] = 0
+                d['backoff_until'] = None
+            d['consecutive_failures'] = bo.get('consecutive_failures') or 0
+            d['last_status'] = bo.get('last_status')
+            d['last_reason'] = bo.get('last_reason')
+            d['updated_at'] = bo.get('updated_at')
+        else:
+            d['backoff_active'] = False
+            d['backoff_seconds'] = 0
+            d['backoff_until'] = None
+            d['consecutive_failures'] = 0
+            d['last_status'] = None
+            d['last_reason'] = None
+            d['updated_at'] = None
         result.append(d)
     return result
 
