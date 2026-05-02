@@ -47,12 +47,17 @@ async def create_quality_profile(
     cutoff: str = Form(""),
     upgrades_allowed: int = Form(1),
     minimum_custom_format_score: int = Form(0),
+    cutoff_format_score: int = Form(10000),
+    min_upgrade_format_score: int = Form(10),
 ):
     with get_db() as db:
         db.execute(
-            "INSERT INTO quality_profiles(name, qualities, cutoff, upgrades_allowed, minimum_custom_format_score)"
-            " VALUES(?,?,?,?,?)",
-            (name.strip(), qualities, cutoff or None, upgrades_allowed, minimum_custom_format_score)
+            "INSERT INTO quality_profiles"
+            "(name, qualities, cutoff, upgrades_allowed,"
+            " minimum_custom_format_score, cutoff_format_score, min_upgrade_format_score)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (name.strip(), qualities, cutoff or None, upgrades_allowed,
+             minimum_custom_format_score, cutoff_format_score, min_upgrade_format_score)
         )
     return RedirectResponse("/quality-profiles", status_code=303)
 
@@ -83,12 +88,17 @@ async def edit_quality_profile(
     cutoff: str = Form(""),
     upgrades_allowed: int = Form(1),
     minimum_custom_format_score: int = Form(0),
+    cutoff_format_score: int = Form(10000),
+    min_upgrade_format_score: int = Form(10),
 ):
     with get_db() as db:
         db.execute(
             "UPDATE quality_profiles SET name=?, qualities=?, cutoff=?, upgrades_allowed=?,"
-            " minimum_custom_format_score=? WHERE id=?",
-            (name.strip(), qualities, cutoff or None, upgrades_allowed, minimum_custom_format_score, profile_id)
+            " minimum_custom_format_score=?, cutoff_format_score=?,"
+            " min_upgrade_format_score=? WHERE id=?",
+            (name.strip(), qualities, cutoff or None, upgrades_allowed,
+             minimum_custom_format_score, cutoff_format_score,
+             min_upgrade_format_score, profile_id)
         )
     return RedirectResponse("/quality-profiles", status_code=303)
 

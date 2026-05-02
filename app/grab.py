@@ -341,11 +341,55 @@ async def grab_item(item: dict, series_id: int, respect_monitoring: bool = True)
             if quality_rank(new_q) > quality_rank(old_q):
                 pass  # quality upgrade — allow grab
             else:
-                # Same or unknown quality — fall back to score comparison
-                new_score = score_release(title)
-                old_score = score_release(existing_vol['torrent_name'] or '')
-                if new_score <= old_score:
-                    return False  # not an upgrade
+                # Same or unknown quality — fall back to CF score comparison.
+                # Two profile-controlled gates (Sonarr v4 semantics, PR #124):
+                #   1. cutoff_format_score — once old_score reaches this, no
+                #      more CF-driven upgrades.
+                #   2. min_upgrade_format_score — require a minimum delta or
+                #      reject. Prevents +1-loop where the same release
+                #      re-grabs forever for trivial score improvements.
+                new_score = score_release(title, series_id,
+                                          release_group=item.get('release_group', ''),
+                                          indexer=item.get('indexer', ''),
+                                          volume_num=vol_num,
+                                          pub_year=_pub_year)
+                old_score = score_release(existing_vol['torrent_name'] or '', series_id,
+                                          release_group=existing_vol['release_group'] or '',
+                                          volume_num=vol_num,
+                                          pub_year=_pub_year)
+                # Look up the series's quality profile gates.
+                cutoff_cf = 10000
+                min_upgrade_cf = 10
+                with get_db() as _qp_db:
+                    qp_row = _qp_db.execute(
+                        "SELECT qp.cutoff_format_score, qp.min_upgrade_format_score"
+                        " FROM series s"
+                        " LEFT JOIN quality_profiles qp ON qp.id = s.quality_profile_id"
+                        " WHERE s.id=?",
+                        (series_id,)
+                    ).fetchone()
+                if qp_row:
+                    cutoff_cf = (qp_row['cutoff_format_score']
+                                 if qp_row['cutoff_format_score'] is not None
+                                 else 10000)
+                    min_upgrade_cf = (qp_row['min_upgrade_format_score']
+                                      if qp_row['min_upgrade_format_score'] is not None
+                                      else 10)
+                if old_score >= cutoff_cf:
+                    _log_grab_rejection(
+                        series_id, title,
+                        f'CF score upgrade ceiling reached '
+                        f'(old={old_score} >= cutoff_format_score={cutoff_cf})'
+                    )
+                    return False
+                if (new_score - old_score) < min_upgrade_cf:
+                    _log_grab_rejection(
+                        series_id, title,
+                        f'CF score delta too small '
+                        f'(new={new_score} - old={old_score} = {new_score - old_score} '
+                        f'< min_upgrade_format_score={min_upgrade_cf})'
+                    )
+                    return False
 
     # Quality cutoff enforcement on initial grab — reject releases below the configured
     # minimum quality so we don't grab CBR when the series requires CBZ.
