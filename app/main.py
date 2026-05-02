@@ -44,6 +44,7 @@ from routers import (
     download_clients          as _dc_router,
     indexers                  as _idx_router,
     custom_formats            as _cf_router,
+    cf_export_import          as _cfio_router,
     notification_connections  as _nc_router,
     import_lists              as _il_router,
     series_editor             as _se_router,
@@ -648,6 +649,10 @@ app.include_router(_rp_router.router,  tags=["Release Profiles"])
 app.include_router(_dp_router.router,  tags=["Delay Profiles"])
 app.include_router(_dc_router.router,  tags=["Download Clients"])
 app.include_router(_idx_router.router, tags=["Indexers"])
+# cf_export_import has literal paths (/custom-formats/import, /custom-formats/export.json)
+# that would otherwise match the parameterized POST /custom-formats/{format_id} in
+# _cf_router (format_id="import" → 422). Order matters here.
+app.include_router(_cfio_router.router, tags=["Custom Formats"])
 app.include_router(_cf_router.router,  tags=["Custom Formats"])
 app.include_router(_nc_router.router,  tags=["Notifications"])
 app.include_router(_il_router.router,  tags=["Import Lists"])

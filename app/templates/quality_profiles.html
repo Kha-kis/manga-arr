@@ -6,9 +6,19 @@
 {% block content %}
 <div class="d-flex align-items-center justify-content-between mb-4">
   <div class="page-heading mb-0"><i class="bi bi-trophy"></i>Quality Profiles</div>
-  <button class="btn btn-outline-ember btn-sm" data-bs-toggle="modal" data-bs-target="#newProfileModal">
-    <i class="bi bi-plus me-1"></i>New Profile
-  </button>
+  <div class="d-flex gap-2">
+    <a href="/custom-formats/export.json" class="btn btn-secondary btn-sm"
+       title="Download all custom formats + quality profiles as a JSON bundle">
+      <i class="bi bi-download me-1"></i>Export
+    </a>
+    <a href="/custom-formats/import" class="btn btn-secondary btn-sm"
+       title="Paste a Mangarr JSON bundle to merge custom formats + profiles">
+      <i class="bi bi-cloud-upload me-1"></i>Import
+    </a>
+    <button class="btn btn-outline-ember btn-sm" data-bs-toggle="modal" data-bs-target="#newProfileModal">
+      <i class="bi bi-plus me-1"></i>New Profile
+    </button>
+  </div>
 </div>
 
 <div class="row g-3">
