@@ -71,7 +71,9 @@ def _csrf(tag="t"):
 def _seed_grid(db_path):
     """Seed 3 CFs × 2 profiles + a couple of pre-existing scores."""
     with sqlite3.connect(db_path) as c:
+        c.execute("DELETE FROM quality_profile_custom_formats")  # join rows from preset seed
         c.execute("DELETE FROM quality_profiles")  # init_db seeds default
+        c.execute("DELETE FROM custom_formats")   # PR #127 seeds 11 CFs by default
         c.execute("INSERT INTO custom_formats(id, name) VALUES(1, 'cf-A'), (2, 'cf-B'), (3, 'cf-C')")
         c.execute(
             "INSERT INTO quality_profiles(id, name, qualities, cutoff)"

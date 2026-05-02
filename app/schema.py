@@ -623,8 +623,53 @@ def init_db():
                 ]
             )
 
-        # ── Seed default quality profile if none exists ───────────────────────
-        if not db.execute("SELECT id FROM quality_profiles LIMIT 1").fetchone():
+        # ── Seed CF library + profile presets on a fresh install ─────────────
+        # Skip the legacy "Any Quality" seed if we're going to seed the CF
+        # library + 4 profile presets (PR #127). Presence of *any* CF means
+        # this is an existing install — don't clobber user data.
+        _seed_presets = (
+            not db.execute("SELECT id FROM custom_formats LIMIT 1").fetchone()
+            and not db.execute("SELECT id FROM quality_profiles LIMIT 1").fetchone()
+        )
+        if _seed_presets:
+            from cf_presets import BUILTIN_CUSTOM_FORMATS, PROFILE_PRESETS
+            import json as _json
+            cf_id_by_name: dict[str, int] = {}
+            for cf in BUILTIN_CUSTOM_FORMATS:
+                cur = db.execute(
+                    "INSERT INTO custom_formats(name, specifications) VALUES(?, ?)",
+                    (cf['name'], _json.dumps(cf['specs']))
+                )
+                cf_id_by_name[cf['name']] = cur.lastrowid
+            for preset in PROFILE_PRESETS:
+                cur = db.execute(
+                    "INSERT INTO quality_profiles(name, qualities, cutoff,"
+                    " upgrades_allowed, minimum_custom_format_score,"
+                    " cutoff_format_score, min_upgrade_format_score, is_default)"
+                    " VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        preset['name'], preset['qualities'], preset['cutoff'],
+                        preset['upgrades_allowed'],
+                        preset['minimum_custom_format_score'],
+                        preset['cutoff_format_score'],
+                        preset['min_upgrade_format_score'],
+                        1 if preset['is_default'] else 0,
+                    )
+                )
+                profile_id = cur.lastrowid
+                for cf_name, score in preset['scores'].items():
+                    cf_id = cf_id_by_name.get(cf_name)
+                    if cf_id is None or score == 0:
+                        continue
+                    db.execute(
+                        "INSERT INTO quality_profile_custom_formats"
+                        "(profile_id, format_id, score) VALUES(?, ?, ?)",
+                        (profile_id, cf_id, score)
+                    )
+        elif not db.execute("SELECT id FROM quality_profiles LIMIT 1").fetchone():
+            # Existing-install path: a profile got deleted and the CF library
+            # is intact — keep prior behavior so we don't ship a UI with no
+            # profiles to choose from.
             db.execute(
                 "INSERT INTO quality_profiles(name,qualities,cutoff,upgrades_allowed,"
                 " minimum_custom_format_score,is_default) VALUES(?,?,?,?,?,?)",
