@@ -144,14 +144,48 @@ MANGA_CATEGORIES = [
 ]
 
 
+def _indexer_grab_stats(db) -> dict:
+    """Return per-indexer 30-day grab/failure counts + last-grab timestamp,
+    keyed by indexer name. Used by the /indexers page to show 'N grabs in
+    the last 30 days' as a per-row badge — surface Sonarr/Radarr hide
+    behind their stats panel.
+
+    Aggregated from `history` (one row per grab event) using `event_type` to
+    distinguish success ('grabbed') from failure ('grab_failed'). Indexer
+    column on history rows is the human name string (matches indexers.name)."""
+    rows = db.execute(
+        "SELECT indexer, event_type, COUNT(*) AS n, MAX(created_at) AS last_at"
+        " FROM history"
+        " WHERE indexer IS NOT NULL AND indexer != ''"
+        "   AND event_type IN ('grabbed', 'grab_failed')"
+        "   AND created_at > datetime('now', '-30 days')"
+        " GROUP BY indexer, event_type"
+    ).fetchall()
+    stats: dict = {}
+    for r in rows:
+        bucket = stats.setdefault(r['indexer'], {
+            'grabs_30d': 0, 'failures_30d': 0, 'last_grab_at': None,
+        })
+        if r['event_type'] == 'grabbed':
+            bucket['grabs_30d'] = r['n']
+            bucket['last_grab_at'] = r['last_at']
+        elif r['event_type'] == 'grab_failed':
+            bucket['failures_30d'] = r['n']
+    return stats
+
+
 def _all_indexers(db):
-    """Return enriched indexer rows with their tag list attached.
+    """Return enriched indexer rows with their tag list + 30-day grab stats
+    attached.
 
     Each row is a dict (Jinja's attribute access falls back to dict lookup).
     The `tags` field is a sorted list of strings — empty list means the
     indexer applies to all series (Sonarr semantics, see indexer_tags table).
+    Stats fields: `grabs_30d`, `failures_30d`, `last_grab_at` (ISO string
+    or None) — joined by indexer name from the history table.
     """
     rows = db.execute("SELECT * FROM indexers ORDER BY priority, id").fetchall()
+    stats = _indexer_grab_stats(db)
     result = []
     for r in rows:
         d = dict(r)
@@ -161,6 +195,10 @@ def _all_indexers(db):
                 (r['id'],)
             ).fetchall()
         ]
+        s = stats.get(r['name'], {})
+        d['grabs_30d'] = s.get('grabs_30d', 0)
+        d['failures_30d'] = s.get('failures_30d', 0)
+        d['last_grab_at'] = s.get('last_grab_at')
         result.append(d)
     return result
 

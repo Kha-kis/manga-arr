@@ -132,6 +132,23 @@
       </span>
       {% endif %}
       <span style="font-size:var(--text-sm);color:var(--text-2)">Priority: {{ idx.priority }}</span>
+      {# Per-indexer 30-day grab + failure counts. Sonarr hides this; we surface it. #}
+      {% if idx.grabs_30d or idx.failures_30d %}
+      <span class="d-inline-flex gap-1" style="font-size:var(--text-2xs)" title="Activity in the last 30 days">
+        {% if idx.grabs_30d %}
+        <span class="badge-status badge-downloaded"
+              title="{{ idx.grabs_30d }} successful grab(s) in the last 30 days{% if idx.last_grab_at %} — last on {{ idx.last_grab_at | format_date }}{% endif %}">
+          <i class="bi bi-check-circle"></i> {{ idx.grabs_30d }}
+        </span>
+        {% endif %}
+        {% if idx.failures_30d %}
+        <span class="badge-status badge-wanted"
+              title="{{ idx.failures_30d }} grab failure(s) in the last 30 days">
+          <i class="bi bi-x-circle"></i> {{ idx.failures_30d }}
+        </span>
+        {% endif %}
+      </span>
+      {% endif %}
       <div class="ms-auto d-flex gap-2">
         {% if idx.type == 'prowlarr' %}
         <button class="btn btn-sm btn-outline-ember"
