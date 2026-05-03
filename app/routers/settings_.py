@@ -321,7 +321,9 @@ async def test_komga(url: str = Form(""), user: str = Form(""), pw: str = Form("
 @router.get("/api/tags")
 async def list_all_tags():
     with get_db() as db:
-        rows = db.execute("SELECT tags FROM series WHERE tags IS NOT NULL").fetchall()
+        rows = db.execute(
+            "SELECT tags FROM series WHERE tags IS NOT NULL AND deleted_at IS NULL"
+        ).fetchall()
     tags: set[str] = set()
     for r in rows:
         try:

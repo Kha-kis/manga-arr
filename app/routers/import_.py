@@ -312,7 +312,9 @@ async def import_clear_old(request: Request):
 @router.get("/manual-import", response_class=HTMLResponse)
 async def manual_import_page(request: Request):
     with get_db() as db:
-        rows = db.execute("SELECT id, title FROM series ORDER BY title").fetchall()
+        rows = db.execute(
+            "SELECT id, title FROM series WHERE deleted_at IS NULL ORDER BY title"
+        ).fetchall()
     series_list = [{"id": r["id"], "title": r["title"]} for r in rows]
     return templates.TemplateResponse(request, "manual_import.html", {
         "series_list": series_list,
@@ -331,7 +333,8 @@ async def manual_import_scan(request: Request):
 
     with get_db() as db:
         series_list = db.execute(
-            "SELECT id, title, search_pattern FROM series ORDER BY title"
+            "SELECT id, title, search_pattern FROM series"
+            " WHERE deleted_at IS NULL ORDER BY title"
         ).fetchall()
         alias_map: dict[int, list[str]] = {}
         for r in db.execute("SELECT series_id, alias FROM series_aliases").fetchall():
@@ -396,7 +399,9 @@ async def manual_import_auto(request: Request):
         return JSONResponse({"error": "No manga files found", "results": []})
 
     with get_db() as db:
-        series_list = list(db.execute("SELECT id, title, search_pattern FROM series").fetchall())
+        series_list = list(db.execute(
+            "SELECT id, title, search_pattern FROM series WHERE deleted_at IS NULL"
+        ).fetchall())
         alias_map: dict[int, list[str]] = {}
         for r in db.execute("SELECT series_id, alias FROM series_aliases").fetchall():
             alias_map.setdefault(r['series_id'], []).append(r['alias'])
@@ -421,7 +426,8 @@ async def manual_import_auto(request: Request):
         best = results_search[0]
         with get_db() as db:
             existing = db.execute(
-                "SELECT id FROM series WHERE anilist_id=? OR title=?",
+                "SELECT id FROM series WHERE (anilist_id=? OR title=?)"
+                " AND deleted_at IS NULL",
                 (best['anilist_id'], best['title'])
             ).fetchone()
             if existing:

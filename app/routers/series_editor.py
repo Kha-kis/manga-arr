@@ -35,6 +35,7 @@ async def series_editor_page(request: Request):
             " FROM series s"
             " LEFT JOIN quality_profiles qp ON qp.id=s.quality_profile_id"
             " LEFT JOIN root_folders rf ON rf.id=s.root_folder_id"
+            " WHERE s.deleted_at IS NULL"
             " ORDER BY s.title"
         ).fetchall()
         profiles     = db.execute("SELECT id, name FROM quality_profiles ORDER BY name").fetchall()
@@ -128,15 +129,15 @@ async def series_editor_save(request: Request):
 @router.get("/api/series-editor/search")
 async def series_editor_search(q: str = "", tag: str = "", status: str = ""):
     with get_db() as db:
-        clauses = []
-        params  = []
+        clauses = ["s.deleted_at IS NULL"]
+        params: list = []
         if q:
             clauses.append("s.title LIKE ?")
             params.append(f"%{q}%")
         if status:
             clauses.append("s.status=?")
             params.append(status)
-        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        where = "WHERE " + " AND ".join(clauses)
         rows = db.execute(
             f"SELECT s.id, s.title, s.status, s.monitored, s.monitor_mode,"
             f" s.quality_profile_id, qp.name as qp_name"

@@ -112,7 +112,7 @@ def _root_folders_disk(db) -> list[dict]:
 @router.get("/system/status", response_class=HTMLResponse)
 async def system_status_page(request: Request):
     with get_db() as db:
-        series_count     = db.execute("SELECT COUNT(*) FROM series").fetchone()[0]
+        series_count     = db.execute("SELECT COUNT(*) FROM series WHERE deleted_at IS NULL").fetchone()[0]
         volumes_count    = db.execute("SELECT COUNT(*) FROM volumes WHERE volume_num IS NOT NULL").fetchone()[0]
         downloaded_count = db.execute("SELECT COUNT(*) FROM volumes WHERE status='downloaded'").fetchone()[0]
         wanted_count     = db.execute("SELECT COUNT(*) FROM volumes WHERE status='wanted' AND monitored=1").fetchone()[0]

@@ -93,6 +93,7 @@ def _health_db_snapshot() -> dict:
             'orphan_series_rf': db.execute("""
                 SELECT COUNT(*) AS n FROM series s
                 WHERE s.root_folder_id IS NOT NULL
+                  AND s.deleted_at IS NULL
                   AND NOT EXISTS (
                       SELECT 1 FROM root_folders rf WHERE rf.id = s.root_folder_id
                   )
@@ -121,6 +122,7 @@ def _health_db_snapshot() -> dict:
                 FROM series s
                 JOIN volumes v ON v.series_id = s.id AND v.status='wanted'
                 WHERE s.monitored=1
+                  AND s.deleted_at IS NULL
                   AND NOT EXISTS (
                     SELECT 1 FROM volumes v2
                     WHERE v2.series_id = s.id AND v2.status IN ('grabbed','downloaded')
@@ -401,6 +403,7 @@ async def trigger_backlog_search():
                 "SELECT DISTINCT s.id, s.title, s.search_pattern FROM series s"
                 " JOIN volumes v ON v.series_id=s.id"
                 " WHERE s.monitored=1 AND v.status='wanted'"
+                " AND s.deleted_at IS NULL"
             ).fetchall()
         grabbed = 0
         for s in wanted_series:

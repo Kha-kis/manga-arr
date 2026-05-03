@@ -791,6 +791,19 @@ def init_db():
         add_col('suwayomi_downloads',  'chapter_num',          'REAL')
         add_col('series',              'suwayomi_source_id',   'TEXT')
 
+        # ── Recycle bin (PR-1) ───────────────────────────────────────────────
+        # Soft-delete state: deleted_at NOT NULL means the series is in the
+        # recycle bin. Every multi-row series query MUST filter on
+        # deleted_at IS NULL — pinned by tests/python/test_recycle_bin.py
+        # and CLAUDE.md hard-invariant entry. Partial index covers the hot
+        # recycle-bin page query (rare scan, small partial set).
+        add_col('series', 'deleted_at',      'TIMESTAMP')
+        add_col('series', 'deletion_reason', 'TEXT')
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_series_deleted_at"
+            " ON series(deleted_at) WHERE deleted_at IS NOT NULL"
+        )
+
         # ── Backfill suwayomi_sources from existing mangadex_id linkages ──────
         db.execute("""
             INSERT OR IGNORE INTO suwayomi_sources

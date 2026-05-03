@@ -139,7 +139,15 @@ def index_client(monkeypatch):
     import sqlite3 as _sql
     class _SpyConn(_sql.Connection):
         def execute(self, sql, *a, **kw):
-            if "ORDER BY" in sql and "FROM series" in sql and "WHERE" not in sql:
+            # Capture the library-index query (FROM series ... ORDER BY <expr>).
+            # The library route emits exactly one such pattern; the
+            # `WHERE deleted_at IS NULL` filter (recycle-bin epic, PR-1)
+            # is part of that query.
+            if (
+                "ORDER BY" in sql
+                and "FROM series" in sql
+                and "deleted_at IS NULL" in sql
+            ):
                 captured_sql.append(sql)
             return super().execute(sql, *a, **kw)
     def _spy_connect(*args, **kwargs):
@@ -162,7 +170,7 @@ def test_library_index_default_sort_is_title(index_client):
     client, captured = index_client
     r = client.get("/", follow_redirects=False)
     assert r.status_code == 200
-    series_sql = [s for s in captured if s.strip().startswith("SELECT * FROM series ORDER BY")]
+    series_sql = [s for s in captured if "FROM series WHERE deleted_at IS NULL ORDER BY" in s]
     assert series_sql, f"no SELECT FROM series ORDER BY captured; got: {captured}"
     # Default is "title"
     assert any("ORDER BY title" in s for s in series_sql), \
@@ -173,7 +181,7 @@ def test_library_index_valid_sort_status(index_client):
     client, captured = index_client
     r = client.get("/?sort=status", follow_redirects=False)
     assert r.status_code == 200
-    series_sql = [s for s in captured if "SELECT * FROM series ORDER BY" in s]
+    series_sql = [s for s in captured if "FROM series WHERE deleted_at IS NULL ORDER BY" in s]
     assert any("ORDER BY status, title" in s for s in series_sql), \
         f"expected ORDER BY status, title; got: {series_sql}"
 
@@ -182,7 +190,7 @@ def test_library_index_valid_sort_added(index_client):
     client, captured = index_client
     r = client.get("/?sort=added", follow_redirects=False)
     assert r.status_code == 200
-    series_sql = [s for s in captured if "SELECT * FROM series ORDER BY" in s]
+    series_sql = [s for s in captured if "FROM series WHERE deleted_at IS NULL ORDER BY" in s]
     assert any("ORDER BY added_at DESC" in s for s in series_sql), \
         f"expected ORDER BY added_at DESC; got: {series_sql}"
 
@@ -192,7 +200,7 @@ def test_library_index_unknown_sort_falls_back(index_client):
     client, captured = index_client
     r = client.get("/?sort=bogus_nonsense", follow_redirects=False)
     assert r.status_code == 200
-    series_sql = [s for s in captured if "SELECT * FROM series ORDER BY" in s]
+    series_sql = [s for s in captured if "FROM series WHERE deleted_at IS NULL ORDER BY" in s]
     # The string "bogus_nonsense" must not have leaked into the SQL
     for s in series_sql:
         assert "bogus_nonsense" not in s, \
@@ -209,7 +217,7 @@ def test_library_index_injection_payload_rejected(index_client):
     r = client.get("/", params={"sort": payload}, follow_redirects=False)
     # Must not 500 (the injection is refused, not crashing)
     assert r.status_code == 200
-    series_sql = [s for s in captured if "SELECT * FROM series ORDER BY" in s]
+    series_sql = [s for s in captured if "FROM series WHERE deleted_at IS NULL ORDER BY" in s]
     assert series_sql
     for s in series_sql:
         # Neither the full payload nor its dangerous fragment should appear

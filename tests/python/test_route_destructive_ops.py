@@ -97,45 +97,44 @@ def _csrf_kwargs(tag: str = "test"):
 # ───────────────────── series delete ─────────────────────
 
 
-def test_series_delete_removes_only_target_series(env):
-    """series_id=1 delete must cascade through volumes, blocklist, etc.
-    for series 1 ONLY — series 2's rows must be untouched. The audit's
-    nightmare scenario: a series_id-parsing bug deletes the wrong cascade,
-    and the user can't tell because the thing they'd compare against is
-    the row that just got deleted."""
+def test_series_delete_soft_deletes_only_target(env):
+    """Soft-delete of series_id=1 must mark series 1 only — series 2's
+    `deleted_at` must remain NULL.
+
+    NOTE: as of the recycle-bin epic, /series/{id}/delete is a soft-delete
+    that sets `deleted_at` + `deletion_reason` and leaves every dependent
+    row in place. The hard cascade now lives in `_hard_delete_series`,
+    called by the reaper and by the explicit purge endpoint. The
+    cross-series isolation property still holds.
+    """
     client = _client()
     csrf = _csrf_kwargs("delete-series")
 
     r = client.post("/series/1/delete", **csrf, follow_redirects=False)
-    assert r.status_code in (303, 200), r.text  # 303 plain or 200 with HX-Redirect
+    assert r.status_code in (303, 200), r.text
 
     with sqlite3.connect(env['db_path']) as c:
         c.row_factory = sqlite3.Row
 
-        # Series 1 gone, series 2 intact
-        s1 = c.execute("SELECT 1 FROM series WHERE id=1").fetchone()
-        s2 = c.execute("SELECT title FROM series WHERE id=2").fetchone()
-        assert s1 is None, "series 1 must be deleted"
-        assert s2 is not None and s2['title'] == 'BetaSeries', (
-            "series 2 must survive untouched — a cascade bug here would be invisible"
-        )
+        s1 = c.execute("SELECT title, deleted_at FROM series WHERE id=1").fetchone()
+        s2 = c.execute("SELECT title, deleted_at FROM series WHERE id=2").fetchone()
+        assert s1 is not None, "series 1 row must still exist (soft-delete)"
+        assert s1['deleted_at'] is not None, "series 1 must be marked soft-deleted"
+        assert s2 is not None and s2['title'] == 'BetaSeries'
+        assert s2['deleted_at'] is None, "series 2 deleted_at must be NULL"
 
-        # All series-1 volumes gone, series-2 volumes intact
-        v1_count = c.execute("SELECT COUNT(*) FROM volumes WHERE series_id=1").fetchone()[0]
+        # During the soft-delete window, dependent rows are preserved for
+        # restore. Just verify series-2 wasn't accidentally touched.
         v2_count = c.execute("SELECT COUNT(*) FROM volumes WHERE series_id=2").fetchone()[0]
-        assert v1_count == 0, "series-1 volumes must cascade-delete"
         assert v2_count == 1, "series-2 volumes must NOT be affected"
-
-        # Series-1 blocklist gone, standalone blocklist row intact
         bl_orphan = c.execute("SELECT COUNT(*) FROM blocklist WHERE series_id IS NULL").fetchone()[0]
-        bl_s1 = c.execute("SELECT COUNT(*) FROM blocklist WHERE series_id=1").fetchone()[0]
-        assert bl_s1 == 0, "series-1 blocklist rows must cascade-delete"
         assert bl_orphan == 1, "standalone blocklist row must survive"
 
 
 def test_series_delete_logs_history(env):
-    """The deletion must add a 'series_deleted' history event so the user
-    can audit what happened (no 'where did MySeries go?' mystery)."""
+    """The soft-delete must add a `series_soft_deleted` history event so
+    the user can audit what happened. (Renamed from `series_deleted` —
+    the hard `series_purged` event is logged by the reaper / purge.)"""
     client = _client()
     csrf = _csrf_kwargs("delete-history")
 
@@ -144,9 +143,10 @@ def test_series_delete_logs_history(env):
 
     with sqlite3.connect(env['db_path']) as c:
         ev = c.execute(
-            "SELECT event_type, source_title FROM history WHERE event_type='series_deleted'"
+            "SELECT event_type, source_title FROM history"
+            " WHERE event_type='series_soft_deleted'"
         ).fetchone()
-        assert ev is not None, "series_deleted event must be logged"
+        assert ev is not None, "series_soft_deleted event must be logged"
         assert ev[1] == 'AlphaSeries', f"deleted-title must match, got {ev[1]!r}"
 
 
