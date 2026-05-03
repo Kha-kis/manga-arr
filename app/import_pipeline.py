@@ -1856,11 +1856,16 @@ async def _execute_import(
         vol_label = build_volume_label(queue['volume_num'], None, None)
 
         if imported_count > 0:
-            # Mark the pack/volume entry downloaded and cascade to any remaining stubs
-            _mark_downloaded(db, queue['series_id'], queue['volume_num'], queue['torrent_url'])
-            # If the user reassigned volume numbers in the review form, the originally
-            # grabbed stub (queue['volume_num']) may not have been imported. Reset it
-            # so it shows as wanted rather than incorrectly downloaded.
+            # Reassignment safety: if the user reassigned volume numbers in
+            # the review form, the originally grabbed stub
+            # (queue['volume_num']) may not have been imported. Reset it
+            # BEFORE _mark_downloaded runs — otherwise _mark_downloaded
+            # would flip queue['volume_num'] from grabbed→downloaded
+            # (since the row IS in 'grabbed' state) and the
+            # `WHERE status='grabbed'` clause below would silently match
+            # 0 rows, leaving the original stub stuck at 'downloaded'
+            # with no actual file. Symptom: a series page shows a
+            # volume as downloaded but `import_path` is NULL.
             if (queue['volume_num'] is not None
                     and imported_vols
                     and queue['volume_num'] not in imported_vols):
@@ -1871,6 +1876,13 @@ async def _execute_import(
                     "WHERE series_id=? AND volume_num=? AND status='grabbed'",
                     (queue['series_id'], queue['volume_num'])
                 )
+            # Mark the pack/volume entry downloaded and cascade to any
+            # remaining stubs. After the reassignment-reset above, this
+            # call is a no-op for the original stub when reassignment
+            # happened (it's now 'wanted'); it still fires for the
+            # actually-imported volume(s) when the per-file UPDATEs in
+            # the import loop set them up.
+            _mark_downloaded(db, queue['series_id'], queue['volume_num'], queue['torrent_url'])
             # Set import_path on the pack entry itself (directory level)
             db.execute(
                 "UPDATE volumes SET import_path=? WHERE series_id=? AND download_id=?"
