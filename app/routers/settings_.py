@@ -167,34 +167,46 @@ async def settings_general_page(request: Request, saved: str = ""):
 
 
 @router.post("/settings/general")
-async def save_general_settings(
-    request:              Request,
-    instance_name:        str = Form(""),
-    log_level:            str = Form("INFO"),
-    backup_folder:        str = Form("/config/backups/"),
-    backup_interval_days: str = Form("7"),
-    backup_retention:     str = Form("10"),
-    ui_date_format:       str = Form("relative"),
-    blocklist_ttl_days:   str = Form("90"),
-    api_key:              str = Form(""),
-):
+async def save_general_settings(request: Request):
+    """Save general settings. Partial-POST safe: only key/value rows
+    whose form key is present in the request body are written. Each
+    setting is its own row in the `settings` table, so partial POSTs
+    naturally only touch what they submit (no row-level UPDATE to
+    contaminate other columns)."""
+    form = await request.form()
+
+    # Per-key coercers — most are passthrough; blocklist_ttl_days and
+    # backup_retention need numeric clamping to match prior behaviour.
+    coercers = {
+        'instance_name':        lambda v: str(v or ''),
+        'log_level':            lambda v: str(v or 'INFO').strip() or 'INFO',
+        'backup_folder':        lambda v: str(v or '/config/backups/'),
+        'backup_interval_days': lambda v: str(v or '7'),
+        'backup_retention':     lambda v: str(v or '10'),
+        'ui_date_format':       lambda v: str(v or 'relative').strip() or 'relative',
+        'blocklist_ttl_days': lambda v: str(max(0, int(str(v or '90') if str(v or '').strip().lstrip('-').isdigit() else 90))),
+    }
     with get_db() as db:
-        for k, v in {
-            'instance_name':        instance_name,
-            'log_level':            log_level,
-            'backup_folder':        backup_folder,
-            'backup_interval_days': backup_interval_days,
-            'backup_retention':     backup_retention,
-            'ui_date_format':       ui_date_format,
-            'blocklist_ttl_days':   str(max(0, int(blocklist_ttl_days or '90'))),
-        }.items():
-            db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (k, v))
-        if api_key.strip():
-            # H4 PR #2: encrypt the user-supplied api_key before write.
-            encrypted_api_key = encrypt_if_cipher_available(api_key.strip())
-            db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('api_key',?)", (encrypted_api_key,))
+        for key, coerce in coercers.items():
+            if key in form:
+                db.execute(
+                    "INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
+                    (key, coerce(form[key]))
+                )
+        # api_key: only write if the form carries it AND it's non-empty
+        if 'api_key' in form:
+            api_raw = str(form['api_key'] or '').strip()
+            if api_raw:
+                encrypted_api_key = encrypt_if_cipher_available(api_raw)
+                db.execute(
+                    "INSERT OR REPLACE INTO settings(key,value) VALUES('api_key',?)",
+                    (encrypted_api_key,)
+                )
     _reload_config()
-    logging.getLogger().setLevel(getattr(logging, log_level.upper(), logging.INFO))
+    # Only reset the active log level if log_level was actually submitted
+    if 'log_level' in form:
+        log_level = str(form['log_level'] or 'INFO').strip() or 'INFO'
+        logging.getLogger().setLevel(getattr(logging, log_level.upper(), logging.INFO))
     if is_htmx(request):
         return Response(headers={"HX-Trigger": json.dumps({"showToast": {"msg": "Settings saved", "type": "success"}})})
     return RedirectResponse("/settings/general?saved=1", status_code=303)

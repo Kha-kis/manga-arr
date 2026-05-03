@@ -41,13 +41,12 @@ ROUTERS_DIR = pathlib.Path(__file__).resolve().parents[2] / "app" / "routers"
 # ── Allowlist of routes still pending conversion ─────────────────────
 # Format: (file_basename, route_method, route_path)
 # Removed entry-by-entry as the conversion PRs land.
-_KNOWN_CLOBBER_ROUTES: set[tuple[str, str, str]] = {
-    # CRITICAL — PR-B (CONVERTED)
-    # HIGH      — PR-C (CONVERTED)
-    # HIGH/MEDIUM — PR-D
-    ('notification_connections.py', 'POST', '/notifications/{conn_id}'),
-    ('settings_.py',              'POST', '/settings/general'),
-}
+_KNOWN_CLOBBER_ROUTES: set[tuple[str, str, str]] = set()
+# All 11 audited routes have been converted. The two invariants below
+# now actively enforce against every edit route in app/routers/. If you
+# add a new edit route that hits Pattern A (wholesale UPDATE) or
+# Pattern C (JSON-array-string defaults), CI fails — fix the route to
+# use submitted_subset() from app/routers/_form_helpers.py instead.
 
 # The audit also flagged `POST /settings` itself, but that route already
 # implements per-field `if v or k in _CLEARABLE_KEYS` — the closest
@@ -233,16 +232,6 @@ def test_no_edit_route_emits_multi_column_update_without_form_introspection():
 # ── Bookend invariant: zero outstanding clobbers ─────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Editor-clobber epic in progress — 11 routes pending conversion. "
-        "PRs B/C/D will shrink _KNOWN_CLOBBER_ROUTES; PR-D removes this "
-        "xfail marker once the allowlist is empty. Failing this xfail "
-        "(i.e. the assertion passing) means the epic is done; succeeding "
-        "(asserting fails) means there are still unconverted routes."
-    ),
-)
 def test_zero_unconverted_clobber_routes_remain():
     """The bookend: when this test stops xfailing, the epic is done.
 

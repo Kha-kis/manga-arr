@@ -806,3 +806,173 @@ def test_edit_import_list_partial_post(env):
     assert row['monitor_mode'] == 'future'
     assert '"endpoint"' in row['settings'] and 'x' in row['settings']
     assert '"interval"' in row['settings']
+
+
+# ═════════════════════════════════════════════════════════════════════
+# edit_notification_connection — POST /notifications/{conn_id}
+# ═════════════════════════════════════════════════════════════════════
+
+
+def test_edit_notification_partial_post_does_not_clobber_events(env):
+    """Submit only `name` — the 6 event flags must keep their seeded
+    values. Without partial-POST safety, every flag would be wiped to
+    0 (or its `Form(0)` default) on each submit."""
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute(
+            "INSERT INTO notification_connections(id, name, type, enabled, settings,"
+            " on_grab, on_download, on_upgrade, on_series_add,"
+            " on_health_issue, on_health_restored)"
+            " VALUES(120, 'Seeded NTF', 'discord', 0,"
+            "        '{\"webhook_url\":\"https://example.com/hook\"}',"
+            "        0, 1, 0, 1, 0, 1)"
+        )
+
+    csrf = _csrf("ntf-partial")
+    r = _client().post(
+        "/notifications/120",
+        data={
+            'csrf_token': csrf['headers']['X-CSRFToken'],
+            'name':       'Renamed NTF',
+        },
+        **csrf, follow_redirects=False,
+    )
+    assert r.status_code in (200, 303), r.text
+
+    with sqlite3.connect(env['db_path']) as c:
+        c.row_factory = sqlite3.Row
+        row = dict(c.execute(
+            "SELECT * FROM notification_connections WHERE id=120"
+        ).fetchone())
+
+    assert row['name']                  == 'Renamed NTF'
+    # Type, enabled, settings unchanged
+    assert row['type']                  == 'discord'
+    assert row['enabled']               == 0
+    assert 'webhook_url' in row['settings']
+    # Event flags unchanged
+    assert row['on_grab']               == 0
+    assert row['on_download']           == 1
+    assert row['on_upgrade']            == 0
+    assert row['on_series_add']         == 1
+    assert row['on_health_issue']       == 0
+    assert row['on_health_restored']    == 1
+
+
+def test_edit_notification_partial_post_can_toggle_single_event(env):
+    """Submit only `on_grab=1` — only that column changes; other event
+    flags AND name/type/settings stay seeded."""
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute(
+            "INSERT INTO notification_connections(id, name, type, enabled, settings,"
+            " on_grab, on_download, on_upgrade, on_series_add,"
+            " on_health_issue, on_health_restored)"
+            " VALUES(121, 'Seeded NTF2', 'webhook', 1, '{}',"
+            "        0, 1, 1, 1, 1, 1)"
+        )
+
+    csrf = _csrf("ntf-toggle")
+    _client().post(
+        "/notifications/121",
+        data={
+            'csrf_token': csrf['headers']['X-CSRFToken'],
+            'on_grab':    '1',
+        },
+        **csrf, follow_redirects=False,
+    )
+
+    with sqlite3.connect(env['db_path']) as c:
+        c.row_factory = sqlite3.Row
+        row = dict(c.execute(
+            "SELECT * FROM notification_connections WHERE id=121"
+        ).fetchone())
+    assert row['on_grab']        == 1  # changed
+    assert row['on_download']    == 1
+    assert row['on_upgrade']     == 1
+    assert row['on_series_add']  == 1
+    assert row['name']           == 'Seeded NTF2'
+    assert row['type']           == 'webhook'
+
+
+# ═════════════════════════════════════════════════════════════════════
+# save_general_settings — POST /settings/general
+# ═════════════════════════════════════════════════════════════════════
+
+
+def test_save_general_settings_partial_post(env):
+    """Each setting is its own row in the `settings` table. A partial
+    POST must only INSERT-OR-REPLACE rows whose form key is in the
+    body — every other setting is left alone."""
+    # Seed pre-existing settings to verify they're untouched
+    with sqlite3.connect(env['db_path']) as c:
+        for k, v in [
+            ('instance_name',        'My Mangarr'),
+            ('log_level',            'DEBUG'),
+            ('backup_folder',        '/custom/backups'),
+            ('backup_interval_days', '14'),
+            ('backup_retention',     '5'),
+            ('ui_date_format',       'absolute'),
+            ('blocklist_ttl_days',   '180'),
+        ]:
+            c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (k, v))
+
+    csrf = _csrf("settings-partial")
+    r = _client().post(
+        "/settings/general",
+        data={
+            'csrf_token': csrf['headers']['X-CSRFToken'],
+            'instance_name': 'Renamed Instance',
+        },
+        **csrf, follow_redirects=False,
+    )
+    assert r.status_code in (200, 303), r.text
+
+    with sqlite3.connect(env['db_path']) as c:
+        out = {
+            r[0]: r[1] for r in c.execute(
+                "SELECT key, value FROM settings WHERE key IN ("
+                "'instance_name','log_level','backup_folder','backup_interval_days',"
+                "'backup_retention','ui_date_format','blocklist_ttl_days')"
+            ).fetchall()
+        }
+    assert out['instance_name']         == 'Renamed Instance'  # changed
+    # Everything else preserved — would have been clobbered to defaults
+    # under the old wholesale-write pattern.
+    assert out['log_level']             == 'DEBUG'
+    assert out['backup_folder']         == '/custom/backups'
+    assert out['backup_interval_days']  == '14'
+    assert out['backup_retention']      == '5'
+    assert out['ui_date_format']        == 'absolute'
+    assert out['blocklist_ttl_days']    == '180'
+
+
+def test_save_general_settings_does_not_overwrite_api_key_when_absent(env):
+    """The api_key field gets special handling: only written if the
+    form carries it AND it's non-empty. A partial POST that doesn't
+    mention api_key must leave the stored key alone."""
+    from security import encrypt_if_cipher_available
+    # Seed an encrypted api_key directly (mirrors what the route would do)
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute(
+            "INSERT OR REPLACE INTO settings(key,value) VALUES('api_key',?)",
+            (encrypt_if_cipher_available('PRESERVED-API-KEY'),)
+        )
+        seeded = c.execute(
+            "SELECT value FROM settings WHERE key='api_key'"
+        ).fetchone()[0]
+
+    csrf = _csrf("settings-keepkey")
+    _client().post(
+        "/settings/general",
+        data={
+            'csrf_token': csrf['headers']['X-CSRFToken'],
+            'log_level':  'INFO',
+            # api_key omitted
+        },
+        **csrf, follow_redirects=False,
+    )
+
+    with sqlite3.connect(env['db_path']) as c:
+        after = c.execute(
+            "SELECT value FROM settings WHERE key='api_key'"
+        ).fetchone()[0]
+    assert after == seeded, "api_key must not be overwritten on partial POST"
