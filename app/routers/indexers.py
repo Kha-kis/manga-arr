@@ -990,6 +990,14 @@ def _parse_torznab_rss(xml_text: str, indexer: str, default_protocol: str = 'tor
             size_bytes = int(size_raw)
         except Exception:
             size_bytes = 0
+        # Cross-URL dedup: indexer-supplied <guid> identifies the SAME
+        # release even when the URL rotates (Prowlarr session-rotated
+        # download links produce a unique URL per request, so URL-only
+        # dedup misses the duplicate). Falls back to torznab attr-style
+        # for indexers that surface guid via attributes instead. Empty
+        # string means "no guid available" — grab.py treats that as
+        # missing.
+        guid = (item.findtext('guid', '') or '').strip() or _attr(item, 'guid') or ''
         items.append({
             'title':      title,
             'url':        dl_url,
@@ -997,6 +1005,7 @@ def _parse_torznab_rss(xml_text: str, indexer: str, default_protocol: str = 'tor
             'seeders':    int(_attr(item, 'seeders') or 0),
             'indexer':    indexer,
             'protocol':   protocol,
+            'guid':       guid,
         })
     return items
 
@@ -1190,5 +1199,8 @@ def _parse_prowlarr_response(data: list, indexer_name: str = '') -> list[dict]:
             'seeders':    item.get('seeders', 0),
             'indexer':    item.get('indexer') or indexer_name,
             'protocol':   protocol,
+            # Same dedup contract as _parse_torznab_rss — Prowlarr's JSON
+            # search response surfaces the original release guid here.
+            'guid':       item.get('guid', '') or item.get('infoUrl', ''),
         })
     return results
