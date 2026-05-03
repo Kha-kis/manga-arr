@@ -1071,7 +1071,12 @@ async def api_cover_refresh(series_id: int):
     return JSONResponse({"ok": False, "error": "No cover_url stored for this series"})
 
 
-def _hard_delete_series(db, series_id: int, *, log_history: bool = False) -> str:
+def _hard_delete_series(
+    db, series_id: int,
+    *,
+    log_history: bool = False,
+    remove_files: bool = False,
+) -> str:
     """Destructive cascade for a series. Removes every dependent row +
     the cover file. Returns the (possibly-empty) title for the caller's
     logging purposes.
@@ -1083,10 +1088,35 @@ def _hard_delete_series(db, series_id: int, *, log_history: bool = False) -> str
     The user-facing soft-delete (`delete_series`) does NOT call this —
     soft-delete only sets `deleted_at`/`deletion_reason` and keeps every
     dependent row in place so restore is a one-flag operation.
+
+    `remove_files=True` (PR-4) additionally deletes every downloaded
+    volume file referenced by `volumes.import_path` before the cascade
+    DELETEs. Used by the explicit purge button (user clicked permanent
+    delete, expects disk to be freed) and optionally by the reaper
+    when `recycle_bin_remove_files` is set. Default off — preserves the
+    pre-epic behaviour where Mangarr never touched on-disk files on
+    series delete.
     """
     import main as _m
     s = db.execute("SELECT title FROM series WHERE id=?", (series_id,)).fetchone()
     title = s['title'] if s else ''
+
+    # PR-4: optionally delete on-disk volume files BEFORE the row deletes
+    # so we still know which paths to remove. Errors are swallowed — a
+    # missing file shouldn't block the cascade.
+    if remove_files:
+        for vol in db.execute(
+            "SELECT import_path FROM volumes WHERE series_id=?"
+            " AND import_path IS NOT NULL AND import_path != ''",
+            (series_id,)
+        ).fetchall():
+            try:
+                fpath = vol['import_path']
+                if fpath and os.path.exists(fpath) and os.path.isfile(fpath):
+                    os.remove(fpath)
+            except OSError:
+                pass
+
     iq_ids = [r['id'] for r in db.execute(
         "SELECT id FROM import_queue WHERE series_id=?", (series_id,)
     ).fetchall()]
@@ -1199,7 +1229,7 @@ async def purge_series(request: Request, series_id: int):
                 from fastapi.responses import Response as _Resp
                 return _Resp(headers={"HX-Redirect": "/recycle-bin"})
             return RedirectResponse("/recycle-bin", status_code=303)
-        _hard_delete_series(db, series_id, log_history=True)
+        _hard_delete_series(db, series_id, log_history=True, remove_files=True)
 
     if request.headers.get("HX-Request") == "true":
         import json
@@ -1254,6 +1284,77 @@ async def recycle_bin_page(request: Request):
         "binned":         binned,
         "retention_days": retention_days,
     })
+
+
+@router.post("/recycle-bin/restore-all")
+async def recycle_bin_restore_all(request: Request):
+    """Restore every series currently in the recycle bin in one click.
+    Each restoration logs its own `series_restored` history event so
+    the audit trail stays intact even after a bulk operation.
+    """
+    import main as _m
+    restored = 0
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT id, title FROM series WHERE deleted_at IS NOT NULL"
+        ).fetchall()
+        for r in rows:
+            db.execute(
+                "UPDATE series SET deleted_at=NULL, deletion_reason=NULL"
+                " WHERE id=?", (r['id'],)
+            )
+            _m.add_history(db, 'series_restored', None, r['title'] or '',
+                           '', source_title=r['title'] or '')
+            restored += 1
+
+    if request.headers.get("HX-Request") == "true":
+        import json
+        from fastapi.responses import Response as _Resp
+        return _Resp(headers={
+            "HX-Trigger": json.dumps({
+                "showToast": {
+                    "msg": f"Restored {restored} series" if restored else "Recycle bin is empty",
+                    "type": "success" if restored else "info",
+                }
+            }),
+            "HX-Redirect": "/recycle-bin",
+        })
+    return RedirectResponse("/recycle-bin", status_code=303)
+
+
+@router.post("/recycle-bin/empty")
+async def recycle_bin_empty(request: Request):
+    """Permanently delete EVERY series in the recycle bin in one click.
+    Files are removed from disk (same semantics as the per-row purge
+    button) — this is the "free up disk space" action.
+    """
+    purged = 0
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT id FROM series WHERE deleted_at IS NOT NULL"
+        ).fetchall()
+        for r in rows:
+            try:
+                _hard_delete_series(db, r['id'], log_history=True, remove_files=True)
+                purged += 1
+            except Exception:
+                # One failure shouldn't block the others; reaper will
+                # retry on its next sweep.
+                pass
+
+    if request.headers.get("HX-Request") == "true":
+        import json
+        from fastapi.responses import Response as _Resp
+        return _Resp(headers={
+            "HX-Trigger": json.dumps({
+                "showToast": {
+                    "msg": f"Permanently deleted {purged} series" if purged else "Recycle bin is empty",
+                    "type": "success" if purged else "info",
+                }
+            }),
+            "HX-Redirect": "/recycle-bin",
+        })
+    return RedirectResponse("/recycle-bin", status_code=303)
 
 
 @router.post("/series/{series_id}/grab")

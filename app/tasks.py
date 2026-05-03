@@ -575,11 +575,22 @@ async def _backup_loop():
 # retention period. Runs every 6 hours so the "X days remaining" UI on
 # the recycle-bin page stays roughly accurate without spamming.
 
-def _run_recycle_bin_purge_once(*, retention_days: int | None = None) -> int:
+def _run_recycle_bin_purge_once(
+    *,
+    retention_days: int | None = None,
+    remove_files: bool | None = None,
+) -> int:
     """Hard-delete every series whose deleted_at is older than the
     retention period. Returns the count of purged series. Extracted
     from the loop body so the reaper can be exercised synchronously
-    in tests without spinning up the asyncio task."""
+    in tests without spinning up the asyncio task.
+
+    `remove_files` (PR-4): when True, the reaper also deletes on-disk
+    volume files. Defaults to the `recycle_bin_remove_files` config
+    setting (default false — opt-in, since Mangarr never deleted files
+    on series-delete pre-epic). The explicit purge button always passes
+    True regardless of this setting (user clicked permanent delete).
+    """
     from shared import get_db
     from routers.series_ import _hard_delete_series
     if retention_days is None:
@@ -587,6 +598,11 @@ def _run_recycle_bin_purge_once(*, retention_days: int | None = None) -> int:
             retention_days = max(1, int(get_cfg('recycle_bin_retention_days', '30')))
         except (TypeError, ValueError):
             retention_days = 30
+    if remove_files is None:
+        remove_files = (
+            str(get_cfg('recycle_bin_remove_files', '0') or '0').strip()
+            in ('1', 'true', 'True', 'on', 'yes')
+        )
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
     purged = 0
     with get_db() as db:
@@ -597,7 +613,11 @@ def _run_recycle_bin_purge_once(*, retention_days: int | None = None) -> int:
         ).fetchall()
         for row in expired:
             try:
-                _hard_delete_series(db, row['id'], log_history=True)
+                _hard_delete_series(
+                    db, row['id'],
+                    log_history=True,
+                    remove_files=remove_files,
+                )
                 purged += 1
             except Exception as e:
                 log_event('error', f"Recycle-bin purge failed for series {row['id']}: {e}")

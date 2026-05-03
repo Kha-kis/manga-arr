@@ -11,6 +11,26 @@
     <span style="font-size:var(--text-sm); color:var(--text-3)">
       <i class="bi bi-clock me-1"></i>Auto-purge after {{ retention_days }}d
     </span>
+    {% if binned %}
+    <form method="POST" action="/recycle-bin/restore-all" style="display:inline">
+      <button type="submit" class="btn btn-sm btn-outline-ember"
+              hx-post="/recycle-bin/restore-all"
+              hx-confirm="Restore all {{ binned|length }} series from the recycle bin?"
+              hx-swap="none"
+              title="Restore every series in the recycle bin">
+        <i class="bi bi-arrow-counterclockwise me-1"></i>Restore all
+      </button>
+    </form>
+    <form method="POST" action="/recycle-bin/empty" style="display:inline">
+      <button type="submit" class="btn btn-sm btn-danger-soft"
+              hx-post="/recycle-bin/empty"
+              hx-confirm="Permanently delete all {{ binned|length }} series and their files? This cannot be undone."
+              hx-swap="none"
+              title="Permanently delete every series in the recycle bin">
+        <i class="bi bi-trash me-1"></i>Empty bin
+      </button>
+    </form>
+    {% endif %}
   </div>
 </div>
 
