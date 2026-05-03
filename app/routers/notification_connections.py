@@ -295,42 +295,76 @@ async def create_notification_connection(
 
 # ── Edit ──────────────────────────────────────────────────────────────────────
 @router.post("/notifications/{conn_id}")
-async def edit_notification_connection(
-    request: Request,
-    conn_id: int,
-    name: str = Form(...),
-    type: str = Form(...),
-    enabled: int = Form(1),
-    settings: str = Form("{}"),
-):
+async def edit_notification_connection(request: Request, conn_id: int):
+    """Edit a notification connection. Partial-POST safe: only columns
+    whose form key is present in the request body are written. The
+    settings JSON is special-cased — when only some setting keys are
+    submitted (e.g. tweaking just the webhook URL), they're merged
+    onto the existing stored settings rather than replacing wholesale.
+    """
+    from routers._form_helpers import submitted_subset, bool_int
     form = await request.form()
-    events = {flag: int(form.get(flag, 0)) for flag, _ in EVENT_FLAGS}
+
     with get_db() as db:
         current = db.execute(
-            "SELECT type, settings FROM notification_connections WHERE id=?", (conn_id,)
+            "SELECT type, settings FROM notification_connections WHERE id=?",
+            (conn_id,)
         ).fetchone()
-        current_settings = from_json(current["settings"], {}) if current else {}
-        if not isinstance(current_settings, dict):
-            current_settings = {}
-        settings_dict, err = _notification_settings_from_form(
-            form,
-            type,
-            base_settings=current_settings,
-            original_type=current["type"] if current else None,
+        if not current:
+            return RedirectResponse("/notifications", status_code=303)
+
+        # Resolve the type for settings validation. If the form sends
+        # `type`, use it (the user is changing connection type — settings
+        # validation runs against the new type's schema). Otherwise fall
+        # back to the stored type so we can re-encrypt secrets correctly.
+        eff_type = (form.get('type') or current['type']) or ''
+        eff_type = str(eff_type).strip()
+
+        plain_fields = {
+            'name':    ('name',    lambda v: str(v or '').strip()),
+            'type':    ('type',    lambda v: str(v or '').strip()),
+            'enabled': ('enabled', bool_int),
+        }
+        updates, params = submitted_subset(form, plain_fields)
+
+        # Settings: only re-derive if the form carries `settings` OR any
+        # type-specific setting field. The helper returns the merged
+        # dict on top of the base. If neither type nor any setting is in
+        # the form, leave the column alone.
+        any_settings_field = any(
+            k.startswith('settings_') or k == 'settings' for k in form.keys()
         )
-        if err:
-            return JSONResponse({"ok": False, "message": err}, status_code=400)
-        settings_dict = _encrypt_secret_fields(type, settings_dict or {})
-        db.execute(
-            "UPDATE notification_connections SET name=?,type=?,enabled=?,settings=?,"
-            " on_grab=?,on_download=?,on_upgrade=?,on_series_add=?,on_health_issue=?,"
-            " on_health_restored=? WHERE id=?",
-            (name.strip(), type, enabled, json.dumps(settings_dict),
-             events.get('on_grab', 1), events.get('on_download', 1),
-             events.get('on_upgrade', 1), events.get('on_series_add', 1),
-             events.get('on_health_issue', 1), events.get('on_health_restored', 0),
-             conn_id)
-        )
+        if any_settings_field or 'type' in form:
+            current_settings = from_json(current['settings'], {})
+            if not isinstance(current_settings, dict):
+                current_settings = {}
+            settings_dict, err = _notification_settings_from_form(
+                form,
+                eff_type,
+                base_settings=current_settings,
+                original_type=current['type'],
+            )
+            if err:
+                return JSONResponse({"ok": False, "message": err}, status_code=400)
+            settings_dict = _encrypt_secret_fields(eff_type, settings_dict or {})
+            updates.append('settings=?')
+            params.append(json.dumps(settings_dict))
+
+        # Event flags: per-flag conditional. With the HTML page's
+        # hidden-input-first idiom, every flag is always submitted, so
+        # the full-form path still hits every column. Scripted partial
+        # POSTs that send only one flag won't clobber the others.
+        for flag, _label in EVENT_FLAGS:
+            if flag in form:
+                updates.append(f"{flag}=?")
+                params.append(bool_int(form[flag]))
+
+        if updates:
+            params.append(conn_id)
+            db.execute(
+                f"UPDATE notification_connections SET {', '.join(updates)} WHERE id=?",
+                params
+            )
     return RedirectResponse("/notifications", status_code=303)
 
 

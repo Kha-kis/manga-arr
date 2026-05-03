@@ -13,6 +13,7 @@ Solo-dev manga library manager (Sonarr/Readarr-equivalent). FastAPI + Starlette 
 - **Action endpoints are dual-mode**: each handles HTMX (returns partial template, or `HX-Trigger` / `HX-Refresh` / `HX-Redirect` header) **and** plain form fallback. Don't break the plain-form path — server stays usable without JS.
 - **CSRF**: `starlette-csrf` middleware in `app/middleware.py`. `base.html` injects the token for HTMX + plain forms. `/api/` routes bypass CSRF (they auth via `X-Api-Key`).
 - **Two-layer grab dedup**: `seen.torrent_url` (URL match) AND `seen.release_guid` (cross-URL same-content match). Both checked before `grab_url` fires. Don't bypass either.
+- **Editor-form partial-POST safety**: every `@router.post` edit handler in `app/routers/` must accept `(request, id)` and use `submitted_subset()` from `app/routers/_form_helpers.py` to assemble the SQL UPDATE clause from only the keys the client actually sent. Defaults like `Form("[]")` / `Form("{}")` / `Form(0)` silently overwrite columns whenever a scripted client omits a field — the HTML page sends every input so the bug never fires from the browser, but curl / HTMX-partial / scripted callers trip it. Pinned by `tests/python/test_editor_form_partial_invariants.py` (AST-walks every edit route). HTML checkbox toggles use the paired hidden-input-first idiom (`<hidden value=0>` + `<checkbox value=1>`) so the field always carries an unambiguous value — see `app/templates/indexers.html` for the canonical example.
 
 ## Verify before claiming done
 
