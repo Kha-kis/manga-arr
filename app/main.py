@@ -407,7 +407,7 @@ from tasks import (  # noqa: F401
     _backfill_metadata_loop, _stuck_state_cleanup_loop,
     backlog_search_loop, backlog_search,
     import_list_sync, rescan_loop,
-    _import_list_loop, _backup_loop,
+    _import_list_loop, _backup_loop, _recycle_bin_reaper_loop,
     _MDX_BACKOFF_UNTIL, _mdx_backoff_active, _mdx_set_backoff,
     _maybe_backoff_from_exception, _parse_retry_after_seconds,
     cleanup_stuck_state,
@@ -523,6 +523,7 @@ async def lifespan(app: FastAPI):
     create_background_task(rescan_loop(),                      name="rescan_loop")
     create_background_task(_import_list_loop(),                name="import_list_loop")
     create_background_task(_backup_loop(),                     name="backup_loop")
+    create_background_task(_recycle_bin_reaper_loop(),         name="recycle_bin_reaper")
     # Poll qBit/SAB in the background so /queue renders from cached
     # snapshots instead of making live HTTP calls on every pageview.
     from status_cache import download_status_refresh_loop as _dl_status_loop

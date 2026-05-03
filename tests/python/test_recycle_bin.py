@@ -565,3 +565,170 @@ def test_nav_includes_recycle_bin_link(env):
     assert r.status_code == 200
     assert '/recycle-bin' in r.text
     assert 'Recycle Bin' in r.text
+
+
+# ───────────────────── PR-3: reaper job ─────────────────────
+
+
+def test_reaper_purges_expired_series(env):
+    """Series soft-deleted longer than retention_days must be hard-deleted
+    by the reaper."""
+    from tasks import _run_recycle_bin_purge_once
+
+    _seed_series(env['db_path'], 1, 'Old Series')
+    _seed_series(env['db_path'], 2, 'New Series')
+    with sqlite3.connect(env['db_path']) as c:
+        # Series 1: deleted 31 days ago (expired against 30-day retention)
+        c.execute(
+            "UPDATE series SET deleted_at=datetime('now', '-31 days'),"
+            " deletion_reason='user_action' WHERE id=1"
+        )
+        # Series 2: deleted 5 days ago (still in window)
+        c.execute(
+            "UPDATE series SET deleted_at=datetime('now', '-5 days'),"
+            " deletion_reason='user_action' WHERE id=2"
+        )
+
+    purged = _run_recycle_bin_purge_once(retention_days=30)
+    assert purged == 1, f"expected 1 purge, got {purged}"
+
+    with sqlite3.connect(env['db_path']) as c:
+        s1 = c.execute("SELECT 1 FROM series WHERE id=1").fetchone()
+        s2 = c.execute("SELECT 1 FROM series WHERE id=2").fetchone()
+        v1 = c.execute("SELECT COUNT(*) FROM volumes WHERE series_id=1").fetchone()[0]
+        v2 = c.execute("SELECT COUNT(*) FROM volumes WHERE series_id=2").fetchone()[0]
+    assert s1 is None, "expired series 1 must be hard-deleted"
+    assert s2 is not None, "in-window series 2 must remain"
+    assert v1 == 0, "series-1 volumes must cascade-delete"
+    assert v2 == 2, "series-2 volumes must remain"
+
+
+def test_reaper_skips_active_series(env):
+    """Active (not soft-deleted) series must NEVER be touched by the
+    reaper, regardless of how old they are."""
+    from tasks import _run_recycle_bin_purge_once
+    _seed_series(env['db_path'], 1, 'Active Series')
+
+    purged = _run_recycle_bin_purge_once(retention_days=1)
+    assert purged == 0
+
+    with sqlite3.connect(env['db_path']) as c:
+        s = c.execute("SELECT 1 FROM series WHERE id=1").fetchone()
+    assert s is not None, "active series must NOT be reaped"
+
+
+def test_reaper_logs_purge_event_per_series(env):
+    """Each reaped series gets a 'series_purged' history event so the
+    user can audit what the reaper removed."""
+    from tasks import _run_recycle_bin_purge_once
+    _seed_series(env['db_path'], 1, 'Old A')
+    _seed_series(env['db_path'], 2, 'Old B')
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute("UPDATE series SET deleted_at=datetime('now', '-60 days') WHERE id IN (1,2)")
+
+    _run_recycle_bin_purge_once(retention_days=30)
+    with sqlite3.connect(env['db_path']) as c:
+        events = c.execute(
+            "SELECT source_title FROM history WHERE event_type='series_purged'"
+            " ORDER BY id"
+        ).fetchall()
+    titles = sorted(e[0] for e in events)
+    assert titles == ['Old A', 'Old B']
+
+
+def test_reaper_with_default_retention(env):
+    """If retention_days isn't passed explicitly, the helper reads
+    the recycle_bin_retention_days config setting (default 30)."""
+    from tasks import _run_recycle_bin_purge_once
+
+    _seed_series(env['db_path'], 1, 'Just Past')
+    with sqlite3.connect(env['db_path']) as c:
+        # 31 days ago — past default 30-day retention
+        c.execute(
+            "UPDATE series SET deleted_at=datetime('now', '-31 days') WHERE id=1"
+        )
+
+    purged = _run_recycle_bin_purge_once()  # no retention_days arg
+    assert purged == 1
+
+
+def test_reaper_handles_empty_bin(env):
+    """No soft-deleted series → reaper is a no-op (no exception)."""
+    from tasks import _run_recycle_bin_purge_once
+    _seed_series(env['db_path'], 1, 'Active')
+    purged = _run_recycle_bin_purge_once(retention_days=30)
+    assert purged == 0
+
+
+# ───────────────────── PR-3: retention setting ─────────────────────
+
+
+def test_retention_setting_persists_via_general_form(env):
+    """POST /settings/general with recycle_bin_retention_days writes
+    the value to the settings table (clamped 1-365)."""
+    csrf = _csrf("ret-set")
+    _client().post(
+        "/settings/general",
+        data={
+            'csrf_token': csrf['headers']['X-CSRFToken'],
+            'recycle_bin_retention_days': '60',
+        },
+        **csrf, follow_redirects=False,
+    )
+    with sqlite3.connect(env['db_path']) as c:
+        v = c.execute(
+            "SELECT value FROM settings WHERE key='recycle_bin_retention_days'"
+        ).fetchone()
+    assert v is not None and v[0] == '60'
+
+
+def test_retention_setting_clamps_out_of_range(env):
+    """Values outside 1-365 are clamped to the boundary (matches the
+    blocklist_ttl_days pattern)."""
+    csrf = _csrf("ret-clamp")
+    # Below min → 1
+    _client().post(
+        "/settings/general",
+        data={
+            'csrf_token': csrf['headers']['X-CSRFToken'],
+            'recycle_bin_retention_days': '0',
+        },
+        **csrf, follow_redirects=False,
+    )
+    with sqlite3.connect(env['db_path']) as c:
+        v = c.execute(
+            "SELECT value FROM settings WHERE key='recycle_bin_retention_days'"
+        ).fetchone()
+    assert v[0] == '1'
+
+    # Above max → 365
+    _client().post(
+        "/settings/general",
+        data={
+            'csrf_token': csrf['headers']['X-CSRFToken'],
+            'recycle_bin_retention_days': '9999',
+        },
+        **csrf, follow_redirects=False,
+    )
+    with sqlite3.connect(env['db_path']) as c:
+        v = c.execute(
+            "SELECT value FROM settings WHERE key='recycle_bin_retention_days'"
+        ).fetchone()
+    assert v[0] == '365'
+
+
+def test_settings_general_template_renders_retention_input(env):
+    """The /settings/general page renders the recycle-bin retention
+    input so users can find the setting."""
+    r = _client().get("/settings/general")
+    assert r.status_code == 200
+    assert 'recycle_bin_retention_days' in r.text
+    assert '/recycle-bin' in r.text  # the "Open recycle bin" link
+
+
+def test_recycle_bin_purge_task_in_system_tasks(env):
+    """The System → Tasks page lists the RecycleBinPurge task so users
+    can see when it last ran / next runs."""
+    r = _client().get("/system/tasks")
+    assert r.status_code == 200
+    assert 'Recycle Bin Purge' in r.text or 'RecycleBinPurge' in r.text
