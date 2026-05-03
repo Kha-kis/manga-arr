@@ -177,7 +177,16 @@ def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
         src_dir    = os.path.dirname(content_path)  # for display / storage only
         scan_paths = [content_path]                  # only this specific file
     else:
-        log_event('error', f"Import queue: content_path not found: {content_path}", series_id, db=db)
+        # dedup=True: if the file is gone (user deleted, NFS hiccup,
+        # qBit reseed without re-download), the status_loop polls
+        # this codepath every cycle for that same content_path and
+        # would otherwise add a row to the events table every minute
+        # forever. Production observed: a single ghost path produced
+        # 1.65M identical 'Import queue: content_path not found'
+        # rows. Rate-limit logs at 1h granularity so operators still
+        # see the issue without 1.65M-row noise.
+        log_event('error', f"Import queue: content_path not found: {content_path}",
+                  series_id, db=db, dedup=True)
         return None, False
 
     dest_root = _resolve_series_dest_root(db, s['root_folder_id'], rf)

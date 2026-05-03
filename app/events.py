@@ -38,12 +38,32 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time as _time
 
 from shared import get_db
 
 
+# In-memory rate-limit for repeating identical events. Caps "log spam"
+# patterns where the same (event_type, series_id, first 80 chars of
+# message) tuple fires every status-loop cycle for a stable
+# unrecoverable failure (e.g. "Import queue: content_path not found:
+# /path/that/no/longer/exists" — observed in production at 1.65M
+# instances of one path before the rate-limit landed).
+#
+# Cache key: (event_type, series_id, message[:80]) — pruned to bound
+# memory at 5000 entries. Process-local; cleared on restart so first
+# fire after a restart is always logged.
+#
+# `dedup=False` (the default) bypasses rate-limiting — preserve the
+# pre-rate-limit semantics for normal callers. Only opt-in callers
+# that fire from poll loops on stable repeating conditions should
+# pass `dedup=True`.
+_LOG_DEDUP_TTL_S = 3600
+_LOG_DEDUP_LAST: dict[tuple, float] = {}
+
+
 def log_event(event_type: str, message: str, series_id: int | None = None,
-              *, db=None):
+              *, db=None, dedup: bool = False):
     """Insert a row into the events table.
 
     If `db` is provided, the INSERT is executed on that existing connection
@@ -57,7 +77,27 @@ def log_event(event_type: str, message: str, series_id: int | None = None,
 
     Swallows exceptions either way — event logging is best-effort and must
     not break the caller.
+
+    `dedup=True` opts into per-process rate-limiting on
+    (event_type, series_id, message[:80]) tuples — same key within
+    `_LOG_DEDUP_TTL_S` (default 1h) silently skips the INSERT.
+    Use this for stable repeating conditions that would otherwise
+    spam the events table on every loop cycle. Default False keeps
+    pre-existing semantics unchanged.
     """
+    if dedup:
+        key = (event_type, series_id, (message or '')[:80])
+        now = _time.monotonic()
+        last = _LOG_DEDUP_LAST.get(key)
+        if last is not None and (now - last) < _LOG_DEDUP_TTL_S:
+            return
+        _LOG_DEDUP_LAST[key] = now
+        # Bounded prune: when the dict gets too big, drop stale entries.
+        if len(_LOG_DEDUP_LAST) > 5000:
+            cutoff = now - _LOG_DEDUP_TTL_S
+            for k, t in list(_LOG_DEDUP_LAST.items()):
+                if t < cutoff:
+                    del _LOG_DEDUP_LAST[k]
     try:
         if db is not None:
             db.execute(
