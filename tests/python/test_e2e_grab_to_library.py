@@ -127,7 +127,7 @@ def test_grab_writes_seen_and_marks_volume_grabbed(env):
     }
 
     async def _fake_grab_url(*a, **kw):
-        return (True, 'TestQbit', 'dl-id-1')
+        return (True, 'TestQbit', 'dl-id-1', True)
 
     async def _run():
         import grab
@@ -172,7 +172,7 @@ def test_second_grab_attempt_is_blocked_by_seen_table(env):
 
     async def _counting_grab_url(*a, **kw):
         grab_url_call_count['n'] += 1
-        return (True, 'TestQbit', f"dl-{grab_url_call_count['n']}")
+        return (True, 'TestQbit', f"dl-{grab_url_call_count['n']}", True)
 
     async def _run():
         import grab
@@ -206,7 +206,7 @@ def test_grab_failure_does_not_pollute_seen(env):
     }
 
     async def _failing_grab_url(*a, **kw):
-        return (False, 'TestQbit', None)
+        return (False, 'TestQbit', None, False)
 
     async def _run():
         import grab
@@ -263,7 +263,7 @@ def test_guid_dedup_blocks_same_content_different_url(env):
 
     async def _counting_grab_url(*a, **kw):
         grab_url_call_count['n'] += 1
-        return (True, 'TestQbit', f"dl-{grab_url_call_count['n']}")
+        return (True, 'TestQbit', f"dl-{grab_url_call_count['n']}", True)
 
     async def _run():
         import grab
@@ -301,7 +301,7 @@ def test_missing_guid_falls_back_to_url_only_dedup(env):
     }
 
     async def _ok(*a, **kw):
-        return (True, 'TestQbit', 'dl-no-guid')
+        return (True, 'TestQbit', 'dl-no-guid', True)
 
     async def _run():
         import grab
@@ -350,7 +350,7 @@ def test_empty_string_guid_treated_as_missing(env):
     }
 
     async def _ok(*a, **kw):
-        return (True, 'TestQbit', 'dl-empty-guid')
+        return (True, 'TestQbit', 'dl-empty-guid', True)
 
     async def _run():
         import grab
@@ -390,7 +390,7 @@ def test_guid_dedup_does_not_block_different_guids(env):
     }
 
     async def _ok(*a, **kw):
-        return (True, 'TestQbit', 'dl-x')
+        return (True, 'TestQbit', 'dl-x', True)
 
     async def _run():
         import grab
@@ -428,7 +428,7 @@ def test_full_pipeline_grabbed_to_downloaded(env):
 
     # 1. Stub the download client to "accept" the grab and return a download_id
     async def _fake_grab_url(*a, **kw):
-        return (True, 'TestQbit', 'dl-e2e-1')
+        return (True, 'TestQbit', 'dl-e2e-1', True)
 
     async def _grab():
         import grab

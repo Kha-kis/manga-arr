@@ -417,7 +417,7 @@ async def grab_item(item: dict, series_id: int, respect_monitoring: bool = True)
     # retry for minutes.
     try:
         try:
-            ok, client_name, dl_id = await asyncio.wait_for(
+            ok, client_name, dl_id, client_healthy = await asyncio.wait_for(
                 grab_url(item['url'], protocol, save_path=save_path,
                          torrent_name=title),
                 timeout=45,
@@ -431,6 +431,40 @@ async def grab_item(item: dict, series_id: int, respect_monitoring: bool = True)
             return False
     finally:
         _GRABBING_URLS.discard(item['url'])
+
+    # Soft-failure recovery: qBit accepted the add but Mangarr couldn't
+    # find its hash to track. Without a `seen` insert, the RSS poll
+    # keeps re-finding this URL and qBit fills with duplicate adds —
+    # observed in production via the recurring "[qBit] grab added but
+    # hash not found" log spam. Insert `seen` here so the URL-dedup
+    # path blocks future retries; the volume row stays in 'wanted' so
+    # the orphan-cleanup logic in import_pipeline doesn't fight us.
+    # The user can manually grab via interactive search if they want
+    # the file, or improve the title that qBit fails to match.
+    if not ok and client_healthy and dl_id is None:
+        with get_db() as _seen_db:
+            _seen_db.execute(
+                "INSERT OR IGNORE INTO seen"
+                "(torrent_url, torrent_name, series_id, volume_num, grabbed_at,"
+                " indexer, protocol, client, download_id, release_group, size_bytes,"
+                " release_guid)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    item['url'], title, series_id, vol_num,
+                    datetime.utcnow().isoformat(),
+                    indexer, protocol, client_name, None,
+                    parse_release_group(title),
+                    item.get('size_bytes', 0),
+                    _release_guid,
+                )
+            )
+        log_event(
+            'grab_untracked',
+            f"Client accepted but no hash returned; deduped to prevent retry loop: {title[:120]}",
+            series_id,
+        )
+        return False
+
     if not ok:
         return False
 

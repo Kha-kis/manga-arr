@@ -220,7 +220,7 @@ def test_cutoff_format_score_blocks_further_cf_upgrades(env):
     }
 
     async def _ok(*a, **kw):
-        return (True, 'TestQbit', 'dl-1')
+        return (True, 'TestQbit', 'dl-1', True)
 
     # Stub score_release: existing scores 150 (above cutoff 100), new scores 200.
     # cutoff_format_score blocks regardless of delta.
@@ -260,7 +260,7 @@ def test_min_upgrade_score_blocks_trivial_delta_upgrades(env):
     }
 
     async def _ok(*a, **kw):
-        return (True, 'TestQbit', 'dl-2')
+        return (True, 'TestQbit', 'dl-2', True)
 
     # Stub: old=200, new=210 → delta=10, below min 50 → reject
     def _fake_score(title, *a, **kw):
@@ -298,7 +298,7 @@ def test_upgrade_with_sufficient_delta_proceeds(env):
     }
 
     async def _ok(*a, **kw):
-        return (True, 'TestQbit', 'dl-3')
+        return (True, 'TestQbit', 'dl-3', True)
 
     # Stub: old=100, new=200 → delta=100, well above min 10
     def _fake_score(title, *a, **kw):
@@ -335,7 +335,7 @@ def test_cutoff_takes_precedence_over_min_upgrade_when_both_set(env):
     }
 
     async def _ok(*a, **kw):
-        return (True, 'TestQbit', 'dl-4')
+        return (True, 'TestQbit', 'dl-4', True)
 
     # Stub: old=500 (well above cutoff 100), new=1000.
     # Delta would be 500 (huge), but cutoff blocks regardless.
@@ -392,7 +392,7 @@ def test_existing_indexer_is_unchanged_for_quality_driven_upgrade(env):
     }
 
     async def _ok(*a, **kw):
-        return (True, 'TestQbit', 'dl-qu')
+        return (True, 'TestQbit', 'dl-qu', True)
 
     async def _run():
         import grab
