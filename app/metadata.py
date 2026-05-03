@@ -431,7 +431,18 @@ async def fetch_kitsu_chapter_map(title: str, anilist_id: int | None,
                     vol_num = attrs.get('volumeNumber')
                     if ch_num is not None and vol_num is not None:
                         try:
-                            mapping[str(int(float(ch_num)))] = int(float(vol_num))
+                            # Preserve half-chapters: int(float("0.5")) = 0
+                            # collides with chapter 0. Stringify the float
+                            # form so "0", "0.5", "1", "1.5" are all distinct
+                            # keys. The mapping consumer (`populate_chapters`,
+                            # `_check_volume_completion`) looks up via
+                            # str(chapter_num), which produces matching
+                            # keys for whole and fractional chapters.
+                            # Volume number stays int — ComicInfo / Komga
+                            # only support integer volumes anyway.
+                            ch_f = float(ch_num)
+                            ch_key = str(int(ch_f)) if ch_f == int(ch_f) else str(ch_f)
+                            mapping[ch_key] = int(float(vol_num))
                         except (ValueError, TypeError):
                             pass
                 # Check if there are more pages
