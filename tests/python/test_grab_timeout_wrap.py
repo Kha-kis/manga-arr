@@ -98,7 +98,7 @@ def test_successful_grab_still_works(env):
     import main
 
     async def _ok_grab(*a, **kw):
-        return (True, 'qbit-client', 'dl-id-123')
+        return (True, 'qbit-client', 'dl-id-123', True)
 
     item = {
         'url': 'https://example.test/ok.torrent',

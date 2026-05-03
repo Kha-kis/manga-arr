@@ -282,12 +282,25 @@ async def blackhole_grab(url: str, client: dict,
 
 async def grab_url(url: str, protocol: str = '', save_path: str | None = None,
                    torrent_name: str | None = None,
-                   series_id: int | None = None) -> tuple[bool, str, str | None]:
+                   series_id: int | None = None) -> tuple[bool, str, str | None, bool]:
     """Route to best available download client.
 
-    Returns (success, client_name, download_id). Records circuit-breaker
-    state based on the adapter's ``client_healthy`` flag — business-level
-    failures don't trip the CB, only real reachability/auth failures do.
+    Returns (success, client_name, download_id, client_healthy).
+
+      success         — True iff the grab fully succeeded (added AND
+                        the download_id is known).
+      client_name     — adapter type / client name for accounting.
+      download_id     — qBit hash / SAB nzo_id, or None if unknown.
+      client_healthy  — True if the client itself worked (auth + add
+                        succeeded). Distinguishes "qBit accepted the
+                        torrent but Mangarr couldn't find its hash"
+                        (success=False, healthy=True) from "qBit
+                        unreachable / auth fail" (both False).
+
+    The healthy flag both drives the circuit breaker (existing) AND
+    lets the caller insert `seen` for URL-dedup even on the soft-failure
+    path, preventing the infinite RSS-retry loop where qBit keeps adding
+    duplicate copies of the same torrent because the dedup never fires.
     """
     use_torrent = protocol == 'torrent' or url.endswith('.torrent') or url.startswith('magnet:')
     detected_protocol = 'torrent' if use_torrent else 'nzb'
@@ -306,12 +319,12 @@ async def grab_url(url: str, protocol: str = '', save_path: str | None = None,
 
     if not client:
         print(f"[grab_url] No download client configured for {detected_protocol}")
-        return False, 'none', None
+        return False, 'none', None, False
 
     client_id = client.get('id', 0) or 0
     if _cb_is_open(client_id):
         print(f"[grab_url] Circuit open for client {client['name']} — skipping grab")
-        return False, client['name'], None
+        return False, client['name'], None, False
 
     ctype = client['type']
     if ctype == 'qbittorrent':
@@ -324,10 +337,10 @@ async def grab_url(url: str, protocol: str = '', save_path: str | None = None,
         ok, dl_id, healthy = await nzbget_grab(url, client=client)
     else:
         print(f"[grab_url] Client type '{ctype}' not yet implemented")
-        return False, client['name'], None
+        return False, client['name'], None, False
 
     if healthy:
         _cb_record_success(client_id)
     else:
         _cb_record_failure(client_id)
-    return ok, (client.get('type') or client['name']).lower(), dl_id
+    return ok, (client.get('type') or client['name']).lower(), dl_id, healthy

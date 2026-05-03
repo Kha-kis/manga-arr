@@ -157,13 +157,14 @@ def test_pipeline_search_to_qbit_handoff(fresh_db_with_qbit):
     captured: list = []
     mock_client = _make_qbit_mock(captured, auth_ok=True, add_status=200)
     with patch("httpx.AsyncClient", new=mock_client):
-        ok, client_type, dl_id = asyncio.run(
+        ok, client_type, dl_id, healthy = asyncio.run(
             main.grab_url(chosen["url"], protocol=chosen["protocol"])
         )
 
     # 3. grab_url result.
     assert ok is True, f"grab failed; captured calls: {captured}"
     assert client_type == "qbittorrent"
+    assert healthy is True, "client_healthy must be True on success"
     # For magnet URLs grab_url returns the btih hash directly.
     assert dl_id and len(dl_id) == 40, f"expected 40-char btih, got {dl_id!r}"
 
@@ -190,12 +191,13 @@ def test_pipeline_no_download_client_returns_failure(fresh_db_with_qbit):
     with sqlite3.connect(fresh_db_with_qbit) as c:
         c.execute("UPDATE download_clients SET enabled=0")
 
-    ok, client_type, dl_id = asyncio.run(
+    ok, client_type, dl_id, healthy = asyncio.run(
         main.grab_url("magnet:?xt=urn:btih:" + "a"*40, protocol="torrent")
     )
     assert ok is False
     assert client_type == "none"
     assert dl_id is None
+    assert healthy is False, "no client = not healthy"
 
 
 def test_pipeline_qbit_unreachable_trips_circuit(fresh_db_with_qbit):
@@ -212,7 +214,7 @@ def test_pipeline_qbit_unreachable_trips_circuit(fresh_db_with_qbit):
     with patch("httpx.AsyncClient", new=mock_client):
         # Repeat enough times to trip the circuit breaker.
         for _ in range(_CB_THRESHOLD):
-            ok, _, _ = asyncio.run(main.grab_url(magnet, protocol="torrent"))
+            ok, _, _, _ = asyncio.run(main.grab_url(magnet, protocol="torrent"))
             assert ok is False
 
     # CB should be open against client id 1 now — state is persisted in
@@ -225,7 +227,7 @@ def test_pipeline_qbit_unreachable_trips_circuit(fresh_db_with_qbit):
     # Subsequent grab while CB is open: short-circuits before any HTTP call.
     captured.clear()
     with patch("httpx.AsyncClient", new=mock_client):
-        ok, _, _ = asyncio.run(main.grab_url(magnet, protocol="torrent"))
+        ok, _, _, _ = asyncio.run(main.grab_url(magnet, protocol="torrent"))
     assert ok is False
     assert captured == [], "CB-open grab should not make HTTP calls"
 
