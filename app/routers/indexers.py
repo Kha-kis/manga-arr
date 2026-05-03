@@ -1176,7 +1176,12 @@ async def _search_indexer(idx: dict, query: str) -> list[dict]:
             return _parse_torznab_rss(r.text, name, proto)
 
     except Exception as e:
-        print(f"[Indexer:{name}] search error: {e}")
+        # Include the exception class name. Some httpx errors (and other
+        # network exceptions) have an empty str(e), which previously
+        # produced uninformative logs like "[Indexer:Prowlarr] search
+        # error:" with nothing after the colon. The recorded failure
+        # reason already includes the class name; the print should too.
+        print(f"[Indexer:{name}] search error: {type(e).__name__}: {e}")
         _indexer_record_failure(
             idx_id, status=None, retry_after_header=None,
             reason=f'{type(e).__name__}: {str(e)[:120]}'
