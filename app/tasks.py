@@ -289,6 +289,7 @@ def _parse_retry_after_seconds(raw: str | None) -> float | None:
 def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
                         queue_stale_days: int = 30,
                         importing_stale_hours: int = 6,
+                        events_retention_days: int = 90,
                         max_rows_per_sweep: int = 500) -> dict:
     """Reconcile the four stuck-state patterns the app can otherwise
     accumulate indefinitely:
@@ -337,6 +338,7 @@ def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
         'pending_deleted':  0,
         'queue_failed':     0,
         'importing_reset':  0,
+        'events_pruned':    0,
     }
 
     # ── Phase 1: stale grabbed volumes ──
@@ -466,6 +468,45 @@ def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
                 f"stuck in 'importing' for >{importing_stale_hours}h to 'failed' for retry",
                 db=db,
             )
+
+    # ── Phase 5: events table retention ──
+    # Without pruning, the events table grows indefinitely. Production
+    # observed: 5.8M rows / ~1GB after 26 days, dominated by repeated
+    # error events (one ghost content_path produced 1.65M rows alone —
+    # that source spam is now rate-limited at the log_event level via
+    # `dedup=True`, but historical accumulation stays until pruned).
+    #
+    # Retention default: 90 days. The /activity page only shows recent
+    # rows; older events have no surface in the UI and exist purely
+    # for forensic value, which 90 days covers comfortably.
+    #
+    # Use a chunked DELETE so a one-shot prune of millions of rows
+    # doesn't lock the writer for minutes — each chunk is its own
+    # short transaction. Bound at 50 chunks (= 250K rows) per sweep.
+    if events_retention_days > 0:
+        chunk_total = 0
+        for _ in range(50):
+            with get_db() as db:
+                cur = db.execute(
+                    "DELETE FROM events"
+                    " WHERE id IN ("
+                    "   SELECT id FROM events"
+                    "   WHERE created_at < datetime('now', ?)"
+                    "   LIMIT ?"
+                    " )",
+                    (f'-{int(events_retention_days)} days', 5000)
+                )
+                if cur.rowcount == 0:
+                    break
+                chunk_total += cur.rowcount
+        stats['events_pruned'] = chunk_total
+        if chunk_total:
+            with get_db() as db:
+                log_event(
+                    'stuck_cleanup',
+                    f'pruned {chunk_total} events older than {events_retention_days} days',
+                    db=db,
+                )
 
     return stats
 

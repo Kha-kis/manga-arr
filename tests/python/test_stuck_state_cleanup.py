@@ -286,6 +286,118 @@ def test_stats_dict_includes_importing_reset_key(env):
     assert stats['importing_reset'] == 0  # nothing to recover
 
 
+# ───────────────────── Phase 5: events table retention ─────────────────────
+
+
+def test_prunes_events_older_than_retention(env):
+    """Phase 5: events older than `events_retention_days` are deleted.
+    Production hit 5.8M rows / ~1GB; without pruning the events table
+    grows indefinitely. Default retention 90 days."""
+    from main import cleanup_stuck_state
+    _seed_series(env, 7)
+    with sqlite3.connect(env) as c:
+        # Old event (>90 days) — should be pruned
+        c.execute(
+            "INSERT INTO events(event_type, message, created_at)"
+            " VALUES('error', 'old', datetime('now', '-100 days'))"
+        )
+        # Recent event (<90 days) — should be kept
+        c.execute(
+            "INSERT INTO events(event_type, message, created_at)"
+            " VALUES('error', 'recent', datetime('now', '-1 day'))"
+        )
+
+    stats = cleanup_stuck_state()
+    assert stats['events_pruned'] == 1, (
+        f"expected 1 event pruned; got {stats['events_pruned']}"
+    )
+    with sqlite3.connect(env) as c:
+        rows = [r[0] for r in c.execute(
+            "SELECT message FROM events WHERE message IN ('old', 'recent')"
+        ).fetchall()]
+    assert rows == ['recent']  # 'old' is gone
+
+
+def test_events_retention_threshold_overridable(env):
+    """The retention is parameterizable for tests + future tuning."""
+    from main import cleanup_stuck_state
+    _seed_series(env, 7)
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO events(event_type, message, created_at)"
+            " VALUES('error', 'one-week-old', datetime('now', '-7 days'))"
+        )
+    # Default 90d retention: keeps it
+    stats = cleanup_stuck_state()
+    assert stats['events_pruned'] == 0
+    # Tighter 5d retention: prunes it
+    stats = cleanup_stuck_state(events_retention_days=5)
+    assert stats['events_pruned'] == 1
+
+
+def test_events_retention_disabled_when_zero(env):
+    """events_retention_days=0 disables pruning entirely (never delete).
+    Useful for users who want to keep historical events for forensics."""
+    from main import cleanup_stuck_state
+    _seed_series(env, 7)
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO events(event_type, message, created_at)"
+            " VALUES('error', 'forever', datetime('now', '-365 days'))"
+        )
+    stats = cleanup_stuck_state(events_retention_days=0)
+    assert stats['events_pruned'] == 0
+    with sqlite3.connect(env) as c:
+        n = c.execute("SELECT COUNT(*) FROM events WHERE message='forever'").fetchone()[0]
+    assert n == 1, "events_retention_days=0 must keep all events"
+
+
+def test_events_pruning_is_chunked_for_large_tables(env):
+    """Sanity: even with many old events, the prune doesn't lock the
+    writer for minutes. We chunk-DELETE 5K rows per transaction."""
+    from main import cleanup_stuck_state
+    _seed_series(env, 7)
+    with sqlite3.connect(env) as c:
+        # Insert 12K old events
+        c.executemany(
+            "INSERT INTO events(event_type, message, created_at)"
+            " VALUES('error', ?, datetime('now', '-100 days'))",
+            [(f'msg-{i}',) for i in range(12000)]
+        )
+    stats = cleanup_stuck_state()
+    assert stats['events_pruned'] == 12000
+
+
+# ───────────────────── log_event dedup rate-limit ─────────────────────
+
+
+def test_log_event_dedup_rate_limits_repeated_messages(env):
+    """log_event(..., dedup=True) only writes one row per (type, series_id,
+    message[:80]) tuple per TTL. Without this, a stable repeating
+    failure (content_path missing) spams the events table forever."""
+    from events import log_event, _LOG_DEDUP_LAST
+    _LOG_DEDUP_LAST.clear()
+    _seed_series(env, 7)
+    for _ in range(20):
+        log_event('error', 'Import queue: content_path not found: /a/b', 7, dedup=True)
+    with sqlite3.connect(env) as c:
+        n = c.execute(
+            "SELECT COUNT(*) FROM events WHERE message='Import queue: content_path not found: /a/b'"
+        ).fetchone()[0]
+    assert n == 1, f"expected 1 event with dedup; got {n}"
+
+
+def test_log_event_without_dedup_unchanged(env):
+    """Default dedup=False keeps prior behavior — every call writes a row."""
+    from events import log_event
+    _seed_series(env, 7)
+    for i in range(5):
+        log_event('info', f'distinct message {i}', 7)
+    with sqlite3.connect(env) as c:
+        n = c.execute("SELECT COUNT(*) FROM events WHERE event_type='info'").fetchone()[0]
+    assert n == 5
+
+
 def test_logs_events_for_each_category(env):
     from main import cleanup_stuck_state
     _seed_series(env, 7)
@@ -316,4 +428,5 @@ def test_stats_are_zero_when_nothing_stuck(env):
         'pending_deleted': 0,
         'queue_failed':    0,
         'importing_reset': 0,
+        'events_pruned':   0,
     }
