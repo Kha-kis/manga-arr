@@ -187,6 +187,105 @@ def test_recent_pending_import_queue_is_left_alone(env):
     assert stats['queue_failed'] == 0
 
 
+# ───────────────────── Phase 4: stuck 'importing' rows ─────────────────────
+
+
+def test_reverts_stuck_importing_queue_after_threshold(env):
+    """Phase 4: import_queue rows stuck in 'importing' state past
+    threshold get reverted to 'failed'. This was the production bug
+    where a worker died mid-import (or hit "database is locked"
+    trying to mark itself failed) and left the row claimed forever.
+    Auto-import status_loop never retried the row because it only
+    looks at 'pending'."""
+    from main import cleanup_stuck_state
+    _seed_series(env, 7)
+    with sqlite3.connect(env) as c:
+        # Old stuck importing row — should be recovered
+        c.execute(
+            "INSERT INTO import_queue(series_id, download_id, torrent_name,"
+            " status, created_at) VALUES(7, 'dl-old', 'OldImporting',"
+            " 'importing', datetime('now', '-10 hours'))"
+        )
+        # Recent importing row — should be left alone (worker may still be live)
+        c.execute(
+            "INSERT INTO import_queue(series_id, download_id, torrent_name,"
+            " status, created_at) VALUES(7, 'dl-fresh', 'FreshImporting',"
+            " 'importing', datetime('now', '-30 minutes'))"
+        )
+
+    stats = cleanup_stuck_state()
+    assert stats['importing_reset'] == 1, (
+        f"expected 1 stuck 'importing' to be reset; got {stats['importing_reset']}"
+    )
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        rows = {r['torrent_name']: r['status'] for r in c.execute(
+            "SELECT torrent_name, status FROM import_queue"
+        ).fetchall()}
+    assert rows['OldImporting']   == 'failed', "old stuck-importing must be reset to 'failed'"
+    assert rows['FreshImporting'] == 'importing', "fresh in-flight import must NOT be touched"
+
+
+def test_does_not_revert_importing_with_needs_review_files(env):
+    """Safety: rows with needs_review files carry user decisions and
+    must NOT be auto-recovered — operator must intervene via the
+    reconcile UI. Mirrors the planning logic in app/reconcile.py."""
+    from main import cleanup_stuck_state
+    _seed_series(env, 7)
+    with sqlite3.connect(env) as c:
+        # Old stuck importing row...
+        c.execute(
+            "INSERT INTO import_queue(id, series_id, download_id, torrent_name,"
+            " status, created_at) VALUES(99, 7, 'dl-needs-review', 'NeedsReview',"
+            " 'importing', datetime('now', '-10 hours'))"
+        )
+        # ...with at least one needs_review file
+        c.execute(
+            "INSERT INTO import_queue_files(queue_id, filename, src_path,"
+            " dst_path, status) VALUES(99, 'foo.cbz', '/src/foo.cbz',"
+            " '/dst/foo.cbz', 'needs_review')"
+        )
+
+    stats = cleanup_stuck_state()
+    assert stats['importing_reset'] == 0, (
+        "must NOT auto-recover rows with needs_review files"
+    )
+    with sqlite3.connect(env) as c:
+        status = c.execute(
+            "SELECT status FROM import_queue WHERE id=99"
+        ).fetchone()[0]
+    assert status == 'importing', "row must remain 'importing' for operator review"
+
+
+def test_importing_threshold_param_overridable(env):
+    """The threshold is parameterized (not just hardcoded). Useful for
+    tests + future tuning. Default is 6h."""
+    from main import cleanup_stuck_state
+    _seed_series(env, 7)
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO import_queue(series_id, download_id, torrent_name,"
+            " status, created_at) VALUES(7, 'dl-2h', 'TwoHoursOld',"
+            " 'importing', datetime('now', '-2 hours'))"
+        )
+    # With default threshold (6h), 2h-old row is left alone
+    stats = cleanup_stuck_state()
+    assert stats['importing_reset'] == 0
+    # With 1h threshold, same row gets recovered
+    stats = cleanup_stuck_state(importing_stale_hours=1)
+    assert stats['importing_reset'] == 1
+
+
+def test_stats_dict_includes_importing_reset_key(env):
+    """Schema check: the stats dict must include the new key so
+    downstream consumers (logs, tests, dashboards) don't KeyError."""
+    from main import cleanup_stuck_state
+    _seed_series(env, 7)
+    stats = cleanup_stuck_state()
+    assert 'importing_reset' in stats
+    assert stats['importing_reset'] == 0  # nothing to recover
+
+
 def test_logs_events_for_each_category(env):
     from main import cleanup_stuck_state
     _seed_series(env, 7)
@@ -212,4 +311,9 @@ def test_logs_events_for_each_category(env):
 def test_stats_are_zero_when_nothing_stuck(env):
     from main import cleanup_stuck_state
     stats = cleanup_stuck_state()
-    assert stats == {'volumes_reset': 0, 'pending_deleted': 0, 'queue_failed': 0}
+    assert stats == {
+        'volumes_reset':   0,
+        'pending_deleted': 0,
+        'queue_failed':    0,
+        'importing_reset': 0,
+    }
