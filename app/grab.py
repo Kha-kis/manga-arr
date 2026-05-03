@@ -104,6 +104,26 @@ from volumes import _cascade_chapters
 _GRABBING_URLS: set[str] = set()
 
 
+# In-memory rate-limit cache for grab-rejection events. Even "real
+# filtering" decisions (edition mismatch, blocked group, language)
+# fire every RSS poll for the same release because the rejection path
+# doesn't INSERT into seen — and shouldn't, because the user might
+# change the gating setting and we'd want to re-evaluate. Without
+# rate-limiting, a single colored release in the RSS feed produces
+# ~173 identical rejection events per day (observed in production).
+#
+# Cache key: (series_id, title, reason) — same release rejected for
+# the same reason silently skips re-logging within the TTL.
+# Cache value: monotonic-clock timestamp of last log.
+# TTL: 1 hour. Process-local. Cleared on restart so the first poll
+# after a restart still surfaces every rejection (intentional — gives
+# operators a clean view after config changes).
+import time as _time
+
+_REJECTION_LOG_TTL_S = 3600
+_rejection_log_last: dict[tuple[int, str, str], float] = {}
+
+
 def _log_grab_rejection(series_id: int, title: str, reason: str) -> None:
     """Surface a grab rejection as a `rejected_release` event.
 
@@ -113,11 +133,32 @@ def _log_grab_rejection(series_id: int, title: str, reason: str) -> None:
     dedup) is NOT logged here — those aren't rejections, just guards,
     and logging them would flood the events table on every RSS poll.
 
+    Rate-limited: the same (series_id, title, reason) tuple is only
+    logged once per `_REJECTION_LOG_TTL_S` (default 1h). Without this,
+    a stable rejection (e.g. user has series=standard but indexer
+    consistently returns a colored release) generates ~173 identical
+    events/day, drowning the debugging signal from rare rejections
+    operators actually care about.
+
     Also skipped: high-frequency informational rejections that repeat
     every poll for a stable reason (coverage-already-satisfied,
-    score-too-low, not-an-upgrade). Those would drown the debugging
-    signal from the rare rejections operators actually care about.
+    score-too-low, not-an-upgrade) — handled by the call sites in
+    grab.py NOT calling this function for those cases.
     """
+    key = (series_id, title[:120], reason[:80])
+    now = _time.monotonic()
+    last = _rejection_log_last.get(key, 0.0)
+    if now - last < _REJECTION_LOG_TTL_S:
+        return
+    _rejection_log_last[key] = now
+    # Prune stale entries on every Nth call so the dict doesn't grow
+    # unboundedly. Cheap O(n) sweep — n ~= unique recent rejections,
+    # typically <100.
+    if len(_rejection_log_last) > 1000:
+        cutoff = now - _REJECTION_LOG_TTL_S
+        for k, t in list(_rejection_log_last.items()):
+            if t < cutoff:
+                del _rejection_log_last[k]
     try:
         log_event('rejected_release',
                   f'{reason}: {title[:120]}',
