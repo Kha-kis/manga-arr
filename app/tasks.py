@@ -59,7 +59,7 @@ from __future__ import annotations
 import asyncio
 import os
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from events import log_event
 from grab import grab_existing, poll_rss
@@ -568,6 +568,62 @@ async def _backup_loop():
         except Exception as e:
             log_event('error', f"Auto-backup failed: {e}")
         await asyncio.sleep(interval_days * 86400)
+
+
+# ── Recycle-bin reaper (PR-3 of the recycle-bin epic) ────────────────────────
+# Hard-deletes series whose `deleted_at` is older than the configured
+# retention period. Runs every 6 hours so the "X days remaining" UI on
+# the recycle-bin page stays roughly accurate without spamming.
+
+def _run_recycle_bin_purge_once(*, retention_days: int | None = None) -> int:
+    """Hard-delete every series whose deleted_at is older than the
+    retention period. Returns the count of purged series. Extracted
+    from the loop body so the reaper can be exercised synchronously
+    in tests without spinning up the asyncio task."""
+    from shared import get_db
+    from routers.series_ import _hard_delete_series
+    if retention_days is None:
+        try:
+            retention_days = max(1, int(get_cfg('recycle_bin_retention_days', '30')))
+        except (TypeError, ValueError):
+            retention_days = 30
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    purged = 0
+    with get_db() as db:
+        expired = db.execute(
+            "SELECT id, title FROM series"
+            " WHERE deleted_at IS NOT NULL AND deleted_at < ?",
+            (cutoff.isoformat(sep=' ', timespec='seconds'),)
+        ).fetchall()
+        for row in expired:
+            try:
+                _hard_delete_series(db, row['id'], log_history=True)
+                purged += 1
+            except Exception as e:
+                log_event('error', f"Recycle-bin purge failed for series {row['id']}: {e}")
+    return purged
+
+
+async def _recycle_bin_reaper_loop():
+    """Background loop: every 6 hours, purge any soft-deleted series
+    older than the retention window. Slot into the existing background
+    scheduler in `main.py`."""
+    from routers.system import update_task_state
+    await asyncio.sleep(900)  # 15 min after startup
+    while True:
+        try:
+            purged = _run_recycle_bin_purge_once()
+            if purged:
+                log_event('recycle_bin_purge', f"Purged {purged} series from recycle bin")
+            now = datetime.now(timezone.utc)
+            update_task_state(
+                'RecycleBinPurge',
+                last_run=now,
+                next_run=datetime.fromtimestamp(now.timestamp() + 6 * 3600, tz=timezone.utc),
+            )
+        except Exception as e:
+            log_event('error', f"Recycle-bin reaper error: {e}")
+        await asyncio.sleep(6 * 3600)  # 6h
 
 
 # ── Background task lifecycle ────────────────────────────────────────────────

@@ -33,6 +33,7 @@ TASKS: list[dict] = [
     {"name": "Auto Backup",         "key": "Backup",            "interval": "daily",   "manual": True},
     {"name": "Reset Stuck Grabs",   "key": "ResetStuckGrabs",   "interval": "manual",  "manual": True},
     {"name": "Cleanup Seen Cache",  "key": "CleanupSeen",       "interval": "manual",  "manual": True},
+    {"name": "Recycle Bin Purge",   "key": "RecycleBinPurge",   "interval": "6 hr",    "manual": True},
 ]
 
 TASK_STATE: dict[str, dict] = {

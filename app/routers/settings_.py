@@ -185,6 +185,11 @@ async def save_general_settings(request: Request):
         'backup_retention':     lambda v: str(v or '10'),
         'ui_date_format':       lambda v: str(v or 'relative').strip() or 'relative',
         'blocklist_ttl_days': lambda v: str(max(0, int(str(v or '90') if str(v or '').strip().lstrip('-').isdigit() else 90))),
+        # Recycle-bin retention: how many days a soft-deleted series sits
+        # in /recycle-bin before the reaper hard-deletes it. Clamped 1–365.
+        'recycle_bin_retention_days': lambda v: str(
+            max(1, min(365, int(str(v or '30') if str(v or '').strip().lstrip('-').isdigit() else 30)))
+        ),
     }
     with get_db() as db:
         for key, coerce in coercers.items():
