@@ -288,8 +288,9 @@ def _parse_retry_after_seconds(raw: str | None) -> float | None:
 
 def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
                         queue_stale_days: int = 30,
+                        importing_stale_hours: int = 6,
                         max_rows_per_sweep: int = 500) -> dict:
-    """Reconcile the three stuck-state patterns the app can otherwise
+    """Reconcile the four stuck-state patterns the app can otherwise
     accumulate indefinitely:
 
       1. Volumes in status='grabbed' whose grabbed_at is older than
@@ -308,6 +309,18 @@ def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
          next periodic reconcile can return the associated volumes
          to 'wanted'.
 
+      4. import_queue rows stuck in status='importing' for more than
+         ``importing_stale_hours`` hours. The 'importing' state is
+         supposed to be ephemeral (a worker claimed it, then either
+         marks 'imported'/'failed'/'partial' on completion). Stuck
+         'importing' rows mean the worker died mid-flight or hit
+         "database is locked" trying to mark itself failed — leaving
+         the row claimed forever. Recover by reverting to 'failed' so
+         the next status_loop can retry. NOTE: rows with any
+         needs_review files are skipped (those carry user decisions
+         we shouldn't drop) — operator must intervene via the
+         reconcile UI for those.
+
     Every destructive action is logged via `log_event` so operators
     can see what moved. The ``max_rows_per_sweep`` cap exists as a
     safety valve against a bad filter matching the whole table — if
@@ -315,14 +328,15 @@ def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
 
     Returns a dict of counts for visibility in tests and logs.
     """
-    # One transaction per phase — not one big transaction for all three.
+    # One transaction per phase — not one big transaction for all four.
     # Each phase might process hundreds of rows; keeping each phase its
     # own transaction lets other writers slot in between. The stats dict
     # is accumulated across phases at function scope.
     stats = {
-        'volumes_reset':   0,
-        'pending_deleted': 0,
-        'queue_failed':    0,
+        'volumes_reset':    0,
+        'pending_deleted':  0,
+        'queue_failed':     0,
+        'importing_reset':  0,
     }
 
     # ── Phase 1: stale grabbed volumes ──
@@ -410,6 +424,46 @@ def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
                 'stuck_cleanup',
                 f'failed {len(stale_queue)} import_queue row(s) stuck in '
                 f'pending/partial for >{queue_stale_days} days',
+                db=db,
+            )
+
+    # ── Phase 4: stuck 'importing' queue rows ──
+    # The 'importing' state means a worker claimed the row but never
+    # marked completion. Two real causes observed in production:
+    #   (a) Worker died mid-flight (crash, restart) before the final
+    #       UPDATE.
+    #   (b) Concurrent SQLite writers — _execute_import holds the write
+    #       lock during file I/O; if the per-row commit-failed UPDATE
+    #       can't acquire the lock within busy_timeout, the row stays
+    #       claimed and the worker logs (but can't write to) the error.
+    # Recovery: revert to 'failed' so the next status_loop can retry.
+    # Skip rows that have files in 'needs_review' state — those carry
+    # user decisions and need manual operator action via the reconcile
+    # UI. (Mirrors the planning logic in app/reconcile.py.)
+    with get_db() as db:
+        stale_importing = db.execute(
+            "SELECT iq.id, iq.series_id, iq.torrent_name"
+            "  FROM import_queue iq"
+            " WHERE iq.status = 'importing'"
+            "   AND iq.created_at < datetime('now', ?)"
+            "   AND NOT EXISTS ("
+            "       SELECT 1 FROM import_queue_files f"
+            "        WHERE f.queue_id = iq.id AND f.status = 'needs_review'"
+            "   )"
+            " LIMIT ?",
+            (f'-{int(importing_stale_hours)} hours', max_rows_per_sweep)
+        ).fetchall()
+        for row in stale_importing:
+            db.execute(
+                "UPDATE import_queue SET status='failed' WHERE id=?",
+                (row['id'],)
+            )
+            stats['importing_reset'] += 1
+        if stale_importing:
+            log_event(
+                'stuck_cleanup',
+                f"reverted {len(stale_importing)} import_queue row(s) "
+                f"stuck in 'importing' for >{importing_stale_hours}h to 'failed' for retry",
                 db=db,
             )
 

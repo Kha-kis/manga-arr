@@ -139,6 +139,7 @@ def test_cleanup_stuck_state_uses_separate_transactions_per_phase(env):
         'volumes_reset':   1,
         'pending_deleted': 1,
         'queue_failed':    1,
+        'importing_reset': 0,
     }
 
 
