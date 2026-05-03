@@ -732,3 +732,267 @@ def test_recycle_bin_purge_task_in_system_tasks(env):
     r = _client().get("/system/tasks")
     assert r.status_code == 200
     assert 'Recycle Bin Purge' in r.text or 'RecycleBinPurge' in r.text
+
+
+# ───────────────────── PR-4: bulk operations ─────────────────────
+
+
+def test_bulk_restore_all_clears_every_binned_series(env):
+    """POST /recycle-bin/restore-all flips deleted_at=NULL on every bin
+    entry in one shot."""
+    _seed_series(env['db_path'], 1, 'A')
+    _seed_series(env['db_path'], 2, 'B')
+    _seed_series(env['db_path'], 3, 'C')
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute("UPDATE series SET deleted_at=CURRENT_TIMESTAMP WHERE id IN (1,2,3)")
+
+    csrf = _csrf("ra")
+    r = _client().post(
+        "/recycle-bin/restore-all",
+        data={'csrf_token': csrf['headers']['X-CSRFToken']},
+        **csrf, follow_redirects=False,
+    )
+    assert r.status_code in (200, 303), r.text
+
+    with sqlite3.connect(env['db_path']) as c:
+        n = c.execute(
+            "SELECT COUNT(*) FROM series WHERE deleted_at IS NULL"
+        ).fetchone()[0]
+    assert n == 3, "all 3 series must be restored"
+
+
+def test_bulk_restore_all_logs_history_per_series(env):
+    """Bulk restore must log a series_restored event for each restored
+    series — keeps the audit trail intact."""
+    _seed_series(env['db_path'], 1, 'A')
+    _seed_series(env['db_path'], 2, 'B')
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute("UPDATE series SET deleted_at=CURRENT_TIMESTAMP WHERE id IN (1,2)")
+
+    csrf = _csrf("rah")
+    _client().post(
+        "/recycle-bin/restore-all",
+        data={'csrf_token': csrf['headers']['X-CSRFToken']},
+        **csrf, follow_redirects=False,
+    )
+    with sqlite3.connect(env['db_path']) as c:
+        events = [r[0] for r in c.execute(
+            "SELECT source_title FROM history WHERE event_type='series_restored'"
+            " ORDER BY id"
+        ).fetchall()]
+    assert sorted(events) == ['A', 'B']
+
+
+def test_bulk_restore_all_empty_bin_is_no_op(env):
+    """Restore-all on an empty bin must not error."""
+    _seed_series(env['db_path'], 1, 'Active')  # not in bin
+    csrf = _csrf("rae")
+    r = _client().post(
+        "/recycle-bin/restore-all",
+        data={'csrf_token': csrf['headers']['X-CSRFToken']},
+        **csrf, follow_redirects=False,
+    )
+    assert r.status_code in (200, 303)
+    with sqlite3.connect(env['db_path']) as c:
+        # Active series untouched
+        s = c.execute("SELECT deleted_at FROM series WHERE id=1").fetchone()
+    assert s[0] is None
+
+
+def test_bulk_empty_purges_every_binned_series(env):
+    """POST /recycle-bin/empty hard-deletes every bin entry in one shot."""
+    _seed_series(env['db_path'], 1, 'A')
+    _seed_series(env['db_path'], 2, 'B')
+    _seed_series(env['db_path'], 3, 'Active')
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute("UPDATE series SET deleted_at=CURRENT_TIMESTAMP WHERE id IN (1,2)")
+
+    csrf = _csrf("eb")
+    r = _client().post(
+        "/recycle-bin/empty",
+        data={'csrf_token': csrf['headers']['X-CSRFToken']},
+        **csrf, follow_redirects=False,
+    )
+    assert r.status_code in (200, 303), r.text
+
+    with sqlite3.connect(env['db_path']) as c:
+        ids = [r[0] for r in c.execute("SELECT id FROM series ORDER BY id").fetchall()]
+    assert ids == [3], "only the active series must remain; bin must be empty"
+
+
+def test_bulk_empty_does_not_touch_active_series(env):
+    """Critical safety property: Empty-bin must NEVER touch active series,
+    even if the user has 50 active series and 0 binned."""
+    _seed_series(env['db_path'], 1, 'Active 1')
+    _seed_series(env['db_path'], 2, 'Active 2')
+    csrf = _csrf("ebs")
+    _client().post(
+        "/recycle-bin/empty",
+        data={'csrf_token': csrf['headers']['X-CSRFToken']},
+        **csrf, follow_redirects=False,
+    )
+    with sqlite3.connect(env['db_path']) as c:
+        n = c.execute("SELECT COUNT(*) FROM series").fetchone()[0]
+    assert n == 2
+
+
+def test_bulk_buttons_render_when_bin_has_entries(env):
+    """The /recycle-bin page must surface Restore-all + Empty-bin
+    buttons when the bin is non-empty (not when empty)."""
+    _seed_series(env['db_path'], 1, 'X')
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute("UPDATE series SET deleted_at=CURRENT_TIMESTAMP WHERE id=1")
+
+    r = _client().get("/recycle-bin")
+    assert r.status_code == 200
+    assert '/recycle-bin/restore-all' in r.text
+    assert '/recycle-bin/empty' in r.text
+    assert 'Restore all' in r.text
+    assert 'Empty bin' in r.text
+
+
+def test_bulk_buttons_hidden_when_bin_empty(env):
+    r = _client().get("/recycle-bin")
+    assert r.status_code == 200
+    assert '/recycle-bin/restore-all' not in r.text
+    assert '/recycle-bin/empty' not in r.text
+
+
+# ───────────────────── PR-4: file removal on permanent delete ─────────────────────
+
+
+def test_purge_removes_volume_files_from_disk(env, tmp_path):
+    """The per-row "Permanent delete" button removes on-disk volume files
+    in addition to the DB cascade."""
+    _seed_series(env['db_path'], 1, 'Series With Files')
+    # Replace the seeded volumes with rows whose import_path points to
+    # real files we can actually verify get removed.
+    f1 = tmp_path / "vol01.cbz"
+    f2 = tmp_path / "vol02.cbz"
+    f1.write_bytes(b"PK\x03\x04fake-cbz-1")
+    f2.write_bytes(b"PK\x03\x04fake-cbz-2")
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute("DELETE FROM volumes WHERE series_id=1")
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, import_path)"
+            " VALUES(1, 1, 'downloaded', ?), (1, 2, 'downloaded', ?)",
+            (str(f1), str(f2))
+        )
+        c.execute("UPDATE series SET deleted_at=CURRENT_TIMESTAMP WHERE id=1")
+    assert f1.exists() and f2.exists()
+
+    csrf = _csrf("pf")
+    _client().post(
+        "/series/1/purge",
+        data={'csrf_token': csrf['headers']['X-CSRFToken']},
+        **csrf, follow_redirects=False,
+    )
+    assert not f1.exists(), "volume file must be removed by purge"
+    assert not f2.exists(), "volume file must be removed by purge"
+
+
+def test_bulk_empty_removes_volume_files_from_disk(env, tmp_path):
+    """Empty-bin matches the per-row purge: removes files."""
+    _seed_series(env['db_path'], 1, 'Series A')
+    _seed_series(env['db_path'], 2, 'Series B')
+    f_a = tmp_path / "a-vol01.cbz"
+    f_b = tmp_path / "b-vol01.cbz"
+    f_a.write_bytes(b"a"); f_b.write_bytes(b"b")
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute("DELETE FROM volumes WHERE series_id IN (1,2)")
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, import_path)"
+            " VALUES(1, 1, 'downloaded', ?), (2, 1, 'downloaded', ?)",
+            (str(f_a), str(f_b))
+        )
+        c.execute("UPDATE series SET deleted_at=CURRENT_TIMESTAMP WHERE id IN (1,2)")
+
+    csrf = _csrf("ebf")
+    _client().post(
+        "/recycle-bin/empty",
+        data={'csrf_token': csrf['headers']['X-CSRFToken']},
+        **csrf, follow_redirects=False,
+    )
+    assert not f_a.exists()
+    assert not f_b.exists()
+
+
+def test_reaper_keeps_files_by_default(env, tmp_path):
+    """The reaper preserves files unless `recycle_bin_remove_files` is
+    explicitly enabled — preserves Mangarr's pre-epic behaviour where
+    series delete never touched the disk."""
+    from tasks import _run_recycle_bin_purge_once
+
+    _seed_series(env['db_path'], 1, 'Old')
+    f = tmp_path / "old-vol01.cbz"
+    f.write_bytes(b"data")
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute("DELETE FROM volumes WHERE series_id=1")
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, import_path)"
+            " VALUES(1, 1, 'downloaded', ?)", (str(f),)
+        )
+        c.execute("UPDATE series SET deleted_at=datetime('now', '-31 days') WHERE id=1")
+
+    purged = _run_recycle_bin_purge_once(retention_days=30)  # no remove_files arg
+    assert purged == 1
+    assert f.exists(), "default reaper must NOT remove files"
+
+
+def test_reaper_removes_files_when_remove_files_setting_enabled(env, tmp_path):
+    """When `recycle_bin_remove_files` setting is true, reaper deletes
+    files alongside the DB cascade."""
+    from tasks import _run_recycle_bin_purge_once
+
+    _seed_series(env['db_path'], 1, 'Old')
+    f = tmp_path / "old-vol01.cbz"
+    f.write_bytes(b"data")
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute("DELETE FROM volumes WHERE series_id=1")
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, import_path)"
+            " VALUES(1, 1, 'downloaded', ?)", (str(f),)
+        )
+        c.execute("UPDATE series SET deleted_at=datetime('now', '-31 days') WHERE id=1")
+
+    purged = _run_recycle_bin_purge_once(retention_days=30, remove_files=True)
+    assert purged == 1
+    assert not f.exists()
+
+
+def test_remove_files_handles_missing_file(env):
+    """A missing file (e.g. user moved it manually) must not block the
+    DB cascade — robustness property."""
+    from tasks import _run_recycle_bin_purge_once
+    _seed_series(env['db_path'], 1, 'Old')
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute("DELETE FROM volumes WHERE series_id=1")
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, import_path)"
+            " VALUES(1, 1, 'downloaded', '/tmp/does-not-exist-xyzzy.cbz')"
+        )
+        c.execute("UPDATE series SET deleted_at=datetime('now', '-31 days') WHERE id=1")
+    purged = _run_recycle_bin_purge_once(retention_days=30, remove_files=True)
+    assert purged == 1, "missing file must not block the cascade"
+
+
+# ───────────────────── PR-4: setting persists ─────────────────────
+
+
+def test_remove_files_setting_persists_via_general_form(env):
+    """The recycle_bin_remove_files toggle round-trips through
+    /settings/general."""
+    csrf = _csrf("rfs")
+    _client().post(
+        "/settings/general",
+        data={
+            'csrf_token': csrf['headers']['X-CSRFToken'],
+            'recycle_bin_remove_files': '1',  # checkbox value
+        },
+        **csrf, follow_redirects=False,
+    )
+    with sqlite3.connect(env['db_path']) as c:
+        v = c.execute(
+            "SELECT value FROM settings WHERE key='recycle_bin_remove_files'"
+        ).fetchone()
+    assert v is not None and v[0] == '1'

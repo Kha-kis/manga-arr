@@ -195,6 +195,18 @@
                    value="{{ cfg.recycle_bin_retention_days or '30' }}" min="1" max="365">
             <div class="form-text">Days a soft-deleted series sits in the recycle bin before the reaper permanently deletes it.</div>
           </div>
+          <div class="col-12 col-sm-6">
+            <label class="form-label">Reaper file deletion</label>
+            <div class="form-check form-switch mt-1">
+              <input type="hidden" name="recycle_bin_remove_files" value="0">
+              <input type="checkbox" name="recycle_bin_remove_files" value="1"
+                     class="form-check-input"
+                     id="rbf-toggle"
+                     {% if cfg.recycle_bin_remove_files in ('1', 'true', 'on', 'yes') %}checked{% endif %}>
+              <label class="form-check-label" for="rbf-toggle">Also delete files from disk when the reaper purges a series</label>
+            </div>
+            <div class="form-text">Off by default. The "Permanent delete" and "Empty bin" buttons always remove files regardless of this setting.</div>
+          </div>
         </div>
         <div class="mt-2">
           <a href="/recycle-bin" class="text-ember text-sm"><i class="bi bi-box-arrow-up-right me-1"></i>Open recycle bin</a>

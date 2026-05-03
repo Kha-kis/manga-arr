@@ -190,6 +190,12 @@ async def save_general_settings(request: Request):
         'recycle_bin_retention_days': lambda v: str(
             max(1, min(365, int(str(v or '30') if str(v or '').strip().lstrip('-').isdigit() else 30)))
         ),
+        # Reaper file deletion (PR-4). When set, the recycle-bin reaper
+        # additionally removes volume files from disk (matches what the
+        # explicit "Empty bin" / "Permanent delete" buttons always do).
+        # Default off — opt-in, preserves pre-epic behaviour where
+        # Mangarr never touched files on series delete.
+        'recycle_bin_remove_files': lambda v: '1' if str(v or '').strip().lower() in ('1', 'true', 'on', 'yes') else '0',
     }
     with get_db() as db:
         for key, coerce in coercers.items():
