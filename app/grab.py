@@ -978,7 +978,8 @@ async def poll_rss():
 
     with get_db() as db:
         series_list = [dict(r) for r in db.execute(
-            "SELECT id, title, search_pattern, pub_year, edition_type FROM series WHERE enabled=1 AND monitored=1"
+            "SELECT id, title, search_pattern, pub_year, edition_type FROM series"
+            " WHERE monitored=1 AND deleted_at IS NULL"
         ).fetchall()]
         seen_urls  = {r['torrent_url'] for r in db.execute("SELECT torrent_url FROM seen").fetchall()}
         blocked_urls = {r['torrent_url'] for r in db.execute("SELECT torrent_url FROM blocklist").fetchall()}

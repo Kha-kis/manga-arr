@@ -115,6 +115,7 @@ async def refresh_ongoing_loop():
                 candidates = db.execute(
                     "SELECT * FROM series WHERE UPPER(status) IN ('RELEASING','HIATUS')"
                     " AND anilist_id IS NOT NULL AND monitored=1"
+                    " AND deleted_at IS NULL"
                 ).fetchall()
             updated = 0
             now_utc = datetime.utcnow()
@@ -213,8 +214,9 @@ async def _backfill_metadata_loop():
     await asyncio.sleep(10)  # let startup settle first
     with get_db() as db:
         missing = db.execute(
-            "SELECT id FROM series WHERE mangadex_id IS NULL OR mal_id IS NULL OR mu_id IS NULL"
-            " OR (mangadex_id IS NOT NULL AND chapter_vol_map IS NULL)"
+            "SELECT id FROM series WHERE deleted_at IS NULL AND ("
+            " mangadex_id IS NULL OR mal_id IS NULL OR mu_id IS NULL"
+            " OR (mangadex_id IS NOT NULL AND chapter_vol_map IS NULL))"
         ).fetchall()
     for row in missing:
         # If we've been rate-limited recently, hold off until the deadline
@@ -233,6 +235,7 @@ async def _backfill_metadata_loop():
     with get_db() as db:
         needs_sync = db.execute(
             "SELECT id FROM series WHERE mangadex_id IS NOT NULL"
+            " AND deleted_at IS NULL"
             " AND NOT EXISTS (SELECT 1 FROM mangadex_chapters m WHERE m.series_id=series.id)"
         ).fetchall()
     for row in needs_sync:
@@ -439,6 +442,7 @@ async def backlog_search_loop():
                     "SELECT DISTINCT s.id, s.title, s.search_pattern, s.mangadex_id FROM series s"
                     " JOIN volumes v ON v.series_id=s.id"
                     " WHERE s.monitored=1 AND v.status='wanted'"
+                    " AND s.deleted_at IS NULL"
                 ).fetchall()
             searched = 0
             if ddl_only:
@@ -474,6 +478,7 @@ async def backlog_search():
             "SELECT DISTINCT s.id, s.title, s.search_pattern FROM series s"
             " JOIN volumes v ON v.series_id=s.id"
             " WHERE s.monitored=1 AND v.status='wanted'"
+            " AND s.deleted_at IS NULL"
         ).fetchall()
     searched = 0
     for s in wanted_series:

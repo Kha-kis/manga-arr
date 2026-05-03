@@ -196,14 +196,17 @@ async def _sync_list(lst: dict):
         db.execute("UPDATE import_lists SET last_sync=? WHERE id=?",
                    (datetime.utcnow().isoformat(), lst['id']))
 
-        # Dedup by (anilist_id, edition_type) — same series can exist in multiple editions
+        # Dedup by (anilist_id, edition_type) — same series can exist in multiple editions.
+        # Soft-deleted series don't count: an import-list re-add should create a fresh
+        # row rather than inheriting state from the recycle-bin entry.
         existing_ids = {(r['anilist_id'], r['edition_type'] or 'standard') for r in db.execute(
-            "SELECT anilist_id, edition_type FROM series WHERE anilist_id IS NOT NULL"
+            "SELECT anilist_id, edition_type FROM series"
+            " WHERE anilist_id IS NOT NULL AND deleted_at IS NULL"
         ).fetchall()}
 
         # Title-based dedup for sources without anilist_id (MAL, custom RSS)
         existing_titles = {r['title'].lower().strip() for r in db.execute(
-            "SELECT title FROM series"
+            "SELECT title FROM series WHERE deleted_at IS NULL"
         ).fetchall()}
 
         for entry in series_list:

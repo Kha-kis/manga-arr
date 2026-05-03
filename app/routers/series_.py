@@ -333,7 +333,9 @@ async def index(request: Request, q: str = "", sort: str = "title",
         order = build_order_by(sort,
                                allowed=_LIBRARY_SORT_ALLOWED,
                                default_key=_LIBRARY_SORT_DEFAULT)
-        series_rows = db.execute(f"SELECT * FROM series ORDER BY {order}").fetchall()
+        series_rows = db.execute(
+            f"SELECT * FROM series WHERE deleted_at IS NULL ORDER BY {order}"
+        ).fetchall()
 
         _vstats = {
             r['series_id']: dict(r) for r in db.execute(
@@ -922,18 +924,27 @@ async def search(request: Request, q: str = ""):
     if q.strip():
         results, source_used = await _m.search_series(q)
     with get_db() as db:
+        # Soft-deleted series don't block re-add — a user who soft-deleted
+        # then searches again should be able to add fresh (or restore via
+        # the recycle bin instead, but that's their choice).
         existing_anilist: dict[int, list[str]] = {}
         for r in db.execute(
-            "SELECT anilist_id, edition_type FROM series WHERE anilist_id IS NOT NULL"
+            "SELECT anilist_id, edition_type FROM series"
+            " WHERE anilist_id IS NOT NULL AND deleted_at IS NULL"
         ).fetchall():
             existing_anilist.setdefault(r['anilist_id'], []).append(r['edition_type'] or 'standard')
         existing_mu = {
             r['mu_id']
-            for r in db.execute("SELECT mu_id FROM series WHERE mu_id IS NOT NULL").fetchall()
+            for r in db.execute(
+                "SELECT mu_id FROM series WHERE mu_id IS NOT NULL"
+                " AND deleted_at IS NULL"
+            ).fetchall()
         }
         existing_titles = {
             r['title'].lower()
-            for r in db.execute("SELECT title FROM series").fetchall()
+            for r in db.execute(
+                "SELECT title FROM series WHERE deleted_at IS NULL"
+            ).fetchall()
         }
         root_folders = get_root_folders(db)
     return templates.TemplateResponse(request, "search.html", {
@@ -975,17 +986,21 @@ async def add_series(
     with get_db() as db:
         if anilist_id:
             existing = db.execute(
-                "SELECT id FROM series WHERE anilist_id=? AND edition_type=?",
+                "SELECT id FROM series WHERE anilist_id=? AND edition_type=?"
+                " AND deleted_at IS NULL",
                 (anilist_id, edition_type)
             ).fetchone()
         else:
             existing = db.execute(
-                "SELECT id FROM series WHERE anilist_id IS NULL AND title=? AND edition_type=?",
+                "SELECT id FROM series WHERE anilist_id IS NULL AND title=?"
+                " AND edition_type=? AND deleted_at IS NULL",
                 (title, edition_type)
             ).fetchone()
         if not existing and mu_id:
             existing = db.execute(
-                "SELECT id FROM series WHERE mu_id=? AND edition_type=?", (mu_id, edition_type)
+                "SELECT id FROM series WHERE mu_id=? AND edition_type=?"
+                " AND deleted_at IS NULL",
+                (mu_id, edition_type)
             ).fetchone()
         if existing:
             return RedirectResponse(f"/series/{existing['id']}", status_code=303)
@@ -1056,37 +1071,112 @@ async def api_cover_refresh(series_id: int):
     return JSONResponse({"ok": False, "error": "No cover_url stored for this series"})
 
 
-@router.post("/series/{series_id}/delete")
-async def delete_series(request: Request, series_id: int):
+def _hard_delete_series(db, series_id: int, *, log_history: bool = False) -> str:
+    """Destructive cascade for a series. Removes every dependent row +
+    the cover file. Returns the (possibly-empty) title for the caller's
+    logging purposes.
+
+    Used by:
+      - The recycle-bin reaper (`tasks.py:_recycle_bin_reaper_loop`)
+      - The "permanent delete now" button (`/series/{id}/purge`, PR-2)
+
+    The user-facing soft-delete (`delete_series`) does NOT call this —
+    soft-delete only sets `deleted_at`/`deletion_reason` and keeps every
+    dependent row in place so restore is a one-flag operation.
+    """
     import main as _m
-    with get_db() as db:
-        s = db.execute("SELECT title FROM series WHERE id=?", (series_id,)).fetchone()
-        title = s['title'] if s else ''
-        iq_ids = [r['id'] for r in db.execute(
-            "SELECT id FROM import_queue WHERE series_id=?", (series_id,)
-        ).fetchall()]
-        for iq_id in iq_ids:
-            db.execute("DELETE FROM import_queue_files WHERE queue_id=?", (iq_id,))
-        db.execute("DELETE FROM import_queue WHERE series_id=?", (series_id,))
-        db.execute("DELETE FROM chapters WHERE series_id=?", (series_id,))
-        db.execute("DELETE FROM volumes WHERE series_id=?", (series_id,))
-        db.execute("DELETE FROM pending_releases WHERE series_id=?", (series_id,))
-        db.execute("DELETE FROM seen WHERE series_id=?", (series_id,))
-        db.execute("DELETE FROM blocklist WHERE series_id=?", (series_id,))
-        db.execute("DELETE FROM series_aliases WHERE series_id=?", (series_id,))
-        db.execute("DELETE FROM series_tags WHERE series_id=?", (series_id,))
-        _m.add_history(db, 'series_deleted', None, title, '', source_title=title)
-        db.execute("DELETE FROM series WHERE id=?", (series_id,))
+    s = db.execute("SELECT title FROM series WHERE id=?", (series_id,)).fetchone()
+    title = s['title'] if s else ''
+    iq_ids = [r['id'] for r in db.execute(
+        "SELECT id FROM import_queue WHERE series_id=?", (series_id,)
+    ).fetchall()]
+    for iq_id in iq_ids:
+        db.execute("DELETE FROM import_queue_files WHERE queue_id=?", (iq_id,))
+    db.execute("DELETE FROM import_queue WHERE series_id=?", (series_id,))
+    db.execute("DELETE FROM chapters WHERE series_id=?", (series_id,))
+    db.execute("DELETE FROM volumes WHERE series_id=?", (series_id,))
+    db.execute("DELETE FROM pending_releases WHERE series_id=?", (series_id,))
+    db.execute("DELETE FROM seen WHERE series_id=?", (series_id,))
+    db.execute("DELETE FROM blocklist WHERE series_id=?", (series_id,))
+    db.execute("DELETE FROM series_aliases WHERE series_id=?", (series_id,))
+    db.execute("DELETE FROM series_tags WHERE series_id=?", (series_id,))
+    if log_history:
+        _m.add_history(db, 'series_purged', None, title, '', source_title=title)
+    db.execute("DELETE FROM series WHERE id=?", (series_id,))
     cover_path = f"/config/covers/{series_id}.jpg"
     try:
         if os.path.exists(cover_path):
             os.remove(cover_path)
     except OSError:
         pass
+    return title
+
+
+@router.post("/series/{series_id}/delete")
+async def delete_series(request: Request, series_id: int):
+    """Soft-delete a series. Sets `deleted_at` + `deletion_reason`; the
+    series and every dependent row remain in place but are filtered
+    out of all listing / search / activity queries until either the
+    user restores them (`/series/{id}/restore`) or the recycle-bin
+    reaper hard-deletes them after the configured retention period.
+    """
+    import main as _m
+    with get_db() as db:
+        s = db.execute("SELECT title FROM series WHERE id=?", (series_id,)).fetchone()
+        if not s:
+            # Already gone — fall through to a redirect (no-op) so we
+            # don't 404 the HTMX caller mid-flight.
+            title = ''
+        else:
+            title = s['title']
+            db.execute(
+                "UPDATE series SET deleted_at=CURRENT_TIMESTAMP,"
+                " deletion_reason=? WHERE id=? AND deleted_at IS NULL",
+                ('user_action', series_id)
+            )
+            _m.add_history(db, 'series_soft_deleted', None, title, '',
+                           source_title=title)
+
+    if request.headers.get("HX-Request") == "true":
+        import json
+        from fastapi.responses import Response as _Resp
+        return _Resp(headers={
+            "HX-Trigger": json.dumps({
+                "showToast": {
+                    "msg": f"{title} moved to recycle bin" if title else "Series moved to recycle bin",
+                    "type": "success",
+                    "actionLabel": "Undo",
+                    "actionUrl": f"/series/{series_id}/restore",
+                }
+            }),
+            "HX-Redirect": "/",
+        })
+    return RedirectResponse("/", status_code=303)
+
+
+@router.post("/series/{series_id}/restore")
+async def restore_series(request: Request, series_id: int):
+    """Restore a soft-deleted series. Clears `deleted_at` + reason.
+    The dependent rows were never touched, so restore is a one-flag
+    flip and the series re-appears in every listing immediately.
+    """
+    import main as _m
+    with get_db() as db:
+        s = db.execute(
+            "SELECT title, deleted_at FROM series WHERE id=?", (series_id,)
+        ).fetchone()
+        if s and s['deleted_at']:
+            db.execute(
+                "UPDATE series SET deleted_at=NULL, deletion_reason=NULL"
+                " WHERE id=?", (series_id,)
+            )
+            _m.add_history(db, 'series_restored', None, s['title'] or '',
+                           '', source_title=s['title'] or '')
+
     if request.headers.get("HX-Request") == "true":
         from fastapi.responses import Response as _Resp
-        return _Resp(headers={"HX-Redirect": "/"})
-    return RedirectResponse("/", status_code=303)
+        return _Resp(headers={"HX-Redirect": f"/series/{series_id}"})
+    return RedirectResponse(f"/series/{series_id}", status_code=303)
 
 
 @router.post("/series/{series_id}/grab")

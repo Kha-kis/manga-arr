@@ -22,11 +22,13 @@ async def wanted(request: Request, page: int = 1):
         total_count = db.execute(
             "SELECT COUNT(*) FROM volumes v JOIN series s ON s.id = v.series_id "
             "WHERE v.status='wanted' AND s.monitored=1 AND v.monitored=1"
+            "  AND s.deleted_at IS NULL"
         ).fetchone()[0]
         wanted_rows = db.execute(
             "SELECT v.*, s.title as series_title, s.id as series_id "
             "FROM volumes v JOIN series s ON s.id = v.series_id "
             "WHERE v.status='wanted' AND s.monitored=1 AND v.monitored=1 "
+            "  AND s.deleted_at IS NULL "
             "ORDER BY s.title, COALESCE(v.volume_num, 9999) "
             "LIMIT ? OFFSET ?",
             (per_page, offset)
@@ -37,6 +39,7 @@ async def wanted(request: Request, page: int = 1):
             "JOIN series s ON s.id = c.series_id "
             "LEFT JOIN volumes v ON v.id = c.volume_id "
             "WHERE c.status='wanted' AND c.monitored=1 AND s.monitored=1 "
+            "  AND s.deleted_at IS NULL "
             "  AND (c.volume_id IS NULL OR v.status = 'downloaded') "
             "ORDER BY s.title, c.chapter_num"
         ).fetchall()
@@ -78,7 +81,7 @@ async def search_all_wanted(request: Request):
     with get_db() as db:
         series_list = db.execute(
             "SELECT id, title, search_pattern FROM series "
-            "WHERE monitored=1 AND EXISTS ("
+            "WHERE monitored=1 AND deleted_at IS NULL AND EXISTS ("
             "  SELECT 1 FROM volumes WHERE series_id=series.id AND status='wanted'"
             ")"
         ).fetchall()
@@ -121,6 +124,7 @@ async def cutoff_unmet_page(request: Request):
             LEFT JOIN quality_profiles qp ON qp.id = s.quality_profile_id
             WHERE v.status = 'downloaded'
               AND s.monitored = 1
+              AND s.deleted_at IS NULL
         """).fetchall()
         cutoff_unmet = []
         for row in rows:
@@ -163,6 +167,7 @@ async def stats_page(request: Request):
                 SUM(CASE WHEN UPPER(s.status) IN ('FINISHED','COMPLETED') THEN 1 ELSE 0 END) as finished,
                 SUM(CASE WHEN s.monitored=1 THEN 1 ELSE 0 END) as monitored
             FROM series s
+            WHERE s.deleted_at IS NULL
         """).fetchone()
 
         volumes_stats = db.execute("""
@@ -239,6 +244,7 @@ async def calendar_page(request: Request):
             " FROM series s"
             " JOIN volumes v ON v.series_id=s.id AND v.volume_num IS NOT NULL"
             " WHERE UPPER(s.status)='RELEASING' AND s.monitored=1"
+            " AND s.deleted_at IS NULL"
             " GROUP BY s.id HAVING missing > 0"
             " ORDER BY wanted_count DESC, s.title"
         ).fetchall()
@@ -264,6 +270,7 @@ async def calendar_page(request: Request):
             "SELECT s.id, s.title, s.cover_url, s.status, s.total_volumes, s.pub_year"
             " FROM series s"
             " WHERE UPPER(s.status)='NOT_YET_RELEASED' AND s.monitored=1"
+            " AND s.deleted_at IS NULL"
             " ORDER BY COALESCE(s.pub_year, 9999), s.title"
         ).fetchall()
 
@@ -274,6 +281,7 @@ async def calendar_page(request: Request):
             " FROM series s"
             " JOIN volumes v ON v.series_id=s.id AND v.volume_num IS NOT NULL"
             " WHERE UPPER(s.status) IN ('HIATUS','ON_HIATUS') AND s.monitored=1"
+            " AND s.deleted_at IS NULL"
             " GROUP BY s.id"
             " ORDER BY s.title"
         ).fetchall()
