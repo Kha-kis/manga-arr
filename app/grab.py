@@ -147,8 +147,12 @@ def _log_grab_rejection(series_id: int, title: str, reason: str) -> None:
     """
     key = (series_id, title[:120], reason[:80])
     now = _time.monotonic()
-    last = _rejection_log_last.get(key, 0.0)
-    if now - last < _REJECTION_LOG_TTL_S:
+    last = _rejection_log_last.get(key)
+    # First-time keys MUST log. Don't use `last = 0.0` default + `now - last`
+    # comparison — `time.monotonic()` returns seconds since process start
+    # which can be < TTL early on, causing the very first call to silently
+    # skip. Explicit "key not in dict" branch fixes that.
+    if last is not None and (now - last) < _REJECTION_LOG_TTL_S:
         return
     _rejection_log_last[key] = now
     # Prune stale entries on every Nth call so the dict doesn't grow
