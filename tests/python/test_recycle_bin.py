@@ -455,3 +455,113 @@ def test_restore_of_active_series_is_no_op(env):
             "SELECT COUNT(*) FROM history WHERE event_type='series_restored'"
         ).fetchone()[0]
     assert ev == 0
+
+
+# ───────────────────── PR-2: /recycle-bin page ─────────────────────
+
+
+def test_recycle_bin_page_renders_with_binned_series(env):
+    """The /recycle-bin page lists every soft-deleted series with
+    restore + permanent-delete buttons."""
+    _seed_series(env['db_path'], 1, 'Active Series')
+    _seed_series(env['db_path'], 2, 'Binned Alpha')
+    _seed_series(env['db_path'], 3, 'Binned Beta')
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute("UPDATE series SET deleted_at=CURRENT_TIMESTAMP WHERE id=2")
+        c.execute("UPDATE series SET deleted_at=CURRENT_TIMESTAMP WHERE id=3")
+
+    r = _client().get("/recycle-bin")
+    assert r.status_code == 200
+    body = r.text
+    assert 'Binned Alpha' in body
+    assert 'Binned Beta' in body
+    assert 'Active Series' not in body, "active series must not appear in bin"
+    # Restore + purge form actions present
+    assert '/series/2/restore' in body
+    assert '/series/2/purge' in body
+
+
+def test_recycle_bin_page_empty_state(env):
+    r = _client().get("/recycle-bin")
+    assert r.status_code == 200
+    assert 'recycle bin is empty' in r.text.lower()
+
+
+# ───────────────────── PR-2: purge endpoint ─────────────────────
+
+
+def test_purge_hard_deletes_only_soft_deleted_series(env):
+    """Purge fires the destructive cascade — series + all dependents
+    must be gone after."""
+    _seed_series(env['db_path'], 1, 'To Purge')
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute("UPDATE series SET deleted_at=CURRENT_TIMESTAMP WHERE id=1")
+
+    csrf = _csrf("purge")
+    r = _client().post(
+        "/series/1/purge",
+        data={'csrf_token': csrf['headers']['X-CSRFToken']},
+        **csrf, follow_redirects=False,
+    )
+    assert r.status_code in (200, 303), r.text
+
+    with sqlite3.connect(env['db_path']) as c:
+        s   = c.execute("SELECT 1 FROM series WHERE id=1").fetchone()
+        v   = c.execute("SELECT COUNT(*) FROM volumes WHERE series_id=1").fetchone()[0]
+        ch  = c.execute("SELECT COUNT(*) FROM chapters WHERE series_id=1").fetchone()[0]
+        sn  = c.execute("SELECT COUNT(*) FROM seen WHERE series_id=1").fetchone()[0]
+        tg  = c.execute("SELECT COUNT(*) FROM series_tags WHERE series_id=1").fetchone()[0]
+        al  = c.execute("SELECT COUNT(*) FROM series_aliases WHERE series_id=1").fetchone()[0]
+    assert s is None
+    assert v == 0
+    assert ch == 0
+    assert sn == 0
+    assert tg == 0
+    assert al == 0
+
+
+def test_purge_logs_history_event(env):
+    _seed_series(env['db_path'], 1, 'To Purge')
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute("UPDATE series SET deleted_at=CURRENT_TIMESTAMP WHERE id=1")
+    csrf = _csrf("phist")
+    _client().post(
+        "/series/1/purge",
+        data={'csrf_token': csrf['headers']['X-CSRFToken']},
+        **csrf, follow_redirects=False,
+    )
+    with sqlite3.connect(env['db_path']) as c:
+        ev = c.execute(
+            "SELECT event_type FROM history WHERE event_type='series_purged'"
+        ).fetchone()
+    assert ev is not None
+
+
+def test_purge_refuses_active_series(env):
+    """Purge on an active (not soft-deleted) series must NOT cascade —
+    safety guard against a stale UI button or scripted misuse."""
+    _seed_series(env['db_path'], 1, 'Active Series')
+    csrf = _csrf("prefuse")
+    r = _client().post(
+        "/series/1/purge",
+        data={'csrf_token': csrf['headers']['X-CSRFToken']},
+        **csrf, follow_redirects=False,
+    )
+    # Must redirect (no 500 / no 400) but the series must still exist
+    assert r.status_code in (200, 303)
+    with sqlite3.connect(env['db_path']) as c:
+        s = c.execute("SELECT 1 FROM series WHERE id=1").fetchone()
+        v = c.execute("SELECT COUNT(*) FROM volumes WHERE series_id=1").fetchone()[0]
+    assert s is not None, "active series must NOT be purged"
+    assert v > 0, "volumes must NOT be cascaded"
+
+
+# ───────────────────── PR-2: nav link ─────────────────────
+
+
+def test_nav_includes_recycle_bin_link(env):
+    """Discoverability: Recycle Bin appears in the sidebar nav."""
+    r = _client().get("/")
+    assert r.status_code == 200
+    assert '/recycle-bin' in r.text
+    assert 'Recycle Bin' in r.text

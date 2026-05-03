@@ -1338,6 +1338,23 @@
     .app-toast.toast-warning { border-left: 3px solid var(--gold); }
     .app-toast.toast-warning .toast-icon { color: var(--gold); }
 
+    .app-toast-action {
+      margin-left: auto;
+      padding: 4px 10px;
+      font-size: var(--text-sm);
+      font-weight: 600;
+      background: transparent;
+      border: 1px solid var(--ember);
+      color: var(--ember);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .app-toast-action:hover {
+      background: var(--ember);
+      color: var(--ink-1);
+    }
+
     @keyframes toast-in {
       from { opacity: 0; transform: translateX(20px) scale(0.95); }
       to   { opacity: 1; transform: translateX(0)    scale(1); }
@@ -1716,6 +1733,9 @@
         <a href="/blocklist" class="nav-item {% block nav_blocklist %}{% endblock %}" data-label="Blocklist">
           <i class="bi bi-slash-circle-fill"></i><span>Blocklist</span>
         </a>
+        <a href="/recycle-bin" class="nav-item {% block nav_recycle_bin %}{% endblock %}" data-label="Recycle Bin">
+          <i class="bi bi-trash3-fill"></i><span>Recycle Bin</span>
+        </a>
         <a href="/health" class="nav-item {% block nav_health %}{% endblock %}" data-label="Health">
           <i class="bi bi-heart-pulse-fill"></i><span>Health</span>
         </a>
@@ -2004,7 +2024,7 @@ document.body.addEventListener('htmx:confirm', function(e) {
 });
 
 // ── Toast helper ─────────────────────────────────────────────────────────
-function showToast(msg, type='info', duration=3500) {
+function showToast(msg, type='info', duration=3500, opts={}) {
   const icons = { success: 'bi-check-circle-fill', error: 'bi-x-circle-fill', info: 'bi-info-circle-fill', warning: 'bi-exclamation-triangle-fill' };
   const el = document.createElement('div');
   el.className = `app-toast toast-${type}`;
@@ -2014,6 +2034,37 @@ function showToast(msg, type='info', duration=3500) {
   txt.textContent = msg;
   el.appendChild(icon);
   el.appendChild(txt);
+
+  // Optional action button (e.g. Undo on soft-delete). The action POSTs
+  // to actionUrl with CSRF — used by the recycle-bin epic for the
+  // restore-after-delete flow. Toast persists longer when an action is
+  // present so the user has time to click.
+  if (opts.actionLabel && opts.actionUrl) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'app-toast-action';
+    btn.textContent = opts.actionLabel;
+    btn.addEventListener('click', async () => {
+      try {
+        const resp = await fetch(opts.actionUrl, {
+          method: 'POST',
+          headers: {'X-CSRFToken': _csrfToken()},
+        });
+        if (resp.ok) {
+          el.remove();
+          // Reload so the restored row reappears in any current listing.
+          window.location.reload();
+        } else {
+          showToast('Undo failed', 'error');
+        }
+      } catch (e) {
+        showToast('Undo failed', 'error');
+      }
+    });
+    el.appendChild(btn);
+    duration = Math.max(duration, 8000);
+  }
+
   document.getElementById('toast-container').appendChild(el);
   setTimeout(() => {
     el.style.transition = 'opacity 0.3s, transform 0.3s';
@@ -2068,7 +2119,11 @@ document.addEventListener('htmx:configRequest', function(evt) {
 
 // ── HTMX: HX-Trigger → showToast ─────────────────────────────────────────
 document.body.addEventListener('showToast', function(evt) {
-  showToast(evt.detail.msg || 'Done', evt.detail.type || 'success');
+  const d = evt.detail || {};
+  showToast(d.msg || 'Done', d.type || 'success', undefined, {
+    actionLabel: d.actionLabel,
+    actionUrl:   d.actionUrl,
+  });
 });
 
 document.addEventListener('DOMContentLoaded', function() {

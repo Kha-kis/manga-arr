@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Recycle Bin — {{ get_instance_name() }}{% endblock %}
+{% block title_short %}Recycle Bin{% endblock %}
+{% block nav_recycle_bin %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div class="page-heading mb-0"><i class="bi bi-trash3-fill"></i>Recycle Bin</div>
+  <div class="d-flex align-items-center gap-3">
+    {% if binned %}<span class="text-muted" style="font-size:var(--text-base)">{{ binned|length }} series</span>{% endif %}
+    <span style="font-size:var(--text-sm); color:var(--text-3)">
+      <i class="bi bi-clock me-1"></i>Auto-purge after {{ retention_days }}d
+    </span>
+  </div>
+</div>
+
+<p class="text-muted" style="font-size:var(--text-sm); color:var(--text-3); margin-bottom:1rem">
+  Soft-deleted series sit here until the recycle-bin reaper hard-deletes them after the retention window.
+  Restore brings the series back exactly as it was — volumes, chapters, history, and tags all preserved.
+  Permanent delete cannot be undone.
+</p>
+
+{% if binned %}
+<div class="table-wrap">
+  <table class="table table-sm mb-0">
+    <thead>
+      <tr>
+        <th style="width:60px"></th>
+        <th>Series</th>
+        <th style="width:90px">Volumes</th>
+        <th style="width:120px">Reason</th>
+        <th style="width:140px">Deleted</th>
+        <th style="width:130px">Days Left</th>
+        <th style="width:200px"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in binned %}
+      <tr>
+        <td>
+          {% if entry.cover_url %}
+          <img src="/covers/{{ entry.id }}.jpg"
+               alt=""
+               style="width:40px;height:56px;object-fit:cover;border-radius:var(--radius-xs);background:var(--ink-3)"
+               onerror="this.style.display='none'">
+          {% endif %}
+        </td>
+        <td>
+          <span class="fw-semibold" style="font-size:var(--text-base)">{{ entry.title }}</span>
+        </td>
+        <td class="text-muted" style="font-size:var(--text-sm)">{{ entry.volume_count }}</td>
+        <td class="text-muted" style="font-size:var(--text-sm)">
+          {% if entry.deletion_reason == 'user_action' %}
+            <span class="badge text-bg-secondary">User</span>
+          {% else %}
+            <span class="badge text-bg-secondary">{{ entry.deletion_reason or '—' }}</span>
+          {% endif %}
+        </td>
+        <td class="text-muted" style="font-size:var(--text-sm)" title="{{ entry.deleted_at or '' }}">
+          {{ (entry.deleted_at or '')[:10] or '—' }}
+        </td>
+        <td>
+          {% if entry.days_remaining > 7 %}
+            <span style="color:var(--jade); font-size:var(--text-sm)">{{ entry.days_remaining }}d</span>
+          {% elif entry.days_remaining > 0 %}
+            <span style="color:var(--gold); font-size:var(--text-sm)">{{ entry.days_remaining }}d</span>
+          {% else %}
+            <span style="color:var(--ruby); font-size:var(--text-sm)">overdue</span>
+          {% endif %}
+        </td>
+        <td class="text-end">
+          <form method="POST" action="/series/{{ entry.id }}/restore"
+                style="display:inline">
+            <button type="submit" class="btn btn-sm btn-outline-ember"
+                    title="Restore — series and all its data come back exactly as they were">
+              <i class="bi bi-arrow-counterclockwise"></i> Restore
+            </button>
+          </form>
+          <form method="POST" action="/series/{{ entry.id }}/purge"
+                style="display:inline"
+                hx-post="/series/{{ entry.id }}/purge"
+                hx-confirm="Permanently delete &quot;{{ entry.title }}&quot;? This cannot be undone — volumes, chapters, history, and tags will all be removed."
+                hx-swap="none">
+            <button type="submit" class="btn btn-sm btn-danger-soft"
+                    title="Permanent delete — irreversible">
+              <i class="bi bi-trash"></i>
+            </button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="empty-state text-center" style="padding:3rem 1rem">
+  <i class="bi bi-trash3" style="font-size:3rem; color:var(--text-3); margin-bottom:1rem; display:block"></i>
+  <p class="text-muted" style="font-size:var(--text-base)">The recycle bin is empty.</p>
+  <p class="text-muted" style="font-size:var(--text-sm); color:var(--text-3)">
+    Deleted series will appear here for {{ retention_days }} days before being permanently removed.
+  </p>
+</div>
+{% endif %}
+{% endblock %}

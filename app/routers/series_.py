@@ -1179,6 +1179,83 @@ async def restore_series(request: Request, series_id: int):
     return RedirectResponse(f"/series/{series_id}", status_code=303)
 
 
+@router.post("/series/{series_id}/purge")
+async def purge_series(request: Request, series_id: int):
+    """Permanent delete from the recycle bin. Runs the destructive
+    cascade in `_hard_delete_series` and logs a 'series_purged' history
+    event. Refuses to purge a series that isn't currently soft-deleted —
+    the only way into a permanent delete is via the recycle-bin UI,
+    which only shows soft-deleted entries.
+    """
+    with get_db() as db:
+        row = db.execute(
+            "SELECT deleted_at FROM series WHERE id=?", (series_id,)
+        ).fetchone()
+        if not row or not row['deleted_at']:
+            # Not in the bin — refuse silently rather than 404 (the
+            # button is only rendered for binned entries; if it fires on
+            # a non-binned series, something stale-rendered).
+            if request.headers.get("HX-Request") == "true":
+                from fastapi.responses import Response as _Resp
+                return _Resp(headers={"HX-Redirect": "/recycle-bin"})
+            return RedirectResponse("/recycle-bin", status_code=303)
+        _hard_delete_series(db, series_id, log_history=True)
+
+    if request.headers.get("HX-Request") == "true":
+        import json
+        from fastapi.responses import Response as _Resp
+        return _Resp(headers={
+            "HX-Trigger": json.dumps({
+                "showToast": {"msg": "Series permanently deleted", "type": "success"}
+            }),
+            "HX-Redirect": "/recycle-bin",
+        })
+    return RedirectResponse("/recycle-bin", status_code=303)
+
+
+@router.get("/recycle-bin", response_class=HTMLResponse)
+async def recycle_bin_page(request: Request):
+    """Listing of soft-deleted series with restore + permanent-delete
+    buttons. Shows the cover, title, deleted-at timestamp, days
+    remaining (against the configured retention period), and the
+    deletion reason.
+    """
+    from shared import get_cfg
+    try:
+        retention_days = max(1, int(get_cfg('recycle_bin_retention_days', '30')))
+    except (TypeError, ValueError):
+        retention_days = 30
+
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT id, title, cover_url, deleted_at, deletion_reason,"
+            " (SELECT COUNT(*) FROM volumes WHERE series_id=series.id) as volume_count"
+            " FROM series"
+            " WHERE deleted_at IS NOT NULL"
+            " ORDER BY deleted_at DESC"
+        ).fetchall()
+        binned = [dict(r) for r in rows]
+
+    # Annotate with days_remaining (computed in Python so the template
+    # is dumb-display only). Negative values mean the reaper is overdue.
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    for entry in binned:
+        try:
+            # SQLite CURRENT_TIMESTAMP yields 'YYYY-MM-DD HH:MM:SS' UTC
+            ts_str = (entry['deleted_at'] or '').replace('T', ' ').rstrip('Z')
+            dt = datetime.fromisoformat(ts_str).replace(tzinfo=timezone.utc)
+            elapsed_days = (now - dt).total_seconds() / 86400
+            entry['days_remaining'] = max(0, int(retention_days - elapsed_days))
+        except (TypeError, ValueError):
+            entry['days_remaining'] = retention_days
+
+    return templates.TemplateResponse(request, "recycle_bin.html", {
+        "binned":         binned,
+        "retention_days": retention_days,
+    })
+
+
 @router.post("/series/{series_id}/grab")
 async def manual_grab(request: Request, series_id: int):
     import main as _m
