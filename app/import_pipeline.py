@@ -1360,6 +1360,18 @@ def _plan_import(
     )
 
 
+@dataclass
+class _StageOutcome:
+    """Phase 2 result for one file. Carries the final destination
+    after any CBR→CBZ rename and the error string if staging failed.
+    Phase 3 reads these to drive DB writes.
+    """
+    file_id: int
+    ok: bool
+    final_dst: str        # post CBR→CBZ rename; '' on failure
+    error: str            # populated when ok=False
+
+
 class _ImportStaging:
     """Per-import-batch staging directory + two-phase commit.
 
@@ -1468,6 +1480,56 @@ class _ImportStaging:
             pass
         except OSError as e:
             print(f"[Import] failed to clean staging dir {self.staging_dir}: {e}")
+
+
+async def _stage_files(
+    plan: _ImportPlan,
+    staging: _ImportStaging,
+) -> list[_StageOutcome]:
+    """Phase 2: filesystem operations only (no DB).
+
+    For each ready file: stage via the helper, run CBR→CBZ if needed,
+    inject ComicInfo. Returns one _StageOutcome per planned file.
+    Files marked skip / needs_review / pre_failed in Phase 1 are
+    represented with ok=False, error='' so the Phase-3 loop can
+    iterate uniformly without a parallel index.
+
+    Caller decides commit_all vs rollback after this returns.
+    """
+    outcomes: list[_StageOutcome] = []
+    for fp in plan.files:
+        if fp.plan_status != 'ready':
+            outcomes.append(_StageOutcome(
+                file_id=fp.file_id, ok=False, final_dst='', error='',
+            ))
+            continue
+        try:
+            stage_path = await asyncio.to_thread(staging.stage, fp.src_path, fp.dst_path)
+            stage_after = await asyncio.to_thread(_maybe_convert_to_cbz, stage_path)
+            final_dst = fp.dst_path
+            if stage_after != stage_path:
+                final_dst = staging.rename(stage_path, stage_after)
+            if plan.series:
+                if fp.file_type == 'chapter':
+                    await asyncio.to_thread(
+                        _try_inject_comicinfo,
+                        stage_after, plan.series,
+                        chapter_num=fp.proposed_chap, tags=plan.series_tags,
+                    )
+                else:
+                    await asyncio.to_thread(
+                        _try_inject_comicinfo,
+                        stage_after, plan.series,
+                        volume_num=fp.proposed_vol, tags=plan.series_tags,
+                    )
+            outcomes.append(_StageOutcome(
+                file_id=fp.file_id, ok=True, final_dst=final_dst, error='',
+            ))
+        except Exception as e:
+            outcomes.append(_StageOutcome(
+                file_id=fp.file_id, ok=False, final_dst='', error=str(e),
+            ))
+    return outcomes
 
 
 # ── Import concurrency guard ──────────────────────────────────────────────────
@@ -1588,11 +1650,10 @@ async def _execute_import_impl(
         if plan is None:
             return False
 
-        queue        = plan.queue
-        s            = plan.series
-        _series_tags = plan.series_tags
-        dst_dir      = plan.dst_dir
-        now_ts       = plan.now_ts
+        queue   = plan.queue
+        s       = plan.series
+        dst_dir = plan.dst_dir
+        now_ts  = plan.now_ts
 
         imported_count = 0
         imported_vols: set[float] = set()
@@ -1605,6 +1666,11 @@ async def _execute_import_impl(
         # filesystem staging so DB writes (queue_files, volumes, chapters)
         # commit together with the renames — or roll back together.
         staging = _ImportStaging(dst_dir, queue['id'], import_mode)
+
+        # Phase 2 — pure filesystem (no DB writes).
+        outcomes = await _stage_files(plan, staging)
+        outcomes_by_id = {o.file_id: o for o in outcomes}
+
         db.execute("SAVEPOINT import_batch")
         # First file that failed mid-batch, so we can still mark it 'failed'
         # in the DB AFTER the savepoint rollback reverts other writes.
@@ -1613,7 +1679,7 @@ async def _execute_import_impl(
 
         for fp in plan.files:
             if fp.plan_status in ('skip', 'needs_review'):
-                # Already persisted by _plan_import; nothing more to do.
+                # Already persisted by _plan_import.
                 continue
             if fp.plan_status == 'pre_failed':
                 db.execute(
@@ -1624,31 +1690,31 @@ async def _execute_import_impl(
                 any_error = True
                 continue
 
-            # plan_status == 'ready'
-            src = fp.src_path
-            dst = fp.dst_path  # local mutable; staging.rename may bump it
+            outcome = outcomes_by_id[fp.file_id]
+            if not outcome.ok:
+                # Phase 2 staging failure for this file.
+                err_label = (
+                    f"Import chapter error ({fp.filename}): {outcome.error}"
+                    if fp.file_type == 'chapter'
+                    else f"Import file error ({fp.filename}): {outcome.error}"
+                )
+                db.execute(
+                    "UPDATE import_queue_files SET status='failed' WHERE id=?",
+                    (fp.file_id,),
+                )
+                log_event('error', err_label, queue['series_id'], db=db)
+                any_error = True
+                if _batch_failed_file_id is None:
+                    _batch_failed_file_id = fp.file_id
+                    _batch_failed_reason = err_label
+                continue
+
+            # ── Phase 3 DB writes for a successfully-staged file ──────────
+            dst = outcome.final_dst
 
             # ── Chapter file ───────────────────────────────────────────────
             if fp.file_type == 'chapter' and fp.proposed_chap is not None:
                 try:
-                    # File I/O on a worker thread so a large CBZ copy
-                    # can't freeze the event loop. py-spy during the
-                    # v0.1.5 HxH session showed uvicorn's MainThread
-                    # stuck inside shutil.copy2 here. Same treatment
-                    # for CBR→CBZ and ComicInfo injection (both touch
-                    # zip archives).
-                    stage_path = await asyncio.to_thread(staging.stage, src, dst)
-                    stage_after = await asyncio.to_thread(_maybe_convert_to_cbz, stage_path)
-                    if stage_after != stage_path:
-                        dst = staging.rename(stage_path, stage_after)
-                        stage_path = stage_after
-                    if s:
-                        await asyncio.to_thread(
-                            _try_inject_comicinfo,
-                            stage_path, s,
-                            chapter_num=fp.proposed_chap, tags=_series_tags,
-                        )
-
                     db.execute(
                         "UPDATE import_queue_files SET status='imported', dst_path=? WHERE id=?",
                         (dst, fp.file_id),
@@ -1755,8 +1821,7 @@ async def _execute_import_impl(
 
                     # If this row covers a chapter range, sweep up
                     # pre-existing placeholder rows for the inner
-                    # chapters (status='wanted', no import_path) — they
-                    # are now covered by this single file.
+                    # chapters (status='wanted', no import_path).
                     if fp.chap_range_end is not None:
                         db.execute(
                             "DELETE FROM chapters WHERE series_id=?"
@@ -1785,17 +1850,6 @@ async def _execute_import_impl(
 
             # ── Volume file ────────────────────────────────────────────────
             try:
-                stage_path = await asyncio.to_thread(staging.stage, src, dst)
-                stage_after = await asyncio.to_thread(_maybe_convert_to_cbz, stage_path)
-                if stage_after != stage_path:
-                    dst = staging.rename(stage_path, stage_after)
-                    stage_path = stage_after
-                if s:
-                    await asyncio.to_thread(
-                        _try_inject_comicinfo,
-                        stage_path, s,
-                        volume_num=fp.proposed_vol, tags=_series_tags,
-                    )
                 db.execute(
                     "UPDATE import_queue_files SET status='imported', dst_path=? WHERE id=?",
                     (dst, fp.file_id),
@@ -1818,9 +1872,6 @@ async def _execute_import_impl(
                         )
 
                 # ── Volume-range file (Stage 2) ────────────────────────
-                # One physical file covering v1-v3 style: write a single
-                # volumes row with vol_range_start/end + pack_type, then
-                # skip the single-volume flow below.
                 if fp.has_volume_range and fp.proposed_vol is None:
                     seen_row = db.execute(
                         "SELECT torrent_name, indexer, protocol, client, release_group, size_bytes"
@@ -1846,9 +1897,6 @@ async def _execute_import_impl(
                          meta.get('size_bytes'), file_quality, now_ts,
                          fp.vol_range_start, fp.vol_range_end, _rpt, fp.is_special)
                     )
-                    # Volume range satisfies all interior volumes — skip
-                    # the single-volume cascade; chapter tables for those
-                    # inner volumes will be updated by future grabs.
                     for _v in range(int(fp.vol_range_start), int(fp.vol_range_end) + 1):
                         imported_vols.add(float(_v))
                     continue  # next queue file
@@ -1864,9 +1912,6 @@ async def _execute_import_impl(
                     ).fetchone()
                     meta = dict(seen_row) if seen_row else {}
 
-                    # Match/create on the same is_special track as the
-                    # import — a special grab must not flip a mainline
-                    # row to is_special=1.
                     if fp.is_special:
                         vol_row = db.execute(
                             "SELECT id FROM volumes WHERE series_id=? AND volume_num=?"
@@ -1898,9 +1943,6 @@ async def _execute_import_impl(
                              vol_row['id'])
                         )
                         _check_volume_completion(db, queue['series_id'], vol_row['id'])
-                        # Whole-volume file satisfies all chapters in this
-                        # volume. Cascade FULL metadata so chapter rows
-                        # don't end up with NULL fields.
                         _cascade_chapters(db, queue['series_id'], [vol_row['id']],
                                           'downloaded', import_path=dst,
                                           download_id=queue['download_id'],
@@ -1912,7 +1954,6 @@ async def _execute_import_impl(
                                           release_group=meta.get('release_group'),
                                           size_bytes=meta.get('size_bytes'))
                     else:
-                        # Stub doesn't exist yet — create it with full metadata.
                         _rpt_new = fp.pack_type if fp.pack_type in ('volume', 'complete') else None
                         cur_ins = db.execute(
                             "INSERT INTO volumes(series_id, volume_num, status, source_url,"
@@ -1951,18 +1992,9 @@ async def _execute_import_impl(
                     _batch_failed_reason = f"Import file error ({fp.filename}): {e}"
 
         # ── Two-phase commit decision ─────────────────────────────────────
-        # If ANY file failed mid-batch AND at least one other file would
-        # have imported, roll back the whole batch so the library doesn't
-        # end up half-full with an incomplete release. Pure-failure
-        # batches (0 imports) keep their 'failed' per-file markers so the
-        # user sees which file was bad.
         if any_error and imported_count > 0:
-            # Filesystem rollback: drop every staged file, sources intact.
             await asyncio.to_thread(staging.rollback)
-            # DB rollback: revert every per-file UPDATE done in the loop.
             db.execute("ROLLBACK TO SAVEPOINT import_batch")
-            # Re-apply the bits we want to keep: the queue status and the
-            # identity of the one file that actually broke.
             if _batch_failed_file_id is not None:
                 db.execute(
                     "UPDATE import_queue_files SET status='failed' WHERE id=?",
@@ -1975,19 +2007,14 @@ async def _execute_import_impl(
                 queue['series_id'],
                 db=db,
             )
-            # Force the post-loop "Determine final queue status" logic to see
-            # a fully-failed batch.
             imported_count = 0
             chapter_vols_touched.clear()
             imported_vols.clear()
         elif imported_count > 0:
-            # All-or-nothing succeeded: commit the staged files into place.
             try:
                 await asyncio.to_thread(staging.commit_all)
                 db.execute("RELEASE SAVEPOINT import_batch")
             except Exception as e:
-                # Commit-phase failure is extremely rare (rename within one
-                # filesystem). Fall back to rolling the batch back.
                 await asyncio.to_thread(staging.rollback)
                 db.execute("ROLLBACK TO SAVEPOINT import_batch")
                 db.execute("RELEASE SAVEPOINT import_batch")
@@ -1999,7 +2026,6 @@ async def _execute_import_impl(
                 )
                 imported_count = 0
         else:
-            # No files succeeded; nothing to commit or roll back.
             await asyncio.to_thread(staging.rollback)
             db.execute("RELEASE SAVEPOINT import_batch")
 
@@ -2029,14 +2055,13 @@ async def _execute_import_impl(
         if imported_count == 0 and any_error:
             new_status = 'failed'
         elif has_needs_review:
-            new_status = 'partial'   # some files imported, some need review
+            new_status = 'partial'
         elif any_error:
             new_status = 'partial'
         else:
             new_status = 'imported'
 
         db.execute("UPDATE import_queue SET status=? WHERE id=?", (new_status, queue_id))
-        # Reset grabbed volumes back to wanted when import conclusively fails.
         if new_status == 'failed' and queue['download_id']:
             db.execute(
                 "UPDATE volumes SET status='wanted', grabbed_at=NULL, download_id=NULL,"
@@ -2045,7 +2070,6 @@ async def _execute_import_impl(
                 " WHERE download_id=? AND status='grabbed'",
                 (queue['download_id'],)
             )
-        # Clean up fully imported records (keep failed/partial for user review).
         if new_status == 'imported':
             db.execute("DELETE FROM import_queue_files WHERE queue_id=?", (queue_id,))
             db.execute("DELETE FROM import_queue WHERE id=?", (queue_id,))
@@ -2057,14 +2081,7 @@ async def _execute_import_impl(
         vol_label = build_volume_label(queue['volume_num'], None, None)
 
         if imported_count > 0:
-            # Reassignment safety: if the user reassigned volume numbers
-            # in the review form, the originally grabbed stub
-            # (queue['volume_num']) may not have been imported. Reset it
-            # BEFORE _mark_downloaded runs — otherwise _mark_downloaded
-            # would flip queue['volume_num'] from grabbed→downloaded and
-            # the `WHERE status='grabbed'` clause below would silently
-            # match 0 rows, leaving the original stub stuck at
-            # 'downloaded' with no actual file.
+            # Reassignment safety: see comment in original.
             if (queue['volume_num'] is not None
                     and imported_vols
                     and queue['volume_num'] not in imported_vols):
@@ -2075,10 +2092,7 @@ async def _execute_import_impl(
                     "WHERE series_id=? AND volume_num=? AND status='grabbed'",
                     (queue['series_id'], queue['volume_num'])
                 )
-            # Mark the pack/volume entry downloaded and cascade to any
-            # remaining stubs.
             _mark_downloaded(db, queue['series_id'], queue['volume_num'], queue['torrent_url'])
-            # Set import_path on the pack entry itself (directory level).
             db.execute(
                 "UPDATE volumes SET import_path=? WHERE series_id=? AND download_id=?"
                 " AND volume_num IS NULL",
@@ -2096,7 +2110,6 @@ async def _execute_import_impl(
                         download_id=queue['download_id'] or '')
 
     if not any_error:
-        # Extract CBZ cover for any newly imported CBZ files
         with get_db() as _cdb:
             _series_id_for_cover = queue['series_id']
             _cover_url_for_series = _cdb.execute(
@@ -2104,7 +2117,6 @@ async def _execute_import_impl(
             ).fetchone()
         _local_cover = f"/config/covers/{_series_id_for_cover}.jpg"
         if not os.path.exists(_local_cover):
-            # Try to get cover from a CBZ we just imported.
             with get_db() as _cdb2:
                 _first_cbz = _cdb2.execute(
                     "SELECT dst_path FROM import_queue_files"
@@ -2116,7 +2128,6 @@ async def _execute_import_impl(
             elif _cover_url_for_series and _cover_url_for_series['cover_url']:
                 asyncio.create_task(download_cover(_series_id_for_cover, _cover_url_for_series['cover_url']))
         await trigger_komga_scan()
-        # Remove from download client after successful import (like Sonarr's "Remove Completed").
         if get_cfg('remove_completed', 'false').lower() == 'true' and queue['download_id']:
             with get_db() as db2:
                 proto = db2.execute(
