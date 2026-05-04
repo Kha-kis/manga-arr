@@ -84,7 +84,7 @@ import json
 import os
 import shutil
 import tempfile as _tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 
 import httpx
@@ -1080,7 +1080,6 @@ def _mark_downloaded(db, series_id, volume_num, torrent_url) -> bool:
 # - CBR→CBZ and ComicInfo.xml injection happen on the staging file so a
 #   crash mid-transform leaves the staging dir to be cleaned up on
 #   rollback; the live library tree never sees the partial file.
-import tempfile as _tempfile
 
 
 @dataclass
@@ -1565,7 +1564,6 @@ def _commit_import(
     series_id   = plan.series_id
     dst_dir     = plan.dst_dir
     now_ts      = plan.now_ts
-    s           = plan.series
     queue_id    = queue['id']
 
     outcomes_by_id = {o.file_id: o for o in outcomes}
@@ -1917,14 +1915,15 @@ def _commit_import(
             elif commit_failure_reason:
                 # commit_all itself failed (no prior errors). Original
                 # leaves any_error=False here, which makes the final
-                # status fall through to 'imported'. Preserved as-is.
+                # status fall through to 'imported'. Fixed: mark as error.
                 log_event(
                     'error',
                     f"Import commit phase failed; rolled back: {commit_failure_reason}",
                     series_id,
                     db=db,
                 )
-            imported_count = 0
+                any_error = True
+                imported_count = 0
             chapter_vols_touched.clear()
             imported_vols.clear()
         else:
