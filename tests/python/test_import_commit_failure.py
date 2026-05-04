@@ -121,6 +121,10 @@ def test_commit_all_failure_marks_import_failed(test_env, monkeypatch):
     # Verify failure
     assert result is False, "Import should return False when commit fails"
 
+    # Verify filesystem state: destination file should not exist
+    dst_file = os.path.join(test_env["library_root"], "Test Series", "Test v01.cbz")
+    assert not os.path.exists(dst_file), "Destination file should not exist after commit failure"
+
     # Verify DB state
     with sqlite3.connect(test_env["db_path"]) as c:
         c.row_factory = sqlite3.Row
@@ -137,6 +141,17 @@ def test_commit_all_failure_marks_import_failed(test_env, monkeypatch):
             "SELECT status FROM import_queue_files WHERE queue_id=?", (qid,)
         ).fetchall()
         assert len(file_rows) > 0, "Import files should remain for review"
+
+        # Should not have any volumes or chapters marked as downloaded with import_path
+        vol_downloaded = c.execute(
+            "SELECT COUNT(*) FROM volumes WHERE series_id=? AND status='downloaded' AND import_path IS NOT NULL", (sid,)
+        ).fetchone()[0]
+        assert vol_downloaded == 0, "No volumes should be marked as downloaded after commit failure"
+
+        chap_downloaded = c.execute(
+            "SELECT COUNT(*) FROM chapters WHERE series_id=? AND status='downloaded' AND import_path IS NOT NULL", (sid,)
+        ).fetchone()[0]
+        assert chap_downloaded == 0, "No chapters should be marked as downloaded after commit failure"
 
 
 def test_commit_all_failure_preserves_volumes_to_retry(test_env, monkeypatch):
@@ -184,6 +199,10 @@ def test_commit_all_failure_preserves_volumes_to_retry(test_env, monkeypatch):
     # Run import
     result = _run(import_pipeline._execute_import_impl(qid))
 
+    # Verify filesystem state: destination should not exist
+    dst_file = os.path.join(test_env["library_root"], "Test Series", "Test v01.cbz")
+    assert not os.path.exists(dst_file), "Destination file should not exist after commit failure"
+
     # Verify volume reset to wanted
     with sqlite3.connect(test_env["db_path"]) as c:
         vol_status = c.execute(
@@ -191,6 +210,12 @@ def test_commit_all_failure_preserves_volumes_to_retry(test_env, monkeypatch):
             (sid, 1.0),
         ).fetchone()
         assert vol_status[0] == "wanted", "Volume should reset to wanted after commit failure"
+
+        # Verify no download states were written
+        vol_downloaded = c.execute(
+            "SELECT COUNT(*) FROM volumes WHERE series_id=? AND status='downloaded' AND import_path IS NOT NULL", (sid,)
+        ).fetchone()[0]
+        assert vol_downloaded == 0, "No volumes should be marked as downloaded after commit failure"
 
 
 def test_commit_all_failure_with_some_preexisting_errors(test_env, monkeypatch):
