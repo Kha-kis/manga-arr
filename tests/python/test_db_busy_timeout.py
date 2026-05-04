@@ -136,11 +136,12 @@ def test_cleanup_stuck_state_uses_separate_transactions_per_phase(env):
 
     stats = main.cleanup_stuck_state()
     assert stats == {
-        'volumes_reset':   1,
-        'pending_deleted': 1,
-        'queue_failed':    1,
-        'importing_reset': 0,
-        'events_pruned':   0,
+        'volumes_reset':         1,
+        'pending_deleted':       1,
+        'queue_failed':          1,
+        'importing_reset':       0,
+        'events_pruned':         0,
+        'orphan_packs_deleted':  0,
     }
 
 

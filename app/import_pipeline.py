@@ -687,10 +687,23 @@ async def _check_download_status_impl():
                                             (r['series_id'], r['torrent_url'] or '', r['torrent_name'] or '',
                                              f"Download failed: {tf.get('state', 'error')}")
                                         )
+                                        # Pack rows (vol_num NULL) have no purpose
+                                        # without their source URL — DELETE rather
+                                        # than reset to 'wanted', otherwise they
+                                        # accumulate as orphan rows on the volumes
+                                        # table forever (production: 1,201 such
+                                        # rows accumulated, fixed by cleanup
+                                        # Phase 4b).
+                                        db.execute(
+                                            "DELETE FROM volumes"
+                                            " WHERE download_id=? AND status='grabbed'"
+                                            "   AND volume_num IS NULL", (h,)
+                                        )
                                         db.execute(
                                             "UPDATE volumes SET status='wanted', download_id=NULL, grabbed_at=NULL,"
                                             " source_url=NULL, torrent_name=NULL "
-                                            "WHERE download_id=? AND status='grabbed'", (h,)
+                                            "WHERE download_id=? AND status='grabbed'"
+                                            "  AND volume_num IS NOT NULL", (h,)
                                         )
                                         db.execute("DELETE FROM seen WHERE download_id=?", (h,))
                                 await asyncio.to_thread(_mark_failed_sync)
