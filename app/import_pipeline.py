@@ -118,6 +118,30 @@ from events import add_history, broadcast_queue_event, log_event
 from volumes import _cascade_chapters, _check_volume_completion
 
 
+# Staging root for auto-packed image-only chapter dirs (PR #147).
+# Lives under /config so it shares the filesystem with the SQLite DB
+# (always writable when the container is healthy) and is wiped on
+# container rebuild without leaking into user-mounted library volumes.
+# Each download_id gets a `queue-<id>` subdir; cleaned up by
+# _cleanup_pack_staging_dir() in _execute_import's finally branch.
+PACK_STAGING_ROOT = '/config/mangarr-image-pack'
+
+
+def _cleanup_pack_staging_dir(download_id: str) -> None:
+    """Remove the per-queue auto-pack staging dir, if present.
+
+    Called from _execute_import after success or failure so packed
+    CBZs don't accumulate in /config indefinitely. ignore_errors=True
+    because the dir may not exist (no auto-pack happened) or may have
+    been partially cleaned by _ImportStaging.commit_all already.
+    """
+    if not download_id:
+        return
+    pack_dir = os.path.join(PACK_STAGING_ROOT, f'queue-{download_id}')
+    if os.path.isdir(pack_dir):
+        shutil.rmtree(pack_dir, ignore_errors=True)
+
+
 def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
                   torrent_url: str, volume_num: float | None,
                   content_path: str) -> tuple[int | None, bool]:
@@ -184,20 +208,53 @@ def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
         # produced 207K instances before the dedup landed in PR #145).
         # When we detect leaf dirs containing only images, pack them
         # into CBZs and use those as the import source.
-        image_leafs = find_image_only_chapter_dirs(content_path)
+        #
+        # NOTE on move-mode: when import_mode='move', the staged CBZ
+        # under PACK_STAGING_ROOT gets unlinked by _ImportStaging.commit_all
+        # but the ORIGINAL image directory in the torrent share is NOT
+        # removed (the auto-pack creates a copy of the images, not a
+        # move). Users running move-mode for seedbox cleanup will see
+        # the JPG dirs persist. Documented as a known gap; full
+        # passthrough-move would require reworking the staging contract.
+        image_leafs = sorted(find_image_only_chapter_dirs(content_path))
         if image_leafs:
-            # Stage packed CBZs under /config so they survive container
-            # restarts and stay on the same filesystem as the library
-            # (atomic rename on commit). Cleaned up after import.
-            pack_dir = os.path.join('/config', 'mangarr-image-pack', f'queue-{download_id}')
+            # Stage packed CBZs under PACK_STAGING_ROOT (= /config). Same
+            # filesystem as the library = atomic rename on commit. Cleaned
+            # up by _execute_import after the queue completes (success or
+            # failure) — see _cleanup_pack_staging_dir().
+            #
+            # safe_join_under guards against download_id values that
+            # contain path separators or `..` — qBit infohashes are hex
+            # so safe in practice, but SAB nzo ids are arbitrary strings
+            # not validated upstream.
+            pack_dir = safe_join_under(PACK_STAGING_ROOT, f'queue-{download_id}')
             packed_paths: list[str] = []
+            used_names: set[str] = set()
             for leaf in image_leafs:
                 leaf_basename = os.path.basename(leaf.rstrip('/')) or 'chapter'
-                cbz_name = sanitize_filename(leaf_basename) + '.cbz'
+                base_name = sanitize_filename(leaf_basename)
+                cbz_name = base_name + '.cbz'
+                # Collision rename: if two sibling dirs sanitize to the
+                # same name (e.g. `Vol 1/Ch. 001/` and `Vol 2/Ch. 001/`),
+                # suffix with a counter so the second doesn't silently
+                # overwrite the first.
+                n = 2
+                while cbz_name in used_names:
+                    cbz_name = f'{base_name} ({n}).cbz'
+                    n += 1
+                used_names.add(cbz_name)
                 cbz_path = os.path.join(pack_dir, cbz_name)
                 size = pack_image_dir_to_cbz(leaf, cbz_path)
                 if size:
                     packed_paths.append(cbz_path)
+                else:
+                    # dedup=True so a persistent failure (full disk,
+                    # /config not writable) doesn't spam every poll
+                    # cycle the way the unrate-limited print() did.
+                    log_event('error',
+                        f"Auto-pack failed for {leaf}: "
+                        f"check disk space + /config writable",
+                        series_id, db=db, dedup=True)
             if packed_paths:
                 log_event('import',
                     f"Auto-packed {len(packed_paths)} image-only chapter "
@@ -1188,6 +1245,33 @@ async def _guarded_execute_import(
 
 
 async def _execute_import(
+    queue_id: int,
+    volume_overrides: dict | None = None,
+    skip_ids: set | None = None,
+    chapter_overrides: dict | None = None,
+) -> bool:
+    """Wrapper around _execute_import_impl that cleans up the auto-pack
+    staging dir on every exit path (success, failure, or exception).
+    Without this, packed CBZs would accumulate under PACK_STAGING_ROOT
+    forever — disk leak proportional to import volume.
+    """
+    pack_cleanup_id: str | None = None
+    with get_db() as _db_init:
+        _qrow = _db_init.execute(
+            "SELECT download_id FROM import_queue WHERE id=?", (queue_id,)
+        ).fetchone()
+        if _qrow and _qrow['download_id']:
+            pack_cleanup_id = _qrow['download_id']
+    try:
+        return await _execute_import_impl(
+            queue_id, volume_overrides, skip_ids, chapter_overrides
+        )
+    finally:
+        if pack_cleanup_id:
+            _cleanup_pack_staging_dir(pack_cleanup_id)
+
+
+async def _execute_import_impl(
     queue_id: int,
     volume_overrides: dict | None = None,
     skip_ids: set | None = None,

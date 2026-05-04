@@ -228,15 +228,18 @@ def test_rollback_also_runs_off_event_loop(env):
     # DB or FS mid-import. Instead, drive a successful import and pin
     # that commit_all is invoked through asyncio.to_thread — the same
     # mechanism rollback uses. If this test regresses, a grep for
-    # "await asyncio.to_thread(staging." in _execute_import is the
-    # quickest way to triage.
+    # "await asyncio.to_thread(staging." in _execute_import_impl is the
+    # quickest way to triage. (PR #147 added a thin _execute_import
+    # wrapper for staging-dir cleanup; the actual import body lives in
+    # _execute_import_impl now.)
     import inspect
-    src_code = inspect.getsource(main._execute_import)
+    from import_pipeline import _execute_import_impl
+    src_code = inspect.getsource(_execute_import_impl)
     assert "await asyncio.to_thread(staging.commit_all" in src_code, (
-        "_execute_import must call staging.commit_all via asyncio.to_thread"
+        "_execute_import_impl must call staging.commit_all via asyncio.to_thread"
     )
     assert "await asyncio.to_thread(staging.rollback" in src_code, (
-        "_execute_import must call staging.rollback via asyncio.to_thread"
+        "_execute_import_impl must call staging.rollback via asyncio.to_thread"
     )
 
 
@@ -244,8 +247,8 @@ def test_inject_comicinfo_runs_off_event_loop(env):
     """ComicInfo injection reads and rewrites a zip. That's blocking
     I/O; must go through asyncio.to_thread."""
     import inspect
-    import main
-    src = inspect.getsource(main._execute_import)
+    from import_pipeline import _execute_import_impl
+    src = inspect.getsource(_execute_import_impl)
     # Every _try_inject_comicinfo call inside _execute_import is
     # prefixed with asyncio.to_thread. A bare `_try_inject_comicinfo(`
     # call (no `to_thread` before it) would regress.
@@ -273,8 +276,8 @@ def test_maybe_convert_to_cbz_runs_off_event_loop(env):
     """CBR→CBZ conversion is CPU+IO heavy (rarfile extraction + zip
     write). Same rule as above."""
     import inspect, re
-    import main
-    src = inspect.getsource(main._execute_import)
+    from import_pipeline import _execute_import_impl
+    src = inspect.getsource(_execute_import_impl)
     bad = re.findall(
         r"^\s+stage_after\s*=\s*_maybe_convert_to_cbz\(",
         src,

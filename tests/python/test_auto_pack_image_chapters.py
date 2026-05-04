@@ -189,3 +189,127 @@ def test_pack_is_uncompressed_for_speed(tmp_path):
         assert info.compress_type == zipfile.ZIP_STORED, (
             f"expected ZIP_STORED (no compression); got {info.compress_type}"
         )
+
+
+# ───────────────────── _queue_import integration ─────────────────────
+
+
+@pytest.fixture
+def integ_env(tmp_path, monkeypatch):
+    """Fresh DB + temp src/library + tmp PACK_STAGING_ROOT.
+
+    Mirrors test_import_mapping's env fixture but adds the PACK_STAGING_ROOT
+    monkeypatch so the staging dir lands inside tmp_path (the real
+    `/config/mangarr-image-pack` doesn't exist / isn't writable in CI).
+    """
+    import sqlite3
+    import main, shared, security, import_pipeline
+
+    db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    db.close(); os.unlink(db.name)
+    key_dir = tempfile.mkdtemp(prefix="mangarr-autopack-keys-")
+
+    orig_main_db = main.DB_PATH
+    orig_shared_db = shared.DB_PATH
+    main.DB_PATH = db.name
+    shared.DB_PATH = db.name
+    security._SECRET_CIPHER = None
+    security.load_or_create_secret_cipher(key_dir)
+    main.init_db()
+    main.load_config()
+    main.ensure_api_key()
+
+    src_root = tmp_path / "src"; src_root.mkdir()
+    lib_root = tmp_path / "library"; lib_root.mkdir()
+    pack_root = tmp_path / "pack-staging"  # lazily created by safe_join_under
+
+    with sqlite3.connect(db.name) as c:
+        c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('save_path', ?)",
+                  (str(lib_root),))
+        c.execute("INSERT OR REPLACE INTO root_folders(id, path) VALUES(1, ?)", (str(lib_root),))
+    main.load_config()
+
+    monkeypatch.setattr(import_pipeline, 'PACK_STAGING_ROOT', str(pack_root))
+
+    try:
+        yield {"db_path": db.name, "src_root": src_root,
+               "lib_root": lib_root, "pack_root": pack_root}
+    finally:
+        main.DB_PATH = orig_main_db
+        shared.DB_PATH = orig_shared_db
+        for ext in ("", "-wal", "-shm"):
+            p = db.name + ext
+            if os.path.exists(p):
+                os.unlink(p)
+
+
+def test_queue_import_auto_packs_image_only_dir(integ_env):
+    """End-to-end: a torrent dir of raw JPGs (no archives) goes through
+    _queue_import → packed CBZ in staging → import_queue_files row points
+    at the staged CBZ. This is the production scenario from PR #145
+    that previously generated 207K 'No manga files found' events."""
+    import sqlite3, main, import_pipeline
+
+    # Seed series.
+    with sqlite3.connect(integ_env["db_path"]) as c:
+        c.execute(
+            "INSERT INTO series(id, title, search_pattern, total_volumes,"
+            " root_folder_id) VALUES(?, ?, ?, ?, ?)",
+            (42, "One Piece", "One Piece", None, 1),
+        )
+
+    # Build content_path: a real torrent shape — a chapter dir of JPGs.
+    torrent = integ_env["src_root"] / "One Piece - Ch. 991 [VIZ]"
+    torrent.mkdir()
+    for i in range(1, 6):
+        (torrent / f"{i:03d}.jpg").write_bytes(b"jpg-data-" + str(i).encode())
+
+    # Run _queue_import via a real DB transaction.
+    with main.get_db() as db:
+        qid, needs_review = main._queue_import(
+            db, 42, "abc123hash", "One Piece - Ch. 991 [VIZ]",
+            None, None, str(torrent),
+        )
+
+    assert qid is not None, "queue row not created — auto-pack didn't surface a CBZ"
+
+    # The file row's src_path must point at the staged CBZ, not the
+    # original JPG dir.
+    with sqlite3.connect(integ_env["db_path"]) as c:
+        c.row_factory = sqlite3.Row
+        files = c.execute(
+            "SELECT src_path, filename FROM import_queue_files WHERE queue_id=?",
+            (qid,),
+        ).fetchall()
+    assert len(files) == 1, f"expected one packed CBZ, got {[dict(f) for f in files]}"
+    src_path = files[0]["src_path"]
+    assert src_path.endswith(".cbz"), f"src_path should be a CBZ, got {src_path!r}"
+    assert str(integ_env["pack_root"]) in src_path, (
+        f"src_path must live under PACK_STAGING_ROOT; got {src_path!r}"
+    )
+    assert os.path.exists(src_path), (
+        f"staged CBZ missing on disk at {src_path!r}"
+    )
+
+    # Original torrent dir untouched (auto-pack copies, doesn't move).
+    assert (torrent / "001.jpg").exists()
+
+
+def test_cleanup_pack_staging_dir_removes_dir(integ_env):
+    """_cleanup_pack_staging_dir removes the per-queue staging dir but
+    is a no-op when the dir is missing. This is the disk-leak guard."""
+    import import_pipeline
+
+    pack_root = integ_env["pack_root"]
+    # Simulate a leftover staged CBZ.
+    queue_dir = pack_root / "queue-deadbeef"
+    queue_dir.mkdir(parents=True)
+    (queue_dir / "Ch. 1.cbz").write_bytes(b"PK\x03\x04 fake cbz")
+
+    import_pipeline._cleanup_pack_staging_dir("deadbeef")
+    assert not queue_dir.exists(), "staging dir should be removed"
+
+    # Idempotent: second call on missing dir is a no-op.
+    import_pipeline._cleanup_pack_staging_dir("deadbeef")
+    import_pipeline._cleanup_pack_staging_dir("")  # empty id → no-op
+    import_pipeline._cleanup_pack_staging_dir(None)  # type: ignore[arg-type]
