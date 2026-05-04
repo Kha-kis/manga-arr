@@ -290,6 +290,7 @@ def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
                         queue_stale_days: int = 30,
                         importing_stale_hours: int = 6,
                         events_retention_days: int = 90,
+                        orphan_pack_cleanup: bool = True,
                         max_rows_per_sweep: int = 500) -> dict:
     """Reconcile the four stuck-state patterns the app can otherwise
     accumulate indefinitely:
@@ -339,6 +340,7 @@ def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
         'queue_failed':     0,
         'importing_reset':  0,
         'events_pruned':    0,
+        'orphan_packs_deleted': 0,
     }
 
     # ── Phase 1: stale grabbed volumes ──
@@ -468,6 +470,43 @@ def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
                 f"stuck in 'importing' for >{importing_stale_hours}h to 'failed' for retry",
                 db=db,
             )
+
+    # ── Phase 4b: orphan pack-row cleanup ──
+    # Pack rows have volume_num IS NULL — they represent multi-volume
+    # downloads (volume range or complete-series grabs). When the grab
+    # fails / gets reset, the orphan-cleanup at import_pipeline.py:691
+    # UPDATEs status='wanted' and clears download_id/source_url, but
+    # leaves the row in place. Result: a pack row with no source info,
+    # no torrent name, no URL — just status='wanted' and stale
+    # size_bytes/pack_type. Production observed 1,201 such rows
+    # accumulating over weeks.
+    #
+    # These rows have NO purpose: RSS poll re-matches by URL (NULL),
+    # the grab loop won't resurrect them. Just clutter on the volumes
+    # table.
+    #
+    # Safe to DELETE: pack rows with status='wanted' AND no source_url
+    # AND no download_id AND no torrent_name. Individual-volume rows
+    # (vol_num NOT NULL) are preserved unconditionally — they ARE
+    # functional even with no source info because RSS matches by series.
+    if orphan_pack_cleanup:
+        with get_db() as db:
+            cur = db.execute(
+                "DELETE FROM volumes"
+                " WHERE volume_num IS NULL"
+                "   AND status = 'wanted'"
+                "   AND (source_url IS NULL OR source_url = '')"
+                "   AND (download_id IS NULL OR download_id = '')"
+                "   AND (torrent_name IS NULL OR torrent_name = '')"
+            )
+            stats['orphan_packs_deleted'] = cur.rowcount
+            if cur.rowcount:
+                log_event(
+                    'stuck_cleanup',
+                    f"deleted {cur.rowcount} orphan pack row(s) "
+                    f"(vol_num NULL, status=wanted, no source info)",
+                    db=db,
+                )
 
     # ── Phase 5: events table retention ──
     # Without pruning, the events table grows indefinitely. Production

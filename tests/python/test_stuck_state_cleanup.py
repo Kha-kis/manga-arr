@@ -398,6 +398,69 @@ def test_log_event_without_dedup_unchanged(env):
     assert n == 5
 
 
+# ───────────────────── Phase 4b: orphan pack cleanup ─────────────────────
+
+
+def test_deletes_orphan_pack_rows(env):
+    """Phase 4b: pack rows (vol_num NULL) in 'wanted' state with no
+    source URL or download_id are dead state and get deleted.
+    Production observed 1,201 such rows accumulating over weeks
+    because import_pipeline.py:691 was UPDATEing them to 'wanted'
+    instead of DELETEing them."""
+    from main import cleanup_stuck_state
+    _seed_series(env, 7)
+    with sqlite3.connect(env) as c:
+        # Orphan pack: no source info, no purpose
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, pack_type,"
+            " size_bytes, monitored)"
+            " VALUES(7, NULL, 'wanted', 'volume', 21000000000, 1)"
+        )
+        # Functional pack: has source — should be PRESERVED
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, pack_type,"
+            " source_url, torrent_name, monitored)"
+            " VALUES(7, NULL, 'wanted', 'volume', 'http://x/y', 'realpack', 1)"
+        )
+        # Individual volume: should be PRESERVED regardless
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, monitored)"
+            " VALUES(7, 1.0, 'wanted', 1)"
+        )
+        # Pack in grabbed state: PRESERVED (still in flight)
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, pack_type,"
+            " source_url, monitored)"
+            " VALUES(7, NULL, 'grabbed', 'volume', 'http://x/active', 1)"
+        )
+
+    stats = cleanup_stuck_state()
+    assert stats['orphan_packs_deleted'] == 1, (
+        f"expected exactly 1 orphan pack deleted; got {stats['orphan_packs_deleted']}"
+    )
+    with sqlite3.connect(env) as c:
+        n = c.execute("SELECT COUNT(*) FROM volumes WHERE series_id=7").fetchone()[0]
+    assert n == 3, f"expected 3 rows preserved; got {n}"
+
+
+def test_orphan_pack_cleanup_can_be_disabled(env):
+    """orphan_pack_cleanup=False disables the phase entirely. Useful
+    if a future bug-class makes mass deletion risky and we want to
+    pause it without rolling back the whole cleanup loop."""
+    from main import cleanup_stuck_state
+    _seed_series(env, 7)
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, pack_type, monitored)"
+            " VALUES(7, NULL, 'wanted', 'volume', 1)"
+        )
+    stats = cleanup_stuck_state(orphan_pack_cleanup=False)
+    assert stats['orphan_packs_deleted'] == 0
+    with sqlite3.connect(env) as c:
+        n = c.execute("SELECT COUNT(*) FROM volumes WHERE series_id=7").fetchone()[0]
+    assert n == 1
+
+
 def test_no_manga_files_found_event_is_deduped(env):
     """Production observation: 'No manga files found in <path> — skipping'
     fired 207K times for one ghost torrent path before the dedup landed.
@@ -443,9 +506,10 @@ def test_stats_are_zero_when_nothing_stuck(env):
     from main import cleanup_stuck_state
     stats = cleanup_stuck_state()
     assert stats == {
-        'volumes_reset':   0,
-        'pending_deleted': 0,
-        'queue_failed':    0,
-        'importing_reset': 0,
-        'events_pruned':   0,
+        'volumes_reset':         0,
+        'pending_deleted':       0,
+        'queue_failed':          0,
+        'importing_reset':       0,
+        'events_pruned':         0,
+        'orphan_packs_deleted':  0,
     }
