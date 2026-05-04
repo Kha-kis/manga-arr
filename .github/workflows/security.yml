@@ -46,7 +46,7 @@ jobs:
     name: Trivy filesystem (deps + IaC)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Trivy fs scan
         uses: aquasecurity/trivy-action@v0.36.0
@@ -68,7 +68,7 @@ jobs:
     name: Trivy image (base + python pkgs)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Build image
         run: docker build -t mangarr:${{ github.run_id }} .
@@ -106,7 +106,7 @@ jobs:
     container:
       image: returntocorp/semgrep
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Semgrep scan (ERROR-severity gating)
         # Uses `semgrep scan` (not `semgrep ci`) so we can pass the
@@ -142,7 +142,7 @@ jobs:
     name: Gitleaks (committed secrets)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # Gitleaks needs full history to scan every commit, not just
           # the diff.
