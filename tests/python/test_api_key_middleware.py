@@ -102,6 +102,10 @@ def _make_test_app(api_key_value):
     async def ping():
         return {"ok": True}
 
+    @app.post("/api/ping")
+    async def ping_post():
+        return {"ok": True}
+
     @app.get("/non-api/ping")
     async def non_api_ping():
         return {"ok": True}
@@ -113,6 +117,28 @@ def _make_test_app(api_key_value):
     main.CONFIG["api_key"] = api_key_value
     shared.CONFIG["api_key"] = api_key_value
     # Reset the once-per-process warning flag so tests are independent.
+    if hasattr(main.ApiKeyMiddleware, "_warned_no_key"):
+        delattr(main.ApiKeyMiddleware, "_warned_no_key")
+    return app
+
+
+def _make_csrf_api_test_app(api_key_value):
+    """Build an app with the production API-key + CSRF middleware stack."""
+    import main
+    from fastapi import FastAPI
+
+    app = FastAPI()
+
+    @app.post("/api/mutate")
+    async def mutate():
+        return {"ok": True}
+
+    app.add_middleware(main.CSRFMiddleware)
+    app.add_middleware(main.ApiKeyMiddleware)
+
+    import shared
+    main.CONFIG["api_key"] = api_key_value
+    shared.CONFIG["api_key"] = api_key_value
     if hasattr(main.ApiKeyMiddleware, "_warned_no_key"):
         delattr(main.ApiKeyMiddleware, "_warned_no_key")
     return app
@@ -173,6 +199,39 @@ def test_api_route_accepts_correct_key_via_query_param():
     app = _make_test_app("server-secret")
     client = TestClient(app)
     r = client.get("/api/ping?apikey=server-secret")
+    assert r.status_code == 200
+
+
+def test_mutating_api_route_with_cookie_but_no_api_key_requires_csrf():
+    """A csrftoken cookie alone must not bypass both API key and CSRF checks."""
+    from fastapi.testclient import TestClient
+    app = _make_csrf_api_test_app("server-secret")
+    client = TestClient(app)
+    r = client.post("/api/mutate", cookies={"csrftoken": "x" * 64})
+    assert r.status_code == 403
+
+
+def test_mutating_api_route_accepts_cookie_delegate_with_valid_csrf():
+    """Browser API form submissions may use the CSRF path instead of API key."""
+    from fastapi.testclient import TestClient
+    app = _make_csrf_api_test_app("server-secret")
+    client = TestClient(app)
+    token = "x" * 64
+    r = client.post(
+        "/api/mutate",
+        cookies={"csrftoken": token},
+        headers={"X-CSRFToken": token},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+
+def test_mutating_api_route_with_api_key_does_not_require_csrf():
+    """External API clients authenticate by API key and do not need CSRF."""
+    from fastapi.testclient import TestClient
+    app = _make_csrf_api_test_app("server-secret")
+    client = TestClient(app)
+    r = client.post("/api/mutate", headers={"X-Api-Key": "server-secret"})
     assert r.status_code == 200
 
 

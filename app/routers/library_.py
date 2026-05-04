@@ -87,7 +87,10 @@ async def search_all_wanted(request: Request):
         ).fetchall()
     n = len(series_list)
     for s in series_list:
-        asyncio.create_task(_m.grab_existing(s['id'], s['title'], s['search_pattern']))
+        _m.create_background_task(
+            _m.grab_existing(s['id'], s['title'], s['search_pattern']),
+            name=f"wanted:search_all:{s['id']}",
+        )
     if is_htmx(request):
         return Response(headers={"HX-Trigger": json.dumps({
             "showToast": {"msg": f"Search started for {n} series", "type": "success"}
@@ -101,7 +104,10 @@ async def grab_all_wanted(request: Request, series_id: int):
     with get_db() as db:
         s = db.execute("SELECT * FROM series WHERE id=?", (series_id,)).fetchone()
     if s:
-        asyncio.create_task(_m.grab_existing(series_id, s['title'], s['search_pattern']))
+        _m.create_background_task(
+            _m.grab_existing(series_id, s['title'], s['search_pattern']),
+            name=f"wanted:grab_series:{series_id}",
+        )
     if is_htmx(request):
         return Response(headers={"HX-Trigger": json.dumps({
             "showToast": {"msg": f"Search started for {s['title']}", "type": "success"}

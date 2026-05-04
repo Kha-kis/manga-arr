@@ -122,4 +122,4 @@ def test_migration_succeeds_when_old_schema_matches_ddl(env):
         fks = c.execute("PRAGMA foreign_key_list(events)").fetchall()
         assert any(fk[2] == 'series' and fk[6] == 'CASCADE' for fk in fks), fks
         ver = c.execute("PRAGMA user_version").fetchone()[0]
-    assert ver == 1
+    assert ver == 2

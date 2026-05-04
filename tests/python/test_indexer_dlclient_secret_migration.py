@@ -28,6 +28,11 @@ sys.path.insert(0, "app")
 import conftest  # noqa: F401
 
 
+def _csrf_header(client) -> dict[str, str]:
+    token = client.cookies.get("csrftoken", "")
+    return {"X-CSRFToken": token} if token else {}
+
+
 @pytest.fixture
 def fresh_env(monkeypatch, tmp_path):
     """Fresh DB + fresh secret-key dir + reset cipher cache."""
@@ -219,7 +224,7 @@ def test_indexer_test_endpoint_decrypts_api_key_before_http(fresh_env):
     # auth requires either X-Api-Key or csrftoken cookie on POST)
     client.get("/system/status", follow_redirects=False)
     with patch("routers.indexers.httpx.AsyncClient", _MockAsyncClient):
-        r = client.post(f"/api/indexers/{iid}/test")
+        r = client.post(f"/api/indexers/{iid}/test", headers=_csrf_header(client))
     assert r.status_code == 200, r.text
     assert r.json().get("ok") is True, r.json()
     # The plaintext api_key must have reached the HTTP layer
@@ -293,7 +298,7 @@ def test_dlclient_test_endpoint_decrypts_password(fresh_env):
             return _MockResp()
 
     with patch("routers.download_clients.httpx.AsyncClient", _MockAsyncClient):
-        r = client.post(f"/api/download-clients/{cid}/test")
+        r = client.post(f"/api/download-clients/{cid}/test", headers=_csrf_header(client))
     assert r.status_code == 200, r.text
     body = r.json()
     assert body.get("ok") is True, body
@@ -328,7 +333,7 @@ def test_indexer_test_form_endpoint_uses_plaintext_api_key(fresh_env):
             "type": "prowlarr",
             "url": "http://192.168.1.50:9696",
             "api_key": "FORM-PLAINTEXT-KEY",
-        })
+        }, headers=_csrf_header(client))
     assert r.status_code == 200, r.text
     assert r.json()["ok"] is True
     assert observed["headers"]["X-Api-Key"] == "FORM-PLAINTEXT-KEY"
@@ -364,7 +369,7 @@ def test_dlclient_test_form_endpoint_uses_plaintext_password(fresh_env):
             "port": "8080",
             "username": "u",
             "password": "FORM-DC-PLAINTEXT",
-        })
+        }, headers=_csrf_header(client))
     assert r.status_code == 200, r.text
     assert r.json()["ok"] is True
     assert observed["data"]["password"] == "FORM-DC-PLAINTEXT"

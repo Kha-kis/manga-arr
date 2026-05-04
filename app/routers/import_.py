@@ -278,7 +278,10 @@ async def retry_import(request: Request, queue_id: int):
             (queue_id,)
         ).fetchone()
     if not has_review:
-        asyncio.create_task(_m._process_auto_import(queue_id))
+        _m.create_background_task(
+            _m._process_auto_import(queue_id),
+            name=f"import:retry:{queue_id}",
+        )
     if request.headers.get("HX-Request") == "true":
         import json
         from fastapi.responses import Response as _Resp
@@ -466,8 +469,14 @@ async def manual_import_auto(request: Request):
         newly_added.append({'id': sid, 'title': best['title']})
 
         if best.get('anilist_id'):
-            asyncio.create_task(_m.fetch_anilist_aliases(sid, best['anilist_id'], best['title']))
-        asyncio.create_task(_m.refresh_mangadex_map(sid))
+            _m.create_background_task(
+                _m.fetch_anilist_aliases(sid, best['anilist_id'], best['title']),
+                name=f"manual_import:{sid}:fetch_aliases",
+            )
+        _m.create_background_task(
+            _m.refresh_mangadex_map(sid),
+            name=f"manual_import:{sid}:refresh_mangadex",
+        )
 
     if newly_added:
         with get_db() as db:

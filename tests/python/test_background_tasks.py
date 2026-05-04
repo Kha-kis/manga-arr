@@ -179,3 +179,19 @@ def test_lifespan_shutdown_calls_cancel_helper():
     assert "_rss_task.cancel()" not in src
     assert "_status_task.cancel()" not in src
     assert "_refresh_task.cancel()" not in src
+
+
+def test_router_handlers_do_not_spawn_untracked_asyncio_tasks():
+    """HTTP-triggered jobs should use the tracked background-task helper."""
+    import pathlib
+
+    routers_dir = pathlib.Path(__file__).resolve().parents[2] / "app" / "routers"
+    offenders = []
+    for path in routers_dir.glob("*.py"):
+        if "asyncio.create_task" in path.read_text():
+            offenders.append(path.name)
+
+    assert offenders == [], (
+        "route modules must use create_background_task(), not raw "
+        f"asyncio.create_task(): {offenders}"
+    )

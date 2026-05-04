@@ -165,12 +165,15 @@ async def run_command(request: Request):
     except ImportError:
         main_module = None
 
-    def _create(coro):
+    def _create(coro, name: str):
         """Schedule a coroutine safely regardless of whether we have a running loop."""
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                asyncio.create_task(coro)
+                if main_module and hasattr(main_module, "create_background_task"):
+                    main_module.create_background_task(coro, name=f"command:{name}")
+                else:
+                    loop.create_task(coro)
             else:
                 loop.run_until_complete(coro)
         except Exception:
@@ -178,13 +181,13 @@ async def run_command(request: Request):
 
     if name == "RssSyncAll":
         if main_module and hasattr(main_module, "poll_rss"):
-            _create(main_module.poll_rss())
+            _create(main_module.poll_rss(), name)
     elif name == "CheckDownloads":
         if main_module and hasattr(main_module, "check_download_status"):
-            _create(main_module.check_download_status())
+            _create(main_module.check_download_status(), name)
     elif name == "BacklogSearch":
         if main_module and hasattr(main_module, "backlog_search"):
-            _create(main_module.backlog_search())
+            _create(main_module.backlog_search(), name)
     elif name == "RefreshMetadata":
         if main_module and hasattr(main_module, "refresh_ongoing_loop"):
             _create(main_module.refresh_ongoing_loop())

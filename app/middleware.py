@@ -10,11 +10,9 @@ reverse):
   app.add_middleware(CSRFMiddleware)      # outer
   app.add_middleware(ApiKeyMiddleware)    # inner — runs first on request
 
-So: ApiKeyMiddleware decides 401 vs continue, then CSRFMiddleware
-validates the token. The API-key middleware's "exempt POST with
-csrftoken cookie" branch delegates enforcement to the CSRF layer
-so plain `<form action="/api/...">` submissions from the UI work
-without manual header injection.
+So: ApiKeyMiddleware decides 401 vs continue for API clients, then
+CSRFMiddleware validates browser-delegated mutating API requests that
+carry only the in-session CSRF cookie.
 
 Pure move — no behaviour changes.
 """
@@ -36,9 +34,10 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
     """Require an X-Api-Key header (or ?apikey= query param) on /api/
     routes. Exempts the SSE endpoint and health check. In-session
     browser requests (POST/PUT/DELETE/PATCH with a csrftoken cookie)
-    are exempt because the CSRF middleware validates the token
-    separately — this lets `<form action="/api/...">` submissions
-    work without JS header injection.
+    may proceed without an API key, but only by delegating enforcement
+    to CSRFMiddleware. API-key-authenticated requests mark the ASGI
+    scope so CSRFMiddleware can skip duplicate CSRF checks for API
+    clients.
 
     Fails closed: if the configured key is blank/missing (bad import,
     manual edit, partial migration), refuses the request. Never
@@ -53,6 +52,7 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if (request.method in ('POST', 'PUT', 'DELETE', 'PATCH')
                 and request.cookies.get('csrftoken')):
+            request.scope['mangarr_api_browser_csrf_required'] = True
             return await call_next(request)
 
         api_key = (get_cfg('api_key', '') or '').strip()
@@ -74,6 +74,7 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
                  "description": "Invalid or missing API key"},
                 status_code=401,
             )
+        request.scope['mangarr_api_key_authenticated'] = True
         return await call_next(request)
 
 
@@ -82,7 +83,7 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
 _CSRF_COOKIE  = "csrftoken"
 _CSRF_HEADER  = "X-CSRFToken"
 _CSRF_FIELD   = "csrf_token"
-_CSRF_SKIP_PREFIXES = ("/api/", "/static/", "/covers/")
+_CSRF_SKIP_PREFIXES = ("/static/", "/covers/")
 
 
 def _should_secure_cookie(scope) -> bool:
@@ -135,7 +136,11 @@ class CSRFMiddleware:
         req.state.csrf_token = token
 
         path = scope.get("path", "")
-        is_exempt = any(path.startswith(p) for p in _CSRF_SKIP_PREFIXES)
+        is_exempt = (
+            any(path.startswith(p) for p in _CSRF_SKIP_PREFIXES)
+            or (path.startswith("/api/")
+                and scope.get("mangarr_api_key_authenticated"))
+        )
         method = scope.get("method", "GET")
 
         # Receive callable that will be forwarded to the app (may be
