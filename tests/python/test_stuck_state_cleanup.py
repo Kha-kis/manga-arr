@@ -398,6 +398,25 @@ def test_log_event_without_dedup_unchanged(env):
     assert n == 5
 
 
+def test_no_manga_files_found_event_is_deduped(env):
+    """Production observation: 'No manga files found in <path> — skipping'
+    fired 207K times for one ghost torrent path before the dedup landed.
+    The import_pipeline call site at line 389 must pass dedup=True so the
+    same (path, torrent_name) tuple within 1h only logs once."""
+    import inspect, import_pipeline
+    src = inspect.getsource(import_pipeline)
+    # Find the line and verify dedup=True is present
+    idx = src.find("No manga files found in")
+    assert idx >= 0, "emitter not found in source"
+    # Look at the next ~150 chars after the message string for `dedup=True`
+    snippet = src[idx:idx + 300]
+    assert 'dedup=True' in snippet, (
+        "log_event call for 'No manga files found' must opt into dedup=True. "
+        "Without it, a stuck content_path produces hundreds of thousands of "
+        "duplicate import events."
+    )
+
+
 def test_logs_events_for_each_category(env):
     from main import cleanup_stuck_state
     _seed_series(env, 7)

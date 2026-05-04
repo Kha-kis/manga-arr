@@ -386,7 +386,13 @@ def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
     # get stuck in 'grabbed' state waiting for an import that can never complete.
     if mapped == 0 and unmapped == 0:
         db.execute("DELETE FROM import_queue WHERE id=?", (queue_id,))
-        log_event('import', f"No manga files found in {src_dir} — skipping: {torrent_name}", series_id, db=db)
+        # dedup=True: same as the 'content_path not found' fix — when a
+        # torrent's directory has nothing matching MANGA_EXTENSIONS,
+        # the status_loop will scan it again every cycle and produce
+        # an event each time. Production observed 207K instances of
+        # one path before the rate-limit landed.
+        log_event('import', f"No manga files found in {src_dir} — skipping: {torrent_name}",
+                  series_id, db=db, dedup=True)
         return None, False
 
     # needs_review if ANY file is unmapped — user must confirm before the whole batch imports
