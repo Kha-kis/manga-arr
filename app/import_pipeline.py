@@ -48,12 +48,16 @@ imported files plus the corresponding volume / chapter database state.
                                      start entry point (auto-import
                                      loop, qbit discovery, stuck
                                      retry, manual form).
-    _execute_import                — the batch itself: stage every
-                                     file under SAVEPOINT + staging
-                                     dir, run CBR→CBZ and ComicInfo
-                                     injection on the staged copy,
-                                     commit_all on success or
-                                     rollback on partial failure.
+    _execute_import                — the batch itself, split across
+                                     three phases: Phase 1 (short
+                                     DB tx) plans the import; Phase 2
+                                     (no DB held) stages files into a
+                                     hidden dir, runs CBR→CBZ and
+                                     ComicInfo injection on the staged
+                                     copy, then commit_all on success
+                                     or rollback on partial failure;
+                                     Phase 3 (short DB tx) replays
+                                     the per-file writes.
     _process_auto_import           — fire-and-forget wrapper around
                                      _guarded_execute_import; marks
                                      the queue 'failed' on unhandled
@@ -1059,8 +1063,10 @@ def _mark_downloaded(db, series_id, volume_num, torrent_url) -> bool:
 # file 3 fails used to leave files 1+2 at the final destination with files
 # 4+5 still at source. Now every file op lands in a hidden staging dir
 # under dst_dir first; only after ALL files stage successfully does the
-# helper rename them into place. Staging + DB are committed/rolled back
-# together via a SQLite SAVEPOINT.
+# helper rename them into place. The pipeline runs filesystem staging
+# (Phase 2) without a DB connection held, then Phase 3 only writes the
+# 'imported' row state for files whose stage outcome was a success — so
+# DB and filesystem state stay consistent without a long-running write tx.
 #
 # True atomicity caveats (documented — not claimed):
 # - `os.replace` is atomic ONLY within the same filesystem. Staging lives
@@ -1532,6 +1538,506 @@ async def _stage_files(
     return outcomes
 
 
+def _commit_import(
+    db,
+    plan: _ImportPlan,
+    outcomes: list[_StageOutcome],
+    fs_committed: bool,
+    commit_failure_reason: str,
+) -> tuple[bool, int, str]:
+    """Phase 3: short DB transaction replaying all writes for the
+    import. Reads outcomes from Phase 2 and the frozen plan from
+    Phase 1 — never re-runs file I/O.
+
+    fs_committed=True: write 'imported' + chapter/volume metadata for
+                      each ok outcome.
+    fs_committed=False: implement the original SAVEPOINT-rollback
+                       semantics structurally — when there were
+                       successful stages, only re-apply the first
+                       staging-failure 'failed' marker; when there
+                       were no successful stages, mark every failure
+                       (pre_failed + staging) so the user sees what
+                       was bad.
+
+    Returns (ok, imported_count, new_status).
+    """
+    queue       = plan.queue
+    series_id   = plan.series_id
+    dst_dir     = plan.dst_dir
+    now_ts      = plan.now_ts
+    s           = plan.series
+    queue_id    = queue['id']
+
+    outcomes_by_id = {o.file_id: o for o in outcomes}
+    imported_count = 0
+    imported_vols: set[float] = set()
+    chapter_vols_touched: set[int] = set()
+
+    has_pre_failed = any(fp.plan_status == 'pre_failed' for fp in plan.files)
+    has_stage_fail = any(
+        fp.plan_status == 'ready' and not outcomes_by_id[fp.file_id].ok
+        for fp in plan.files
+    )
+    any_error = has_pre_failed or has_stage_fail
+    would_be_imported = sum(
+        1 for fp in plan.files
+        if fp.plan_status == 'ready' and outcomes_by_id[fp.file_id].ok
+    )
+
+    if fs_committed:
+        # ── Pure-success Phase 3: write 'imported' + chapter/volume metadata.
+        for fp in plan.files:
+            if fp.plan_status in ('skip', 'needs_review'):
+                continue
+            if fp.plan_status == 'pre_failed':
+                # Defensive — Phase 2 should not have reached commit_all
+                # if pre_failed files exist.
+                db.execute(
+                    "UPDATE import_queue_files SET status='failed' WHERE id=?",
+                    (fp.file_id,),
+                )
+                log_event('error', f"Import: {fp.plan_failure_reason}", series_id, db=db)
+                any_error = True
+                continue
+
+            outcome = outcomes_by_id[fp.file_id]
+            if not outcome.ok:
+                # Defensive — same reasoning.
+                err_label = (
+                    f"Import chapter error ({fp.filename}): {outcome.error}"
+                    if fp.file_type == 'chapter'
+                    else f"Import file error ({fp.filename}): {outcome.error}"
+                )
+                db.execute(
+                    "UPDATE import_queue_files SET status='failed' WHERE id=?",
+                    (fp.file_id,),
+                )
+                log_event('error', err_label, series_id, db=db)
+                any_error = True
+                continue
+
+            dst = outcome.final_dst
+
+            # ── Chapter file ───────────────────────────────────────────────
+            if fp.file_type == 'chapter' and fp.proposed_chap is not None:
+                try:
+                    db.execute(
+                        "UPDATE import_queue_files SET status='imported', dst_path=? WHERE id=?",
+                        (dst, fp.file_id),
+                    )
+                    imported_count += 1
+
+                    vol_id = None
+                    if fp.proposed_vol is not None:
+                        if fp.is_special:
+                            vol_row = db.execute(
+                                "SELECT id FROM volumes WHERE series_id=? AND volume_num=?"
+                                " AND COALESCE(is_special, 0) = 1",
+                                (series_id, fp.proposed_vol)
+                            ).fetchone()
+                            if vol_row:
+                                vol_id = vol_row['id']
+                            else:
+                                cur2 = db.execute(
+                                    "INSERT INTO volumes(series_id, volume_num, status, is_special)"
+                                    " VALUES(?,?,'wanted',1)",
+                                    (series_id, fp.proposed_vol)
+                                )
+                                vol_id = cur2.lastrowid
+                        else:
+                            vol_row = db.execute(
+                                "SELECT id FROM volumes WHERE series_id=? AND volume_num=?"
+                                " AND COALESCE(is_special, 0) = 0",
+                                (series_id, fp.proposed_vol)
+                            ).fetchone()
+                            if vol_row:
+                                vol_id = vol_row['id']
+                            else:
+                                cur2 = db.execute(
+                                    "INSERT INTO volumes(series_id, volume_num, status)"
+                                    " VALUES(?,?,'wanted')",
+                                    (series_id, fp.proposed_vol)
+                                )
+                                vol_id = cur2.lastrowid
+                    elif fp.is_legacy_chapter_recheck:
+                        _pre = db.execute(
+                            "SELECT volume_id FROM chapters WHERE series_id=? AND chapter_num=?",
+                            (series_id, fp.proposed_chap)
+                        ).fetchone()
+                        if _pre and _pre['volume_id'] is not None:
+                            vol_id = _pre['volume_id']
+
+                    _pv_meta = {}
+                    if vol_id is not None:
+                        _pv_row = db.execute(
+                            "SELECT indexer, protocol, client, release_group, size_bytes,"
+                            " torrent_name FROM volumes WHERE id=?",
+                            (vol_id,)
+                        ).fetchone()
+                        if _pv_row:
+                            _pv_meta = dict(_pv_row)
+                    _ch_quality = quality_from_filename(dst)
+                    _ch_torrent_name = _pv_meta.get('torrent_name') or queue['torrent_name']
+
+                    chap_row = db.execute(
+                        "SELECT id FROM chapters WHERE series_id=? AND chapter_num=?",
+                        (series_id, fp.proposed_chap)
+                    ).fetchone()
+                    if chap_row:
+                        db.execute(
+                            "UPDATE chapters SET status='downloaded', import_path=?,"
+                            " quality=COALESCE(quality,?), imported_at=COALESCE(imported_at,?),"
+                            " torrent_name=COALESCE(torrent_name,?),"
+                            " indexer=COALESCE(indexer,?), protocol=COALESCE(protocol,?),"
+                            " client=COALESCE(client,?), release_group=COALESCE(release_group,?),"
+                            " size_bytes=COALESCE(NULLIF(size_bytes,0),?),"
+                            " volume_id=COALESCE(volume_id,?), download_id=COALESCE(download_id,?),"
+                            " chapter_range_end=COALESCE(?, chapter_range_end)"
+                            " WHERE id=?",
+                            (dst, _ch_quality, now_ts, _ch_torrent_name,
+                             _pv_meta.get('indexer'), _pv_meta.get('protocol'),
+                             _pv_meta.get('client'), _pv_meta.get('release_group'),
+                             _pv_meta.get('size_bytes'),
+                             vol_id, queue['download_id'], fp.chap_range_end, chap_row['id'])
+                        )
+                    else:
+                        db.execute(
+                            "INSERT INTO chapters(series_id, volume_id, chapter_num, status,"
+                            " import_path, download_id, torrent_name, indexer, protocol, client,"
+                            " release_group, size_bytes, quality, imported_at, chapter_range_end)"
+                            " VALUES(?,?,?,'downloaded',?,?,?,?,?,?,?,?,?,?,?)",
+                            (series_id, vol_id, fp.proposed_chap, dst,
+                             queue['download_id'], _ch_torrent_name,
+                             _pv_meta.get('indexer'), _pv_meta.get('protocol'),
+                             _pv_meta.get('client'), _pv_meta.get('release_group'),
+                             _pv_meta.get('size_bytes'), _ch_quality, now_ts,
+                             fp.chap_range_end)
+                        )
+
+                    if fp.chap_range_end is not None:
+                        db.execute(
+                            "DELETE FROM chapters WHERE series_id=?"
+                            "   AND chapter_num > ? AND chapter_num <= ?"
+                            "   AND status = 'wanted'"
+                            "   AND import_path IS NULL",
+                            (series_id, fp.proposed_chap, fp.chap_range_end)
+                        )
+
+                    if vol_id is not None:
+                        chapter_vols_touched.add(vol_id)
+                    if fp.proposed_vol is not None:
+                        imported_vols.add(fp.proposed_vol)
+
+                except Exception as e:
+                    db.execute(
+                        "UPDATE import_queue_files SET status='failed' WHERE id=?",
+                        (fp.file_id,),
+                    )
+                    log_event('error', f"Import chapter error ({fp.filename}): {e}", series_id, db=db)
+                    any_error = True
+                continue
+
+            # ── Volume file ────────────────────────────────────────────────
+            try:
+                db.execute(
+                    "UPDATE import_queue_files SET status='imported', dst_path=? WHERE id=?",
+                    (dst, fp.file_id),
+                )
+                imported_count += 1
+                if fp.proposed_vol is not None:
+                    imported_vols.add(fp.proposed_vol)
+                elif fp.is_legacy_chapter_stub:
+                    _stub = db.execute(
+                        "SELECT id FROM volumes WHERE series_id=? AND download_id=?"
+                        " AND status='grabbed' AND pack_type='chapter'",
+                        (series_id, queue['download_id'])
+                    ).fetchone()
+                    if _stub:
+                        db.execute(
+                            "UPDATE volumes SET status='downloaded', import_path=?,"
+                            " quality=COALESCE(quality,?), imported_at=? WHERE id=?",
+                            (dst, quality_from_filename(dst), now_ts, _stub['id'])
+                        )
+
+                if fp.has_volume_range and fp.proposed_vol is None:
+                    seen_row = db.execute(
+                        "SELECT torrent_name, indexer, protocol, client, release_group, size_bytes"
+                        " FROM seen WHERE (download_id=? AND download_id IS NOT NULL)"
+                        " OR torrent_url=? LIMIT 1",
+                        (queue['download_id'], queue['torrent_url'])
+                    ).fetchone()
+                    meta = dict(seen_row) if seen_row else {}
+                    file_quality = quality_from_filename(fp.filename)
+                    _rpt = fp.pack_type if fp.pack_type in ('volume', 'volume_range', 'complete') \
+                           else 'volume'
+                    db.execute(
+                        "INSERT INTO volumes(series_id, volume_num, status, source_url,"
+                        " torrent_name, import_path, download_id, indexer, protocol,"
+                        " client, release_group, size_bytes, quality, imported_at,"
+                        " vol_range_start, vol_range_end, pack_type, is_special)"
+                        " VALUES(?,NULL,'downloaded',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (series_id,
+                         queue['torrent_url'], meta.get('torrent_name'),
+                         dst, queue['download_id'],
+                         meta.get('indexer'), meta.get('protocol'),
+                         meta.get('client'), meta.get('release_group'),
+                         meta.get('size_bytes'), file_quality, now_ts,
+                         fp.vol_range_start, fp.vol_range_end, _rpt, fp.is_special)
+                    )
+                    for _v in range(int(fp.vol_range_start), int(fp.vol_range_end) + 1):
+                        imported_vols.add(float(_v))
+                    continue
+
+                if fp.proposed_vol is not None:
+                    seen_row = db.execute(
+                        "SELECT torrent_name, indexer, protocol, client, release_group, size_bytes"
+                        " FROM seen WHERE (download_id=? AND download_id IS NOT NULL)"
+                        " OR torrent_url=? LIMIT 1",
+                        (queue['download_id'], queue['torrent_url'])
+                    ).fetchone()
+                    meta = dict(seen_row) if seen_row else {}
+
+                    if fp.is_special:
+                        vol_row = db.execute(
+                            "SELECT id FROM volumes WHERE series_id=? AND volume_num=?"
+                            " AND COALESCE(is_special, 0) = 1",
+                            (series_id, fp.proposed_vol)
+                        ).fetchone()
+                    else:
+                        vol_row = db.execute(
+                            "SELECT id FROM volumes WHERE series_id=? AND volume_num=?"
+                            " AND COALESCE(is_special, 0) = 0",
+                            (series_id, fp.proposed_vol)
+                        ).fetchone()
+                    file_quality = quality_from_filename(fp.filename)
+                    if vol_row:
+                        db.execute(
+                            "UPDATE volumes SET status='downloaded', import_path=?,"
+                            " torrent_name=?, indexer=?, protocol=?, client=?,"
+                            " release_group=?, size_bytes=?, quality=?, imported_at=?,"
+                            " download_id=COALESCE(download_id,?),"
+                            " is_special=COALESCE(NULLIF(?,0), is_special),"
+                            " pack_type=COALESCE(?, pack_type) WHERE id=?",
+                            (dst,
+                             meta.get('torrent_name'), meta.get('indexer'),
+                             meta.get('protocol'), meta.get('client'),
+                             meta.get('release_group'), meta.get('size_bytes'),
+                             file_quality, now_ts, queue['download_id'],
+                             fp.is_special,
+                             fp.pack_type if fp.pack_type in ('volume', 'complete') else None,
+                             vol_row['id'])
+                        )
+                        _check_volume_completion(db, series_id, vol_row['id'])
+                        _cascade_chapters(db, series_id, [vol_row['id']],
+                                          'downloaded', import_path=dst,
+                                          download_id=queue['download_id'],
+                                          quality=file_quality, imported_at=now_ts,
+                                          torrent_name=meta.get('torrent_name'),
+                                          indexer=meta.get('indexer'),
+                                          protocol=meta.get('protocol'),
+                                          client=meta.get('client'),
+                                          release_group=meta.get('release_group'),
+                                          size_bytes=meta.get('size_bytes'))
+                    else:
+                        _rpt_new = fp.pack_type if fp.pack_type in ('volume', 'complete') else None
+                        cur_ins = db.execute(
+                            "INSERT INTO volumes(series_id, volume_num, status, source_url,"
+                            " torrent_name, import_path, download_id, indexer, protocol,"
+                            " client, release_group, size_bytes, quality, imported_at,"
+                            " pack_type, is_special)"
+                            " VALUES(?,?,'downloaded',?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (series_id, fp.proposed_vol,
+                             queue['torrent_url'], meta.get('torrent_name'),
+                             dst, queue['download_id'],
+                             meta.get('indexer'), meta.get('protocol'),
+                             meta.get('client'), meta.get('release_group'),
+                             meta.get('size_bytes'), file_quality, now_ts,
+                             _rpt_new, fp.is_special)
+                        )
+                        _cascade_chapters(db, series_id, [cur_ins.lastrowid],
+                                          'downloaded', import_path=dst,
+                                          download_id=queue['download_id'],
+                                          quality=file_quality, imported_at=now_ts,
+                                          torrent_name=meta.get('torrent_name'),
+                                          indexer=meta.get('indexer'),
+                                          protocol=meta.get('protocol'),
+                                          client=meta.get('client'),
+                                          release_group=meta.get('release_group'),
+                                          size_bytes=meta.get('size_bytes'))
+
+            except Exception as e:
+                db.execute(
+                    "UPDATE import_queue_files SET status='failed' WHERE id=?",
+                    (fp.file_id,),
+                )
+                log_event('error', f"Import file error ({fp.filename}): {e}", series_id, db=db)
+                any_error = True
+    else:
+        # ── Rollback Phase 3: filesystem already rolled back by Phase 2.
+        if would_be_imported > 0:
+            # Mid-batch failure equivalent — re-apply only the first
+            # staging-failure 'failed' marker, mirroring the original's
+            # _batch_failed_file_id semantics. Pre_failed files do NOT
+            # get a 'failed' marker here (the original SAVEPOINT
+            # ROLLBACK reverted their plan-time 'failed' write).
+            first_fail: tuple[int, str] | None = None
+            for fp in plan.files:
+                if fp.plan_status == 'ready':
+                    outcome = outcomes_by_id[fp.file_id]
+                    if not outcome.ok:
+                        err_label = (
+                            f"Import chapter error ({fp.filename}): {outcome.error}"
+                            if fp.file_type == 'chapter'
+                            else f"Import file error ({fp.filename}): {outcome.error}"
+                        )
+                        first_fail = (fp.file_id, err_label)
+                        break
+            if has_pre_failed or has_stage_fail:
+                if first_fail is not None:
+                    db.execute(
+                        "UPDATE import_queue_files SET status='failed' WHERE id=?",
+                        (first_fail[0],),
+                    )
+                    log_event(
+                        'error',
+                        f"Import rolled back (batch atomicity): {first_fail[1]}",
+                        series_id,
+                        db=db,
+                    )
+                else:
+                    # Pre_failed-only trigger: log the rollback with
+                    # empty reason (matches original's empty
+                    # _batch_failed_reason).
+                    log_event(
+                        'error',
+                        "Import rolled back (batch atomicity): ",
+                        series_id,
+                        db=db,
+                    )
+            elif commit_failure_reason:
+                # commit_all itself failed (no prior errors). Original
+                # leaves any_error=False here, which makes the final
+                # status fall through to 'imported'. Preserved as-is.
+                log_event(
+                    'error',
+                    f"Import commit phase failed; rolled back: {commit_failure_reason}",
+                    series_id,
+                    db=db,
+                )
+            imported_count = 0
+            chapter_vols_touched.clear()
+            imported_vols.clear()
+        else:
+            # Pure-failure batch — no successful stages. Mark each
+            # failure individually so the user sees what was bad.
+            for fp in plan.files:
+                if fp.plan_status == 'pre_failed':
+                    db.execute(
+                        "UPDATE import_queue_files SET status='failed' WHERE id=?",
+                        (fp.file_id,),
+                    )
+                    log_event('error', f"Import: {fp.plan_failure_reason}", series_id, db=db)
+                elif fp.plan_status == 'ready':
+                    outcome = outcomes_by_id[fp.file_id]
+                    if not outcome.ok:
+                        err_label = (
+                            f"Import chapter error ({fp.filename}): {outcome.error}"
+                            if fp.file_type == 'chapter'
+                            else f"Import file error ({fp.filename}): {outcome.error}"
+                        )
+                        db.execute(
+                            "UPDATE import_queue_files SET status='failed' WHERE id=?",
+                            (fp.file_id,),
+                        )
+                        log_event('error', err_label, series_id, db=db)
+            imported_count = 0
+
+    # ── Cascade chapter completion to volumes (success-mode only) ─────────
+    for vol_id in chapter_vols_touched:
+        total_chaps = db.execute(
+            "SELECT COUNT(*) FROM chapters WHERE volume_id=? AND monitored=1",
+            (vol_id,)
+        ).fetchone()[0]
+        done_chaps = db.execute(
+            "SELECT COUNT(*) FROM chapters WHERE volume_id=? AND monitored=1 AND status='downloaded'",
+            (vol_id,)
+        ).fetchone()[0]
+        if total_chaps > 0 and done_chaps >= total_chaps:
+            db.execute(
+                "UPDATE volumes SET status='downloaded', imported_at=COALESCE(imported_at,?)"
+                " WHERE id=? AND status!='downloaded'",
+                (now_ts, vol_id)
+            )
+
+    # ── Final queue status ────────────────────────────────────────────────
+    has_needs_review = db.execute(
+        "SELECT 1 FROM import_queue_files WHERE queue_id=? AND status='needs_review'",
+        (queue_id,)
+    ).fetchone()
+
+    if imported_count == 0 and any_error:
+        new_status = 'failed'
+    elif has_needs_review:
+        new_status = 'partial'
+    elif any_error:
+        new_status = 'partial'
+    else:
+        new_status = 'imported'
+
+    db.execute("UPDATE import_queue SET status=? WHERE id=?", (new_status, queue_id))
+    if new_status == 'failed' and queue['download_id']:
+        db.execute(
+            "UPDATE volumes SET status='wanted', grabbed_at=NULL, download_id=NULL,"
+            " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
+            " client=NULL, release_group=NULL, import_path=NULL"
+            " WHERE download_id=? AND status='grabbed'",
+            (queue['download_id'],)
+        )
+    if new_status == 'imported':
+        db.execute("DELETE FROM import_queue_files WHERE queue_id=?", (queue_id,))
+        db.execute("DELETE FROM import_queue WHERE id=?", (queue_id,))
+
+    s_info = db.execute(
+        "SELECT title FROM series WHERE id=?", (series_id,)
+    ).fetchone()
+    s_title = s_info['title'] if s_info else ''
+    vol_label = build_volume_label(queue['volume_num'], None, None)
+
+    if imported_count > 0:
+        # Reassignment safety: if the user reassigned volume numbers in
+        # the review form, the originally grabbed stub
+        # (queue['volume_num']) may not have been imported. Reset it
+        # BEFORE _mark_downloaded runs.
+        if (queue['volume_num'] is not None
+                and imported_vols
+                and queue['volume_num'] not in imported_vols):
+            db.execute(
+                "UPDATE volumes SET status='wanted', download_id=NULL, grabbed_at=NULL,"
+                " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
+                " client=NULL, release_group=NULL "
+                "WHERE series_id=? AND volume_num=? AND status='grabbed'",
+                (series_id, queue['volume_num'])
+            )
+        _mark_downloaded(db, series_id, queue['volume_num'], queue['torrent_url'])
+        db.execute(
+            "UPDATE volumes SET import_path=? WHERE series_id=? AND download_id=?"
+            " AND volume_num IS NULL",
+            (dst_dir, series_id, queue['download_id'])
+        )
+        log_event('import', f"Imported {imported_count} file(s): {queue['torrent_name']}", series_id, db=db)
+        add_history(db, 'imported', series_id, s_title, vol_label,
+                    source_title=queue['torrent_name'] or '',
+                    download_id=queue['download_id'] or '',
+                    data={'dst_dir': dst_dir, 'count': imported_count})
+    else:
+        log_event('error', f"Import failed: {queue['torrent_name']}", series_id, db=db)
+        add_history(db, 'import_failed', series_id, s_title, vol_label,
+                    source_title=queue['torrent_name'] or '',
+                    download_id=queue['download_id'] or '')
+
+    return (not any_error, imported_count, new_status)
+
+
 # ── Import concurrency guard ──────────────────────────────────────────────────
 # Bound the number of imports that can run in parallel so a backlog of pending
 # queue rows doesn't spawn one task per row and hammer SQLite + disk I/O.
@@ -1630,6 +2136,12 @@ async def _execute_import_impl(
     chapter_overrides: {file_id: new_chapter_num} — user corrections for chapter files
     skip_ids:          set of file_ids to skip
     Returns True on full success.
+
+    Three-phase pipeline:
+      Phase 1 — open DB, build _ImportPlan, close. Short tx.
+      Phase 2 — stage files + decide commit/rollback. NO DB connection
+                held during file I/O, so concurrent writers don't block.
+      Phase 3 — open DB, replay all writes in one short tx.
     """
     if volume_overrides is None:
         volume_overrides = {}
@@ -1639,477 +2151,65 @@ async def _execute_import_impl(
         skip_ids = set()
 
     import_mode = get_cfg('import_mode', 'hardlink')
-    any_error   = False
 
-    with get_db() as db:
+    # ── Phase 1 — short DB tx for planning ──────────────────────────────
+    with get_db() as _db1:
         plan = _plan_import(
-            db, queue_id,
+            _db1, queue_id,
             volume_overrides, chapter_overrides, skip_ids,
             import_mode,
         )
-        if plan is None:
-            return False
+    if plan is None:
+        return False
 
-        queue   = plan.queue
-        s       = plan.series
-        dst_dir = plan.dst_dir
-        now_ts  = plan.now_ts
+    queue = plan.queue
 
-        imported_count = 0
-        imported_vols: set[float] = set()
-        # Track volumes that gained new chapter imports so we can cascade completion.
-        chapter_vols_touched: set[int] = set()
+    # ── Phase 2 — filesystem (no DB held) ───────────────────────────────
+    staging = _ImportStaging(plan.dst_dir, queue['id'], import_mode)
+    outcomes = await _stage_files(plan, staging)
+    outcomes_by_id = {o.file_id: o for o in outcomes}
 
-        # Two-phase commit for the whole batch. Every file op goes into
-        # staging/; commit_all() renames them into place only if every
-        # file staged successfully. The SQLite SAVEPOINT mirrors the
-        # filesystem staging so DB writes (queue_files, volumes, chapters)
-        # commit together with the renames — or roll back together.
-        staging = _ImportStaging(dst_dir, queue['id'], import_mode)
+    has_pre_failed = any(fp.plan_status == 'pre_failed' for fp in plan.files)
+    has_stage_fail = any(
+        fp.plan_status == 'ready' and not outcomes_by_id[fp.file_id].ok
+        for fp in plan.files
+    )
+    would_be_imported = sum(
+        1 for fp in plan.files
+        if fp.plan_status == 'ready' and outcomes_by_id[fp.file_id].ok
+    )
 
-        # Phase 2 — pure filesystem (no DB writes).
-        outcomes = await _stage_files(plan, staging)
-        outcomes_by_id = {o.file_id: o for o in outcomes}
-
-        db.execute("SAVEPOINT import_batch")
-        # First file that failed mid-batch, so we can still mark it 'failed'
-        # in the DB AFTER the savepoint rollback reverts other writes.
-        _batch_failed_file_id: int | None = None
-        _batch_failed_reason: str = ""
-
-        for fp in plan.files:
-            if fp.plan_status in ('skip', 'needs_review'):
-                # Already persisted by _plan_import.
-                continue
-            if fp.plan_status == 'pre_failed':
-                db.execute(
-                    "UPDATE import_queue_files SET status='failed' WHERE id=?",
-                    (fp.file_id,),
-                )
-                log_event('error', f"Import: {fp.plan_failure_reason}", queue['series_id'], db=db)
-                any_error = True
-                continue
-
-            outcome = outcomes_by_id[fp.file_id]
-            if not outcome.ok:
-                # Phase 2 staging failure for this file.
-                err_label = (
-                    f"Import chapter error ({fp.filename}): {outcome.error}"
-                    if fp.file_type == 'chapter'
-                    else f"Import file error ({fp.filename}): {outcome.error}"
-                )
-                db.execute(
-                    "UPDATE import_queue_files SET status='failed' WHERE id=?",
-                    (fp.file_id,),
-                )
-                log_event('error', err_label, queue['series_id'], db=db)
-                any_error = True
-                if _batch_failed_file_id is None:
-                    _batch_failed_file_id = fp.file_id
-                    _batch_failed_reason = err_label
-                continue
-
-            # ── Phase 3 DB writes for a successfully-staged file ──────────
-            dst = outcome.final_dst
-
-            # ── Chapter file ───────────────────────────────────────────────
-            if fp.file_type == 'chapter' and fp.proposed_chap is not None:
-                try:
-                    db.execute(
-                        "UPDATE import_queue_files SET status='imported', dst_path=? WHERE id=?",
-                        (dst, fp.file_id),
-                    )
-                    imported_count += 1
-
-                    # Resolve or create the parent volume record. Specials
-                    # and mainline share volume numbers (Gaiden vol 3 ≠
-                    # mainline vol 3), so route by the is_special flag.
-                    vol_id = None
-                    if fp.proposed_vol is not None:
-                        if fp.is_special:
-                            vol_row = db.execute(
-                                "SELECT id FROM volumes WHERE series_id=? AND volume_num=?"
-                                " AND COALESCE(is_special, 0) = 1",
-                                (queue['series_id'], fp.proposed_vol)
-                            ).fetchone()
-                            if vol_row:
-                                vol_id = vol_row['id']
-                            else:
-                                cur2 = db.execute(
-                                    "INSERT INTO volumes(series_id, volume_num, status, is_special)"
-                                    " VALUES(?,?,'wanted',1)",
-                                    (queue['series_id'], fp.proposed_vol)
-                                )
-                                vol_id = cur2.lastrowid
-                        else:
-                            vol_row = db.execute(
-                                "SELECT id FROM volumes WHERE series_id=? AND volume_num=?"
-                                " AND COALESCE(is_special, 0) = 0",
-                                (queue['series_id'], fp.proposed_vol)
-                            ).fetchone()
-                            if vol_row:
-                                vol_id = vol_row['id']
-                            else:
-                                cur2 = db.execute(
-                                    "INSERT INTO volumes(series_id, volume_num, status)"
-                                    " VALUES(?,?,'wanted')",
-                                    (queue['series_id'], fp.proposed_vol)
-                                )
-                                vol_id = cur2.lastrowid
-                    elif fp.is_legacy_chapter_recheck:
-                        # Pre-migration row: chapter linkage may already
-                        # exist — inherit it for metadata cascade.
-                        _pre = db.execute(
-                            "SELECT volume_id FROM chapters WHERE series_id=? AND chapter_num=?",
-                            (queue['series_id'], fp.proposed_chap)
-                        ).fetchone()
-                        if _pre and _pre['volume_id'] is not None:
-                            vol_id = _pre['volume_id']
-
-                    # Pull parent-volume metadata (if linked) to stamp onto
-                    # chapter rows — keeps chapters in sync with the grab
-                    # that produced them.
-                    _pv_meta = {}
-                    if vol_id is not None:
-                        _pv_row = db.execute(
-                            "SELECT indexer, protocol, client, release_group, size_bytes,"
-                            " torrent_name FROM volumes WHERE id=?",
-                            (vol_id,)
-                        ).fetchone()
-                        if _pv_row:
-                            _pv_meta = dict(_pv_row)
-                    _ch_quality = quality_from_filename(dst)
-                    _ch_torrent_name = _pv_meta.get('torrent_name') or queue['torrent_name']
-
-                    # Upsert the chapter record. When importing a chapter
-                    # pack (c001-002), set chapter_range_end so a single
-                    # row covers the whole span.
-                    chap_row = db.execute(
-                        "SELECT id FROM chapters WHERE series_id=? AND chapter_num=?",
-                        (queue['series_id'], fp.proposed_chap)
-                    ).fetchone()
-                    if chap_row:
-                        db.execute(
-                            "UPDATE chapters SET status='downloaded', import_path=?,"
-                            " quality=COALESCE(quality,?), imported_at=COALESCE(imported_at,?),"
-                            " torrent_name=COALESCE(torrent_name,?),"
-                            " indexer=COALESCE(indexer,?), protocol=COALESCE(protocol,?),"
-                            " client=COALESCE(client,?), release_group=COALESCE(release_group,?),"
-                            " size_bytes=COALESCE(NULLIF(size_bytes,0),?),"
-                            " volume_id=COALESCE(volume_id,?), download_id=COALESCE(download_id,?),"
-                            " chapter_range_end=COALESCE(?, chapter_range_end)"
-                            " WHERE id=?",
-                            (dst, _ch_quality, now_ts, _ch_torrent_name,
-                             _pv_meta.get('indexer'), _pv_meta.get('protocol'),
-                             _pv_meta.get('client'), _pv_meta.get('release_group'),
-                             _pv_meta.get('size_bytes'),
-                             vol_id, queue['download_id'], fp.chap_range_end, chap_row['id'])
-                        )
-                    else:
-                        db.execute(
-                            "INSERT INTO chapters(series_id, volume_id, chapter_num, status,"
-                            " import_path, download_id, torrent_name, indexer, protocol, client,"
-                            " release_group, size_bytes, quality, imported_at, chapter_range_end)"
-                            " VALUES(?,?,?,'downloaded',?,?,?,?,?,?,?,?,?,?,?)",
-                            (queue['series_id'], vol_id, fp.proposed_chap, dst,
-                             queue['download_id'], _ch_torrent_name,
-                             _pv_meta.get('indexer'), _pv_meta.get('protocol'),
-                             _pv_meta.get('client'), _pv_meta.get('release_group'),
-                             _pv_meta.get('size_bytes'), _ch_quality, now_ts,
-                             fp.chap_range_end)
-                        )
-
-                    # If this row covers a chapter range, sweep up
-                    # pre-existing placeholder rows for the inner
-                    # chapters (status='wanted', no import_path).
-                    if fp.chap_range_end is not None:
-                        db.execute(
-                            "DELETE FROM chapters WHERE series_id=?"
-                            "   AND chapter_num > ? AND chapter_num <= ?"
-                            "   AND status = 'wanted'"
-                            "   AND import_path IS NULL",
-                            (queue['series_id'], fp.proposed_chap, fp.chap_range_end)
-                        )
-
-                    if vol_id is not None:
-                        chapter_vols_touched.add(vol_id)
-                    if fp.proposed_vol is not None:
-                        imported_vols.add(fp.proposed_vol)
-
-                except Exception as e:
-                    db.execute(
-                        "UPDATE import_queue_files SET status='failed' WHERE id=?",
-                        (fp.file_id,),
-                    )
-                    log_event('error', f"Import chapter error ({fp.filename}): {e}", queue['series_id'], db=db)
-                    any_error = True
-                    if _batch_failed_file_id is None:
-                        _batch_failed_file_id = fp.file_id
-                        _batch_failed_reason = f"Import chapter error ({fp.filename}): {e}"
-                continue  # chapter file handled — skip volume logic
-
-            # ── Volume file ────────────────────────────────────────────────
-            try:
-                db.execute(
-                    "UPDATE import_queue_files SET status='imported', dst_path=? WHERE id=?",
-                    (dst, fp.file_id),
-                )
-                imported_count += 1
-                if fp.proposed_vol is not None:
-                    imported_vols.add(fp.proposed_vol)
-                elif fp.is_legacy_chapter_stub:
-                    # Legacy chapter-mode grab — mark the stub downloaded.
-                    _stub = db.execute(
-                        "SELECT id FROM volumes WHERE series_id=? AND download_id=?"
-                        " AND status='grabbed' AND pack_type='chapter'",
-                        (queue['series_id'], queue['download_id'])
-                    ).fetchone()
-                    if _stub:
-                        db.execute(
-                            "UPDATE volumes SET status='downloaded', import_path=?,"
-                            " quality=COALESCE(quality,?), imported_at=? WHERE id=?",
-                            (dst, quality_from_filename(dst), now_ts, _stub['id'])
-                        )
-
-                # ── Volume-range file (Stage 2) ────────────────────────
-                if fp.has_volume_range and fp.proposed_vol is None:
-                    seen_row = db.execute(
-                        "SELECT torrent_name, indexer, protocol, client, release_group, size_bytes"
-                        " FROM seen WHERE (download_id=? AND download_id IS NOT NULL)"
-                        " OR torrent_url=? LIMIT 1",
-                        (queue['download_id'], queue['torrent_url'])
-                    ).fetchone()
-                    meta = dict(seen_row) if seen_row else {}
-                    file_quality = quality_from_filename(fp.filename)
-                    _rpt = fp.pack_type if fp.pack_type in ('volume', 'volume_range', 'complete') \
-                           else 'volume'
-                    db.execute(
-                        "INSERT INTO volumes(series_id, volume_num, status, source_url,"
-                        " torrent_name, import_path, download_id, indexer, protocol,"
-                        " client, release_group, size_bytes, quality, imported_at,"
-                        " vol_range_start, vol_range_end, pack_type, is_special)"
-                        " VALUES(?,NULL,'downloaded',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (queue['series_id'],
-                         queue['torrent_url'], meta.get('torrent_name'),
-                         dst, queue['download_id'],
-                         meta.get('indexer'), meta.get('protocol'),
-                         meta.get('client'), meta.get('release_group'),
-                         meta.get('size_bytes'), file_quality, now_ts,
-                         fp.vol_range_start, fp.vol_range_end, _rpt, fp.is_special)
-                    )
-                    for _v in range(int(fp.vol_range_start), int(fp.vol_range_end) + 1):
-                        imported_vols.add(float(_v))
-                    continue  # next queue file
-
-                # Stamp full source metadata on the volume stub now that
-                # the file is confirmed.
-                if fp.proposed_vol is not None:
-                    seen_row = db.execute(
-                        "SELECT torrent_name, indexer, protocol, client, release_group, size_bytes"
-                        " FROM seen WHERE (download_id=? AND download_id IS NOT NULL)"
-                        " OR torrent_url=? LIMIT 1",
-                        (queue['download_id'], queue['torrent_url'])
-                    ).fetchone()
-                    meta = dict(seen_row) if seen_row else {}
-
-                    if fp.is_special:
-                        vol_row = db.execute(
-                            "SELECT id FROM volumes WHERE series_id=? AND volume_num=?"
-                            " AND COALESCE(is_special, 0) = 1",
-                            (queue['series_id'], fp.proposed_vol)
-                        ).fetchone()
-                    else:
-                        vol_row = db.execute(
-                            "SELECT id FROM volumes WHERE series_id=? AND volume_num=?"
-                            " AND COALESCE(is_special, 0) = 0",
-                            (queue['series_id'], fp.proposed_vol)
-                        ).fetchone()
-                    file_quality = quality_from_filename(fp.filename)
-                    if vol_row:
-                        db.execute(
-                            "UPDATE volumes SET status='downloaded', import_path=?,"
-                            " torrent_name=?, indexer=?, protocol=?, client=?,"
-                            " release_group=?, size_bytes=?, quality=?, imported_at=?,"
-                            " download_id=COALESCE(download_id,?),"
-                            " is_special=COALESCE(NULLIF(?,0), is_special),"
-                            " pack_type=COALESCE(?, pack_type) WHERE id=?",
-                            (dst,
-                             meta.get('torrent_name'), meta.get('indexer'),
-                             meta.get('protocol'), meta.get('client'),
-                             meta.get('release_group'), meta.get('size_bytes'),
-                             file_quality, now_ts, queue['download_id'],
-                             fp.is_special,
-                             fp.pack_type if fp.pack_type in ('volume', 'complete') else None,
-                             vol_row['id'])
-                        )
-                        _check_volume_completion(db, queue['series_id'], vol_row['id'])
-                        _cascade_chapters(db, queue['series_id'], [vol_row['id']],
-                                          'downloaded', import_path=dst,
-                                          download_id=queue['download_id'],
-                                          quality=file_quality, imported_at=now_ts,
-                                          torrent_name=meta.get('torrent_name'),
-                                          indexer=meta.get('indexer'),
-                                          protocol=meta.get('protocol'),
-                                          client=meta.get('client'),
-                                          release_group=meta.get('release_group'),
-                                          size_bytes=meta.get('size_bytes'))
-                    else:
-                        _rpt_new = fp.pack_type if fp.pack_type in ('volume', 'complete') else None
-                        cur_ins = db.execute(
-                            "INSERT INTO volumes(series_id, volume_num, status, source_url,"
-                            " torrent_name, import_path, download_id, indexer, protocol,"
-                            " client, release_group, size_bytes, quality, imported_at,"
-                            " pack_type, is_special)"
-                            " VALUES(?,?,'downloaded',?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                            (queue['series_id'], fp.proposed_vol,
-                             queue['torrent_url'], meta.get('torrent_name'),
-                             dst, queue['download_id'],
-                             meta.get('indexer'), meta.get('protocol'),
-                             meta.get('client'), meta.get('release_group'),
-                             meta.get('size_bytes'), file_quality, now_ts,
-                             _rpt_new, fp.is_special)
-                        )
-                        _cascade_chapters(db, queue['series_id'], [cur_ins.lastrowid],
-                                          'downloaded', import_path=dst,
-                                          download_id=queue['download_id'],
-                                          quality=file_quality, imported_at=now_ts,
-                                          torrent_name=meta.get('torrent_name'),
-                                          indexer=meta.get('indexer'),
-                                          protocol=meta.get('protocol'),
-                                          client=meta.get('client'),
-                                          release_group=meta.get('release_group'),
-                                          size_bytes=meta.get('size_bytes'))
-
-            except Exception as e:
-                db.execute(
-                    "UPDATE import_queue_files SET status='failed' WHERE id=?",
-                    (fp.file_id,),
-                )
-                log_event('error', f"Import file error ({fp.filename}): {e}", queue['series_id'], db=db)
-                any_error = True
-                if _batch_failed_file_id is None:
-                    _batch_failed_file_id = fp.file_id
-                    _batch_failed_reason = f"Import file error ({fp.filename}): {e}"
-
-        # ── Two-phase commit decision ─────────────────────────────────────
-        if any_error and imported_count > 0:
+    fs_committed = False
+    commit_failure_reason = ''
+    if (has_pre_failed or has_stage_fail) and would_be_imported > 0:
+        # Mid-batch failure: drop every staged file, sources intact.
+        await asyncio.to_thread(staging.rollback)
+    elif would_be_imported > 0:
+        # All-or-nothing succeeded — commit staged files into place.
+        # commit_all does N os.replace calls (+ optional os.unlink for
+        # move-mode sources). Fast per call, but disk I/O.
+        try:
+            await asyncio.to_thread(staging.commit_all)
+            fs_committed = True
+        except Exception as e:
+            # Commit-phase failure is extremely rare (rename within one
+            # filesystem). Fall back to rolling the batch back.
             await asyncio.to_thread(staging.rollback)
-            db.execute("ROLLBACK TO SAVEPOINT import_batch")
-            if _batch_failed_file_id is not None:
-                db.execute(
-                    "UPDATE import_queue_files SET status='failed' WHERE id=?",
-                    (_batch_failed_file_id,),
-                )
-            db.execute("RELEASE SAVEPOINT import_batch")
-            log_event(
-                'error',
-                f"Import rolled back (batch atomicity): {_batch_failed_reason}",
-                queue['series_id'],
-                db=db,
-            )
-            imported_count = 0
-            chapter_vols_touched.clear()
-            imported_vols.clear()
-        elif imported_count > 0:
-            try:
-                await asyncio.to_thread(staging.commit_all)
-                db.execute("RELEASE SAVEPOINT import_batch")
-            except Exception as e:
-                await asyncio.to_thread(staging.rollback)
-                db.execute("ROLLBACK TO SAVEPOINT import_batch")
-                db.execute("RELEASE SAVEPOINT import_batch")
-                log_event(
-                    'error',
-                    f"Import commit phase failed; rolled back: {e}",
-                    queue['series_id'],
-                    db=db,
-                )
-                imported_count = 0
-        else:
-            await asyncio.to_thread(staging.rollback)
-            db.execute("RELEASE SAVEPOINT import_batch")
+            commit_failure_reason = str(e)
+    else:
+        # No successful stages; nothing to commit or roll back.
+        await asyncio.to_thread(staging.rollback)
 
-        # ── After all files: cascade chapter completion to volumes ────────
-        for vol_id in chapter_vols_touched:
-            total_chaps = db.execute(
-                "SELECT COUNT(*) FROM chapters WHERE volume_id=? AND monitored=1",
-                (vol_id,)
-            ).fetchone()[0]
-            done_chaps = db.execute(
-                "SELECT COUNT(*) FROM chapters WHERE volume_id=? AND monitored=1 AND status='downloaded'",
-                (vol_id,)
-            ).fetchone()[0]
-            if total_chaps > 0 and done_chaps >= total_chaps:
-                db.execute(
-                    "UPDATE volumes SET status='downloaded', imported_at=COALESCE(imported_at,?)"
-                    " WHERE id=? AND status!='downloaded'",
-                    (now_ts, vol_id)
-                )
+    # ── Phase 3 — short DB tx for replay ────────────────────────────────
+    with get_db() as _db3:
+        ok, imported_count, new_status = _commit_import(
+            _db3, plan, outcomes,
+            fs_committed=fs_committed,
+            commit_failure_reason=commit_failure_reason,
+        )
 
-        # Determine final queue status
-        has_needs_review = db.execute(
-            "SELECT 1 FROM import_queue_files WHERE queue_id=? AND status='needs_review'",
-            (queue_id,)
-        ).fetchone()
-
-        if imported_count == 0 and any_error:
-            new_status = 'failed'
-        elif has_needs_review:
-            new_status = 'partial'
-        elif any_error:
-            new_status = 'partial'
-        else:
-            new_status = 'imported'
-
-        db.execute("UPDATE import_queue SET status=? WHERE id=?", (new_status, queue_id))
-        if new_status == 'failed' and queue['download_id']:
-            db.execute(
-                "UPDATE volumes SET status='wanted', grabbed_at=NULL, download_id=NULL,"
-                " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
-                " client=NULL, release_group=NULL, import_path=NULL"
-                " WHERE download_id=? AND status='grabbed'",
-                (queue['download_id'],)
-            )
-        if new_status == 'imported':
-            db.execute("DELETE FROM import_queue_files WHERE queue_id=?", (queue_id,))
-            db.execute("DELETE FROM import_queue WHERE id=?", (queue_id,))
-
-        s_info = db.execute(
-            "SELECT title FROM series WHERE id=?", (queue['series_id'],)
-        ).fetchone()
-        s_title = s_info['title'] if s_info else ''
-        vol_label = build_volume_label(queue['volume_num'], None, None)
-
-        if imported_count > 0:
-            # Reassignment safety: see comment in original.
-            if (queue['volume_num'] is not None
-                    and imported_vols
-                    and queue['volume_num'] not in imported_vols):
-                db.execute(
-                    "UPDATE volumes SET status='wanted', download_id=NULL, grabbed_at=NULL,"
-                    " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
-                    " client=NULL, release_group=NULL "
-                    "WHERE series_id=? AND volume_num=? AND status='grabbed'",
-                    (queue['series_id'], queue['volume_num'])
-                )
-            _mark_downloaded(db, queue['series_id'], queue['volume_num'], queue['torrent_url'])
-            db.execute(
-                "UPDATE volumes SET import_path=? WHERE series_id=? AND download_id=?"
-                " AND volume_num IS NULL",
-                (dst_dir, queue['series_id'], queue['download_id'])
-            )
-            log_event('import', f"Imported {imported_count} file(s): {queue['torrent_name']}", queue['series_id'], db=db)
-            add_history(db, 'imported', queue['series_id'], s_title, vol_label,
-                        source_title=queue['torrent_name'] or '',
-                        download_id=queue['download_id'] or '',
-                        data={'dst_dir': dst_dir, 'count': imported_count})
-        else:
-            log_event('error', f"Import failed: {queue['torrent_name']}", queue['series_id'], db=db)
-            add_history(db, 'import_failed', queue['series_id'], s_title, vol_label,
-                        source_title=queue['torrent_name'] or '',
-                        download_id=queue['download_id'] or '')
-
-    if not any_error:
+    # ── Post-import work (separate DB connections, fine to interleave) ──
+    if ok:
         with get_db() as _cdb:
             _series_id_for_cover = queue['series_id']
             _cover_url_for_series = _cdb.execute(
@@ -2140,7 +2240,7 @@ async def _execute_import_impl(
             else:
                 await sab_remove(queue['download_id'])
     asyncio.create_task(broadcast_queue_event('import_complete', {'queue_id': queue_id}))
-    return not any_error
+    return ok
 
 
 async def _process_auto_import(queue_id: int):

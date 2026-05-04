@@ -59,17 +59,20 @@ def test_reassignment_reset_appears_before_mark_downloaded_call():
     """
     src = _import_pipeline_text()
 
-    # Locate the imported_count check block — there's only one place
-    # this combination of strings lives in the pipeline.
-    m = re.search(r"if imported_count > 0:.*?if not any_error:",
+    # Locate the imported_count check block. Post-refactor (PR for
+    # import lock contention) this block lives inside _commit_import
+    # and is bounded by the function's `return (not any_error, ...)`
+    # tuple — there's only one such return in the pipeline.
+    m = re.search(r"if imported_count > 0:.*?return \(not any_error",
                   src, flags=re.DOTALL)
     assert m, "couldn't locate the post-import status block"
     block = m.group(0)
 
     # The reset SQL block fingerprint
     reset_idx = block.find("status='wanted', download_id=NULL")
-    # The _mark_downloaded call fingerprint
-    mark_idx = block.find("_mark_downloaded(db, queue['series_id']")
+    # The _mark_downloaded call fingerprint. Post-refactor _commit_import
+    # uses a local `series_id` instead of `queue['series_id']`.
+    mark_idx = block.find("_mark_downloaded(db, series_id,")
 
     assert reset_idx >= 0, "reassign-reset SQL not found in post-import block"
     assert mark_idx >= 0, "_mark_downloaded call not found in post-import block"
