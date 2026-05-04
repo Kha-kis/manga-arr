@@ -84,7 +84,8 @@ async def create_import_list(
 # ── Sync (manual trigger) — defined BEFORE /{list_id} to avoid path conflict ──
 @router.post("/import-lists/sync")
 async def sync_import_lists(request: Request):
-    asyncio.create_task(_sync_all_lists())
+    import main as _m
+    _m.create_background_task(_sync_all_lists(), name="import_lists:sync_all")
     if request.headers.get("HX-Request") == "true":
         from fastapi.responses import Response as _Resp
         return _Resp(headers={"HX-Trigger": json.dumps({
@@ -155,7 +156,8 @@ async def sync_single_import_list(request: Request, list_id: int):
                 "showToast": {"msg": "List not found", "type": "error"}
             })}, status_code=404)
         return JSONResponse({"ok": False, "message": "List not found"})
-    asyncio.create_task(_sync_list(dict(lst)))
+    import main as _m
+    _m.create_background_task(_sync_list(dict(lst)), name=f"import_lists:sync:{list_id}")
     if request.headers.get("HX-Request") == "true":
         from fastapi.responses import Response as _Resp
         return _Resp(headers={"HX-Trigger": json.dumps({
@@ -269,13 +271,13 @@ async def _sync_list(lst: dict):
     for series_id, title, search_pattern, cover_url, al_id in added_entries:
         try:
             import main as _m
-            asyncio.create_task(_m.refresh_mangadex_map(series_id))
+            _m.create_background_task(_m.refresh_mangadex_map(series_id), name=f"import_list:{series_id}:refresh_mangadex")
             if cover_url:
-                asyncio.create_task(_m.download_cover(series_id, cover_url))
+                _m.create_background_task(_m.download_cover(series_id, cover_url), name=f"import_list:{series_id}:download_cover")
             if al_id:
-                asyncio.create_task(_m.fetch_anilist_aliases(series_id, al_id, title))
-            asyncio.create_task(_m.fetch_mu_metadata(series_id, title))
-            asyncio.create_task(_m.grab_existing(series_id, title, search_pattern))
+                _m.create_background_task(_m.fetch_anilist_aliases(series_id, al_id, title), name=f"import_list:{series_id}:fetch_aliases")
+            _m.create_background_task(_m.fetch_mu_metadata(series_id, title), name=f"import_list:{series_id}:fetch_mu")
+            _m.create_background_task(_m.grab_existing(series_id, title, search_pattern), name=f"import_list:{series_id}:grab_existing")
         except Exception as e:
             print(f"[ImportList] Post-add tasks failed for '{title}': {e}")
             try:

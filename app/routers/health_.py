@@ -388,7 +388,7 @@ async def trigger_backfill():
 async def trigger_status_check():
     """Manually trigger a download status check."""
     import main as _m
-    asyncio.create_task(_m.check_download_status())
+    _m.create_background_task(_m.check_download_status(), name="health:check_downloads")
     return JSONResponse({"ok": True, "message": "Status check queued"})
 
 
@@ -417,7 +417,7 @@ async def trigger_backlog_search():
         _m.log_event('backlog_search',
                      f"Manual backlog search: {len(wanted_series)} series, {grabbed} grabbed")
 
-    asyncio.create_task(_run())
+    _m.create_background_task(_run(), name="health:backlog_search")
     return JSONResponse({"ok": True, "message": "Backlog search started in background"})
 
 

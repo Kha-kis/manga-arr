@@ -27,6 +27,11 @@ sys.path.insert(0, "app")
 import conftest  # noqa: F401
 
 
+def _csrf_header(client) -> dict[str, str]:
+    token = client.cookies.get("csrftoken", "")
+    return {"X-CSRFToken": token} if token else {}
+
+
 @pytest.fixture
 def fresh_env(monkeypatch, tmp_path):
     import main, shared, security
@@ -697,7 +702,7 @@ def test_notification_test_form_uses_plaintext_secret_fields(fresh_env):
             "name": "unsaved-discord",
             "type": "discord",
             "settings": json.dumps({"webhook_url": "https://FORM-NOTIFY.example/hook"}),
-        })
+        }, headers=_csrf_header(client))
     assert r.status_code == 200, r.text
     assert r.json()["ok"] is True
     assert observed["url"] == "https://FORM-NOTIFY.example/hook"
@@ -730,7 +735,7 @@ def test_notification_test_form_accepts_structured_fields(fresh_env):
             "type": "discord",
             "settings_mode": "structured",
             "webhook_url": "https://STRUCTURED-NOTIFY.example/hook",
-        })
+        }, headers=_csrf_header(client))
     assert r.status_code == 200, r.text
     assert r.json()["ok"] is True
     assert observed["url"] == "https://STRUCTURED-NOTIFY.example/hook"

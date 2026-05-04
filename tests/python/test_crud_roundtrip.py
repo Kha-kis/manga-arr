@@ -139,7 +139,10 @@ def test_indexer_crud_roundtrip(app_client):
     async def _mock_get(self, *a, **kw):
         return fake_resp
     with patch("httpx.AsyncClient.get", new=_mock_get):
-        r = client.post(f"/api/indexers/{indexer_id}/test")
+        r = client.post(
+            f"/api/indexers/{indexer_id}/test",
+            headers={"X-CSRFToken": _csrf(client)},
+        )
     assert r.status_code == 200, f"test endpoint: {r.status_code} {r.text!r}"
     body = r.json()
     assert body["ok"] is True
@@ -211,7 +214,10 @@ def test_download_client_crud_roundtrip(app_client):
         return type("R", (), {"status_code": 200, "text": "4.6.0-mock"})()
     with patch("httpx.AsyncClient.post", new=_mock_post), \
          patch("httpx.AsyncClient.get",  new=_mock_get):
-        r = client.post(f"/api/download-clients/{cid}/test")
+        r = client.post(
+            f"/api/download-clients/{cid}/test",
+            headers={"X-CSRFToken": _csrf(client)},
+        )
     assert r.status_code == 200, f"test endpoint: {r.status_code} {r.text!r}"
     body = r.json()
     assert body["ok"] is True

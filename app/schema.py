@@ -50,11 +50,11 @@ def init_db():
             );
             CREATE TABLE IF NOT EXISTS volumes (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                series_id    INTEGER NOT NULL REFERENCES series(id),
+                series_id    INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
                 volume_num   REAL,
                 chapter_num  REAL,
                 title        TEXT,
-                status       TEXT DEFAULT 'wanted',
+                status       TEXT DEFAULT 'wanted' CHECK(status IN ('wanted','grabbed','downloaded')),
                 grabbed_at   TIMESTAMP,
                 size_bytes   INTEGER,
                 source_url   TEXT,
@@ -257,7 +257,7 @@ def init_db():
                 volume_id     INTEGER REFERENCES volumes(id) ON DELETE SET NULL,
                 chapter_num   REAL    NOT NULL,
                 title         TEXT,
-                status        TEXT    DEFAULT 'wanted',
+                status        TEXT    DEFAULT 'wanted' CHECK(status IN ('wanted','grabbed','downloaded')),
                 monitored     INTEGER DEFAULT 1,
                 grabbed_at    TIMESTAMP,
                 torrent_name  TEXT,
@@ -975,156 +975,288 @@ def _bootstrap_root_folders() -> None:
 # SQLite can't ALTER TABLE to add FK or CHECK constraints. The standard
 # workaround is the "rebuild" pattern: create a new table with the target
 # shape, copy rows in, drop the old table, rename the new into place.
-# We use PRAGMA user_version as a migration flag so the migration runs
-# exactly once per DB. Orphan rows (series_id pointing to a deleted series)
-# are dropped during the copy and logged so operators can see what went.
+# We use PRAGMA user_version as a migration flag so migrations run exactly
+# once per DB. Orphan rows (series_id pointing to a deleted series) are
+# dropped during the copy and logged so operators can see what went.
 
 _SCHEMA_VERSION_FK_CONSTRAINTS = 1
+_SCHEMA_VERSION_STATUS_CONSTRAINTS = 2
+
+
+_OWNED_STATUS_CHECK = "status IN ('wanted','grabbed','downloaded')"
+
+
+def _restore_volume_chapter_artifacts(db) -> None:
+    """Recreate indexes/triggers dropped by SQLite table rebuilds."""
+    for stmt in [
+        "CREATE INDEX IF NOT EXISTS idx_volumes_series        ON volumes(series_id)",
+        "CREATE INDEX IF NOT EXISTS idx_volumes_series_status ON volumes(series_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_volumes_series_volnum ON volumes(series_id, volume_num)",
+        "CREATE INDEX IF NOT EXISTS idx_chapters_series       ON chapters(series_id)",
+        "CREATE INDEX IF NOT EXISTS idx_chapters_volid        ON chapters(volume_id)",
+    ]:
+        db.execute(stmt)
+    db.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_vol_downloaded_cascade
+        AFTER UPDATE OF status ON volumes
+        WHEN NEW.status = 'downloaded' AND OLD.status != 'downloaded'
+        BEGIN
+            UPDATE chapters
+            SET status = 'downloaded'
+            WHERE volume_id = NEW.id
+              AND status != 'downloaded';
+        END
+    """)
 
 
 def _migrate_schema_constraints() -> None:
-    """Add FK constraints on events / blocklist / seen / pending_releases.
+    """Add FK/CHECK constraints that SQLite requires table rebuilds for.
 
-    Pre-migration: series_id was declared INTEGER with no REFERENCES
-    clause, so deleting a series silently orphaned rows in these tables.
-    Post-migration: the same column is INTEGER REFERENCES series(id) ON
-    DELETE CASCADE, enforced by SQLite when foreign_keys=ON.
-
-    Idempotent via PRAGMA user_version. No-op on fresh installs (their
-    CREATE TABLE already uses the new shape).
+    Idempotent via PRAGMA user_version. Fresh installs already create the
+    desired shape, then still flow through these rebuilds once so the
+    version stamp is consistent.
     """
     with get_db() as db:
         version = db.execute("PRAGMA user_version").fetchone()[0]
-        if version >= _SCHEMA_VERSION_FK_CONSTRAINTS:
+        if version >= _SCHEMA_VERSION_STATUS_CONSTRAINTS:
             return
 
-        # Each entry: (table_name, new_schema_ddl, copy_columns)
-        # copy_columns are the columns to copy verbatim. We rely on the
-        # new schema having the same column list so INSERT..SELECT works
-        # without explicit column naming, but explicit naming is safer
-        # against future add_col calls that extend the old table.
-        tables = [
-            ('events', """
-                CREATE TABLE events_new (
-                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                    event_type TEXT,
-                    series_id  INTEGER REFERENCES series(id) ON DELETE CASCADE,
-                    message    TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        if version < _SCHEMA_VERSION_FK_CONSTRAINTS:
+            _migrate_series_fk_constraints(db)
+            version = _SCHEMA_VERSION_FK_CONSTRAINTS
+
+        if version < _SCHEMA_VERSION_STATUS_CONSTRAINTS:
+            _migrate_owned_status_constraints(db)
+
+
+def _migrate_series_fk_constraints(db) -> None:
+    """Add FK constraints on events / blocklist / seen / pending_releases."""
+
+    tables = [
+        ('events', """
+            CREATE TABLE events_new (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type TEXT,
+                series_id  INTEGER REFERENCES series(id) ON DELETE CASCADE,
+                message    TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """),
+        ('blocklist', """
+            CREATE TABLE blocklist_new (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                series_id    INTEGER REFERENCES series(id) ON DELETE CASCADE,
+                torrent_url  TEXT UNIQUE,
+                torrent_name TEXT,
+                reason       TEXT,
+                indexer      TEXT,
+                protocol     TEXT,
+                size_bytes   INTEGER,
+                added_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """),
+        ('seen', """
+            CREATE TABLE seen_new (
+                torrent_url   TEXT PRIMARY KEY,
+                torrent_name  TEXT,
+                series_id     INTEGER REFERENCES series(id) ON DELETE CASCADE,
+                volume_num    REAL,
+                grabbed_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                indexer       TEXT,
+                protocol      TEXT,
+                client        TEXT,
+                download_id   TEXT,
+                release_group TEXT,
+                size_bytes    INTEGER,
+                release_guid  TEXT
+            )
+        """),
+        ('pending_releases', """
+            CREATE TABLE pending_releases_new (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                series_id  INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+                url        TEXT    NOT NULL,
+                title      TEXT,
+                indexer    TEXT,
+                protocol   TEXT,
+                size_bytes INTEGER DEFAULT 0,
+                first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(series_id, url)
+            )
+        """),
+    ]
+
+    db.execute("PRAGMA foreign_keys=OFF")
+    try:
+        for name, ddl in tables:
+            orphan_count = db.execute(
+                f"SELECT COUNT(*) FROM {name}"
+                f" WHERE series_id IS NOT NULL"
+                f"   AND series_id NOT IN (SELECT id FROM series)"
+            ).fetchone()[0]
+            if orphan_count:
+                log_event(
+                    'schema_migration',
+                    f'{name}: {orphan_count} orphan row(s) with stale '
+                    f'series_id will be dropped during FK migration',
+                    db=db,
                 )
-            """),
-            ('blocklist', """
-                CREATE TABLE blocklist_new (
-                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                    series_id    INTEGER REFERENCES series(id) ON DELETE CASCADE,
-                    torrent_url  TEXT UNIQUE,
-                    torrent_name TEXT,
-                    reason       TEXT,
-                    indexer      TEXT,
-                    protocol     TEXT,
-                    size_bytes   INTEGER,
-                    added_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """),
-            ('seen', """
-                CREATE TABLE seen_new (
-                    torrent_url   TEXT PRIMARY KEY,
-                    torrent_name  TEXT,
-                    series_id     INTEGER REFERENCES series(id) ON DELETE CASCADE,
-                    volume_num    REAL,
-                    grabbed_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    indexer       TEXT,
-                    protocol      TEXT,
-                    client        TEXT,
-                    download_id   TEXT,
-                    release_group TEXT,
-                    size_bytes    INTEGER,
-                    release_guid  TEXT
-                )
-            """),
-            ('pending_releases', """
-                CREATE TABLE pending_releases_new (
-                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                    series_id  INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
-                    url        TEXT    NOT NULL,
-                    title      TEXT,
-                    indexer    TEXT,
-                    protocol   TEXT,
-                    size_bytes INTEGER DEFAULT 0,
-                    first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(series_id, url)
-                )
-            """),
-        ]
+            _rebuild_table_copying_known_columns(
+                db,
+                name=name,
+                ddl=ddl,
+                where="series_id IS NULL OR series_id IN (SELECT id FROM series)",
+            )
+    finally:
+        db.execute("PRAGMA foreign_keys=ON")
 
-        # foreign_keys must be OFF during the rename; SQLite otherwise
-        # validates refs against the half-built new table. Restore after.
-        db.execute("PRAGMA foreign_keys=OFF")
-        try:
-            for name, ddl in tables:
-                # Count orphans so we can log a useful summary. An orphan
-                # is a row whose series_id doesn't resolve in series.
-                # NOT NULL columns (pending_releases.series_id) get
-                # orphans dropped silently; nullable columns drop them
-                # too — either way, the old value is bad.
-                orphan_count = db.execute(
-                    f"SELECT COUNT(*) FROM {name}"
-                    f" WHERE series_id IS NOT NULL"
-                    f"   AND series_id NOT IN (SELECT id FROM series)"
-                ).fetchone()[0]
-                if orphan_count:
-                    log_event(
-                        'schema_migration',
-                        f'{name}: {orphan_count} orphan row(s) with stale '
-                        f'series_id will be dropped during FK migration',
-                        db=db,
-                    )
+    db.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_FK_CONSTRAINTS}")
+    log_event(
+        'schema_migration',
+        f'FK constraints added to events, blocklist, seen, '
+        f'pending_releases (schema version -> {_SCHEMA_VERSION_FK_CONSTRAINTS})',
+        db=db,
+    )
 
-                old_cols = [r[1] for r in db.execute(
-                    f"PRAGMA table_info({name})"
-                ).fetchall()]
 
-                db.execute(ddl)
-                new_cols = [r[1] for r in db.execute(
-                    f"PRAGMA table_info({name}_new)"
-                ).fetchall()]
+def _rebuild_table_copying_known_columns(
+    db,
+    *,
+    name: str,
+    ddl: str,
+    where: str | None = None,
+    transforms: dict[str, str] | None = None,
+) -> None:
+    """Rebuild ``name`` into ``name_new`` with drift checks.
 
-                # Drift guard: the hardcoded CREATE TABLE _new DDL must
-                # carry every column that the old table has. If a future
-                # add_col targets one of these four tables without being
-                # reflected in the DDL above, the old table will have
-                # columns the new one doesn't — INSERT..SELECT below
-                # would fail mid-migration and leave the DB half-migrated
-                # (old dropped, new not yet renamed into place). Abort
-                # cleanly instead so an operator sees a clear error.
-                missing = [c for c in old_cols if c not in new_cols]
-                if missing:
-                    # Clean up the half-built _new table so a future run
-                    # with a corrected DDL can try again.
-                    db.execute(f"DROP TABLE {name}_new")
-                    raise RuntimeError(
-                        f"schema migration drift: {name} has columns "
-                        f"{missing} that the new DDL does not include. "
-                        f"Update _migrate_schema_constraints() to include "
-                        f"these columns in the {name}_new DDL before re-running."
-                    )
+    ``transforms`` maps an existing column name to a SQL expression used
+    in the SELECT list, while preserving the original INSERT column list.
+    """
+    old_cols = [r[1] for r in db.execute(
+        f"PRAGMA table_info({name})"
+    ).fetchall()]
 
-                col_list = ', '.join(old_cols)
-                db.execute(
-                    f"INSERT INTO {name}_new ({col_list})"
-                    f" SELECT {col_list} FROM {name}"
-                    f" WHERE series_id IS NULL"
-                    f"    OR series_id IN (SELECT id FROM series)"
-                )
-                db.execute(f"DROP TABLE {name}")
-                db.execute(f"ALTER TABLE {name}_new RENAME TO {name}")
-        finally:
-            db.execute("PRAGMA foreign_keys=ON")
+    db.execute(ddl)
+    new_cols = [r[1] for r in db.execute(
+        f"PRAGMA table_info({name}_new)"
+    ).fetchall()]
 
-        db.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_FK_CONSTRAINTS}")
-        log_event(
-            'schema_migration',
-            f'FK constraints added to events, blocklist, seen, '
-            f'pending_releases (schema version → {_SCHEMA_VERSION_FK_CONSTRAINTS})',
-            db=db,
+    missing = [c for c in old_cols if c not in new_cols]
+    if missing:
+        db.execute(f"DROP TABLE {name}_new")
+        raise RuntimeError(
+            f"schema migration drift: {name} has columns "
+            f"{missing} that the new DDL does not include. "
+            f"Update _migrate_schema_constraints() to include "
+            f"these columns in the {name}_new DDL before re-running."
         )
+
+    transforms = transforms or {}
+    col_list = ', '.join(old_cols)
+    select_list = ', '.join(transforms.get(c, c) for c in old_cols)
+    where_sql = f" WHERE {where}" if where else ""
+    db.execute(
+        f"INSERT INTO {name}_new ({col_list})"
+        f" SELECT {select_list} FROM {name}"
+        f"{where_sql}"
+    )
+    db.execute(f"DROP TABLE {name}")
+    db.execute(f"ALTER TABLE {name}_new RENAME TO {name}")
+
+
+def _migrate_owned_status_constraints(db) -> None:
+    """Add status CHECK constraints and cascade FK shape to owned items."""
+    tables = [
+        ('volumes', """
+            CREATE TABLE volumes_new (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                series_id       INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+                volume_num      REAL,
+                chapter_num     REAL,
+                title           TEXT,
+                status          TEXT DEFAULT 'wanted' CHECK(status IN ('wanted','grabbed','downloaded')),
+                grabbed_at      TIMESTAMP,
+                size_bytes      INTEGER,
+                source_url      TEXT,
+                torrent_name    TEXT,
+                indexer         TEXT,
+                protocol        TEXT,
+                client          TEXT,
+                download_id     TEXT,
+                vol_range_start REAL,
+                vol_range_end   REAL,
+                pack_type       TEXT,
+                import_path     TEXT,
+                release_group   TEXT,
+                monitored       INTEGER DEFAULT 1,
+                quality         TEXT,
+                is_special      INTEGER DEFAULT 0,
+                imported_at     TEXT,
+                edition_type    TEXT,
+                language        TEXT
+            )
+        """),
+        ('chapters', """
+            CREATE TABLE chapters_new (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                series_id         INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+                volume_id         INTEGER REFERENCES volumes(id) ON DELETE SET NULL,
+                chapter_num       REAL    NOT NULL,
+                title             TEXT,
+                status            TEXT    DEFAULT 'wanted' CHECK(status IN ('wanted','grabbed','downloaded')),
+                monitored         INTEGER DEFAULT 1,
+                grabbed_at        TIMESTAMP,
+                torrent_name      TEXT,
+                torrent_url       TEXT,
+                indexer           TEXT,
+                protocol          TEXT,
+                client            TEXT,
+                size_bytes        INTEGER DEFAULT 0,
+                import_path       TEXT,
+                download_id       TEXT,
+                release_group     TEXT,
+                quality           TEXT,
+                imported_at       TEXT,
+                chapter_range_end REAL,
+                UNIQUE(series_id, chapter_num)
+            )
+        """),
+    ]
+
+    status_expr = (
+        "CASE WHEN status IN ('wanted','grabbed','downloaded')"
+        " THEN status ELSE 'wanted' END"
+    )
+    db.execute("PRAGMA foreign_keys=OFF")
+    try:
+        for name, ddl in tables:
+            invalid = db.execute(
+                f"SELECT COUNT(*) FROM {name}"
+                f" WHERE status IS NULL OR status NOT IN "
+                f"('wanted','grabbed','downloaded')"
+            ).fetchone()[0]
+            if invalid:
+                log_event(
+                    'schema_migration',
+                    f'{name}: normalized {invalid} invalid status value(s) '
+                    f"to 'wanted' during CHECK migration",
+                    db=db,
+                )
+            _rebuild_table_copying_known_columns(
+                db,
+                name=name,
+                ddl=ddl,
+                where="series_id IN (SELECT id FROM series)",
+                transforms={'status': status_expr},
+            )
+    finally:
+        db.execute("PRAGMA foreign_keys=ON")
+
+    _restore_volume_chapter_artifacts(db)
+    db.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_STATUS_CONSTRAINTS}")
+    log_event(
+        'schema_migration',
+        f'CHECK constraints added to volumes/chapters status '
+        f'(schema version -> {_SCHEMA_VERSION_STATUS_CONSTRAINTS})',
+        db=db,
+    )

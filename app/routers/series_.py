@@ -1033,22 +1033,22 @@ async def add_series(
                        source_title=title,
                        data={'total_volumes': total_volumes, 'status': status})
     # Fire all post-add tasks in background — don't block the response
-    asyncio.create_task(_m.refresh_mangadex_map(series_id))
+    _m.create_background_task(_m.refresh_mangadex_map(series_id), name=f"series:{series_id}:refresh_mangadex")
     if anilist_id:
-        asyncio.create_task(_m.fetch_anilist_aliases(series_id, anilist_id, title))
+        _m.create_background_task(_m.fetch_anilist_aliases(series_id, anilist_id, title), name=f"series:{series_id}:fetch_aliases")
     if cover_url:
-        asyncio.create_task(_m.download_cover(series_id, cover_url))
-    asyncio.create_task(_m.fetch_mu_metadata(series_id, title))
+        _m.create_background_task(_m.download_cover(series_id, cover_url), name=f"series:{series_id}:download_cover")
+    _m.create_background_task(_m.fetch_mu_metadata(series_id, title), name=f"series:{series_id}:fetch_mu")
     if _search_now:
-        asyncio.create_task(_m.grab_existing(series_id, title, search_pattern))
+        _m.create_background_task(_m.grab_existing(series_id, title, search_pattern), name=f"series:{series_id}:grab_existing")
     if edition_type in _m._NON_STANDARD_STUB_EDITIONS:
-        asyncio.create_task(_m.fetch_edition_volume_count(series_id, title, edition_type))
-    asyncio.create_task(_m.notify_discord('', event='on_series_add', embed={
+        _m.create_background_task(_m.fetch_edition_volume_count(series_id, title, edition_type), name=f"series:{series_id}:fetch_edition_count")
+    _m.create_background_task(_m.notify_discord('', event='on_series_add', embed={
         'title': f'Added — {title}',
         'description': (f"Status: {status}" if status else "Added to library"),
         'color': 0x4cc9f0,
         'thumbnail': {'url': cover_url} if cover_url else {},
-    }))
+    }), name=f"series:{series_id}:notify_add")
     return RedirectResponse(with_flash(f"/series/{series_id}", "Search queued for all wanted volumes", "success"), status_code=303)
 
 
@@ -1363,7 +1363,7 @@ async def manual_grab(request: Request, series_id: int):
     with get_db() as db:
         s = db.execute("SELECT * FROM series WHERE id=?", (series_id,)).fetchone()
     if s:
-        asyncio.create_task(_m.grab_existing(series_id, s['title'], s['search_pattern']))
+        _m.create_background_task(_m.grab_existing(series_id, s['title'], s['search_pattern']), name=f"series:{series_id}:manual_grab")
     if request.headers.get("HX-Request") == "true":
         import json
         from fastapi.responses import Response as _Resp
@@ -1415,7 +1415,8 @@ async def grab_volume(request: Request, series_id: int, volume_id: int):
             ddl_ok = await _swy.suwayomi_grab(series_id, float(v['volume_num']))
             if not ddl_ok:
                 vol_q = f"{s['title']} v{vol_num_to_display(v['volume_num'])}" if v['volume_num'] else s['title']
-                asyncio.create_task(_grab_volume_task(series_id, s, v, vol_q))
+                import main as _m
+                _m.create_background_task(_grab_volume_task(series_id, s, v, vol_q), name=f"series:{series_id}:grab_volume:{volume_id}")
 
         else:
             # 'fallback' (default) or 'off': try indexers first
@@ -1528,8 +1529,8 @@ async def refresh_series(request: Request, series_id: int):
         await _m.refresh_mangadex_map(series_id)
         _m.backfill_pack_ranges()
         if match.get('anilist_id'):
-            asyncio.create_task(_m.fetch_anilist_aliases(series_id, match['anilist_id'], s['title']))
-        asyncio.create_task(_m.fetch_mu_metadata(series_id, s['title']))
+            _m.create_background_task(_m.fetch_anilist_aliases(series_id, match['anilist_id'], s['title']), name=f"series:{series_id}:refresh_aliases")
+        _m.create_background_task(_m.fetch_mu_metadata(series_id, s['title']), name=f"series:{series_id}:refresh_mu")
     if request.headers.get("HX-Request") == "true":
         import json
         from fastapi.responses import Response as _Resp
@@ -1600,7 +1601,7 @@ async def refresh_all_series(request: Request):
             await asyncio.sleep(1.5)
         _m.log_event('refresh', f"Refresh all: {refreshed}/{len(series)} series updated")
 
-    asyncio.create_task(_run())
+    _m.create_background_task(_run(), name="series:refresh_all")
     if request.headers.get("HX-Request") == "true":
         import json
         from fastapi.responses import Response as _Resp
@@ -2074,6 +2075,7 @@ async def delete_volume_file(request: Request, series_id: int, volume_id: int):
 
 @router.post("/series/{series_id}/volumes/{volume_id}/set-range")
 async def set_pack_range(
+    request:         Request,
     series_id:       int,
     volume_id:       int,
     vol_range_start: float = Form(0),
@@ -2361,7 +2363,8 @@ async def reinject_metadata(series_id: int):
 
 @router.post("/library/rescan")
 async def rescan_all_series(request: Request):
-    asyncio.create_task(_rescan_all_impl())
+    import main as _m
+    _m.create_background_task(_rescan_all_impl(), name="series:rescan_all")
     if request.headers.get("HX-Request") == "true":
         import json
         from fastapi.responses import Response as _Resp
@@ -2583,14 +2586,15 @@ async def grab_chapter_route(request: Request, sid: int, cid: int):
         ).fetchone()
     if not s or not ch:
         return RedirectResponse(with_flash(f"/series/{sid}", "No wanted chapters found", "info"), status_code=303)
-    asyncio.create_task(_grab_chapter_task(sid, dict(s), dict(ch)))
+    import main as _m
+    _m.create_background_task(_grab_chapter_task(sid, dict(s), dict(ch)), name=f"series:{sid}:grab_chapter:{cid}")
     if request.headers.get("HX-Request") == "true":
         if ch['volume_id']:
             ctx = await _get_volume_row_ctx(sid, ch['volume_id'])
             return templates.TemplateResponse(request, "partials/volume_row.html", ctx)
         from fastapi.responses import Response as _Resp
         return _Resp(headers={"HX-Refresh": "true"})
-    return RedirectResponse(with_flash(f"/series/{sid}", f"Grab queued for {len(chs)} chapters", "success"), status_code=303)
+    return RedirectResponse(with_flash(f"/series/{sid}", "Grab queued for 1 chapter", "success"), status_code=303)
 
 
 # ── Uncollected chapters ──────────────────────────────────────────────────────
@@ -2609,7 +2613,8 @@ async def uncollected_toggle_monitor(request: Request, sid: int):
     if request.headers.get("HX-Request") == "true":
         from fastapi.responses import Response as _Resp
         return _Resp(headers={"HX-Refresh": "true"})
-    return RedirectResponse(with_flash(f"/series/{sid}", f"Search queued for {len(wanted)} volumes", "success"), status_code=303)
+    msg = "Uncollected chapters monitored" if new_val else "Uncollected chapters unmonitored"
+    return RedirectResponse(with_flash(f"/series/{sid}", msg, "success"), status_code=303)
 
 
 @router.post("/series/{sid}/uncollected/mark-downloaded")
@@ -2645,7 +2650,8 @@ async def uncollected_grab_all(request: Request, sid: int):
             })})
         return RedirectResponse(f"/series/{sid}", status_code=303)
     for ch in chs:
-        asyncio.create_task(_grab_chapter_task(sid, dict(s), dict(ch)))
+        import main as _m
+        _m.create_background_task(_grab_chapter_task(sid, dict(s), dict(ch)), name=f"series:{sid}:grab_chapter:{ch['id']}")
     if request.headers.get("HX-Request") == "true":
         import json
         from fastapi.responses import Response as _Resp
@@ -2671,7 +2677,8 @@ async def trigger_volume_upgrade(
             return templates.TemplateResponse(request, "partials/volume_row.html", ctx)
         return RedirectResponse(f"/series/{sid}", status_code=303)
     query = f"{s['search_pattern']} volume {vol_num_to_display(v['volume_num'])}"
-    asyncio.create_task(_grab_volume_task(sid, s, v, query))
+    import main as _m
+    _m.create_background_task(_grab_volume_task(sid, s, v, query), name=f"series:{sid}:upgrade_volume:{vol_id}")
     if request.headers.get("HX-Request") == "true":
         ctx = await _get_volume_row_ctx(sid, vol_id)
         return templates.TemplateResponse(request, "partials/volume_row.html", ctx)
@@ -2691,7 +2698,8 @@ async def grab_all_wanted_for_series(request: Request, sid: int):
         return RedirectResponse("/wanted", status_code=303)
     for v in wanted:
         query = f"{s['search_pattern']} volume {vol_num_to_display(v['volume_num'])}"
-        asyncio.create_task(_grab_volume_task(sid, dict(s), dict(v), query))
+        import main as _m
+        _m.create_background_task(_grab_volume_task(sid, dict(s), dict(v), query), name=f"series:{sid}:grab_volume:{v['id']}")
     if request.headers.get("HX-Request") == "true":
         import json
         from fastapi.responses import Response as _Resp

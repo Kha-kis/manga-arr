@@ -268,7 +268,10 @@ async def _build_queue_rows() -> tuple[list, list]:
         if any(r['stage'] in ('completed', 'importing') for r in queue_rows):
             try:
                 import main as _m
-                asyncio.create_task(_m.check_download_status())
+                _m.create_background_task(
+                    _m.check_download_status(),
+                    name="queue:check_download_status",
+                )
             except Exception:
                 pass
 
@@ -395,7 +398,11 @@ async def queue_refresh(request: Request):
     Returns HTTP 202. If HTMX, additionally returns the freshness-only
     fragment so the badge updates without waiting for the next poll.
     """
-    asyncio.create_task(_sc.DOWNLOAD_STATUS_CACHE.refresh())
+    import main as _m
+    _m.create_background_task(
+        _sc.DOWNLOAD_STATUS_CACHE.refresh(),
+        name="queue:status_cache_refresh",
+    )
     if is_htmx(request):
         return templates.TemplateResponse(
             request, "partials/queue_status_badge.html",
@@ -646,8 +653,10 @@ async def block_and_remove(request: Request, torrent_hash: str, delete_files: st
             s = db.execute("SELECT title, search_pattern FROM series WHERE id=?",
                            (seen_row['series_id'],)).fetchone()
         if s:
-            asyncio.create_task(_m.grab_existing(seen_row['series_id'], s['title'],
-                                                  s['search_pattern']))
+            _m.create_background_task(
+                _m.grab_existing(seen_row['series_id'], s['title'], s['search_pattern']),
+                name=f"queue:grab_again:{seen_row['series_id']}",
+            )
     return await _queue_partial_response(request)
 
 

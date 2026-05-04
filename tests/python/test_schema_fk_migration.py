@@ -277,8 +277,40 @@ def test_fresh_install_sets_user_version(env):
     empty tables."""
     with sqlite3.connect(env) as c:
         ver = c.execute("PRAGMA user_version").fetchone()[0]
-    # Note: fresh install actually skips the migration (CREATE TABLE IF
-    # NOT EXISTS already built the new shape). user_version may legitimately
-    # be 0 here because the migration's early-return triggered. That's
-    # fine — the FK is present from the initial CREATE.
-    assert ver in (0, 1)
+    assert ver == 2
+
+
+def test_volumes_status_has_check_constraint(env):
+    with sqlite3.connect(env) as c:
+        c.execute("PRAGMA foreign_keys=ON")
+        c.execute("INSERT INTO series(id, title, search_pattern) VALUES(101, 'S', 'S')")
+        with pytest.raises(sqlite3.IntegrityError):
+            c.execute(
+                "INSERT INTO volumes(series_id, volume_num, status)"
+                " VALUES(101, 1, 'bogus')"
+            )
+
+
+def test_chapters_status_has_check_constraint(env):
+    with sqlite3.connect(env) as c:
+        c.execute("PRAGMA foreign_keys=ON")
+        c.execute("INSERT INTO series(id, title, search_pattern) VALUES(102, 'S', 'S')")
+        with pytest.raises(sqlite3.IntegrityError):
+            c.execute(
+                "INSERT INTO chapters(series_id, chapter_num, status)"
+                " VALUES(102, 1, 'bogus')"
+            )
+
+
+def test_delete_series_cascades_to_volumes(env):
+    with sqlite3.connect(env) as c:
+        c.execute("PRAGMA foreign_keys=ON")
+        c.execute("INSERT INTO series(id, title, search_pattern) VALUES(103, 'S', 'S')")
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status)"
+            " VALUES(103, 1, 'wanted')"
+        )
+        c.execute("DELETE FROM series WHERE id=103")
+        assert c.execute(
+            "SELECT COUNT(*) FROM volumes WHERE series_id=103"
+        ).fetchone()[0] == 0
