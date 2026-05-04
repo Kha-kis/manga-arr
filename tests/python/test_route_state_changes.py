@@ -233,6 +233,83 @@ def test_volume_toggle_monitor_flips_bit(env):
     assert m == 1, f"second toggle should set 0→1, got {m}"
 
 
+def test_set_pack_range_non_htmx_redirect_does_not_500(env):
+    """The non-HTMX fallback used to reference an undefined `request`
+    after persisting the range, causing a 500 instead of redirecting."""
+    client = _client()
+    csrf = _csrf_kwargs("set-range")
+
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute(
+            "INSERT INTO volumes(id, series_id, volume_num, status, monitored,"
+            " torrent_name) VALUES(20, 1, NULL, 'grabbed', 1, 'Pack v01-03')"
+        )
+
+    r = client.post(
+        "/series/1/volumes/20/set-range",
+        data={"vol_range_start": "1", "vol_range_end": "3", "mark_stubs": "1"},
+        **csrf,
+        follow_redirects=False,
+    )
+    assert r.status_code == 303, r.text
+
+    with sqlite3.connect(env['db_path']) as c:
+        c.row_factory = sqlite3.Row
+        pack = c.execute(
+            "SELECT vol_range_start, vol_range_end FROM volumes WHERE id=20"
+        ).fetchone()
+    assert pack['vol_range_start'] == 1
+    assert pack['vol_range_end'] == 3
+
+
+def test_chapter_grab_non_htmx_redirect_does_not_500(env, monkeypatch):
+    """The non-HTMX fallback used `len(chs)` even though this route queues
+    exactly one chapter."""
+    import routers.series_ as series_router
+
+    async def _noop_grab_chapter_task(*a, **kw):
+        return None
+
+    monkeypatch.setattr(series_router, "_grab_chapter_task", _noop_grab_chapter_task)
+
+    client = _client()
+    csrf = _csrf_kwargs("chapter-grab")
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute(
+            "INSERT INTO chapters(id, series_id, chapter_num, status, monitored)"
+            " VALUES(30, 1, 1.0, 'wanted', 1)"
+        )
+
+    r = client.post("/series/1/chapters/30/grab", **csrf, follow_redirects=False)
+    assert r.status_code == 303, r.text
+    assert "series/1" in r.headers["location"]
+
+
+def test_uncollected_toggle_non_htmx_redirect_does_not_500(env):
+    """The non-HTMX fallback used an undefined `wanted` variable after
+    toggling monitor state for uncollected chapters."""
+    client = _client()
+    csrf = _csrf_kwargs("uncollected-toggle")
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute(
+            "INSERT INTO chapters(id, series_id, chapter_num, status, monitored,"
+            " volume_id) VALUES(31, 1, 2.0, 'wanted', 1, NULL)"
+        )
+
+    r = client.post(
+        "/series/1/uncollected/toggle-monitor",
+        **csrf,
+        follow_redirects=False,
+    )
+    assert r.status_code == 303, r.text
+
+    with sqlite3.connect(env['db_path']) as c:
+        monitored = c.execute(
+            "SELECT monitored FROM chapters WHERE id=31"
+        ).fetchone()[0]
+    assert monitored == 0
+
+
 # ───────────────────── chapter map editor ─────────────────────
 
 

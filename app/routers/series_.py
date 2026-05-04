@@ -2074,6 +2074,7 @@ async def delete_volume_file(request: Request, series_id: int, volume_id: int):
 
 @router.post("/series/{series_id}/volumes/{volume_id}/set-range")
 async def set_pack_range(
+    request:         Request,
     series_id:       int,
     volume_id:       int,
     vol_range_start: float = Form(0),
@@ -2590,7 +2591,7 @@ async def grab_chapter_route(request: Request, sid: int, cid: int):
             return templates.TemplateResponse(request, "partials/volume_row.html", ctx)
         from fastapi.responses import Response as _Resp
         return _Resp(headers={"HX-Refresh": "true"})
-    return RedirectResponse(with_flash(f"/series/{sid}", f"Grab queued for {len(chs)} chapters", "success"), status_code=303)
+    return RedirectResponse(with_flash(f"/series/{sid}", "Grab queued for 1 chapter", "success"), status_code=303)
 
 
 # ── Uncollected chapters ──────────────────────────────────────────────────────
@@ -2609,7 +2610,8 @@ async def uncollected_toggle_monitor(request: Request, sid: int):
     if request.headers.get("HX-Request") == "true":
         from fastapi.responses import Response as _Resp
         return _Resp(headers={"HX-Refresh": "true"})
-    return RedirectResponse(with_flash(f"/series/{sid}", f"Search queued for {len(wanted)} volumes", "success"), status_code=303)
+    msg = "Uncollected chapters monitored" if new_val else "Uncollected chapters unmonitored"
+    return RedirectResponse(with_flash(f"/series/{sid}", msg, "success"), status_code=303)
 
 
 @router.post("/series/{sid}/uncollected/mark-downloaded")
