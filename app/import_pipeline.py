@@ -93,6 +93,8 @@ from files import (
     _maybe_convert_to_cbz,
     build_filename,
     build_volume_label,
+    find_image_only_chapter_dirs,
+    pack_image_dir_to_cbz,
     quality_from_filename,
     safe_join_under,
     sanitize_filename,
@@ -173,6 +175,37 @@ def _queue_import(db, series_id: int, download_id: str, torrent_name: str,
     if os.path.isdir(content_path):
         src_dir    = content_path
         scan_paths = None  # walk the directory below
+
+        # Auto-pack image-only chapter dirs into CBZs (PR #147).
+        # Some torrents arrive as a directory of raw page images
+        # (001.jpg, 002.jpg, ...) instead of a CBZ. Mangarr's import
+        # scanner only matches MANGA_EXTENSIONS, so previously these
+        # produced "No manga files found" indefinitely (one path
+        # produced 207K instances before the dedup landed in PR #145).
+        # When we detect leaf dirs containing only images, pack them
+        # into CBZs and use those as the import source.
+        image_leafs = find_image_only_chapter_dirs(content_path)
+        if image_leafs:
+            # Stage packed CBZs under /config so they survive container
+            # restarts and stay on the same filesystem as the library
+            # (atomic rename on commit). Cleaned up after import.
+            pack_dir = os.path.join('/config', 'mangarr-image-pack', f'queue-{download_id}')
+            packed_paths: list[str] = []
+            for leaf in image_leafs:
+                leaf_basename = os.path.basename(leaf.rstrip('/')) or 'chapter'
+                cbz_name = sanitize_filename(leaf_basename) + '.cbz'
+                cbz_path = os.path.join(pack_dir, cbz_name)
+                size = pack_image_dir_to_cbz(leaf, cbz_path)
+                if size:
+                    packed_paths.append(cbz_path)
+            if packed_paths:
+                log_event('import',
+                    f"Auto-packed {len(packed_paths)} image-only chapter "
+                    f"director{'ies' if len(packed_paths) != 1 else 'y'} "
+                    f"into CBZs: {torrent_name}",
+                    series_id, db=db)
+                scan_paths = packed_paths
+                # src_dir stays as the original torrent dir for display.
     elif os.path.isfile(content_path):
         src_dir    = os.path.dirname(content_path)  # for display / storage only
         scan_paths = [content_path]                  # only this specific file

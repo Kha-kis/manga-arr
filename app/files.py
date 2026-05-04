@@ -498,6 +498,95 @@ def convert_cbr_to_cbz(cbr_path: str) -> str | None:
         return None
 
 
+# ── Auto-pack image-only chapter directories into CBZs ─────────────────────
+# Some torrents arrive as a directory of raw page images (001.jpg, 002.jpg,
+# ...) instead of a CBZ archive. Mangarr's import scanner only looks at
+# MANGA_EXTENSIONS (cbz/cbr/zip/...), so these directories produce
+# "No manga files found" and the import never completes.
+#
+# Auto-pack: detect leaf directories that contain only image files (no
+# archives, no subdirs) and pack them into CBZs in a staging area. The
+# staged CBZ is then handed to the normal import flow.
+
+_IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.avif'}
+_PACK_SKIP_FILES = {'.ds_store', 'thumbs.db', 'desktop.ini', 'comicinfo.xml'}
+
+
+def _is_pageable_image(fname: str) -> bool:
+    """True iff fname is an image file we'd include in a packed CBZ."""
+    if fname.lower() in _PACK_SKIP_FILES:
+        return False
+    return os.path.splitext(fname)[1].lower() in _IMAGE_EXTS
+
+
+def find_image_only_chapter_dirs(src_dir: str) -> list[str]:
+    """Walk src_dir and return every LEAF directory (no subdirectories)
+    that contains only image files — no archive files matching
+    MANGA_EXTENSIONS, no further subdirs.
+
+    Empty dirs are skipped. Dirs containing both an archive and images
+    are skipped (the archive path covers them; images would duplicate).
+    Dirs with junk metadata files (Thumbs.db, .DS_Store, ComicInfo.xml)
+    plus images count as image-only.
+    """
+    leafs: list[str] = []
+    for root, dirs, files in os.walk(src_dir):
+        if dirs:
+            # Not a leaf — children will be visited separately.
+            continue
+        archive_count = 0
+        image_count = 0
+        for f in files:
+            if f.lower() in _PACK_SKIP_FILES:
+                continue
+            ext = os.path.splitext(f)[1].lower()
+            if ext in MANGA_EXTENSIONS:
+                archive_count += 1
+            elif ext in _IMAGE_EXTS:
+                image_count += 1
+        if archive_count == 0 and image_count > 0:
+            leafs.append(root)
+    return leafs
+
+
+def pack_image_dir_to_cbz(src_dir: str, dst_cbz: str) -> int | None:
+    """Pack all image files from src_dir into a CBZ at dst_cbz.
+
+    Sorts filenames lexicographically (matches the natural page order
+    for typical naming schemes like 001.jpg, 002.jpg, ...). Junk
+    metadata files are skipped. ZIP_STORED (no compression) — page
+    images are already JPEG/PNG-compressed; ZIP_DEFLATED would burn
+    CPU for ~0.1% size reduction.
+
+    Creates parent directory of dst_cbz if it doesn't exist.
+
+    Returns the byte size of the resulting CBZ, or None on failure.
+    """
+    try:
+        import zipfile as _zf
+        files = sorted(
+            f for f in os.listdir(src_dir)
+            if _is_pageable_image(f)
+            and os.path.isfile(os.path.join(src_dir, f))
+        )
+        if not files:
+            return None
+        os.makedirs(os.path.dirname(dst_cbz), exist_ok=True)
+        with _zf.ZipFile(dst_cbz, 'w', _zf.ZIP_STORED) as zf:
+            for f in files:
+                zf.write(os.path.join(src_dir, f), arcname=f)
+        return os.path.getsize(dst_cbz)
+    except Exception as e:
+        print(f"[auto-pack] Failed to pack {src_dir} → {dst_cbz}: {e}")
+        # Clean up partial archive on failure
+        try:
+            if os.path.exists(dst_cbz):
+                os.remove(dst_cbz)
+        except OSError:
+            pass
+        return None
+
+
 def _maybe_convert_to_cbz(path: str) -> str:
     """If path is a CBR file (detected by magic bytes), convert to CBZ,
     remove the original, and return the new .cbz path. For other types
