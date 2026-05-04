@@ -235,6 +235,32 @@ def test_mutating_api_route_with_api_key_does_not_require_csrf():
     assert r.status_code == 200
 
 
+def test_mutating_api_route_prefers_valid_api_key_over_cookie_delegate():
+    """Browser-context API calls may carry cookies; a valid API key still wins."""
+    from fastapi.testclient import TestClient
+    app = _make_csrf_api_test_app("server-secret")
+    client = TestClient(app)
+    r = client.post(
+        "/api/mutate",
+        headers={"X-Api-Key": "server-secret"},
+        cookies={"csrftoken": "x" * 64},
+    )
+    assert r.status_code == 200
+
+
+def test_mutating_api_route_rejects_wrong_api_key_even_with_cookie():
+    """A CSRF cookie must not mask an explicitly wrong API key."""
+    from fastapi.testclient import TestClient
+    app = _make_csrf_api_test_app("server-secret")
+    client = TestClient(app)
+    r = client.post(
+        "/api/mutate",
+        headers={"X-Api-Key": "wrong"},
+        cookies={"csrftoken": "x" * 64},
+    )
+    assert r.status_code == 401
+
+
 def test_non_api_route_unaffected_when_api_key_blank():
     """Non-/api/ routes must NOT be touched by the api-key middleware,
     regardless of whether the key is configured. (CSRF / other middleware

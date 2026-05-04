@@ -50,11 +50,6 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if path in ('/api/queue-events', '/api/health'):
             return await call_next(request)
-        if (request.method in ('POST', 'PUT', 'DELETE', 'PATCH')
-                and request.cookies.get('csrftoken')):
-            request.scope['mangarr_api_browser_csrf_required'] = True
-            return await call_next(request)
-
         api_key = (get_cfg('api_key', '') or '').strip()
         if not api_key:
             if not getattr(ApiKeyMiddleware, '_warned_no_key', False):
@@ -68,14 +63,26 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
             )
         provided = (request.headers.get('X-Api-Key') or
                     request.query_params.get('apikey') or '')
-        if provided != api_key:
-            return JSONResponse(
-                {"message": "Unauthorized",
-                 "description": "Invalid or missing API key"},
-                status_code=401,
-            )
-        request.scope['mangarr_api_key_authenticated'] = True
-        return await call_next(request)
+        if provided:
+            if provided != api_key:
+                return JSONResponse(
+                    {"message": "Unauthorized",
+                     "description": "Invalid or missing API key"},
+                    status_code=401,
+                )
+            request.scope['mangarr_api_key_authenticated'] = True
+            return await call_next(request)
+
+        if (request.method in ('POST', 'PUT', 'DELETE', 'PATCH')
+                and request.cookies.get('csrftoken')):
+            request.scope['mangarr_api_browser_csrf_required'] = True
+            return await call_next(request)
+
+        return JSONResponse(
+            {"message": "Unauthorized",
+             "description": "Invalid or missing API key"},
+            status_code=401,
+        )
 
 
 # ── CSRF middleware ──────────────────────────────────────────────────────────
