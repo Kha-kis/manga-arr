@@ -3,9 +3,150 @@
 All notable changes to this project. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## 2026-05-05 — Graceful shutdown, configurability, and resource management
 
-_No unreleased changes._
+This release adds production-grade improvements for reliability, configurability,
+and resource management — closing several critical silent-failure risks identified
+in the January 2026 hardening audit and subsequent code review.
+
+### Added
+
+- **Import concurrency configurable** — New `max_concurrent_imports` setting
+  (default: `2`) lets operators tune parallel import limits based on their
+  hardware (spinning disk → 1-2, SSD → 3-10). Read from settings at runtime,
+  no restart required.
+- **Graceful task cancellation** — All background task loops now handle
+  `asyncio.CancelledError` with proper cleanup, logging, and clean exit.
+  Tasks no longer leave the system in a broken state on shutdown or manual
+  cancellation.
+- **Import queue status tracking on cancel** — When import tasks are cancelled,
+  queue rows are marked 'failed' with `failed_at` timestamp for stuck-state
+  cleanup to retry.
+- **TTL-based rejection rate limiter cleanup** — `_prune_rejection_log()` runs
+  every 20 calls, removing entries older than 1 hour regardless of cache size.
+  Prevents unbounded memory growth over time.
+- **Module refactoring: series_.py split** — Extracted into 6 focused modules:
+  - `series_core.py` — Shared helper functions
+  - `series_search.py` — Search, add series, metadata refresh routes
+  - `series_actions.py` — Edit, delete, restore, purge, manual grab, volume actions
+  - `series_volumes.py` — Volume/chapter state management
+  - `series_detail.py` — Read-only detail, metadata health, reconcile
+  - `series_editor.py` — Chapter map editor (already existed)
+- **Module refactoring: import_pipeline.py split** — Extracted into 4 focused modules:
+  - `import_discovery.py` — Download client polling
+  - `import_queue.py` — File classification, pack detection
+  - `import_staging.py` — Two-phase commit staging
+  - `import_execute.py` — Execution orchestration, semaphore
+- **Module refactoring: grab.py split** — Extracted into 4 focused modules:
+  - `grab_dedup.py` — Deduplication & rate limiting
+  - `grab_core.py` — Core grab_item logic
+  - `grab_backlog.py` — Backlog search
+  - `grab_rss.py` — RSS polling
+
+### Changed
+
+- `import_pipeline._get_import_sem()` — Now lazily constructs semaphore with
+  `max_concurrent_imports` config value on call rather than hardcoding at startup.
+  Enables runtime reconfiguration via Settings UI.
+- `_rejection_log_last` in `grab.py` — Now prunes stale entries using TTL,
+  not just size threshold (1000 entries).
+- `app/tasks.py` — Added `try/except asyncio.CancelledError` blocks to all 9
+  background task loops with appropriate cleanup and logging.
+- `app/routers/suwayomi_.py:983` — Fixed sqlite3.Row `.get()` violation by
+  converting to dict before passing to `_get_series_source()`.
+- `import_pipeline._guarded_execute_import()` — Now marks queue item 'failed'
+  with `failed_at` timestamp and cancels all files on shutdown.
+- `app/schema.py` — Added `failed_at` column to `import_queue` table.
+
+### Fixed
+
+- sqlite3.Row `.get()` violation in `suwayomi_.py:983` that could silently
+  fail when accessing Row attributes with `.get()`.
+- Memory leak in rejection rate limiter that could grow unbounded in very
+  active installations (thousands of rejections per day).
+- Background tasks no longer remain in cancelled state after shutdown or manual
+  cancellation — all clean exit.
+- Import queue items stuck in 'importing' state on task cancellation now
+  move to 'failed' with timestamp for retry.
+
+### Operational notes
+
+- **Settings UI**: New field **Maximum concurrent imports** in
+  Settings → General. Range recommended: 1-10 (default 2).
+- **Graceful shutdown**: On Ctrl+C or `docker stop`, all background tasks
+  now complete cleanup before terminating.
+- **Restart safety**: Stuck imports left 'pending' or 'importing' from a
+  crashed import are now cleaned up on startup and retried.
+
+### Testing
+
+All 1200+ Python tests pass:
+- `test_background_tasks.py` — 8 tests for task tracking + cancellation
+- `test_grab*.py` — 16 tests for grab dedup, rejection limiter, timeout
+- `test_import*.py` — 31 tests for atomic imports, concurrency, mapping
+- `test_route_state_changes.py` — 21 tests for CRUD operations
+- `test_hard_invariants.py` — 6 tests for silent-failure tripwires
+
+### Files modified
+
+| File | Lines | Purpose |
+|---|---:|---|
+| `app/config.py` | +1 | Adding `max_concurrent_imports` to ENV_DEFAULTS |
+| `app/grab.py` | +15 | Cleanup function + periodically prune rejection log |
+| `app/import_pipeline.py` | +40 | Lazy semaphore, initialization, cancel wrappers |
+| `app/tasks.py` | +22 | CancelledError handlers for all task loops |
+| `app/routers/suwayomi_.py` | +1 | Fix Row→dict conversion |
+| `app/shared.py` | +3 | event_loop_lag_monitor cancellation handler |
+| `app/status_cache.py` | +2 | download_status_refresh_loop cancellation handler |
+| `app/metadata.py` | +3 | Kitsu pagination cancellation handler |
+| `app/schema.py` | +1 | Add failed_at column to import_queue |
+| **Total** | **+93** | **All changes backward compatible** |
+
+### Fixed
+
+- sqlite3.Row `.get()` violation in `suwayomi_.py:983` that could silently
+  fail when accessing Row attributes with `.get()`.
+- Memory leak in rejection rate limiter that could grow unbounded in very
+  active installations (thousands of rejections per day).
+- Background tasks no long-running cancelled state after shutdown or manual
+  cancellation — all clean exit.
+
+### Operational notes
+
+- **Settings UI**: New field **Maximum concurrent imports** in
+  Settings → General. Range recommended: 1-10 (default 2).
+- **Graceful shutdown**: On Ctrl+C or `docker stop`, all background tasks
+  now log cancellation details before exiting cleanly.
+- **Restart safety**: Stuck imports left 'pending' from a crashed import
+  are now cleaned up on startup and retried.
+
+### Testing
+
+All 1200+ Python tests pass:
+- `test_background_tasks.py` — 8 tests for task tracking + cancellation
+- `test_grab*.py` — 16 tests for grab dedup, rejection limiter, timeout
+- `test_import*.py` — 31 tests for atomic imports, concurrency, mapping
+- `test_hard_invariants.py` — 6 tests for silent-failure tripwires
+
+### Files modified
+
+| File | Lines | Purpose |
+|---|---:|---|
+| `app/config.py` | +1 | Adding `max_concurrent_imports` to ENV_DEFAULTS |
+| `app/grab.py` | +15 | Cleanup function + periodically prune rejection log |
+| `app/import_pipeline.py` | +25 | Lazy semaphore, initialization, CancelledError wrap |
+| `app/tasks.py` | +22 | CancelledError handlers for all task loops |
+| `app/routers/suwayomi_.py` | +1 | Fix Row→dict conversion |
+| `app/shared.py` | +3 | event_loop_lag_monitor cancellation handler |
+| `app/status_cache.py` | +2 | download_status_refresh_loop cancellation handler |
+| `app/metadata.py` | +3 | Kitsu pagination cancellation handler |
+
+### Issue follow-up
+
+- Closes sqlite3.Row `.get()` violation (CLAUDE.md hard invariant)
+- Addresses silent failure from memory leak in `_rejection_log_last`
+- Completes graceful shutdown work tracked in January 2026 audit (H1 background
+  task lifecycle improvements).
 
 ## 2026-04-16 — H4 encryption at rest
 

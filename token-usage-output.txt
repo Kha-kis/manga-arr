@@ -1,0 +1,161 @@
+═══════════════════════════════════════════════════════════════════════════
+Token Analysis: Session ses_1fcea9527ffe4NX9mVuSrDcioq
+Model: approx
+═══════════════════════════════════════════════════════════════════════════
+
+WARNINGS
+───────────────────────────────────────────────────
+- Model 'ollama-cloud/kimi-k2-thinking' is not currently supported by a model-specific tokenizer. Token counts use an approximate character-based fallback.
+
+TOKEN BREAKDOWN BY CATEGORY
+─────────────────────────────────────────────────────────────────────────
+Estimated using tokenizer analysis of message content:
+
+Input Categories:
+  SYSTEM    █████████████████████████████░    97.3% (28,300)
+  USER      ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░         0.1% (34)
+  TOOLS     █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░        2.6% (751)
+
+  Subtotal: 29,085 estimated input tokens
+  Note: inferred system/overhead values are heuristic estimates from API telemetry.
+
+Output Categories:
+  ASSISTANT █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░         3.8% (38)
+  REASONING █████████████████████████████░       96.2% (955)
+
+  Subtotal: 993 estimated output tokens
+
+Local Total: 30,078 tokens (estimated)
+
+TOOL USAGE BREAKDOWN
+─────────────────────────────────────────────────────────────────────────
+bash                 █████████████████████████████░       95.9% (720)    5x
+sequential-thinking_sequentialthinking █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░         4.1% (31)    1x
+
+TOP CONTRIBUTORS
+─────────────────────────────────────────────────────────────────────────
+• System (inferred from API telemetry) 28,300 tokens (94.1%)
+• bash                         720 tokens (2.4%)
+• Reasoning#6                  270 tokens (0.9%)
+• Reasoning#2                  232 tokens (0.8%)
+• Reasoning#7                  200 tokens (0.7%)
+
+═══════════════════════════════════════════════════════════════════════════
+MOST RECENT API CALL
+─────────────────────────────────────────────────────────────────────────
+
+Raw telemetry from last API response:
+  Input (fresh):         29,085 tokens
+  Cache read:                 0 tokens
+  Output:                   358 tokens
+  Provider total:        29,443 tokens
+  ─────────────────────────────────────
+  Total:                 29,443 tokens
+
+═══════════════════════════════════════════════════════════════════════════
+SESSION TOTALS (All 6 API calls)
+─────────────────────────────────────────────────────────────────────────
+
+Assistant messages observed: 7 (structural count)
+
+Total tokens processed across the entire session (for cost calculation):
+
+  Input tokens:         170,725 (fresh tokens across all calls)
+  Cache read:                 0 (cached tokens across all calls)
+  Cache write:                0 (tokens written to cache)
+  Output tokens:          1,248 (all model responses)
+  ─────────────────────────────────────
+  Session Total:        171,973 tokens (for billing)
+  Cache read calls:           0 / 6
+  Cache write calls:          0 / 6
+
+═══════════════════════════════════════════════════════════════════════════
+ESTIMATED SESSION COST (API Key Pricing)
+─────────────────────────────────────────────────────────────────────────
+
+You appear to be on a subscription plan (API cost is $0).
+Here's what this session would cost with direct API access:
+
+  Input tokens:         170,725 × $0.60/M  = $0.1024
+  Output tokens:          1,248 × $2.50/M  = $0.0031
+─────────────────────────────────────────────────────────────────────────
+ESTIMATED TOTAL: $0.1056
+
+Note: This estimate uses standard API pricing from models.json.
+Actual API costs may vary based on provider and context size.
+
+══════════════════════════════════════════════════════════════════════════
+AVAILABLE SKILLS (always-available context)
+─────────────────────────────────────────────────────────────────────────
+
+OpenCode currently includes a verbose skill catalog in the system prompt on every API call.
+The rows below estimate the per-skill XML entries inside that shared catalog.
+
+  Skill                  Description                                   Tokens
+  ───────────────────────────────────────────────────────────────────────
+  frontend-design        Create distinctive, production-grade fronten…    ~143
+  find-skills            Helps users discover and install agent skill…    ~117
+  grill-me               Interview the user relentlessly about a plan…     ~97
+  accessibility          Audit and improve web accessibility followin…     ~95
+  seo                    Optimize for search engine visibility and ra…     ~88
+  ───────────────────────────────────────────────────────────────────────
+  Total: ~540 tokens (5 skills available)
+
+  Note: Full system-prompt skill catalog is ~586 tokens (includes shared wrapper/preamble).
+        Compact skill tool description adds ~524 tokens more.
+
+═══════════════════════════════════════════════════════════════════════════
+AVAILABLE SUBAGENTS (in task tool definition)
+─────────────────────────────────────────────────────────────────────────
+
+These subagents are embedded in the task tool description and consume tokens on every API call.
+
+  Subagent               Description                                        Tokens
+  ───────────────────────────────────────────────────────────────────────
+  explore                Fast agent specialized for exploring codebases. U…    ~124
+  general                General-purpose agent for researching complex que…     ~40
+  ───────────────────────────────────────────────────────────────────────
+  Total: ~164 tokens (2 subagents available)
+
+  Note: Full task tool description is ~1,112 tokens (includes instructions/examples).
+
+═══════════════════════════════════════════════════════════════════════════
+TOOL DEFINITION COSTS (Estimated from argument analysis)
+─────────────────────────────────────────────────────────────────────────
+
+  Tool                Est. Tokens   Args   Complexity
+  ───────────────────────────────────────────────────────────────────
+  sequential-thinking_sequentialthinking         ~400       4   simple
+  bash                       ~340       2   simple
+  tokenscope                 ~340       2   simple
+  ───────────────────────────────────────────────────────────────────
+  Total:             ~      1,080 tokens (3 enabled tools)
+
+  Note: Estimates inferred from tool call arguments in this session.
+        Actual schema tokens may vary +/-20%.
+
+═══════════════════════════════════════════════════════════════════════════
+CACHE EFFICIENCY
+─────────────────────────────────────────────────────────────────────────
+
+  Token Distribution:
+    Cache Read:                 0 tokens   ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0.0%
+    Fresh Input:          170,725 tokens   ██████████████████████████████  100.0%
+  ───────────────────────────────────────────────────────────────────
+  Cache Hit Rate:      0.0% (cache read / (cache read + fresh input))
+
+  Cost Analysis (approx @ $0.60/M input, $0.15/M cache read, $0.00/M cache write):
+    Without caching:   $0.1024  (170,725 tokens x $0.60/M)
+    With caching:      $0.1024  (fresh x $0.60/M + cache read x $0.15/M + cache write x $0.00/M)
+  ───────────────────────────────────────────────────────────────────
+  Cost Savings:        $0.0000  (0.0% reduction)
+  Effective Rate:      $0.60/M tokens  (vs. $0.60/M standard)
+
+═══════════════════════════════════════════════════════════════════════════
+SUMMARY
+─────────────────────────────────────────────────────────────────────────
+
+                          Cost        Tokens          API Calls
+  Session:           $    0.1056       171,973             6
+
+═══════════════════════════════════════════════════════════════════════════

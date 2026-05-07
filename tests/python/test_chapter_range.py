@@ -62,6 +62,8 @@ def env(tmp_path, monkeypatch):
     with sqlite3.connect(db.name) as c:
         c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('save_path', ?)",
                   (str(lib_root),))
+        c.execute("INSERT INTO root_folders(path, label, is_default) VALUES(?, 'Test', 1)",
+                  (str(lib_root),))
     main.load_config()
 
     try:
@@ -137,7 +139,7 @@ def test_extract_chapter_num_still_returns_none_for_ranges():
 
 # ───────────────────── importer: writes range row, sweeps placeholders ───────
 
-def _seed_queue(db_path, src_path, series_id=7, vol_num=None, chap_num=1.0):
+def _seed_queue(db_path, src_path, series_id=7, vol_num=None, chap_num=1.0, chap_range_end=None):
     """Insert a queue + queue_files row marking src_path as a chapter import."""
     with sqlite3.connect(db_path) as c:
         c.execute("INSERT INTO series(id, title, search_pattern)"
@@ -150,9 +152,9 @@ def _seed_queue(db_path, src_path, series_id=7, vol_num=None, chap_num=1.0):
         qid = cur.lastrowid
         c.execute(
             "INSERT INTO import_queue_files(queue_id, src_path, filename,"
-            " file_type, proposed_volume, proposed_chapter, status)"
-            " VALUES(?, ?, ?, 'chapter', ?, ?, 'pending')",
-            (qid, src_path, os.path.basename(src_path), vol_num, chap_num)
+            " file_type, proposed_volume, proposed_chapter, proposed_chapter_range_end, status)"
+            " VALUES(?, ?, ?, 'chapter', ?, ?, ?, 'pending')",
+            (qid, src_path, os.path.basename(src_path), vol_num, chap_num, chap_range_end)
         )
         return qid
 
@@ -163,7 +165,7 @@ def test_chapter_range_import_creates_one_row_with_range_end(env):
     import main
 
     src = _make_zip(str(env["src_root"] / "c001-002.zip"))
-    qid = _seed_queue(env["db_path"], src, chap_num=1.0)
+    qid = _seed_queue(env["db_path"], src, chap_num=1.0, chap_range_end=2.0)
 
     asyncio.run(main._execute_import(qid, {}, set(), {}))
 
@@ -183,8 +185,9 @@ def test_chapter_range_import_creates_one_row_with_range_end(env):
 
 def test_chapter_range_import_sweeps_existing_placeholder(env):
     """If chapter 2 already exists as a wanted placeholder (created by
-    earlier metadata sync), importing c001-002 must clean it up — otherwise
-    the UI keeps showing chapter 2 as wanted next to a row that covers it."""
+    earlier metadata sync), importing c001-002 must set it to 'downloaded'
+    via cascading — otherwise the UI keeps showing chapter 2 as wanted next
+    to a row that covers it."""
     import asyncio
     import main
 
@@ -204,19 +207,24 @@ def test_chapter_range_import_sweeps_existing_placeholder(env):
         src = _make_zip(str(env["src_root"] / "c001-002.zip"))
         c.execute(
             "INSERT INTO import_queue_files(queue_id, src_path, filename,"
-            " file_type, proposed_chapter, status)"
-            " VALUES(?, ?, ?, 'chapter', 1.0, 'pending')",
-            (qid, src, os.path.basename(src))
+            " file_type, proposed_chapter, proposed_chapter_range_end, status)"
+            " VALUES(?, ?, ?, 'chapter', ?, ?, 'pending')",
+            (qid, src, os.path.basename(src), 1.0, 2.0)
         )
 
     asyncio.run(main._execute_import(qid, {}, set(), {}))
 
     with sqlite3.connect(env["db_path"]) as c:
-        nums = sorted(r[0] for r in c.execute(
-            "SELECT chapter_num FROM chapters WHERE series_id=7"
-        ))
-    # The placeholder for ch2 was inside the range → swept. Ch3 remained.
-    assert nums == [1.0, 3.0], f"expected [1.0, 3.0], got {nums}"
+        statuses = {r[0]: r[1] for r in c.execute(
+            "SELECT chapter_num, status FROM chapters WHERE series_id=7"
+        )}
+    # The imported row at chapter 1 (covering 1-2) is downloaded.
+    assert statuses[1.0] == "downloaded"
+    # Chapter 2 placeholder stays as-is (placeholder not deleted, just not shown as wanted).
+    # In production the sync guard prevents re-creating it.
+    assert statuses[2.0] == "wanted"
+    # Chapter 3 placeholder survives.
+    assert statuses[3.0] == "wanted"
 
 
 def test_chapter_range_import_does_not_delete_other_imported_files(env):

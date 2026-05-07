@@ -980,7 +980,7 @@ async def _suwayomi_sync_series(c: dict, s: dict) -> tuple[int, int]:
 
     lang = s.get("ddl_language") or get_cfg("ddl_language", "en")
 
-    source_info = _get_series_source(s["id"], s)
+    source_info = _get_series_source(s["id"], dict(s))
     if not source_info:
         return 0, 0
     src_name = source_info.get("source_name", "MangaDex")
@@ -1148,11 +1148,18 @@ async def suwayomi_monitor_loop():
                         "suwayomi_sync",
                         f"Suwayomi monitor: {vol_total} vol(s), {ch_total} chapter(s) queued",
                     )
+        except asyncio.CancelledError:
+            log.error("suwayomi_monitor_loop: Loop cancelled during shutdown", exc_info=True)
+            raise
         except Exception as e:
             log.error("suwayomi_monitor_loop: %s", e, exc_info=True)
 
         interval = max(3600, int(get_cfg("suwayomi_check_interval", "21600")))
-        await _aio.sleep(interval)
+        try:
+            await _aio.sleep(interval)
+        except asyncio.CancelledError:
+            log.error("suwayomi_monitor_loop: Loop cancelled during shutdown", exc_info=True)
+            raise
 
 
 # ── API endpoints ─────────────────────────────────────────────────────────────

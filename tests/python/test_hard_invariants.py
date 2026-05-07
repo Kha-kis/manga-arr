@@ -31,21 +31,27 @@ import conftest  # noqa: F401,E402
 # vol_num_to_search (e.g. 3.5 → "3.5"). int(3.5) = 3 silently misses
 # every half-volume release on the indexer (PR #102).
 #
-# These four occurrences are the only allowed `int(vol_num)` in app/:
+# These six occurrences are the only allowed `int(vol_num)` in app/:
 #
 #   app/shared.py:250  — inside vol_num_to_display itself (computing base)
 #   app/shared.py:274  — inside vol_num_to_search itself (computing base)
 #   app/parsing.py:173 — inside _parse_vol_suffix (parser internal)
-#   app/routers/series_.py:46 — chapter→volume bucketing for the
-#       chapter_vol_map text export, where bucketing into integer volume
+#   app/routers/series_core.py:24 — chapter→volume bucketing in
+#       _chapter_map_to_ranges, where bucketing into integer volume
 #       slots is the intentional behavior (not a search query)
+#   app/routers/series_.py:46 — chapter→volume bucketing for the
+#       chapter_vol_map text export (duplicate of series_core; kept
+#       for backward compatibility during migration)
+#   app/routers/series_detail.py:29 — chapter→volume bucketing in
+#       _chapter_map_to_ranges (extracted from series_ during refactoring;
+#       same purpose as series_core.py:24)
 #
 # A new occurrence anywhere else is almost certainly a search-query bug
 # of the PR #102 class. Bump the limit only after confirming the new
 # site is one of the legitimate helper-internal uses above; document
 # the new line in this comment block.
 
-_ALLOWED_INT_VOL_NUM_OCCURRENCES = 4
+_ALLOWED_INT_VOL_NUM_OCCURRENCES = 6
 
 
 def test_int_vol_num_count_is_pinned():

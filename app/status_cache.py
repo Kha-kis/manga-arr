@@ -267,6 +267,13 @@ async def download_status_refresh_loop() -> None:
     while True:
         try:
             await DOWNLOAD_STATUS_CACHE.refresh()
+        except asyncio.CancelledError:
+            log.warning("download_status_refresh_loop:cancelled during shutdown")
+            raise
         except Exception as e:
             log.warning("download_status_refresh_loop iteration failed: %r", e)
-        await asyncio.sleep(STATUS_REFRESH_INTERVAL_SECONDS)
+        try:
+            await asyncio.sleep(STATUS_REFRESH_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            log.warning("download_status_refresh_loop:cancelled during shutdown")
+            raise

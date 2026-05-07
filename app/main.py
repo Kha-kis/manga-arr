@@ -465,6 +465,9 @@ async def lifespan(app: FastAPI):
     # other flows that read settings post-migration get the plaintext
     # round-tripped through Fernet — same value, just paranoid consistency.
     load_config()
+    # Initialize import concurrency semaphore (max_concurrent_imports setting)
+    from import_pipeline import initialize_import_semaphore
+    initialize_import_semaphore()
     backfill_pack_ranges()
     # Create qBit manga category on startup
     try:

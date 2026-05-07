@@ -76,6 +76,8 @@ ENV_DEFAULTS = {
     'suwayomi_check_interval':  (None,    '21600'),
     # Blocklist TTL — 0 means never auto-expire
     'blocklist_ttl_days':       (None,    '90'),
+    # Import concurrency
+    'max_concurrent_imports':   (None,    '2'),  # Max concurrent imports (2 for spinning disks, 5+ for SSD)
 }
 
 

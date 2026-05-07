@@ -411,16 +411,20 @@ async def fetch_kitsu_chapter_map(title: str, anilist_id: int | None,
         limit  = 20
         async with httpx.AsyncClient(timeout=15) as client:
             while True:
-                r = await client.get(
-                    'https://kitsu.io/api/edge/chapters',
-                    params={
-                        'filter[manga_id]': kitsu_id,
-                        'page[limit]':      limit,
-                        'page[offset]':     offset,
-                        'fields[chapters]': 'number,volumeNumber',
-                    },
-                    headers={'Accept': 'application/vnd.api+json'},
-                )
+                try:
+                    r = await client.get(
+                        'https://kitsu.io/api/edge/chapters',
+                        params={
+                            'filter[manga_id]': kitsu_id,
+                            'page[limit]':      limit,
+                            'page[offset]':     offset,
+                            'fields[chapters]': 'number,volumeNumber',
+                        },
+                        headers={'Accept': 'application/vnd.api+json'},
+                    )
+                except asyncio.CancelledError:
+                    print(f"[Kitsu] chapter map fetch cancelled for kitsu_id={kitsu_id}")
+                    raise
                 page = r.json()
                 rows = page.get('data', [])
                 if not rows:
