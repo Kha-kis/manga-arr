@@ -20,7 +20,7 @@ httpx==0.28.1
 jinja2==3.1.6
 
 # multipart/form-data parser — required for any FastAPI Form() endpoint
-python-multipart==0.0.27
+python-multipart==0.0.28
 
 # CBR (RAR-archive) extraction in the import pipeline
 rarfile==4.2
