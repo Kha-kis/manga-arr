@@ -736,8 +736,9 @@
         {{ packs|length }}{% if superseded_count %} · {{ superseded_count }} superseded{% endif %}
       </span>
       <button class="ms-auto action-btn btn-action"
-              data-bs-toggle="collapse" data-bs-target="#packsTable">
-        <i class="bi bi-chevron-expand"></i>Toggle
+              data-bs-toggle="collapse" data-bs-target="#packsTable"
+              aria-expanded="true" aria-controls="packsTable">
+        <i class="bi bi-chevron-expand" id="packsToggleIcon"></i>Toggle
       </button>
     </div>
     <div class="collapse show" id="packsTable">
@@ -1103,6 +1104,13 @@ function onEditionChange(edition) {
     if (hint) hint.innerHTML = 'Filters grabs by source. <em>Official only</em> rejects fan scans; <em>Fan only</em> rejects publisher releases.';
   }
 }
+// Toggle Packs/Omnibus section icon
+document.getElementById('packsTable')?.addEventListener('hidden.bs.collapse', () => {
+    document.getElementById('packsToggleIcon').className = 'bi bi-chevron-expand';
+});
+document.getElementById('packsTable')?.addEventListener('shown.bs.collapse', () => {
+    document.getElementById('packsToggleIcon').className = 'bi bi-chevron-contract';
+});
 </script>
 {% endblock %}
 
