@@ -31,6 +31,7 @@ def _run(coro):
 def fresh_db(monkeypatch):
     """Empty temp DB with init."""
     import main
+    import import_execute
     import shared
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
@@ -108,6 +109,7 @@ async def _block_during_phase2(blocked, unblock, staging_dir=None):
 def test_execute_import_cancel_during_phase2(fresh_db, monkeypatch, tmp_path):
     """Cancel _execute_import during Phase 2 (file staging) should handle cleanly."""
     import main
+    import import_execute
     import import_pipeline
     
     # Block during Phase 2
@@ -119,10 +121,10 @@ def test_execute_import_cancel_during_phase2(fresh_db, monkeypatch, tmp_path):
         await _block_during_phase2(blocked, unblock)
         return True
     
-    monkeypatch.setattr(import_pipeline, "_execute_import", _mock_execute)
+    monkeypatch.setattr(import_execute, "_execute_import", _mock_execute)
     
     qid = _insert_queue_row(fresh_db, series_id=1, download_id="dl-phase2")
-    _insert_series(fresh_db, series_id=1)
+    _insert_series(fresh_db, 1)
     
     async def _inner():
         # Start the import
@@ -156,6 +158,7 @@ def test_execute_import_cancel_during_phase2(fresh_db, monkeypatch, tmp_path):
 def test_staging_cleanup_on_import_cancel(fresh_db, monkeypatch, tmp_path, staging_root):
     """If staging dir is created, it must be removed even on cancel."""
     import main
+    import import_execute
     import import_pipeline
     import os
     
@@ -179,10 +182,12 @@ def test_staging_cleanup_on_import_cancel(fresh_db, monkeypatch, tmp_path, stagi
             staging = staging_dirs_created[-1]
             os.makedirs(staging, exist_ok=True)
             (staging / "temp_file.cbz").write_text("temp")
-        await _block_during_phase2(blocked, unblock, staging)
+            await _block_during_phase2(blocked, unblock, staging)
+        else:
+            await _block_during_phase2(blocked, unblock, None)
         return True
     
-    monkeypatch.setattr(import_pipeline, "_execute_import", _mock_execute)
+    monkeypatch.setattr(import_execute, "_execute_import", _mock_execute)
     
     qid = _insert_queue_row(fresh_db, download_id="dl-staging-clean")
     _insert_series(fresh_db)
@@ -215,6 +220,7 @@ def test_staging_cleanup_on_import_cancel(fresh_db, monkeypatch, tmp_path, stagi
 def test_db_transaction_rolled_back_on_cancel(fresh_db, monkeypatch):
     """If import is cancelled, no partial commits should remain."""
     import main
+    import import_execute
     import import_pipeline
     
     blocked = asyncio.Event()
@@ -224,7 +230,7 @@ def test_db_transaction_rolled_back_on_cancel(fresh_db, monkeypatch):
         await _block_during_phase2(blocked, unblock)
         return True
     
-    monkeypatch.setattr(import_pipeline, "_execute_import", _mock_execute)
+    monkeypatch.setattr(import_execute, "_execute_import", _mock_execute)
     
     qid = _insert_queue_row(fresh_db, download_id="dl-rollback")
     
@@ -268,6 +274,7 @@ def test_db_transaction_rolled_back_on_cancel(fresh_db, monkeypatch):
 def test_queue_status_set_to_failed_on_cancel(fresh_db, monkeypatch):
     """Cancelled import should set status to 'failed' or 'partial'."""
     import main
+    import import_execute
     import import_pipeline
     
     blocked = asyncio.Event()
@@ -286,7 +293,7 @@ def test_queue_status_set_to_failed_on_cancel(fresh_db, monkeypatch):
         await unblock.wait()
         return True
     
-    monkeypatch.setattr(import_pipeline, "_execute_import", _mock_execute)
+    monkeypatch.setattr(import_execute, "_execute_import", _mock_execute)
     
     qid = _insert_queue_row(fresh_db, download_id="dl-failed")
     
@@ -319,14 +326,15 @@ def test_queue_status_set_to_failed_on_cancel(fresh_db, monkeypatch):
 def test_semaphore_released_on_cancel(fresh_db, monkeypatch):
     """_IMPORT_SEM must be released even if cancelled mid-import."""
     import main
+    import import_execute
     import import_pipeline
     
     # Reset semaphore to ensure clean state
-    import_pipeline._IMPORT_SEM = None
+    import_execute._IMPORT_SEM = None
     import_pipeline.initialize_import_semaphore()
-    import_pipeline._IMPORT_SEM = asyncio.Semaphore(2)
+    import_execute._IMPORT_SEM = asyncio.Semaphore(2)
     
-    original_val = import_pipeline._IMPORT_SEM._value
+    original_val = import_execute._IMPORT_SEM._value
     
     blocked = asyncio.Event()
     unblock = asyncio.Event()
@@ -337,7 +345,7 @@ def test_semaphore_released_on_cancel(fresh_db, monkeypatch):
         await unblock.wait()
         return True
     
-    monkeypatch.setattr(import_pipeline, "_execute_import", _mock_execute)
+    monkeypatch.setattr(import_execute, "_execute_import", _mock_execute)
     
     qid = _insert_queue_row(fresh_db, download_id="dl-sem")
     
@@ -347,7 +355,7 @@ def test_semaphore_released_on_cancel(fresh_db, monkeypatch):
         await asyncio.sleep(0.3)
         
         # Semaphore should be acquired (count lowered)
-        assert import_pipeline._IMPORT_SEM._value < original_val, \
+        assert import_execute._IMPORT_SEM._value < original_val, \
             "Semaphore not acquired when import started"
         
         # Cancel while holding semaphore
@@ -360,8 +368,8 @@ def test_semaphore_released_on_cancel(fresh_db, monkeypatch):
         await asyncio.sleep(0.2)
         
         # Semaphore must be released (count restored)
-        assert import_pipeline._IMPORT_SEM._value == original_val, \
-            f"Semaphore not released after cancel: value={import_pipeline._IMPORT_SEM._value}"
+        assert import_execute._IMPORT_SEM._value == original_val, \
+            f"Semaphore not released after cancel: value={import_execute._IMPORT_SEM._value}"
     
     _run(_inner())
 
@@ -371,12 +379,13 @@ def test_semaphore_released_on_cancel(fresh_db, monkeypatch):
 def test_concurrent_import_limit_works_after_cancel(fresh_db, monkeypatch):
     """After a cancelled import, the semaphore should allow new imports."""
     import main
+    import import_execute
     import import_pipeline
     
     # Reset limits
-    import_pipeline._IMPORT_SEM = None
+    import_execute._IMPORT_SEM = None
     import_pipeline.initialize_import_semaphore()
-    import_pipeline._IMPORT_SEM = asyncio.Semaphore(2)
+    import_execute._IMPORT_SEM = asyncio.Semaphore(2)
     
     blocked = asyncio.Event()
     unblock = asyncio.Event()
@@ -389,7 +398,7 @@ def test_concurrent_import_limit_works_after_cancel(fresh_db, monkeypatch):
         await unblock.wait()
         return True
     
-    monkeypatch.setattr(import_pipeline, "_execute_import", _mock_execute)
+    monkeypatch.setattr(import_execute, "_execute_import", _mock_execute)
     
     # Start first import and cancel it
     qid1 = _insert_queue_row(fresh_db, download_id="dl-cancel")
@@ -409,7 +418,7 @@ def test_concurrent_import_limit_works_after_cancel(fresh_db, monkeypatch):
     # Reset blockers
     blocked = asyncio.Event()
     unblock = asyncio.Event()
-    monkeypatch.setattr(import_pipeline, "_execute_import", _mock_execute)
+    monkeypatch.setattr(import_execute, "_execute_import", _mock_execute)
     
     # Start a second import (should work, not blocked by cancelled first)
     qid2 = _insert_queue_row(fresh_db, download_id="dl-after-cancel")
@@ -418,7 +427,7 @@ def test_concurrent_import_limit_works_after_cancel(fresh_db, monkeypatch):
         await asyncio.sleep(0.2)
         
         # Should have acquired the semaphore
-        assert import_pipeline._IMPORT_SEM._value < 2
+        assert import_execute._IMPORT_SEM._value < 2
         
         # Cancel this one too
         task.cancel()
@@ -440,13 +449,14 @@ def test_concurrent_import_limit_works_after_cancel(fresh_db, monkeypatch):
 def test_semaphore_not_leaked_on_multiple_cancels(fresh_db, monkeypatch):
     """Multiple cancels must not leak semaphore acquisitions."""
     import main
+    import import_execute
     import import_pipeline
     
     # Reset semaphore
-    import_pipeline._IMPORT_SEM = None
+    import_execute._IMPORT_SEM = None
     import_pipeline.initialize_import_semaphore()
-    import_pipeline._IMPORT_SEM = asyncio.Semaphore(2)
-    original = import_pipeline._IMPORT_SEM._value
+    import_execute._IMPORT_SEM = asyncio.Semaphore(2)
+    original = import_execute._IMPORT_SEM._value
     
     blocked = asyncio.Event()
     unblock = asyncio.Event()
@@ -456,7 +466,7 @@ def test_semaphore_not_leaked_on_multiple_cancels(fresh_db, monkeypatch):
         await unblock.wait()
         return True
     
-    monkeypatch.setattr(import_pipeline, "_execute_import", _mock_execute)
+    monkeypatch.setattr(import_execute, "_execute_import", _mock_execute)
     
     async def _inner():
         # Run 5 cancels in sequence
@@ -473,8 +483,8 @@ def test_semaphore_not_leaked_on_multiple_cancels(fresh_db, monkeypatch):
             await asyncio.sleep(0.2)
             
             # After each cancel, semaphore should be back to original
-            assert import_pipeline._IMPORT_SEM._value == original, \
-                f"Semaphore leak on cancel {i+1}: value={import_pipeline._IMPORT_SEM._value}"
+            assert import_execute._IMPORT_SEM._value == original, \
+                f"Semaphore leak on cancel {i+1}: value={import_execute._IMPORT_SEM._value}"
     
     _run(_inner())
 

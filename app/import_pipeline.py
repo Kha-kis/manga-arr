@@ -11,21 +11,21 @@ For the full pipeline implementation, see the split modules.
 from __future__ import annotations
 
 # Re-export from split modules
-from .import_discovery import (
+from import_discovery import (
     _CHECK_DOWNLOAD_STATUS_LOCK,
     check_download_status,
     _check_download_status_impl,
     _process_auto_import,
 )
-from .import_queue import _queue_import
-from .import_staging import (
+from import_queue import _queue_import
+from import_staging import (
     _ImportStaging,
     _StageOutcome,
     _stage_files,
     _cleanup_pack_staging_dir,
     PACK_STAGING_ROOT,
 )
-from .import_execute import (
+from import_execute import (
     _FilePlan,
     _ImportPlan,
     claim_import_queue_row,
