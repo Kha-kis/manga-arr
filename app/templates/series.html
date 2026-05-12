@@ -1105,9 +1105,11 @@ function onEditionChange(edition) {
 }
 // Toggle Packs/Omnibus section icon
 document.getElementById('packsTable')?.addEventListener('hidden.bs.collapse', () => {
+    console.log('hidden.bs.collapse fired');
     document.getElementById('packsToggleIcon').className = 'bi bi-chevron-expand';
 });
 document.getElementById('packsTable')?.addEventListener('shown.bs.collapse', () => {
+    console.log('shown.bs.collapse fired');
     document.getElementById('packsToggleIcon').className = 'bi bi-chevron-contract';
 });
 </script>
