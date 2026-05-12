@@ -1104,13 +1104,20 @@ function onEditionChange(edition) {
   }
 }
 // Toggle Packs/Omnibus section icon
+let _packsToggling = false;
 document.getElementById('packsTable')?.addEventListener('hidden.bs.collapse', () => {
+    if (_packsToggling) return;
     console.log('hidden.bs.collapse fired');
+    _packsToggling = true;
     document.getElementById('packsToggleIcon').className = 'bi bi-chevron-expand';
+    setTimeout(() => { _packsToggling = false; }, 100);
 });
 document.getElementById('packsTable')?.addEventListener('shown.bs.collapse', () => {
+    if (_packsToggling) return;
     console.log('shown.bs.collapse fired');
+    _packsToggling = true;
     document.getElementById('packsToggleIcon').className = 'bi bi-chevron-contract';
+    setTimeout(() => { _packsToggling = false; }, 100);
 });
 </script>
 
