@@ -766,7 +766,9 @@
               {% endif %}
             </td>
             <td style="font-size:var(--text-sm); color:var(--text-2)">
-              {% if p['vol_label'] %}
+              {% if p['pack_type'] == 'complete' and not p['covers'] and p['vol_label'] == 'Complete Series' %}
+              <span class="text-ember">Complete Series</span>
+              {% elif p['vol_label'] %}
               <span class="{% if not p['superseded'] %}text-ember{% endif %}">{{ p['vol_label'] }}</span>{% if not p['covers'] %}<span style="color:var(--text-3)"> (approx)</span>{% endif %}
               {% else %}—{% endif %}
             </td>

@@ -517,9 +517,22 @@ async def series_detail(request: Request, series_id: int):
         covers: set = set()
 
         if pt == 'complete':
-            vol_label = 'Complete Series'
-            if total_vols:
-                covers = set(range(1, total_vols + 1))
+            rs, re_ = p['vol_range_start'], p['vol_range_end']
+            if rs is not None and re_ is not None:
+                vol_label = f"Vol {vol_num_to_display(rs)}–{vol_num_to_display(re_)}"
+                covers = set(range(int(rs), int(re_) + 1))
+            else:
+                rng = _m.extract_volume_range(name)
+                if rng:
+                    rs, re_ = rng
+                    vol_label = f"Vol {vol_num_to_display(rs)}–{vol_num_to_display(re_)}"
+                    covers = set(range(int(rs), int(re_) + 1))
+                elif total_vols:
+                    vol_label = 'Complete Series'
+                    covers = set(range(1, total_vols + 1))
+                else:
+                    vol_label = ''
+                    covers = set()
         elif pt == 'volume':
             rs, re_ = p['vol_range_start'], p['vol_range_end']
             if rs is not None and re_ is not None:
