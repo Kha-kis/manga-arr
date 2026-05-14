@@ -771,6 +771,9 @@
               {% elif p['vol_label'] %}
               <span class="{% if not p['superseded'] %}text-ember{% endif %}">{{ p['vol_label'] }}</span>{% if not p['covers'] %}<span style="color:var(--text-3)"> (approx)</span>{% endif %}
               {% else %}—{% endif %}
+              {% if p.get('overlap') %}
+              <div style="font-size:var(--text-2xs); color:var(--amber)"><i class="bi bi-exclamation-triangle me-1"></i>overlaps with {{ p['overlap']|length }} other pack{{ 's' if p['overlap']|length > 1 else '' }}</div>
+              {% endif %}
             </td>
             <td style="font-size:var(--text-sm)">
               {% if p['dup_count'] > 1 %}<span class="badge-status badge-wanted">×{{ p['dup_count'] }}</span>

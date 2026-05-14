@@ -577,6 +577,23 @@ async def series_detail(request: Request, series_id: int):
             seen_keys[key] = len(packs)
             packs.append(p)
 
+    # Detect overlapping packs (same volume numbers covered by multiple packs)
+    for i, p1 in enumerate(packs):
+        if not p1.get('covers'):
+            continue
+        for j, p2 in enumerate(packs[i+1:], i+1):
+            if not p2.get('covers'):
+                continue
+            overlap = set(p1['covers']) & set(p2['covers'])
+            if overlap:
+                # Mark both packs as overlapping
+                if 'overlap' not in p1:
+                    p1['overlap'] = []
+                if 'overlap' not in p2:
+                    p2['overlap'] = []
+                p1['overlap'].append(p2)
+                p2['overlap'].append(p1)
+
     def _pack_sort_key(p):
         if p['pack_type'] == 'complete':
             return (0, 0)
