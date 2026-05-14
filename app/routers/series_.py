@@ -593,6 +593,17 @@ async def series_detail(request: Request, series_id: int):
                     p2['overlap'] = []
                 p1['overlap'].append(p2)
                 p2['overlap'].append(p1)
+    
+    # Determine which volumes are fully covered by packs
+    covered_vols = set()
+    for p in packs:
+        if p.get('covers'):
+            covered_vols.update(p['covers'])
+    
+    # Mark volumes as covered_by_pack for template rendering
+    volumes = [dict(v) for v in volumes]
+    for v in volumes:
+        v['covered_by_pack'] = v['volume_num'] in covered_vols
 
     def _pack_sort_key(p):
         if p['pack_type'] == 'complete':
