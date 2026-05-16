@@ -101,12 +101,12 @@
   --text-lg: 0.95rem;
   --text-xl: 1rem;
   --text-2xl: 1.1rem;
-  /* ═══ TYPOGRAPHY — Editorial Triple Stack + Inter for chrome ═══ */
-  --font-display: "Fraunces", "Playfair Display", Georgia, serif;
-  --font-serif: "Source Serif 4", "Libre Baskerville", Georgia, serif;
-  --font-ui: "Inter", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
-  --font-italic: "Instrument Serif", Georgia, serif;
+  /* ═══ TYPOGRAPHY — Fraunces (editorial) + system-ui (chrome) ═══ */
+  --font-display: "Fraunces", Georgia, serif;
+  --font-serif: "Fraunces", Georgia, serif;
+  --font-ui: system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-italic: "Fraunces", Georgia, serif;
   /* ── Legacy compat aliases (keep all old variable names working) ── */
   --cyan: var(--ember);
   --green: var(--jade);
@@ -2051,6 +2051,113 @@ body {
 /* ═══════════════════════════════════════════════════════════════
    REDUCED MOTION — respect user preference
 ════════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   TAILWIND COMPAT SHIM — replaces Tailwind CDN classes
+╔════════════════════════════════════════════════════════════════ */
+.opacity-50 {
+  opacity: 0.5;
+}
+.break-all {
+  word-break: break-all;
+}
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.whitespace-nowrap {
+  white-space: nowrap;
+}
+.rounded-full {
+  border-radius: 999px;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PAGE TRANSITIONS — fade in on HTMX navigation
+╔════════════════════════════════════════════════════════════════ */
+@keyframes page-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.page-content {
+  animation: page-fade-in 0.28s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+}
+
+.htmx-settling .page-content {
+  opacity: 0.6;
+  transition: opacity 0.12s;
+}
+
+/* ── Staggered card reveal — applied via .stagger-group > * ── */
+.stagger-group > * {
+  animation: card-appear 0.35s ease both;
+  animation-delay: calc(var(--i, 0) * 0.025s);
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.slide-up {
+  animation: slide-up 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+}
+
+/* ── Volume status pills ── */
+.ch-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  white-space: nowrap;
+  line-height: 1;
+}
+.ch-pill.dl {
+  background: rgba(34, 200, 122, 0.15);
+  color: var(--jade);
+  border: 1px solid var(--jade-medium);
+  cursor: default;
+}
+.ch-pill.gr {
+  background: rgba(240, 132, 40, 0.15);
+  color: var(--ember);
+  border: 1px solid var(--ember-medium);
+  cursor: pointer;
+}
+.ch-pill.wt {
+  background: rgba(240, 80, 80, 0.12);
+  color: var(--ruby);
+  border: 1px solid var(--ruby-medium);
+}
+.ch-pill.wt:hover {
+  background: rgba(240, 80, 80, 0.2);
+}
+.ch-pill.sk {
+  background: rgba(88, 168, 248, 0.12);
+  color: var(--sky);
+  border: 1px solid var(--sky-medium);
+}
+.ch-pill.ir {
+  background: rgba(152, 120, 248, 0.12);
+  color: var(--iris);
+  border: 1px solid var(--iris-medium);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -2064,5 +2171,8 @@ body {
   }
   #htmx-progress {
     transition: none;
+  }
+  .page-content {
+    animation: none;
   }
 }
