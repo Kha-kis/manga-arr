@@ -31,6 +31,7 @@ that path doesn't cover ghost chapters or stuck-importing rows whose
 download_id is gone. This module gives the operator a structured plan
 they can act on manually.
 """
+
 from __future__ import annotations
 
 import os
@@ -67,13 +68,14 @@ class RepairAction:
                               must inspect the affected row first.
       severity:               propagated from the underlying Finding
     """
-    action:                 str
-    target:                 tuple
-    reason:                 str
-    risk:                   RiskLevel
-    would_mutate:           dict = field(default_factory=dict)
+
+    action: str
+    target: tuple
+    reason: str
+    risk: RiskLevel
+    would_mutate: dict = field(default_factory=dict)
     requires_manual_review: bool = False
-    severity:               str  = "warning"
+    severity: str = "warning"
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -83,13 +85,14 @@ class RepairAction:
 
 # ─────────────────────── thresholds (mirror app constants) ───────────────────
 
-STUCK_GRABBED_DAYS    = 2     # volume.status='grabbed' older than this is stuck
-STUCK_IMPORTING_HOURS = 6     # import_queue.status='importing' older than this is stuck
-PARTIAL_AGE_HOURS     = 6     # import_queue.status='partial' older than this is stuck
-FAILED_RETRY_HOURS    = 1     # failed import_queue rows older than this can be retried
+STUCK_GRABBED_DAYS = 2  # volume.status='grabbed' older than this is stuck
+STUCK_IMPORTING_HOURS = 6  # import_queue.status='importing' older than this is stuck
+PARTIAL_AGE_HOURS = 6  # import_queue.status='partial' older than this is stuck
+FAILED_RETRY_HOURS = 1  # failed import_queue rows older than this can be retried
 
 
 # ─────────────────────── read-only DB helpers ────────────────────────────────
+
 
 def _ro_connect(db_path: str) -> sqlite3.Connection:
     """Read-only connection. Any attempt to mutate raises."""
@@ -102,12 +105,14 @@ def _ro_connect(db_path: str) -> sqlite3.Connection:
 
 # ─────────────────────── report (proxies diagnose) ───────────────────────────
 
+
 def report(db_path: str = DEFAULT_DB_PATH) -> list:
     """Return verify_e2e findings. Pure proxy so callers have one entry point."""
     return verify_e2e.diagnose(db_path)
 
 
 # ─────────────────────── individual planners ────────────────────────────────
+
 
 def _plan_stuck_grabbed(db) -> list[RepairAction]:
     """Volumes stuck in 'grabbed' state past the threshold.
@@ -134,40 +139,48 @@ def _plan_stuck_grabbed(db) -> list[RepairAction]:
     actions: list[RepairAction] = []
     for r in rows:
         if r["in_queue"]:
-            actions.append(RepairAction(
-                action="leave_pending_import",
-                target=("volumes", r["id"]),
-                reason=(f"vol {r['volume_num']} of series {r['series_id']} grabbed at "
-                        f"{r['grabbed_at']} but its download_id is still in import_queue"),
-                risk="low",
-                would_mutate={},
-                requires_manual_review=True,
-                severity="warning",
-            ))
+            actions.append(
+                RepairAction(
+                    action="leave_pending_import",
+                    target=("volumes", r["id"]),
+                    reason=(
+                        f"vol {r['volume_num']} of series {r['series_id']} grabbed at "
+                        f"{r['grabbed_at']} but its download_id is still in import_queue"
+                    ),
+                    risk="low",
+                    would_mutate={},
+                    requires_manual_review=True,
+                    severity="warning",
+                )
+            )
         else:
             # Same fields the app's auto-recovery clears.
-            actions.append(RepairAction(
-                action="reset_to_wanted",
-                target=("volumes", r["id"]),
-                reason=(f"vol {r['volume_num']} of series {r['series_id']} stuck in "
+            actions.append(
+                RepairAction(
+                    action="reset_to_wanted",
+                    target=("volumes", r["id"]),
+                    reason=(
+                        f"vol {r['volume_num']} of series {r['series_id']} stuck in "
                         f"'grabbed' since {r['grabbed_at']}; not referenced by any "
-                        "active import_queue row"),
-                risk="low",
-                would_mutate={
-                    "status":         "wanted",
-                    "grabbed_at":     None,
-                    "download_id":    None,
-                    "source_url":     None,
-                    "torrent_name":   None,
-                    "indexer":        None,
-                    "protocol":       None,
-                    "client":         None,
-                    "release_group":  None,
-                    "import_path":    None,
-                },
-                requires_manual_review=False,
-                severity="warning",
-            ))
+                        "active import_queue row"
+                    ),
+                    risk="low",
+                    would_mutate={
+                        "status": "wanted",
+                        "grabbed_at": None,
+                        "download_id": None,
+                        "source_url": None,
+                        "torrent_name": None,
+                        "indexer": None,
+                        "protocol": None,
+                        "client": None,
+                        "release_group": None,
+                        "import_path": None,
+                    },
+                    requires_manual_review=False,
+                    severity="warning",
+                )
+            )
     return actions
 
 
@@ -195,18 +208,25 @@ def _plan_stale_importing(db) -> list[RepairAction]:
     actions: list[RepairAction] = []
     for r in rows:
         manual = bool(r["needs_review_files"])
-        actions.append(RepairAction(
-            action="revert_to_failed_for_retry",
-            target=("import_queue", r["id"]),
-            reason=(f"import_queue row '{r['torrent_name']}' stuck in 'importing' "
+        actions.append(
+            RepairAction(
+                action="revert_to_failed_for_retry",
+                target=("import_queue", r["id"]),
+                reason=(
+                    f"import_queue row '{r['torrent_name']}' stuck in 'importing' "
                     f"since {r['created_at']}"
-                    + (f" with {r['needs_review_files']} needs_review files"
-                       if manual else "")),
-            risk="medium" if manual else "low",
-            would_mutate={"status": "failed"},
-            requires_manual_review=manual,
-            severity="warning",
-        ))
+                    + (
+                        f" with {r['needs_review_files']} needs_review files"
+                        if manual
+                        else ""
+                    )
+                ),
+                risk="medium" if manual else "low",
+                would_mutate={"status": "failed"},
+                requires_manual_review=manual,
+                severity="warning",
+            )
+        )
     return actions
 
 
@@ -228,8 +248,10 @@ def _plan_stale_partial(db) -> list[RepairAction]:
         RepairAction(
             action="revert_to_failed_for_retry",
             target=("import_queue", r["id"]),
-            reason=(f"import_queue row '{r['torrent_name']}' stuck in 'partial' "
-                    f"since {r['created_at']}; some files may already be imported"),
+            reason=(
+                f"import_queue row '{r['torrent_name']}' stuck in 'partial' "
+                f"since {r['created_at']}; some files may already be imported"
+            ),
             risk="high",
             would_mutate={"status": "failed"},
             requires_manual_review=True,
@@ -255,8 +277,10 @@ def _plan_failed_retry(db) -> list[RepairAction]:
         RepairAction(
             action="review_failed_import",
             target=("import_queue", r["id"]),
-            reason=(f"failed import '{r['torrent_name']}' from {r['created_at']} — "
-                    "operator should decide between retry, blocklist, or delete"),
+            reason=(
+                f"failed import '{r['torrent_name']}' from {r['created_at']} — "
+                "operator should decide between retry, blocklist, or delete"
+            ),
             risk="medium",
             would_mutate={},
             requires_manual_review=True,
@@ -288,9 +312,11 @@ def _plan_ghost_chapters(db) -> list[RepairAction]:
         RepairAction(
             action="revert_ghost_chapter_to_wanted",
             target=("chapters", r["id"]),
-            reason=(f"chapter {r['chapter_num']} of series {r['series_id']} marked "
-                    "downloaded but has neither quality nor import_path; file may be "
-                    "missing"),
+            reason=(
+                f"chapter {r['chapter_num']} of series {r['series_id']} marked "
+                "downloaded but has neither quality nor import_path; file may be "
+                "missing"
+            ),
             risk="medium",
             would_mutate={"status": "wanted"},
             requires_manual_review=True,
@@ -313,16 +339,20 @@ def _plan_orphans(db) -> list[RepairAction]:
          WHERE NOT EXISTS (SELECT 1 FROM series s WHERE s.id = volumes.series_id)
         """
     ).fetchall():
-        actions.append(RepairAction(
-            action="manual_review_orphan_volume",
-            target=("volumes", r["id"]),
-            reason=(f"volume {r['id']} references missing series {r['series_id']}; "
-                    "either re-create the series or delete the volume"),
-            risk="high",
-            would_mutate={},
-            requires_manual_review=True,
-            severity="critical",
-        ))
+        actions.append(
+            RepairAction(
+                action="manual_review_orphan_volume",
+                target=("volumes", r["id"]),
+                reason=(
+                    f"volume {r['id']} references missing series {r['series_id']}; "
+                    "either re-create the series or delete the volume"
+                ),
+                risk="high",
+                would_mutate={},
+                requires_manual_review=True,
+                severity="critical",
+            )
+        )
     for r in db.execute(
         """
         SELECT id, volume_id FROM chapters
@@ -330,15 +360,19 @@ def _plan_orphans(db) -> list[RepairAction]:
            AND NOT EXISTS (SELECT 1 FROM volumes v WHERE v.id = chapters.volume_id)
         """
     ).fetchall():
-        actions.append(RepairAction(
-            action="manual_review_orphan_chapter",
-            target=("chapters", r["id"]),
-            reason=(f"chapter {r['id']} references missing volume {r['volume_id']}"),
-            risk="high",
-            would_mutate={},
-            requires_manual_review=True,
-            severity="critical",
-        ))
+        actions.append(
+            RepairAction(
+                action="manual_review_orphan_chapter",
+                target=("chapters", r["id"]),
+                reason=(
+                    f"chapter {r['id']} references missing volume {r['volume_id']}"
+                ),
+                risk="high",
+                would_mutate={},
+                requires_manual_review=True,
+                severity="critical",
+            )
+        )
     return actions
 
 
@@ -353,6 +387,7 @@ _ALL_PLANNERS = [
 
 
 # ─────────────────────── public planner ──────────────────────────────────────
+
 
 def plan(db_path: str = DEFAULT_DB_PATH) -> list[RepairAction]:
     """Return the dry-run repair plan for ``db_path``.
@@ -369,6 +404,7 @@ def plan(db_path: str = DEFAULT_DB_PATH) -> list[RepairAction]:
 
 # ─────────────────────── CLI ─────────────────────────────────────────────────
 
+
 def _print_report(findings: list) -> None:
     """Wraps verify_e2e._print_legacy so `reconcile.py report` is one call."""
     verify_e2e._print_legacy(findings)
@@ -378,7 +414,7 @@ def _print_plan(actions: list[RepairAction]) -> None:
     if not actions:
         print("No reconciliation actions proposed. DB is in a clean state.")
         return
-    by_risk = {"low": [], "medium": [], "high": []}
+    by_risk: dict[str, list[RepairAction]] = {"low": [], "medium": [], "high": []}
     for a in actions:
         by_risk[a.risk].append(a)
     print("=" * 60)
@@ -400,8 +436,10 @@ def _print_plan(actions: list[RepairAction]) -> None:
             else:
                 print(f"      would set: (review only — no mutation proposed)")
     print()
-    print(f"Summary: {len(by_risk['high'])} high, {len(by_risk['medium'])} medium, "
-          f"{len(by_risk['low'])} low risk")
+    print(
+        f"Summary: {len(by_risk['high'])} high, {len(by_risk['medium'])} medium, "
+        f"{len(by_risk['low'])} low risk"
+    )
     print("This was a DRY RUN. No rows were modified.")
 
 

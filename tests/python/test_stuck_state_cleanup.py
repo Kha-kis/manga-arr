@@ -3,6 +3,7 @@ to accumulate indefinitely: grabbed-but-no-download_id volumes,
 pending_releases for deleted/unmonitored series, and import_queue
 rows stuck in pending/partial for >30 days. Prior behaviour only
 ran a subset of this at startup, so a long-running container drifted."""
+
 import os
 import sqlite3
 import sys
@@ -17,8 +18,10 @@ import conftest  # noqa: F401
 @pytest.fixture
 def env():
     import main, shared, security
+
     db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    db.close(); os.unlink(db.name)
+    db.close()
+    os.unlink(db.name)
     key_dir = tempfile.mkdtemp(prefix="mangarr-stuck-keys-")
 
     orig_main_db = main.DB_PATH
@@ -46,12 +49,13 @@ def _seed_series(db_path, sid, monitored=1):
         c.execute(
             "INSERT INTO series(id, title, search_pattern, enabled, monitored,"
             " monitor_mode) VALUES(?, 'S', 'S', 1, ?, 'all')",
-            (sid, monitored)
+            (sid, monitored),
         )
 
 
 def test_resets_stale_grabbed_volume_without_download_id(env):
     from main import cleanup_stuck_state
+
     _seed_series(env, 7)
     with sqlite3.connect(env) as c:
         # Grabbed 7 hours ago, no download_id
@@ -61,10 +65,10 @@ def test_resets_stale_grabbed_volume_without_download_id(env):
             " datetime('now', '-7 hours'))"
         )
     stats = cleanup_stuck_state()
-    assert stats['volumes_reset'] == 1
+    assert stats["volumes_reset"] == 1
     with sqlite3.connect(env) as c:
         r = c.execute("SELECT status, grabbed_at, download_id FROM volumes").fetchone()
-    assert r[0] == 'wanted'
+    assert r[0] == "wanted"
     assert r[1] is None
     assert r[2] is None
 
@@ -72,6 +76,7 @@ def test_resets_stale_grabbed_volume_without_download_id(env):
 def test_recently_grabbed_without_download_id_is_left_alone(env):
     """A grab that just fired might not have had its download_id saved yet."""
     from main import cleanup_stuck_state
+
     _seed_series(env, 7)
     with sqlite3.connect(env) as c:
         c.execute(
@@ -80,16 +85,17 @@ def test_recently_grabbed_without_download_id_is_left_alone(env):
             " datetime('now', '-30 minutes'))"
         )
     stats = cleanup_stuck_state()
-    assert stats['volumes_reset'] == 0
+    assert stats["volumes_reset"] == 0
     with sqlite3.connect(env) as c:
         status = c.execute("SELECT status FROM volumes").fetchone()[0]
-    assert status == 'grabbed'
+    assert status == "grabbed"
 
 
 def test_does_not_reset_volume_with_download_id(env):
     """Having a download_id means the grab succeeded — the client
     just hasn't finished yet. Never reset these."""
     from main import cleanup_stuck_state
+
     _seed_series(env, 7)
     with sqlite3.connect(env) as c:
         c.execute(
@@ -98,13 +104,14 @@ def test_does_not_reset_volume_with_download_id(env):
             " datetime('now', '-10 hours'), 'abc123')"
         )
     stats = cleanup_stuck_state()
-    assert stats['volumes_reset'] == 0
+    assert stats["volumes_reset"] == 0
 
 
 def test_suwayomi_volumes_are_protected(env):
     """Suwayomi/DDL jobs complete asynchronously and can legitimately
     sit in grabbed state for a long time; never reset them."""
     from main import cleanup_stuck_state
+
     _seed_series(env, 7)
     with sqlite3.connect(env) as c:
         c.execute(
@@ -113,11 +120,12 @@ def test_suwayomi_volumes_are_protected(env):
             " datetime('now', '-12 hours'), 'suwayomi')"
         )
     stats = cleanup_stuck_state()
-    assert stats['volumes_reset'] == 0
+    assert stats["volumes_reset"] == 0
 
 
 def test_deletes_pending_releases_for_deleted_series(env):
     from main import cleanup_stuck_state
+
     # series id 99 never existed
     with sqlite3.connect(env) as c:
         c.execute(
@@ -125,7 +133,7 @@ def test_deletes_pending_releases_for_deleted_series(env):
             " VALUES(99, 'https://example/r1', 'Orphan Title')"
         )
     stats = cleanup_stuck_state()
-    assert stats['pending_deleted'] == 1
+    assert stats["pending_deleted"] == 1
     with sqlite3.connect(env) as c:
         count = c.execute("SELECT COUNT(*) FROM pending_releases").fetchone()[0]
     assert count == 0
@@ -133,6 +141,7 @@ def test_deletes_pending_releases_for_deleted_series(env):
 
 def test_deletes_pending_releases_for_unmonitored_series(env):
     from main import cleanup_stuck_state
+
     _seed_series(env, 7, monitored=0)
     with sqlite3.connect(env) as c:
         c.execute(
@@ -140,11 +149,12 @@ def test_deletes_pending_releases_for_unmonitored_series(env):
             " VALUES(7, 'https://example/r1', 'Unmonitored Title')"
         )
     stats = cleanup_stuck_state()
-    assert stats['pending_deleted'] == 1
+    assert stats["pending_deleted"] == 1
 
 
 def test_preserves_pending_releases_for_active_monitored_series(env):
     from main import cleanup_stuck_state
+
     _seed_series(env, 7, monitored=1)
     with sqlite3.connect(env) as c:
         c.execute(
@@ -152,7 +162,7 @@ def test_preserves_pending_releases_for_active_monitored_series(env):
             " VALUES(7, 'https://example/r1', 'Legit Title')"
         )
     stats = cleanup_stuck_state()
-    assert stats['pending_deleted'] == 0
+    assert stats["pending_deleted"] == 0
     with sqlite3.connect(env) as c:
         count = c.execute("SELECT COUNT(*) FROM pending_releases").fetchone()[0]
     assert count == 1
@@ -160,6 +170,7 @@ def test_preserves_pending_releases_for_active_monitored_series(env):
 
 def test_fails_import_queue_stuck_in_pending_over_30_days(env):
     from main import cleanup_stuck_state
+
     _seed_series(env, 7)
     with sqlite3.connect(env) as c:
         c.execute(
@@ -168,14 +179,15 @@ def test_fails_import_queue_stuck_in_pending_over_30_days(env):
             " 'pending', datetime('now', '-40 days'))"
         )
     stats = cleanup_stuck_state()
-    assert stats['queue_failed'] == 1
+    assert stats["queue_failed"] == 1
     with sqlite3.connect(env) as c:
         status = c.execute("SELECT status FROM import_queue").fetchone()[0]
-    assert status == 'failed'
+    assert status == "failed"
 
 
 def test_recent_pending_import_queue_is_left_alone(env):
     from main import cleanup_stuck_state
+
     _seed_series(env, 7)
     with sqlite3.connect(env) as c:
         c.execute(
@@ -184,7 +196,7 @@ def test_recent_pending_import_queue_is_left_alone(env):
             " 'pending', datetime('now', '-1 day'))"
         )
     stats = cleanup_stuck_state()
-    assert stats['queue_failed'] == 0
+    assert stats["queue_failed"] == 0
 
 
 # ───────────────────── Phase 4: stuck 'importing' rows ─────────────────────
@@ -198,6 +210,7 @@ def test_reverts_stuck_importing_queue_after_threshold(env):
     Auto-import status_loop never retried the row because it only
     looks at 'pending'."""
     from main import cleanup_stuck_state
+
     _seed_series(env, 7)
     with sqlite3.connect(env) as c:
         # Old stuck importing row — should be recovered
@@ -214,16 +227,23 @@ def test_reverts_stuck_importing_queue_after_threshold(env):
         )
 
     stats = cleanup_stuck_state()
-    assert stats['importing_reset'] == 1, (
+    assert stats["importing_reset"] == 1, (
         f"expected 1 stuck 'importing' to be reset; got {stats['importing_reset']}"
     )
     with sqlite3.connect(env) as c:
         c.row_factory = sqlite3.Row
-        rows = {r['torrent_name']: r['status'] for r in c.execute(
-            "SELECT torrent_name, status FROM import_queue"
-        ).fetchall()}
-    assert rows['OldImporting']   == 'failed', "old stuck-importing must be reset to 'failed'"
-    assert rows['FreshImporting'] == 'importing', "fresh in-flight import must NOT be touched"
+        rows = {
+            r["torrent_name"]: r["status"]
+            for r in c.execute(
+                "SELECT torrent_name, status FROM import_queue"
+            ).fetchall()
+        }
+    assert rows["OldImporting"] == "failed", (
+        "old stuck-importing must be reset to 'failed'"
+    )
+    assert rows["FreshImporting"] == "importing", (
+        "fresh in-flight import must NOT be touched"
+    )
 
 
 def test_does_not_revert_importing_with_needs_review_files(env):
@@ -231,6 +251,7 @@ def test_does_not_revert_importing_with_needs_review_files(env):
     must NOT be auto-recovered — operator must intervene via the
     reconcile UI. Mirrors the planning logic in app/reconcile.py."""
     from main import cleanup_stuck_state
+
     _seed_series(env, 7)
     with sqlite3.connect(env) as c:
         # Old stuck importing row...
@@ -247,20 +268,19 @@ def test_does_not_revert_importing_with_needs_review_files(env):
         )
 
     stats = cleanup_stuck_state()
-    assert stats['importing_reset'] == 0, (
+    assert stats["importing_reset"] == 0, (
         "must NOT auto-recover rows with needs_review files"
     )
     with sqlite3.connect(env) as c:
-        status = c.execute(
-            "SELECT status FROM import_queue WHERE id=99"
-        ).fetchone()[0]
-    assert status == 'importing', "row must remain 'importing' for operator review"
+        status = c.execute("SELECT status FROM import_queue WHERE id=99").fetchone()[0]
+    assert status == "importing", "row must remain 'importing' for operator review"
 
 
 def test_importing_threshold_param_overridable(env):
     """The threshold is parameterized (not just hardcoded). Useful for
     tests + future tuning. Default is 6h."""
     from main import cleanup_stuck_state
+
     _seed_series(env, 7)
     with sqlite3.connect(env) as c:
         c.execute(
@@ -270,20 +290,21 @@ def test_importing_threshold_param_overridable(env):
         )
     # With default threshold (6h), 2h-old row is left alone
     stats = cleanup_stuck_state()
-    assert stats['importing_reset'] == 0
+    assert stats["importing_reset"] == 0
     # With 1h threshold, same row gets recovered
     stats = cleanup_stuck_state(importing_stale_hours=1)
-    assert stats['importing_reset'] == 1
+    assert stats["importing_reset"] == 1
 
 
 def test_stats_dict_includes_importing_reset_key(env):
     """Schema check: the stats dict must include the new key so
     downstream consumers (logs, tests, dashboards) don't KeyError."""
     from main import cleanup_stuck_state
+
     _seed_series(env, 7)
     stats = cleanup_stuck_state()
-    assert 'importing_reset' in stats
-    assert stats['importing_reset'] == 0  # nothing to recover
+    assert "importing_reset" in stats
+    assert stats["importing_reset"] == 0  # nothing to recover
 
 
 # ───────────────────── Phase 5: events table retention ─────────────────────
@@ -294,6 +315,7 @@ def test_prunes_events_older_than_retention(env):
     Production hit 5.8M rows / ~1GB; without pruning the events table
     grows indefinitely. Default retention 90 days."""
     from main import cleanup_stuck_state
+
     _seed_series(env, 7)
     with sqlite3.connect(env) as c:
         # Old event (>90 days) — should be pruned
@@ -308,19 +330,23 @@ def test_prunes_events_older_than_retention(env):
         )
 
     stats = cleanup_stuck_state()
-    assert stats['events_pruned'] == 1, (
+    assert stats["events_pruned"] == 1, (
         f"expected 1 event pruned; got {stats['events_pruned']}"
     )
     with sqlite3.connect(env) as c:
-        rows = [r[0] for r in c.execute(
-            "SELECT message FROM events WHERE message IN ('old', 'recent')"
-        ).fetchall()]
-    assert rows == ['recent']  # 'old' is gone
+        rows = [
+            r[0]
+            for r in c.execute(
+                "SELECT message FROM events WHERE message IN ('old', 'recent')"
+            ).fetchall()
+        ]
+    assert rows == ["recent"]  # 'old' is gone
 
 
 def test_events_retention_threshold_overridable(env):
     """The retention is parameterizable for tests + future tuning."""
     from main import cleanup_stuck_state
+
     _seed_series(env, 7)
     with sqlite3.connect(env) as c:
         c.execute(
@@ -329,16 +355,17 @@ def test_events_retention_threshold_overridable(env):
         )
     # Default 90d retention: keeps it
     stats = cleanup_stuck_state()
-    assert stats['events_pruned'] == 0
+    assert stats["events_pruned"] == 0
     # Tighter 5d retention: prunes it
     stats = cleanup_stuck_state(events_retention_days=5)
-    assert stats['events_pruned'] == 1
+    assert stats["events_pruned"] == 1
 
 
 def test_events_retention_disabled_when_zero(env):
     """events_retention_days=0 disables pruning entirely (never delete).
     Useful for users who want to keep historical events for forensics."""
     from main import cleanup_stuck_state
+
     _seed_series(env, 7)
     with sqlite3.connect(env) as c:
         c.execute(
@@ -346,9 +373,11 @@ def test_events_retention_disabled_when_zero(env):
             " VALUES('error', 'forever', datetime('now', '-365 days'))"
         )
     stats = cleanup_stuck_state(events_retention_days=0)
-    assert stats['events_pruned'] == 0
+    assert stats["events_pruned"] == 0
     with sqlite3.connect(env) as c:
-        n = c.execute("SELECT COUNT(*) FROM events WHERE message='forever'").fetchone()[0]
+        n = c.execute("SELECT COUNT(*) FROM events WHERE message='forever'").fetchone()[
+            0
+        ]
     assert n == 1, "events_retention_days=0 must keep all events"
 
 
@@ -356,16 +385,17 @@ def test_events_pruning_is_chunked_for_large_tables(env):
     """Sanity: even with many old events, the prune doesn't lock the
     writer for minutes. We chunk-DELETE 5K rows per transaction."""
     from main import cleanup_stuck_state
+
     _seed_series(env, 7)
     with sqlite3.connect(env) as c:
         # Insert 12K old events
         c.executemany(
             "INSERT INTO events(event_type, message, created_at)"
             " VALUES('error', ?, datetime('now', '-100 days'))",
-            [(f'msg-{i}',) for i in range(12000)]
+            [(f"msg-{i}",) for i in range(12000)],
         )
     stats = cleanup_stuck_state()
-    assert stats['events_pruned'] == 12000
+    assert stats["events_pruned"] == 12000
 
 
 # ───────────────────── log_event dedup rate-limit ─────────────────────
@@ -376,10 +406,11 @@ def test_log_event_dedup_rate_limits_repeated_messages(env):
     message[:80]) tuple per TTL. Without this, a stable repeating
     failure (content_path missing) spams the events table forever."""
     from events import log_event, _LOG_DEDUP_LAST
+
     _LOG_DEDUP_LAST.clear()
     _seed_series(env, 7)
     for _ in range(20):
-        log_event('error', 'Import queue: content_path not found: /a/b', 7, dedup=True)
+        log_event("error", "Import queue: content_path not found: /a/b", 7, dedup=True)
     with sqlite3.connect(env) as c:
         n = c.execute(
             "SELECT COUNT(*) FROM events WHERE message='Import queue: content_path not found: /a/b'"
@@ -390,11 +421,14 @@ def test_log_event_dedup_rate_limits_repeated_messages(env):
 def test_log_event_without_dedup_unchanged(env):
     """Default dedup=False keeps prior behavior — every call writes a row."""
     from events import log_event
+
     _seed_series(env, 7)
     for i in range(5):
-        log_event('info', f'distinct message {i}', 7)
+        log_event("info", f"distinct message {i}", 7)
     with sqlite3.connect(env) as c:
-        n = c.execute("SELECT COUNT(*) FROM events WHERE event_type='info'").fetchone()[0]
+        n = c.execute("SELECT COUNT(*) FROM events WHERE event_type='info'").fetchone()[
+            0
+        ]
     assert n == 5
 
 
@@ -408,6 +442,7 @@ def test_deletes_orphan_pack_rows(env):
     because import_pipeline.py:691 was UPDATEing them to 'wanted'
     instead of DELETEing them."""
     from main import cleanup_stuck_state
+
     _seed_series(env, 7)
     with sqlite3.connect(env) as c:
         # Orphan pack: no source info, no purpose
@@ -435,7 +470,7 @@ def test_deletes_orphan_pack_rows(env):
         )
 
     stats = cleanup_stuck_state()
-    assert stats['orphan_packs_deleted'] == 1, (
+    assert stats["orphan_packs_deleted"] == 1, (
         f"expected exactly 1 orphan pack deleted; got {stats['orphan_packs_deleted']}"
     )
     with sqlite3.connect(env) as c:
@@ -448,6 +483,7 @@ def test_orphan_pack_cleanup_can_be_disabled(env):
     if a future bug-class makes mass deletion risky and we want to
     pause it without rolling back the whole cleanup loop."""
     from main import cleanup_stuck_state
+
     _seed_series(env, 7)
     with sqlite3.connect(env) as c:
         c.execute(
@@ -455,7 +491,7 @@ def test_orphan_pack_cleanup_can_be_disabled(env):
             " VALUES(7, NULL, 'wanted', 'volume', 1)"
         )
     stats = cleanup_stuck_state(orphan_pack_cleanup=False)
-    assert stats['orphan_packs_deleted'] == 0
+    assert stats["orphan_packs_deleted"] == 0
     with sqlite3.connect(env) as c:
         n = c.execute("SELECT COUNT(*) FROM volumes WHERE series_id=7").fetchone()[0]
     assert n == 1
@@ -466,14 +502,15 @@ def test_no_manga_files_found_event_is_deduped(env):
     fired 207K times for one ghost torrent path before the dedup landed.
     The import_pipeline call site at line 389 must pass dedup=True so the
     same (path, torrent_name) tuple within 1h only logs once."""
-    import inspect, import_pipeline
-    src = inspect.getsource(import_pipeline)
+    import inspect, import_queue
+
+    src = inspect.getsource(import_queue)
     # Find the line and verify dedup=True is present
     idx = src.find("No manga files found in")
     assert idx >= 0, "emitter not found in source"
     # Look at the next ~150 chars after the message string for `dedup=True`
-    snippet = src[idx:idx + 300]
-    assert 'dedup=True' in snippet, (
+    snippet = src[idx : idx + 300]
+    assert "dedup=True" in snippet, (
         "log_event call for 'No manga files found' must opt into dedup=True. "
         "Without it, a stuck content_path produces hundreds of thousands of "
         "duplicate import events."
@@ -482,6 +519,7 @@ def test_no_manga_files_found_event_is_deduped(env):
 
 def test_logs_events_for_each_category(env):
     from main import cleanup_stuck_state
+
     _seed_series(env, 7)
     with sqlite3.connect(env) as c:
         c.execute(
@@ -495,21 +533,25 @@ def test_logs_events_for_each_category(env):
         )
     cleanup_stuck_state()
     with sqlite3.connect(env) as c:
-        events = [r[0] for r in c.execute(
-            "SELECT message FROM events WHERE event_type='stuck_cleanup'"
-        ).fetchall()]
-    assert any('reset' in e and 'no-download_id' in e for e in events), events
-    assert any('deleted' in e and 'pending_release' in e for e in events), events
+        events = [
+            r[0]
+            for r in c.execute(
+                "SELECT message FROM events WHERE event_type='stuck_cleanup'"
+            ).fetchall()
+        ]
+    assert any("reset" in e and "no-download_id" in e for e in events), events
+    assert any("deleted" in e and "pending_release" in e for e in events), events
 
 
 def test_stats_are_zero_when_nothing_stuck(env):
     from main import cleanup_stuck_state
+
     stats = cleanup_stuck_state()
     assert stats == {
-        'volumes_reset':         0,
-        'pending_deleted':       0,
-        'queue_failed':          0,
-        'importing_reset':       0,
-        'events_pruned':         0,
-        'orphan_packs_deleted':  0,
+        "volumes_reset": 0,
+        "pending_deleted": 0,
+        "queue_failed": 0,
+        "importing_reset": 0,
+        "events_pruned": 0,
+        "orphan_packs_deleted": 0,
     }

@@ -1,4 +1,5 @@
 """Indexers — DB-managed indexer configuration (Sonarr parity)."""
+
 import httpx
 import json
 import time
@@ -8,8 +9,10 @@ from routers._templates import templates
 
 from shared import get_db, from_json, get_cfg, get_secret_health_summary
 from security import (
-    validate_outbound_url, UnsafeURLError,
-    decrypt_secret_safe, encrypt_if_cipher_available,
+    validate_outbound_url,
+    UnsafeURLError,
+    decrypt_secret_safe,
+    encrypt_if_cipher_available,
 )
 
 router = APIRouter()
@@ -27,9 +30,9 @@ router = APIRouter()
 #
 # Success clears the row.
 
-_BACKOFF_MIN   = 60      # seconds
-_BACKOFF_MAX   = 3600    # 1 hour cap
-_BACKOFF_BASE  = 2       # exponential base
+_BACKOFF_MIN = 60  # seconds
+_BACKOFF_MAX = 3600  # 1 hour cap
+_BACKOFF_BASE = 2  # exponential base
 
 
 def _parse_retry_after(raw: str | None) -> float | None:
@@ -45,6 +48,7 @@ def _parse_retry_after(raw: str | None) -> float | None:
     try:
         from email.utils import parsedate_to_datetime
         import datetime as _dt
+
         dt = parsedate_to_datetime(raw)
         if dt is None:
             return None
@@ -58,26 +62,25 @@ def _indexer_is_backed_off(indexer_id: int) -> tuple[bool, float]:
     """Return (is_backed_off, retry_after_epoch)."""
     with get_db() as db:
         row = db.execute(
-            "SELECT retry_after FROM indexer_backoff WHERE indexer_id=?",
-            (indexer_id,)
+            "SELECT retry_after FROM indexer_backoff WHERE indexer_id=?", (indexer_id,)
         ).fetchone()
     if not row:
         return False, 0.0
-    deadline = float(row['retry_after'] or 0)
+    deadline = float(row["retry_after"] or 0)
     return (time.time() < deadline), deadline
 
 
-def _indexer_record_failure(indexer_id: int, *, status: int | None,
-                            retry_after_header: str | None,
-                            reason: str) -> float:
+def _indexer_record_failure(
+    indexer_id: int, *, status: int | None, retry_after_header: str | None, reason: str
+) -> float:
     """Record a failure, compute + persist the next retry deadline, return it."""
     hdr_seconds = _parse_retry_after(retry_after_header)
     with get_db() as db:
         row = db.execute(
             "SELECT consecutive_failures FROM indexer_backoff WHERE indexer_id=?",
-            (indexer_id,)
+            (indexer_id,),
         ).fetchone()
-        failures = (row['consecutive_failures'] + 1) if row else 1
+        failures = (row["consecutive_failures"] + 1) if row else 1
         if hdr_seconds is not None:
             delay = min(max(hdr_seconds, 1.0), _BACKOFF_MAX)
         else:
@@ -93,27 +96,25 @@ def _indexer_record_failure(indexer_id: int, *, status: int | None,
             "   last_status=excluded.last_status,"
             "   last_reason=excluded.last_reason,"
             "   updated_at=CURRENT_TIMESTAMP",
-            (indexer_id, deadline, failures, status, reason[:200])
+            (indexer_id, deadline, failures, status, reason[:200]),
         )
     return deadline
 
 
 def _indexer_record_success(indexer_id: int) -> None:
     with get_db() as db:
-        db.execute(
-            "DELETE FROM indexer_backoff WHERE indexer_id=?", (indexer_id,)
-        )
+        db.execute("DELETE FROM indexer_backoff WHERE indexer_id=?", (indexer_id,))
 
 
 def _should_backoff_on_response(r: httpx.Response) -> tuple[bool, str]:
     """Return (should_backoff, reason)."""
     if r.status_code == 429:
-        return True, 'rate limited (429)'
+        return True, "rate limited (429)"
     if r.status_code == 403:
-        return True, 'forbidden (403)'
+        return True, "forbidden (403)"
     if 500 <= r.status_code < 600:
-        return True, f'server error ({r.status_code})'
-    return False, ''
+        return True, f"server error ({r.status_code})"
+    return False, ""
 
 
 def _row_decrypted(row) -> dict:
@@ -124,12 +125,13 @@ def _row_decrypted(row) -> dict:
     string (the downstream integration sees "no key" and fails cleanly).
     """
     d = dict(row)
-    d['api_key'] = decrypt_secret_safe(
-        d.get('api_key'),
-        field_name='indexers.api_key',
-        context=d.get('name') or '?',
+    d["api_key"] = decrypt_secret_safe(
+        d.get("api_key"),
+        field_name="indexers.api_key",
+        context=d.get("name") or "?",
     )
     return d
+
 
 INDEXER_TYPES = ["prowlarr", "torznab", "newznab"]
 
@@ -163,14 +165,19 @@ def _indexer_grab_stats(db) -> dict:
     ).fetchall()
     stats: dict = {}
     for r in rows:
-        bucket = stats.setdefault(r['indexer'], {
-            'grabs_30d': 0, 'failures_30d': 0, 'last_grab_at': None,
-        })
-        if r['event_type'] == 'grabbed':
-            bucket['grabs_30d'] = r['n']
-            bucket['last_grab_at'] = r['last_at']
-        elif r['event_type'] == 'grab_failed':
-            bucket['failures_30d'] = r['n']
+        bucket = stats.setdefault(
+            r["indexer"],
+            {
+                "grabs_30d": 0,
+                "failures_30d": 0,
+                "last_grab_at": None,
+            },
+        )
+        if r["event_type"] == "grabbed":
+            bucket["grabs_30d"] = r["n"]
+            bucket["last_grab_at"] = r["last_at"]
+        elif r["event_type"] == "grab_failed":
+            bucket["failures_30d"] = r["n"]
     return stats
 
 
@@ -195,7 +202,8 @@ def _all_indexers(db):
     rows = db.execute("SELECT * FROM indexers ORDER BY priority, id").fetchall()
     stats = _indexer_grab_stats(db)
     backoff_rows = {
-        r['indexer_id']: dict(r) for r in db.execute(
+        r["indexer_id"]: dict(r)
+        for r in db.execute(
             "SELECT indexer_id, retry_after, consecutive_failures,"
             " last_status, last_reason, updated_at"
             " FROM indexer_backoff"
@@ -205,44 +213,45 @@ def _all_indexers(db):
     result = []
     for r in rows:
         d = dict(r)
-        d['tags'] = [
-            t['tag'] for t in db.execute(
+        d["tags"] = [
+            t["tag"]
+            for t in db.execute(
                 "SELECT tag FROM indexer_tags WHERE indexer_id=? ORDER BY tag",
-                (r['id'],)
+                (r["id"],),
             ).fetchall()
         ]
-        s = stats.get(r['name'], {})
-        d['grabs_30d'] = s.get('grabs_30d', 0)
-        d['failures_30d'] = s.get('failures_30d', 0)
-        d['last_grab_at'] = s.get('last_grab_at')
+        s = stats.get(r["name"], {})
+        d["grabs_30d"] = s.get("grabs_30d", 0)
+        d["failures_30d"] = s.get("failures_30d", 0)
+        d["last_grab_at"] = s.get("last_grab_at")
 
         # Backoff state — surface even when not currently in backoff so the
         # user can see "this indexer has 2 recent failures" before it auto-
         # disables on the next poll.
-        bo = backoff_rows.get(r['id'])
+        bo = backoff_rows.get(r["id"])
         if bo:
-            retry_after = bo.get('retry_after') or 0
-            d['backoff_active'] = retry_after > now_ts
-            if d['backoff_active']:
-                d['backoff_seconds'] = int(retry_after - now_ts)
-                d['backoff_until'] = _dt.fromtimestamp(
+            retry_after = bo.get("retry_after") or 0
+            d["backoff_active"] = retry_after > now_ts
+            if d["backoff_active"]:
+                d["backoff_seconds"] = int(retry_after - now_ts)
+                d["backoff_until"] = _dt.fromtimestamp(
                     retry_after, tz=_tz.utc
-                ).isoformat(timespec='seconds')
+                ).isoformat(timespec="seconds")
             else:
-                d['backoff_seconds'] = 0
-                d['backoff_until'] = None
-            d['consecutive_failures'] = bo.get('consecutive_failures') or 0
-            d['last_status'] = bo.get('last_status')
-            d['last_reason'] = bo.get('last_reason')
-            d['updated_at'] = bo.get('updated_at')
+                d["backoff_seconds"] = 0
+                d["backoff_until"] = None
+            d["consecutive_failures"] = bo.get("consecutive_failures") or 0
+            d["last_status"] = bo.get("last_status")
+            d["last_reason"] = bo.get("last_reason")
+            d["updated_at"] = bo.get("updated_at")
         else:
-            d['backoff_active'] = False
-            d['backoff_seconds'] = 0
-            d['backoff_until'] = None
-            d['consecutive_failures'] = 0
-            d['last_status'] = None
-            d['last_reason'] = None
-            d['updated_at'] = None
+            d["backoff_active"] = False
+            d["backoff_seconds"] = 0
+            d["backoff_until"] = None
+            d["consecutive_failures"] = 0
+            d["last_status"] = None
+            d["last_reason"] = None
+            d["updated_at"] = None
         result.append(d)
     return result
 
@@ -250,7 +259,11 @@ def _all_indexers(db):
 def _friendly_indexer_error(exc: Exception) -> str:
     msg = (str(exc) or type(exc).__name__).strip()
     low = msg.lower()
-    if "name or service not known" in low or "could not resolve" in low or "nodename nor servname provided" in low:
+    if (
+        "name or service not known" in low
+        or "could not resolve" in low
+        or "nodename nor servname provided" in low
+    ):
         return "Could not resolve the host. Check the hostname."
     if "all connection attempts failed" in low:
         return "Connection failed. Check the host, port, and URL."
@@ -266,40 +279,46 @@ def _friendly_indexer_error(exc: Exception) -> str:
 async def indexers_page(request: Request, saved: str = ""):
     with get_db() as db:
         indexers = _all_indexers(db)
-        clients  = db.execute(
+        clients = db.execute(
             "SELECT id, name FROM download_clients WHERE enabled=1 ORDER BY priority, id"
         ).fetchall()
         secret_health = get_secret_health_summary(db)
-    return templates.TemplateResponse(request, "indexers.html", {
-        "indexers":         indexers,
-        "indexer_types":    INDEXER_TYPES,
-        "manga_categories": MANGA_CATEGORIES,
-        "clients":          [dict(c) for c in clients],
-        "saved":            saved,
-        "secret_health":    secret_health,
-        "cfg":              {
-            "rss_interval":      get_cfg("rss_interval",      "900"),
-            "indexer_max_size":  get_cfg("indexer_max_size",  "0"),
-            "indexer_min_age":   get_cfg("indexer_min_age",   "0"),
-            "backlog_search_days": get_cfg("backlog_search_days", "30"),
+    return templates.TemplateResponse(
+        request,
+        "indexers.html",
+        {
+            "indexers": indexers,
+            "indexer_types": INDEXER_TYPES,
+            "manga_categories": MANGA_CATEGORIES,
+            "clients": [dict(c) for c in clients],
+            "saved": saved,
+            "secret_health": secret_health,
+            "cfg": {
+                "rss_interval": get_cfg("rss_interval", "900"),
+                "indexer_max_size": get_cfg("indexer_max_size", "0"),
+                "indexer_min_age": get_cfg("indexer_min_age", "0"),
+                "backlog_search_days": get_cfg("backlog_search_days", "30"),
+            },
         },
-    })
+    )
 
 
 # ── Options ───────────────────────────────────────────────────────────────────
 @router.post("/indexers/options")
 async def save_indexer_options(
-    rss_interval:        str = Form("900"),
-    indexer_max_size:    str = Form("0"),
-    indexer_min_age:     str = Form("0"),
+    rss_interval: str = Form("900"),
+    indexer_max_size: str = Form("0"),
+    indexer_min_age: str = Form("0"),
     backlog_search_days: str = Form("30"),
 ):
     with get_db() as db:
         for k, v in {
-            'rss_interval':        rss_interval        if rss_interval.isdigit()        else '900',
-            'indexer_max_size':    indexer_max_size    if indexer_max_size.isdigit()    else '0',
-            'indexer_min_age':     indexer_min_age     if indexer_min_age.isdigit()     else '0',
-            'backlog_search_days': backlog_search_days if backlog_search_days.isdigit() else '30',
+            "rss_interval": rss_interval if rss_interval.isdigit() else "900",
+            "indexer_max_size": indexer_max_size if indexer_max_size.isdigit() else "0",
+            "indexer_min_age": indexer_min_age if indexer_min_age.isdigit() else "0",
+            "backlog_search_days": backlog_search_days
+            if backlog_search_days.isdigit()
+            else "30",
         }.items():
             db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (k, v))
     return RedirectResponse("/indexers?saved=1", status_code=303)
@@ -326,10 +345,14 @@ async def create_indexer(
     min_size_mb: int = Form(0),
     max_size_mb: int = Form(0),
 ):
-    cats = json.dumps([int(c.strip()) for c in categories.split(',') if c.strip().isdigit()])
-    cid  = int(client_id) if client_id.strip().isdigit() else None
-    stored_key = encrypt_if_cipher_available(api_key.strip()) if api_key.strip() else None
-    tag_list = [t.strip() for t in tags.split(',') if t.strip()]
+    cats = json.dumps(
+        [int(c.strip()) for c in categories.split(",") if c.strip().isdigit()]
+    )
+    cid = int(client_id) if client_id.strip().isdigit() else None
+    stored_key = (
+        encrypt_if_cipher_available(api_key.strip()) if api_key.strip() else None
+    )
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()]
     # Clamp size limits to non-negative; 0 = no limit.
     min_size_mb = max(0, min_size_mb)
     max_size_mb = max(0, max_size_mb)
@@ -340,16 +363,30 @@ async def create_indexer(
             " use_rss,use_auto_search,use_interactive_search,"
             " min_size_mb,max_size_mb)"
             " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (name.strip(), type, url.strip() or None, stored_key,
-             priority, enabled, cats, settings or '{}', cid, min_seeders, seed_ratio,
-             use_rss, use_auto_search, use_interactive_search,
-             min_size_mb, max_size_mb)
+            (
+                name.strip(),
+                type,
+                url.strip() or None,
+                stored_key,
+                priority,
+                enabled,
+                cats,
+                settings or "{}",
+                cid,
+                min_seeders,
+                seed_ratio,
+                use_rss,
+                use_auto_search,
+                use_interactive_search,
+                min_size_mb,
+                max_size_mb,
+            ),
         )
         new_id = cur.lastrowid
         for tag in tag_list:
             db.execute(
                 "INSERT OR IGNORE INTO indexer_tags(indexer_id, tag) VALUES(?, ?)",
-                (new_id, tag)
+                (new_id, tag),
             )
     return RedirectResponse("/indexers", status_code=303)
 
@@ -357,12 +394,12 @@ async def create_indexer(
 # ── Edit ──────────────────────────────────────────────────────────────────────
 def _categories_to_json(v) -> str:
     """Comma-separated category ints → JSON-encoded array string."""
-    raw = str(v or '').strip()
-    return json.dumps([int(c.strip()) for c in raw.split(',') if c.strip().isdigit()])
+    raw = str(v or "").strip()
+    return json.dumps([int(c.strip()) for c in raw.split(",") if c.strip().isdigit()])
 
 
 def _client_id_or_none(v) -> int | None:
-    s = str(v or '').strip()
+    s = str(v or "").strip()
     return int(s) if s.isdigit() else None
 
 
@@ -376,27 +413,33 @@ async def edit_indexer(request: Request, indexer_id: int):
     Tags are only rebuilt if the `tags` field is in the form.
     """
     from routers._form_helpers import (
-        submitted_subset, str_or_none, int_or_none,
-        int_default_zero, float_default_zero, bool_int, parsed_json_str,
+        submitted_subset,
+        str_or_none,
+        int_or_none,
+        int_default_zero,
+        float_default_zero,
+        bool_int,
+        parsed_json_str,
     )
+
     submitted = await request.form()
 
     plain_fields = {
-        'name':         ('name',         lambda v: str(v or '').strip()),
-        'type':         ('type',         lambda v: str(v or '').strip() or 'prowlarr'),
-        'url':          ('url',          str_or_none),
-        'priority':     ('priority',     int_default_zero),
-        'enabled':      ('enabled',      bool_int),
-        'categories':   ('categories',   _categories_to_json),
-        'settings':     ('settings',     lambda v: parsed_json_str(v, default='{}')),
-        'client_id':    ('client_id',    _client_id_or_none),
-        'min_seeders':  ('min_seeders',  int_default_zero),
-        'seed_ratio':   ('seed_ratio',   float_default_zero),
-        'use_rss':                ('use_rss',                bool_int),
-        'use_auto_search':        ('use_auto_search',        bool_int),
-        'use_interactive_search': ('use_interactive_search', bool_int),
-        'min_size_mb':  ('min_size_mb',  lambda v: max(0, int_default_zero(v))),
-        'max_size_mb':  ('max_size_mb',  lambda v: max(0, int_default_zero(v))),
+        "name": ("name", lambda v: str(v or "").strip()),
+        "type": ("type", lambda v: str(v or "").strip() or "prowlarr"),
+        "url": ("url", str_or_none),
+        "priority": ("priority", int_default_zero),
+        "enabled": ("enabled", bool_int),
+        "categories": ("categories", _categories_to_json),
+        "settings": ("settings", lambda v: parsed_json_str(v, default="{}")),
+        "client_id": ("client_id", _client_id_or_none),
+        "min_seeders": ("min_seeders", int_default_zero),
+        "seed_ratio": ("seed_ratio", float_default_zero),
+        "use_rss": ("use_rss", bool_int),
+        "use_auto_search": ("use_auto_search", bool_int),
+        "use_interactive_search": ("use_interactive_search", bool_int),
+        "min_size_mb": ("min_size_mb", lambda v: max(0, int_default_zero(v))),
+        "max_size_mb": ("max_size_mb", lambda v: max(0, int_default_zero(v))),
     }
 
     with get_db() as db:
@@ -407,28 +450,27 @@ async def edit_indexer(request: Request, indexer_id: int):
         # longer needed — the HTML page submits api_key only when the
         # user has typed a new one, which naturally maps to "absent =
         # leave alone, present = encrypt and store".
-        if 'api_key' in submitted:
-            api_raw = str(submitted['api_key'] or '').strip()
+        if "api_key" in submitted:
+            api_raw = str(submitted["api_key"] or "").strip()
             if api_raw:
-                updates.append('api_key=?')
+                updates.append("api_key=?")
                 params.append(encrypt_if_cipher_available(api_raw))
 
         if updates:
             params.append(indexer_id)
-            db.execute(
-                f"UPDATE indexers SET {', '.join(updates)} WHERE id=?",
-                params
-            )
+            db.execute(f"UPDATE indexers SET {', '.join(updates)} WHERE id=?", params)
 
         # Tag set is only rebuilt if the form actually carries `tags`.
         # Empty `tags=""` is an explicit clear; absent means leave alone.
-        if 'tags' in submitted:
-            tag_list = [t.strip() for t in str(submitted['tags'] or '').split(',') if t.strip()]
+        if "tags" in submitted:
+            tag_list = [
+                t.strip() for t in str(submitted["tags"] or "").split(",") if t.strip()
+            ]
             db.execute("DELETE FROM indexer_tags WHERE indexer_id=?", (indexer_id,))
             for tag in tag_list:
                 db.execute(
                     "INSERT OR IGNORE INTO indexer_tags(indexer_id, tag) VALUES(?, ?)",
-                    (indexer_id, tag)
+                    (indexer_id, tag),
                 )
     return RedirectResponse("/indexers", status_code=303)
 
@@ -459,34 +501,36 @@ async def _list_prowlarr_subs_for_ui(url: str, key: str, cats: list) -> list[dic
         result = []
         for idx in r.json():
             idx_cats_int = {
-                int(c.get('id', 0))
-                for c in idx.get('capabilities', {}).get('categories', [])
+                int(c.get("id", 0))
+                for c in idx.get("capabilities", {}).get("categories", [])
             }
             # Empty caps = unknown caps → benefit of the doubt (mirrors
             # _get_prowlarr_indexers behavior).
             manga_compatible = bool(idx_cats_int & manga_cats) if idx_cats_int else True
-            enabled = idx.get('enable', True)
+            enabled = idx.get("enable", True)
             # Prowlarr exposes per-indexer priority (1–50, lower = higher
             # priority, default 25). Mangarr's priority semantics match,
             # so copy the value directly on import — admins who tuned
             # priorities in Prowlarr expect Mangarr to honor them.
             try:
-                idx_priority = int(idx.get('priority', 25))
+                idx_priority = int(idx.get("priority", 25))
             except (TypeError, ValueError):
                 idx_priority = 25
             idx_priority = max(1, min(50, idx_priority))
-            result.append({
-                'id': idx['id'],
-                'name': idx.get('name', str(idx['id'])),
-                'enable': enabled,
-                'protocol': idx.get('protocol', 'torrent'),
-                'categories': sorted(idx_cats_int),
-                'priority': idx_priority,
-                'manga_compatible': manga_compatible,
-                'will_be_polled': enabled and manga_compatible,
-            })
+            result.append(
+                {
+                    "id": idx["id"],
+                    "name": idx.get("name", str(idx["id"])),
+                    "enable": enabled,
+                    "protocol": idx.get("protocol", "torrent"),
+                    "categories": sorted(idx_cats_int),
+                    "priority": idx_priority,
+                    "manga_compatible": manga_compatible,
+                    "will_be_polled": enabled and manga_compatible,
+                }
+            )
         # Sort: polled first (so the active set is at top), then alpha
-        result.sort(key=lambda r: (not r['will_be_polled'], r['name'].lower()))
+        result.sort(key=lambda r: (not r["will_be_polled"], r["name"].lower()))
         return result
     except Exception as e:
         print(f"[Prowlarr] sub-indexer list failed for UI: {e}")
@@ -511,33 +555,41 @@ async def prowlarr_sub_indexers(request: Request, indexer_id: int):
         idx = db.execute("SELECT * FROM indexers WHERE id=?", (indexer_id,)).fetchone()
     if not idx:
         return templates.TemplateResponse(
-            request, "partials/prowlarr_subs.html",
+            request,
+            "partials/prowlarr_subs.html",
             {"error": "Indexer not found.", "subs": [], "indexer": None},
             status_code=404,
         )
-    if idx['type'] != 'prowlarr':
+    if idx["type"] != "prowlarr":
         return templates.TemplateResponse(
-            request, "partials/prowlarr_subs.html",
+            request,
+            "partials/prowlarr_subs.html",
             {
                 "error": f"Sub-indexer listing is only available for Prowlarr-type indexers (this one is `{idx['type']}`).",
-                "subs": [], "indexer": dict(idx),
+                "subs": [],
+                "indexer": dict(idx),
             },
         )
 
     decrypted = _row_decrypted(idx)
-    cats = from_json(decrypted.get('categories'), [7000, 7010, 7020])
-    url = (decrypted.get('url') or '').rstrip('/')
-    key = decrypted.get('api_key') or ''
+    cats = from_json(decrypted.get("categories"), [7000, 7010, 7020])
+    url = (decrypted.get("url") or "").rstrip("/")
+    key = decrypted.get("api_key") or ""
     if not url:
         return templates.TemplateResponse(
-            request, "partials/prowlarr_subs.html",
-            {"error": "No URL configured for this Prowlarr indexer.",
-             "subs": [], "indexer": dict(idx)},
+            request,
+            "partials/prowlarr_subs.html",
+            {
+                "error": "No URL configured for this Prowlarr indexer.",
+                "subs": [],
+                "indexer": dict(idx),
+            },
         )
 
     subs = await _list_prowlarr_subs_for_ui(url, key, cats)
     return templates.TemplateResponse(
-        request, "partials/prowlarr_subs.html",
+        request,
+        "partials/prowlarr_subs.html",
         {"subs": subs, "indexer": dict(idx), "manga_cats": cats, "error": None},
     )
 
@@ -552,46 +604,57 @@ async def prowlarr_sync_preview(request: Request, indexer_id: int):
     ones to import → POST /indexers/{id}/sync-prowlarr commits as torznab rows."""
     with get_db() as db:
         idx = db.execute("SELECT * FROM indexers WHERE id=?", (indexer_id,)).fetchone()
-        if not idx or idx['type'] != 'prowlarr':
+        if not idx or idx["type"] != "prowlarr":
             return templates.TemplateResponse(
-                request, "partials/prowlarr_sync_modal.html",
-                {"error": "This action is only available for Prowlarr indexers.",
-                 "subs": [], "indexer": None, "manga_cats": []},
+                request,
+                "partials/prowlarr_sync_modal.html",
+                {
+                    "error": "This action is only available for Prowlarr indexers.",
+                    "subs": [],
+                    "indexer": None,
+                    "manga_cats": [],
+                },
                 status_code=400 if idx else 404,
             )
         # Existing imports keyed by (parent_prowlarr_id, prowlarr_indexer_id)
         already_imported = {
-            r['prowlarr_indexer_id']: dict(r)
+            r["prowlarr_indexer_id"]: dict(r)
             for r in db.execute(
                 "SELECT id, name, prowlarr_indexer_id, enabled"
                 " FROM indexers"
                 " WHERE parent_prowlarr_id=? AND prowlarr_indexer_id IS NOT NULL",
-                (indexer_id,)
+                (indexer_id,),
             ).fetchall()
         }
 
     decrypted = _row_decrypted(idx)
-    cats = from_json(decrypted.get('categories'), [7000, 7010, 7020])
-    url = (decrypted.get('url') or '').rstrip('/')
-    key = decrypted.get('api_key') or ''
+    cats = from_json(decrypted.get("categories"), [7000, 7010, 7020])
+    url = (decrypted.get("url") or "").rstrip("/")
+    key = decrypted.get("api_key") or ""
     if not url:
         return templates.TemplateResponse(
-            request, "partials/prowlarr_sync_modal.html",
-            {"error": "No URL configured for this Prowlarr indexer.",
-             "subs": [], "indexer": dict(idx), "manga_cats": cats},
+            request,
+            "partials/prowlarr_sync_modal.html",
+            {
+                "error": "No URL configured for this Prowlarr indexer.",
+                "subs": [],
+                "indexer": dict(idx),
+                "manga_cats": cats,
+            },
         )
 
     subs = await _list_prowlarr_subs_for_ui(url, key, cats)
     # Annotate each sub with import state so the template can disable the
     # checkbox / show "already imported" + a link to the existing row.
     for s in subs:
-        existing = already_imported.get(s['id'])
-        s['already_imported'] = bool(existing)
-        s['imported_row_id'] = existing['id'] if existing else None
-        s['imported_row_name'] = existing['name'] if existing else None
+        existing = already_imported.get(s["id"])
+        s["already_imported"] = bool(existing)
+        s["imported_row_id"] = existing["id"] if existing else None
+        s["imported_row_name"] = existing["name"] if existing else None
 
     return templates.TemplateResponse(
-        request, "partials/prowlarr_sync_modal.html",
+        request,
+        "partials/prowlarr_sync_modal.html",
         {"subs": subs, "indexer": dict(idx), "manga_cats": cats, "error": None},
     )
 
@@ -612,7 +675,9 @@ async def prowlarr_sync_commit(request: Request, indexer_id: int):
     form = await request.form()
     raw_selected = form.getlist("selected")
     try:
-        selected_sub_ids = [int(s) for s in raw_selected if str(s).strip().lstrip('-').isdigit()]
+        selected_sub_ids = [
+            int(str(s)) for s in raw_selected if str(s).strip().lstrip("-").isdigit()
+        ]
     except (TypeError, ValueError):
         selected_sub_ids = []
 
@@ -623,19 +688,23 @@ async def prowlarr_sync_commit(request: Request, indexer_id: int):
         parent_row = db.execute(
             "SELECT * FROM indexers WHERE id=?", (indexer_id,)
         ).fetchone()
-        if not parent_row or parent_row['type'] != 'prowlarr':
+        if not parent_row or parent_row["type"] != "prowlarr":
             return RedirectResponse("/indexers?prowlarr_sync=invalid", status_code=303)
-        parent = dict(parent_row)  # sqlite3.Row has no .get(); convert before .get() use
+        parent = dict(
+            parent_row
+        )  # sqlite3.Row has no .get(); convert before .get() use
 
     decrypted = _row_decrypted(parent_row)
-    parent_url = (decrypted.get('url') or '').rstrip('/')
-    parent_key = decrypted.get('api_key') or ''
-    parent_cats = from_json(decrypted.get('categories'), [7000, 7010, 7020])
+    parent_url = (decrypted.get("url") or "").rstrip("/")
+    parent_key = decrypted.get("api_key") or ""
+    parent_cats = from_json(decrypted.get("categories"), [7000, 7010, 7020])
     if not parent_url or not parent_key:
-        return RedirectResponse("/indexers?prowlarr_sync=missing_credentials", status_code=303)
+        return RedirectResponse(
+            "/indexers?prowlarr_sync=missing_credentials", status_code=303
+        )
 
     live_subs = await _list_prowlarr_subs_for_ui(parent_url, parent_key, parent_cats)
-    by_sub_id = {s['id']: s for s in live_subs}
+    by_sub_id = {s["id"]: s for s in live_subs}
 
     imported, skipped = 0, 0
     with get_db() as db:
@@ -648,7 +717,7 @@ async def prowlarr_sync_commit(request: Request, indexer_id: int):
 
             existing = db.execute(
                 "SELECT id FROM indexers WHERE parent_prowlarr_id=? AND prowlarr_indexer_id=?",
-                (indexer_id, sub_id)
+                (indexer_id, sub_id),
             ).fetchone()
             if existing:
                 skipped += 1
@@ -660,25 +729,31 @@ async def prowlarr_sync_commit(request: Request, indexer_id: int):
             sub_url = f"{parent_url}/{sub_id}"
             # Filter sub categories to manga overlap (parent_cats); fall back
             # to parent_cats if the sub didn't declare capabilities.
-            sub_cats_full = sub.get('categories') or []
+            sub_cats_full = sub.get("categories") or []
             manga_overlap = sorted(set(sub_cats_full) & set(parent_cats))
             cats_for_row = manga_overlap or parent_cats
 
             # Honor Prowlarr's per-indexer priority — admin tuned it for
             # a reason. _list_prowlarr_subs_for_ui already clamped to [1,50].
-            sub_priority = sub.get('priority') or 25
+            sub_priority = sub.get("priority") or 25
 
             db.execute(
                 "INSERT INTO indexers"
                 "(name, type, url, api_key, priority, enabled, categories,"
                 " min_seeders, seed_ratio, parent_prowlarr_id, prowlarr_indexer_id)"
                 " VALUES(?, 'torznab', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (sub['name'], sub_url, parent_key, sub_priority,
-                 1 if sub.get('will_be_polled') else 0,
-                 json.dumps(cats_for_row),
-                 parent.get('min_seeders') or 0,
-                 parent.get('seed_ratio') or 0.0,
-                 indexer_id, sub_id)
+                (
+                    sub["name"],
+                    sub_url,
+                    parent_key,
+                    sub_priority,
+                    1 if sub.get("will_be_polled") else 0,
+                    json.dumps(cats_for_row),
+                    parent.get("min_seeders") or 0,
+                    parent.get("seed_ratio") or 0.0,
+                    indexer_id,
+                    sub_id,
+                ),
             )
             imported += 1
 
@@ -696,8 +771,7 @@ async def prowlarr_sync_commit(request: Request, indexer_id: int):
         parent_was_disabled = False
         if imported > 0:
             cur = db.execute(
-                "UPDATE indexers SET enabled=0 WHERE id=? AND enabled=1",
-                (indexer_id,)
+                "UPDATE indexers SET enabled=0 WHERE id=? AND enabled=1", (indexer_id,)
             )
             parent_was_disabled = cur.rowcount > 0
 
@@ -747,9 +821,9 @@ async def test_indexer_form(
 
 
 async def _test_indexer(idx: dict) -> tuple[bool, str]:
-    t   = idx['type']
-    url = (idx['url'] or '').rstrip('/')
-    key = idx['api_key'] or ''
+    t = idx["type"]
+    url = (idx["url"] or "").rstrip("/")
+    key = idx["api_key"] or ""
     if not url:
         return False, "No URL configured"
     try:
@@ -758,16 +832,17 @@ async def _test_indexer(idx: dict) -> tuple[bool, str]:
     except UnsafeURLError as e:
         return False, f"URL rejected: {e}"
     try:
-        if t == 'prowlarr':
+        if t == "prowlarr":
             async with httpx.AsyncClient(timeout=10) as cli:
-                r = await cli.get(f"{url}/api/v1/system/status",
-                                  headers={"X-Api-Key": key})
+                r = await cli.get(
+                    f"{url}/api/v1/system/status", headers={"X-Api-Key": key}
+                )
             if r.status_code == 200:
                 return True, f"Prowlarr {r.json().get('version', '?')}"
             return False, f"HTTP {r.status_code}"
 
-        elif t in ('torznab', 'newznab'):
-            params = {'t': 'caps', 'apikey': key}
+        elif t in ("torznab", "newznab"):
+            params = {"t": "caps", "apikey": key}
             async with httpx.AsyncClient(timeout=10) as cli:
                 r = await cli.get(f"{url}/api", params=params)
             if r.status_code == 200:
@@ -800,34 +875,39 @@ async def fetch_all_rss(db) -> list[dict]:
     if not indexers:
         return []
 
-    max_size_mb  = int(get_cfg('indexer_max_size', '0'))
-    min_age_min  = int(get_cfg('indexer_min_age',  '0'))
+    max_size_mb = int(get_cfg("indexer_max_size", "0"))
+    min_age_min = int(get_cfg("indexer_min_age", "0"))
     max_size_bytes = max_size_mb * 1024 * 1024 if max_size_mb > 0 else 0
 
     import asyncio
+
     idx_list = [_row_decrypted(idx) for idx in indexers]
-    results  = await asyncio.gather(*[_fetch_rss_for_indexer(idx) for idx in idx_list])
+    results = await asyncio.gather(*[_fetch_rss_for_indexer(idx) for idx in idx_list])
 
     seen: set[str] = set()
     all_items: list[dict] = []
     # iterate in priority order (already ordered by query)
     for idx, batch in zip(idx_list, results):
-        min_seeders       = idx.get('min_seeders') or 0
-        preferred_client  = idx.get('client_id')
+        min_seeders = idx.get("min_seeders") or 0
+        preferred_client = idx.get("client_id")
         # Per-indexer size limits (PR #123). Both stored as megabytes; 0 = none.
-        idx_min_size_bytes = (idx.get('min_size_mb') or 0) * 1024 * 1024
-        idx_max_size_bytes = (idx.get('max_size_mb') or 0) * 1024 * 1024
+        idx_min_size_bytes = (idx.get("min_size_mb") or 0) * 1024 * 1024
+        idx_max_size_bytes = (idx.get("max_size_mb") or 0) * 1024 * 1024
         for item in batch:
-            if item['url'] in seen:
+            if item["url"] in seen:
                 continue
             # Per-indexer seeders filter (torrent only)
-            if item.get('protocol') == 'torrent' and min_seeders > 0:
-                if (item.get('seeders') or 0) < min_seeders:
+            if item.get("protocol") == "torrent" and min_seeders > 0:
+                if (item.get("seeders") or 0) < min_seeders:
                     continue
-            item_size = item.get('size_bytes') or 0
+            item_size = item.get("size_bytes") or 0
             # Per-indexer min size — release smaller than the configured floor
             # is rejected (e.g., chapter-pack-only on a complete-volume tracker).
-            if idx_min_size_bytes > 0 and item_size > 0 and item_size < idx_min_size_bytes:
+            if (
+                idx_min_size_bytes > 0
+                and item_size > 0
+                and item_size < idx_min_size_bytes
+            ):
                 continue
             # Per-indexer max size — release larger than the configured ceiling.
             if idx_max_size_bytes > 0 and item_size > idx_max_size_bytes:
@@ -837,24 +917,24 @@ async def fetch_all_rss(db) -> list[dict]:
             if max_size_bytes > 0 and item_size > max_size_bytes:
                 continue
             # Global min age (item must carry 'age_minutes' if available; skip check if absent)
-            if min_age_min > 0 and 'age_minutes' in item:
-                if (item['age_minutes'] or 0) < min_age_min:
+            if min_age_min > 0 and "age_minutes" in item:
+                if (item["age_minutes"] or 0) < min_age_min:
                     continue
-            seen.add(item['url'])
+            seen.add(item["url"])
             if preferred_client:
-                item['preferred_client_id'] = preferred_client
+                item["preferred_client_id"] = preferred_client
             all_items.append(item)
     return all_items
 
 
 async def _fetch_rss_for_indexer(idx: dict) -> list[dict]:
     """Fetch RSS for a single indexer."""
-    t = idx['type']
-    cats = from_json(idx.get('categories'), [7000, 7010, 7020])
-    url  = (idx['url'] or '').rstrip('/')
-    key  = idx['api_key'] or ''
-    name = idx['name']
-    idx_id = idx['id']
+    t = idx["type"]
+    cats = from_json(idx.get("categories"), [7000, 7010, 7020])
+    url = (idx["url"] or "").rstrip("/")
+    key = idx["api_key"] or ""
+    name = idx["name"]
+    idx_id = idx["id"]
 
     if not url:
         return []
@@ -874,15 +954,18 @@ async def _fetch_rss_for_indexer(idx: dict) -> list[dict]:
         return []
 
     try:
-        if t == 'prowlarr':
+        if t == "prowlarr":
             # Use Prowlarr per-indexer RSS
             sub_indexers = await _get_prowlarr_indexers(url, key, cats)
             import asyncio as _asyncio
-            batches = await _asyncio.gather(*[
-                _fetch_prowlarr_rss(url, key, iid, iname, proto, cats)
-                for iid, iname, proto in sub_indexers
-            ])
-            items = []
+
+            batches = await _asyncio.gather(
+                *[
+                    _fetch_prowlarr_rss(url, key, iid, iname, proto, cats)
+                    for iid, iname, proto in sub_indexers
+                ]
+            )
+            items: list[dict] = []
             for b in batches:
                 items.extend(b)
             # Consider 'success' when we got any meaningful response — the
@@ -891,31 +974,39 @@ async def _fetch_rss_for_indexer(idx: dict) -> list[dict]:
             _indexer_record_success(idx_id)
             return items
 
-        elif t in ('torznab', 'newznab'):
-            cat_str = ','.join(str(c) for c in cats)
+        elif t in ("torznab", "newznab"):
+            cat_str = ",".join(str(c) for c in cats)
             async with httpx.AsyncClient(timeout=20) as cli:
-                r = await cli.get(f"{url}/api",
-                                  params={'t': 'search', 'cat': cat_str, 'apikey': key, 'q': ''})
+                r = await cli.get(
+                    f"{url}/api",
+                    params={"t": "search", "cat": cat_str, "apikey": key, "q": ""},
+                )
             should_off, reason = _should_backoff_on_response(r)
             if should_off:
                 dl = _indexer_record_failure(
                     idx_id,
                     status=r.status_code,
-                    retry_after_header=r.headers.get('Retry-After'),
+                    retry_after_header=r.headers.get("Retry-After"),
                     reason=reason,
                 )
-                print(f"[Indexer:{name}] backoff set — {reason}; next retry at "
-                      f"{int(dl)} ({int(dl - time.time())}s from now)")
+                print(
+                    f"[Indexer:{name}] backoff set — {reason}; next retry at "
+                    f"{int(dl)} ({int(dl - time.time())}s from now)"
+                )
                 return []
             _indexer_record_success(idx_id)
-            return _parse_torznab_rss(r.text, name, 'torrent' if t == 'torznab' else 'nzb')
+            return _parse_torznab_rss(
+                r.text, name, "torrent" if t == "torznab" else "nzb"
+            )
 
     except Exception as e:
         print(f"[Indexer:{name}] RSS error: {e}")
         # Unknown failure — increment counter but with shorter backoff
         _indexer_record_failure(
-            idx_id, status=None, retry_after_header=None,
-            reason=f'{type(e).__name__}: {str(e)[:120]}'
+            idx_id,
+            status=None,
+            retry_after_header=None,
+            reason=f"{type(e).__name__}: {str(e)[:120]}",
         )
     return []
 
@@ -928,13 +1019,20 @@ async def _get_prowlarr_indexers(url: str, key: str, cats: list) -> list[tuple]:
         indexers = r.json() if r.status_code == 200 else []
         result = []
         for idx in indexers:
-            if not idx.get('enable', True):
+            if not idx.get("enable", True):
                 continue
-            idx_cats = {int(c.get('id', 0)) for c in idx.get('capabilities', {}).get('categories', [])}
+            idx_cats = {
+                int(c.get("id", 0))
+                for c in idx.get("capabilities", {}).get("categories", [])
+            }
             if idx_cats and not (idx_cats & set(cats)):
                 continue
-            proto = 'torrent' if idx.get('protocol', 'torrent').lower() == 'torrent' else 'nzb'
-            result.append((idx['id'], idx.get('name', str(idx['id'])), proto))
+            proto = (
+                "torrent"
+                if idx.get("protocol", "torrent").lower() == "torrent"
+                else "nzb"
+            )
+            result.append((idx["id"], idx.get("name", str(idx["id"])), proto))
         return result
     except Exception as e:
         print(f"[Prowlarr] Failed to list indexers: {e}")
@@ -942,13 +1040,13 @@ async def _get_prowlarr_indexers(url: str, key: str, cats: list) -> list[tuple]:
 
 
 async def _fetch_prowlarr_rss(url, key, indexer_id, name, protocol, cats) -> list[dict]:
-    cat_str = ','.join(str(c) for c in cats)
+    cat_str = ",".join(str(c) for c in cats)
     try:
         async with httpx.AsyncClient(timeout=30) as cli:
             r = await cli.get(
                 f"{url}/api/v1/indexer/{indexer_id}/newznab",
                 headers={"X-Api-Key": key},
-                params={'t': 'search', 'cat': cat_str, 'q': ''}
+                params={"t": "search", "cat": cat_str, "q": ""},
             )
         return _parse_torznab_rss(r.text, name, protocol)
     except Exception as e:
@@ -956,12 +1054,16 @@ async def _fetch_prowlarr_rss(url, key, indexer_id, name, protocol, cats) -> lis
         return []
 
 
-
-def _parse_torznab_rss(xml_text: str, indexer: str, default_protocol: str = 'torrent') -> list[dict]:
+def _parse_torznab_rss(
+    xml_text: str, indexer: str, default_protocol: str = "torrent"
+) -> list[dict]:
     from defusedxml.ElementTree import fromstring as _safe_fromstring
-    items = []
-    ns = {'torznab': 'http://torznab.com/api/2015/feed',
-          'newznab': 'http://www.newznab.com/DTD/2010/feeds/attributes/'}
+
+    items: list[dict] = []
+    ns = {
+        "torznab": "http://torznab.com/api/2015/feed",
+        "newznab": "http://www.newznab.com/DTD/2010/feeds/attributes/",
+    }
     try:
         root = _safe_fromstring(xml_text)
     except Exception:
@@ -971,21 +1073,23 @@ def _parse_torznab_rss(xml_text: str, indexer: str, default_protocol: str = 'tor
         for ns_url in ns.values():
             el = item.find(f'{{{ns_url}}}attr[@name="{name}"]')
             if el is not None:
-                return el.get('value', '')
-        return ''
+                return el.get("value", "")
+        return ""
 
-    for item in root.findall('.//item'):
-        title = item.findtext('title', '').strip()
-        link  = item.findtext('link',  '').strip()
-        enclosure = item.find('enclosure')
+    for item in root.findall(".//item"):
+        title = item.findtext("title", "").strip()
+        link = item.findtext("link", "").strip()
+        enclosure = item.find("enclosure")
         if not link and enclosure is not None:
-            link = enclosure.get('url', '')
-        dl_url = _attr(item, 'downloadUrl') or _attr(item, 'magnetUrl') or link
+            link = enclosure.get("url", "")
+        dl_url = _attr(item, "downloadUrl") or _attr(item, "magnetUrl") or link
         if not dl_url:
             continue
-        proto_raw = _attr(item, 'downloadProtocol') or default_protocol
-        protocol = 'nzb' if proto_raw.lower() == 'usenet' else 'torrent'
-        size_raw = _attr(item, 'size') or (enclosure.get('length', '0') if enclosure is not None else '0')
+        proto_raw = _attr(item, "downloadProtocol") or default_protocol
+        protocol = "nzb" if proto_raw.lower() == "usenet" else "torrent"
+        size_raw = _attr(item, "size") or (
+            enclosure.get("length", "0") if enclosure is not None else "0"
+        )
         try:
             size_bytes = int(size_raw)
         except Exception:
@@ -997,18 +1101,19 @@ def _parse_torznab_rss(xml_text: str, indexer: str, default_protocol: str = 'tor
         # for indexers that surface guid via attributes instead. Empty
         # string means "no guid available" — grab.py treats that as
         # missing.
-        guid = (item.findtext('guid', '') or '').strip() or _attr(item, 'guid') or ''
-        items.append({
-            'title':      title,
-            'url':        dl_url,
-            'size_bytes': size_bytes,
-            'seeders':    int(_attr(item, 'seeders') or 0),
-            'indexer':    indexer,
-            'protocol':   protocol,
-            'guid':       guid,
-        })
+        guid = (item.findtext("guid", "") or "").strip() or _attr(item, "guid") or ""
+        items.append(
+            {
+                "title": title,
+                "url": dl_url,
+                "size_bytes": size_bytes,
+                "seeders": int(_attr(item, "seeders") or 0),
+                "indexer": indexer,
+                "protocol": protocol,
+                "guid": guid,
+            }
+        )
     return items
-
 
 
 # ── Indexer tag rule (Sonarr semantics, PR #120) ──────────────────────────────
@@ -1025,24 +1130,29 @@ def _indexer_allowed_for_series(db, indexer_id: int, series_id: int | None) -> b
     """
     if series_id is None:
         return True
-    has_tags = db.execute(
-        "SELECT 1 FROM indexer_tags WHERE indexer_id=? LIMIT 1",
-        (indexer_id,)
-    ).fetchone() is not None
+    has_tags = (
+        db.execute(
+            "SELECT 1 FROM indexer_tags WHERE indexer_id=? LIMIT 1", (indexer_id,)
+        ).fetchone()
+        is not None
+    )
     if not has_tags:
         return True  # untagged indexer → applies to all series
-    intersection = db.execute(
-        "SELECT 1 FROM indexer_tags it"
-        " JOIN series_tags st ON it.tag = st.tag"
-        " WHERE it.indexer_id=? AND st.series_id=? LIMIT 1",
-        (indexer_id, series_id)
-    ).fetchone() is not None
+    intersection = (
+        db.execute(
+            "SELECT 1 FROM indexer_tags it"
+            " JOIN series_tags st ON it.tag = st.tag"
+            " WHERE it.indexer_id=? AND st.series_id=? LIMIT 1",
+            (indexer_id, series_id),
+        ).fetchone()
+        is not None
+    )
     return intersection
 
 
 # ── Search across all enabled indexers ───────────────────────────────────────
 async def search_all_indexers(
-    db, query: str, purpose: str = 'auto', series_id: int | None = None
+    db, query: str, purpose: str = "auto", series_id: int | None = None
 ) -> list[dict]:
     """
     Search across all enabled indexers that participate in `purpose` and return
@@ -1063,7 +1173,7 @@ async def search_all_indexers(
 
     NULL-tolerant: rows that predate the toggle columns default to participating.
     """
-    if purpose == 'interactive':
+    if purpose == "interactive":
         toggle_clause = "(use_interactive_search=1 OR use_interactive_search IS NULL)"
     else:
         # 'auto' or any unknown purpose → default to auto-search filter.
@@ -1080,7 +1190,7 @@ async def search_all_indexers(
         indexers = db.execute(
             f"SELECT * FROM indexers WHERE enabled=1 AND {toggle_clause}"
             f"{tag_clause} ORDER BY priority",
-            (series_id,)
+            (series_id,),
         ).fetchall()
     else:
         indexers = db.execute(
@@ -1089,49 +1199,54 @@ async def search_all_indexers(
     if not indexers:
         return []
 
-    max_size_mb    = int(get_cfg('indexer_max_size', '0'))
+    max_size_mb = int(get_cfg("indexer_max_size", "0"))
     max_size_bytes = max_size_mb * 1024 * 1024 if max_size_mb > 0 else 0
 
     import asyncio
+
     idx_list = [_row_decrypted(idx) for idx in indexers]
-    results  = await asyncio.gather(*[_search_indexer(idx, query) for idx in idx_list])
+    results = await asyncio.gather(*[_search_indexer(idx, query) for idx in idx_list])
 
     seen: set[str] = set()
     all_items: list[dict] = []
     for idx, batch in zip(idx_list, results):
-        min_seeders      = idx.get('min_seeders') or 0
-        preferred_client = idx.get('client_id')
+        min_seeders = idx.get("min_seeders") or 0
+        preferred_client = idx.get("client_id")
         # Per-indexer size limits (PR #123). Same logic as fetch_all_rss.
-        idx_min_size_bytes = (idx.get('min_size_mb') or 0) * 1024 * 1024
-        idx_max_size_bytes = (idx.get('max_size_mb') or 0) * 1024 * 1024
+        idx_min_size_bytes = (idx.get("min_size_mb") or 0) * 1024 * 1024
+        idx_max_size_bytes = (idx.get("max_size_mb") or 0) * 1024 * 1024
         for item in batch:
-            if item['url'] in seen:
+            if item["url"] in seen:
                 continue
-            if item.get('protocol') == 'torrent' and min_seeders > 0:
-                if (item.get('seeders') or 0) < min_seeders:
+            if item.get("protocol") == "torrent" and min_seeders > 0:
+                if (item.get("seeders") or 0) < min_seeders:
                     continue
-            item_size = item.get('size_bytes') or 0
-            if idx_min_size_bytes > 0 and item_size > 0 and item_size < idx_min_size_bytes:
+            item_size = item.get("size_bytes") or 0
+            if (
+                idx_min_size_bytes > 0
+                and item_size > 0
+                and item_size < idx_min_size_bytes
+            ):
                 continue
             if idx_max_size_bytes > 0 and item_size > idx_max_size_bytes:
                 continue
             if max_size_bytes > 0 and item_size > max_size_bytes:
                 continue
-            seen.add(item['url'])
+            seen.add(item["url"])
             if preferred_client:
-                item['preferred_client_id'] = preferred_client
+                item["preferred_client_id"] = preferred_client
             all_items.append(item)
     return all_items
 
 
 async def _search_indexer(idx: dict, query: str) -> list[dict]:
-    t    = idx['type']
-    url  = (idx['url'] or '').rstrip('/')
-    key  = idx['api_key'] or ''
-    cats = from_json(idx.get('categories'), [7000, 7010, 7020])
-    name = idx['name']
-    idx_id = idx['id']
-    cat_str = ','.join(str(c) for c in cats)
+    t = idx["type"]
+    url = (idx["url"] or "").rstrip("/")
+    key = idx["api_key"] or ""
+    cats = from_json(idx.get("categories"), [7000, 7010, 7020])
+    name = idx["name"]
+    idx_id = idx["id"]
+    cat_str = ",".join(str(c) for c in cats)
 
     is_off, deadline = _indexer_is_backed_off(idx_id)
     if is_off:
@@ -1140,18 +1255,19 @@ async def _search_indexer(idx: dict, query: str) -> list[dict]:
         return []
 
     try:
-        if t == 'prowlarr':
+        if t == "prowlarr":
             async with httpx.AsyncClient(timeout=30) as cli:
                 r = await cli.get(
                     f"{url}/api/v1/search",
                     headers={"X-Api-Key": key},
-                    params={'query': query, 'categories': cats, 'type': 'search'}
+                    params={"query": query, "categories": cats, "type": "search"},
                 )
             should_off, reason = _should_backoff_on_response(r)
             if should_off:
                 _indexer_record_failure(
-                    idx_id, status=r.status_code,
-                    retry_after_header=r.headers.get('Retry-After'),
+                    idx_id,
+                    status=r.status_code,
+                    retry_after_header=r.headers.get("Retry-After"),
                     reason=reason,
                 )
                 return []
@@ -1159,16 +1275,19 @@ async def _search_indexer(idx: dict, query: str) -> list[dict]:
                 _indexer_record_success(idx_id)
                 return _parse_prowlarr_response(r.json(), name)
 
-        elif t in ('torznab', 'newznab'):
-            proto = 'torrent' if t == 'torznab' else 'nzb'
+        elif t in ("torznab", "newznab"):
+            proto = "torrent" if t == "torznab" else "nzb"
             async with httpx.AsyncClient(timeout=20) as cli:
-                r = await cli.get(f"{url}/api",
-                                  params={'t': 'search', 'q': query, 'cat': cat_str, 'apikey': key})
+                r = await cli.get(
+                    f"{url}/api",
+                    params={"t": "search", "q": query, "cat": cat_str, "apikey": key},
+                )
             should_off, reason = _should_backoff_on_response(r)
             if should_off:
                 _indexer_record_failure(
-                    idx_id, status=r.status_code,
-                    retry_after_header=r.headers.get('Retry-After'),
+                    idx_id,
+                    status=r.status_code,
+                    retry_after_header=r.headers.get("Retry-After"),
                     reason=reason,
                 )
                 return []
@@ -1183,29 +1302,33 @@ async def _search_indexer(idx: dict, query: str) -> list[dict]:
         # reason already includes the class name; the print should too.
         print(f"[Indexer:{name}] search error: {type(e).__name__}: {e}")
         _indexer_record_failure(
-            idx_id, status=None, retry_after_header=None,
-            reason=f'{type(e).__name__}: {str(e)[:120]}'
+            idx_id,
+            status=None,
+            retry_after_header=None,
+            reason=f"{type(e).__name__}: {str(e)[:120]}",
         )
     return []
 
 
-def _parse_prowlarr_response(data: list, indexer_name: str = '') -> list[dict]:
+def _parse_prowlarr_response(data: list, indexer_name: str = "") -> list[dict]:
     results = []
     for item in data:
-        raw_proto = (item.get('protocol') or 'torrent').lower()
-        protocol  = 'nzb' if raw_proto == 'usenet' else 'torrent'
-        dl_url    = item.get('downloadUrl') or item.get('magnetUrl', '')
+        raw_proto = (item.get("protocol") or "torrent").lower()
+        protocol = "nzb" if raw_proto == "usenet" else "torrent"
+        dl_url = item.get("downloadUrl") or item.get("magnetUrl", "")
         if not dl_url:
             continue
-        results.append({
-            'title':      item.get('title', ''),
-            'url':        dl_url,
-            'size_bytes': item.get('size', 0),
-            'seeders':    item.get('seeders', 0),
-            'indexer':    item.get('indexer') or indexer_name,
-            'protocol':   protocol,
-            # Same dedup contract as _parse_torznab_rss — Prowlarr's JSON
-            # search response surfaces the original release guid here.
-            'guid':       item.get('guid', '') or item.get('infoUrl', ''),
-        })
+        results.append(
+            {
+                "title": item.get("title", ""),
+                "url": dl_url,
+                "size_bytes": item.get("size", 0),
+                "seeders": item.get("seeders", 0),
+                "indexer": item.get("indexer") or indexer_name,
+                "protocol": protocol,
+                # Same dedup contract as _parse_torznab_rss — Prowlarr's JSON
+                # search response surfaces the original release guid here.
+                "guid": item.get("guid", "") or item.get("infoUrl", ""),
+            }
+        )
     return results

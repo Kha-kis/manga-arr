@@ -15,6 +15,7 @@ Three unrelated primitives live here:
 The first two use only stdlib. The third needs `cryptography`
 (added to the Dockerfile pip install in this PR).
 """
+
 import ipaddress
 import logging
 import os
@@ -124,13 +125,18 @@ def validate_outbound_url(url: str, *, allow_private: bool = False) -> str:
         try:
             ip = ipaddress.ip_address(ip_str)
         except ValueError:
-            logger.warning("SSRF: unparseable resolved address %r for host %r", ip_str, host)
+            logger.warning(
+                "SSRF: unparseable resolved address %r for host %r", ip_str, host
+            )
             raise UnsafeURLError("URL not allowed")
         reason = _classify_blocked(ip, allow_private=allow_private)
         if reason:
             logger.warning(
                 "SSRF blocked: host=%r resolved=%s reason=%s allow_private=%s",
-                host, ip_str, reason, allow_private,
+                host,
+                ip_str,
+                reason,
+                allow_private,
             )
             raise UnsafeURLError("URL not allowed")
 
@@ -253,7 +259,7 @@ _KEY_ENV_VAR = "MANGARR_SECRET_KEY"
 # Module-level cache populated by load_or_create_secret_cipher(). Stays
 # None until startup explicitly initialises it. Subsequent PRs will look
 # at this to decide whether to encrypt-on-write / decrypt-on-read.
-_SECRET_CIPHER = None   # type: ignore[var-annotated]
+_SECRET_CIPHER = None
 
 
 class SecretCipherUnavailable(RuntimeError):
@@ -316,14 +322,17 @@ def decrypt_secret(value):
     if not isinstance(value, str):
         raise TypeError(f"decrypt_secret expects str, got {type(value).__name__}")
     if not value.startswith(_ENC_PREFIX):
-        return value   # already plaintext, return as-is
+        return value  # already plaintext, return as-is
     if _SECRET_CIPHER is None:
         raise SecretCipherUnavailable(
             "secret cipher not initialised; cannot decrypt enc:v1: value"
         )
-    token = value[len(_ENC_PREFIX):]
+    token = value[len(_ENC_PREFIX) :]
     try:
-        from cryptography.fernet import InvalidToken   # local import: zero cost when unused
+        from cryptography.fernet import (
+            InvalidToken,
+        )  # local import: zero cost when unused
+
         try:
             return _SECRET_CIPHER.decrypt(token.encode("ascii")).decode("utf-8")
         except InvalidToken:
@@ -375,7 +384,9 @@ def load_or_create_secret_cipher(config_dir="/config"):
     env_key = os.environ.get(_KEY_ENV_VAR)
     if env_key:
         try:
-            cipher = Fernet(env_key.encode("ascii") if isinstance(env_key, str) else env_key)
+            cipher = Fernet(
+                env_key.encode("ascii") if isinstance(env_key, str) else env_key
+            )
         except (ValueError, Exception) as e:
             # Fernet raises ValueError on bad base64 / wrong length. Don't
             # include the key bytes (env_key) in the message.
@@ -403,7 +414,9 @@ def load_or_create_secret_cipher(config_dir="/config"):
             if mode & 0o077:
                 log.warning(
                     "Mangarr secret key file %s has permissive mode %o — recommend `chmod 600 %s`",
-                    key_path, mode, key_path,
+                    key_path,
+                    mode,
+                    key_path,
                 )
         except OSError:
             pass
@@ -469,9 +482,9 @@ def encrypt_if_cipher_available(value):
     if value is None or value == "":
         return value
     if _SECRET_CIPHER is None:
-        return value   # plaintext fallback
+        return value  # plaintext fallback
     if isinstance(value, str) and value.startswith(_ENC_PREFIX):
-        return value   # already encrypted; idempotent
+        return value  # already encrypted; idempotent
     return encrypt_secret(value)
 
 
@@ -511,7 +524,8 @@ def decrypt_secret_safe(value, *, field_name: str, context: str = "") -> str:
         logger.warning(
             "%s%s could not be decrypted — treating credential as "
             "unavailable; re-enter to restore the integration",
-            field_name, suffix,
+            field_name,
+            suffix,
         )
         return ""
     except SecretCipherUnavailable:
@@ -519,7 +533,9 @@ def decrypt_secret_safe(value, *, field_name: str, context: str = "") -> str:
             suffix = f" ({context})" if context else ""
             logger.warning(
                 "%s%s is encrypted but the secret cipher is unavailable — "
-                "treating as unavailable", field_name, suffix,
+                "treating as unavailable",
+                field_name,
+                suffix,
             )
             return ""
         return value

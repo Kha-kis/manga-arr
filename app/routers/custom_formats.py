@@ -1,4 +1,5 @@
 """Custom Formats — regex-based release scoring rules (Sonarr parity)."""
+
 import json
 import re
 from fastapi import APIRouter, Form, Request
@@ -17,31 +18,31 @@ from files import (
 router = APIRouter()
 
 SPEC_TYPES = [
-    "release_title_contains",        # regex match on release title
+    "release_title_contains",  # regex match on release title
     "release_title_not_contains",
-    "release_group_contains",        # case-insensitive substring on release group field
-    "release_group_not_contains",    # inverse
-    "indexer_is",                    # exact match on indexer name
-    "indexer_contains",              # substring match on indexer name
-    "language_is",                   # matches detected language code
-    "edition_contains",              # free-text edition keyword match (legacy)
-    "edition_is",                    # PR #126 — strict enum match on detected edition type
-    "source_is",                     # PR #126 — Official Digital / Scanlation / Raw
+    "release_group_contains",  # case-insensitive substring on release group field
+    "release_group_not_contains",  # inverse
+    "indexer_is",  # exact match on indexer name
+    "indexer_contains",  # substring match on indexer name
+    "language_is",  # matches detected language code
+    "edition_contains",  # free-text edition keyword match (legacy)
+    "edition_is",  # PR #126 — strict enum match on detected edition type
+    "source_is",  # PR #126 — Official Digital / Scanlation / Raw
     "size_minimum",
     "size_maximum",
 ]
 
 # Manga-native enum values for edition_is (mirrors detect_edition_type's outputs).
 EDITION_VALUES = [
-    "single",          # nothing detected (default volume)
-    "omnibus",         # 2-in-1, 3-in-1, perfect-edition, vizbig, complete-collection
-    "deluxe",          # hardcover, anniversary
-    "tankobon",        # Japanese standard volume
-    "kanzenban",       # Japanese "complete" reprint
-    "bunkoban",        # Japanese pocket-size
-    "aizoban",         # Japanese collector edition
+    "single",  # nothing detected (default volume)
+    "omnibus",  # 2-in-1, 3-in-1, perfect-edition, vizbig, complete-collection
+    "deluxe",  # hardcover, anniversary
+    "tankobon",  # Japanese standard volume
+    "kanzenban",  # Japanese "complete" reprint
+    "bunkoban",  # Japanese pocket-size
+    "aizoban",  # Japanese collector edition
     "official_color",  # publisher full-color
-    "colored",         # fan-colored
+    "colored",  # fan-colored
     "collector",
     "special",
     "remaster",
@@ -52,12 +53,12 @@ EDITION_VALUES = [
 # absent-of-group (raw).
 SOURCE_VALUES = [
     "official_digital",  # licensed publisher: Viz, Kodansha, Yen Press, Manga+, etc.
-    "scanlation",        # known fan-scanlation group OR group-tag with non-official lang
-    "raw",               # Japanese language with no group/publisher attribution
+    "scanlation",  # known fan-scanlation group OR group-tag with non-official lang
+    "raw",  # Japanese language with no group/publisher attribution
 ]
 
 
-def detect_source_type(title: str, release_group: str = '') -> str:
+def detect_source_type(title: str, release_group: str = "") -> str:
     """Classify a release into one of SOURCE_VALUES.
 
     Order matters: a Viz release tagged with a fan-group acronym still
@@ -68,13 +69,13 @@ def detect_source_type(title: str, release_group: str = '') -> str:
     since that's overwhelmingly what untagged English manga torrents are.
     """
     if is_official_release(title):
-        return 'official_digital'
-    rg = (release_group or '').strip().lower()
-    if is_quality_fan_release(title) or (rg and rg != 'unknown'):
-        return 'scanlation'
-    if detect_language(title) == 'ja':
-        return 'raw'
-    return 'scanlation'
+        return "official_digital"
+    rg = (release_group or "").strip().lower()
+    if is_quality_fan_release(title) or (rg and rg != "unknown"):
+        return "scanlation"
+    if detect_language(title) == "ja":
+        return "raw"
+    return "scanlation"
 
 
 def _all_formats(db):
@@ -94,16 +95,20 @@ async def custom_formats_page(request: Request):
         if default_profile:
             for r in db.execute(
                 "SELECT format_id, score FROM quality_profile_custom_formats WHERE profile_id=?",
-                (default_profile['id'],)
+                (default_profile["id"],),
             ).fetchall():
-                profile_scores[r['format_id']] = r['score']
-    return templates.TemplateResponse(request, "custom_formats.html", {
-        "formats":         formats,
-        "spec_types":      SPEC_TYPES,
-        "edition_values":  EDITION_VALUES,
-        "source_values":   SOURCE_VALUES,
-        "profile_scores":  profile_scores,
-    })
+                profile_scores[r["format_id"]] = r["score"]
+    return templates.TemplateResponse(
+        request,
+        "custom_formats.html",
+        {
+            "formats": formats,
+            "spec_types": SPEC_TYPES,
+            "edition_values": EDITION_VALUES,
+            "source_values": SOURCE_VALUES,
+            "profile_scores": profile_scores,
+        },
+    )
 
 
 # ── Per-profile score matrix (PR #125) ───────────────────────────────────────
@@ -111,6 +116,7 @@ async def custom_formats_page(request: Request):
 # 30 CFs across 4 profiles = 120 clicks. The matrix view solves this with
 # a single page where rows are CFs, columns are profiles, cells are
 # editable scores. One form-submit saves all changes.
+
 
 @router.get("/custom-formats/scores", response_class=HTMLResponse)
 async def cf_score_matrix_page(request: Request):
@@ -132,14 +138,15 @@ async def cf_score_matrix_page(request: Request):
         for r in db.execute(
             "SELECT profile_id, format_id, score FROM quality_profile_custom_formats"
         ).fetchall():
-            scores[(r['profile_id'], r['format_id'])] = r['score']
+            scores[(r["profile_id"], r["format_id"])] = r["score"]
     return templates.TemplateResponse(
-        request, "custom_format_scores.html",
+        request,
+        "custom_format_scores.html",
         {
-            'formats':  [dict(f) for f in formats],
-            'profiles': [dict(p) for p in profiles],
-            'scores':   scores,
-        }
+            "formats": [dict(f) for f in formats],
+            "profiles": [dict(p) for p in profiles],
+            "scores": scores,
+        },
     )
 
 
@@ -154,13 +161,15 @@ async def cf_score_matrix_save(request: Request):
     form = await request.form()
     updates: list[tuple[int, int, int]] = []
     for key, value in form.items():
-        if not key.startswith('score__'):
+        if not key.startswith("score__"):
             continue
         try:
-            _, pid_s, fid_s = key.split('__', 2)
+            _, pid_s, fid_s = key.split("__", 2)
             pid = int(pid_s)
             fid = int(fid_s)
-            score = int(value or 0)
+            score_raw = value or 0
+            assert isinstance(score_raw, str)
+            score = int(score_raw)
         except (ValueError, TypeError):
             continue
         updates.append((pid, fid, score))
@@ -171,14 +180,14 @@ async def cf_score_matrix_save(request: Request):
                 db.execute(
                     "DELETE FROM quality_profile_custom_formats"
                     " WHERE profile_id=? AND format_id=?",
-                    (pid, fid)
+                    (pid, fid),
                 )
             else:
                 db.execute(
                     "INSERT INTO quality_profile_custom_formats(profile_id, format_id, score)"
                     " VALUES(?, ?, ?)"
                     " ON CONFLICT(profile_id, format_id) DO UPDATE SET score=excluded.score",
-                    (pid, fid, score)
+                    (pid, fid, score),
                 )
     return RedirectResponse("/custom-formats/scores?saved=1", status_code=303)
 
@@ -199,7 +208,7 @@ async def create_custom_format(
         db.execute(
             "INSERT INTO custom_formats(name,specifications,include_custom_format_when_renaming)"
             " VALUES(?,?,?)",
-            (name.strip(), json.dumps(specs), include_custom_format_when_renaming)
+            (name.strip(), json.dumps(specs), include_custom_format_when_renaming),
         )
     return RedirectResponse("/custom-formats", status_code=303)
 
@@ -207,7 +216,7 @@ async def create_custom_format(
 # ── Edit ─────────────────────────────────────────────────────────────────────
 def _validated_spec_json(v) -> str:
     """Re-serialize JSON specs after parsing; on parse failure store '[]'."""
-    raw = str(v or '').strip()
+    raw = str(v or "").strip()
     try:
         parsed = json.loads(raw) if raw else []
     except (TypeError, ValueError):
@@ -219,12 +228,16 @@ def _validated_spec_json(v) -> str:
 async def edit_custom_format(request: Request, format_id: int):
     """Edit a custom format. Partial-POST safe."""
     from routers._form_helpers import submitted_subset, bool_int
+
     submitted = await request.form()
 
     plain_fields = {
-        'name':                                ('name',                                lambda v: str(v or '').strip()),
-        'specifications':                      ('specifications',                      _validated_spec_json),
-        'include_custom_format_when_renaming': ('include_custom_format_when_renaming', bool_int),
+        "name": ("name", lambda v: str(v or "").strip()),
+        "specifications": ("specifications", _validated_spec_json),
+        "include_custom_format_when_renaming": (
+            "include_custom_format_when_renaming",
+            bool_int,
+        ),
     }
 
     with get_db() as db:
@@ -232,8 +245,7 @@ async def edit_custom_format(request: Request, format_id: int):
         if updates:
             params.append(format_id)
             db.execute(
-                f"UPDATE custom_formats SET {', '.join(updates)} WHERE id=?",
-                params
+                f"UPDATE custom_formats SET {', '.join(updates)} WHERE id=?", params
             )
     return RedirectResponse("/custom-formats", status_code=303)
 
@@ -251,13 +263,13 @@ async def delete_custom_format(format_id: int):
 async def preview_custom_format(request: Request):
     """Body: {format_id: N, title: "..."}"""
     body = await request.json()
-    fid   = int(body.get('format_id', 0))
-    title = body.get('title', '')
+    fid = int(body.get("format_id", 0))
+    title = body.get("title", "")
     with get_db() as db:
         fmt = db.execute("SELECT * FROM custom_formats WHERE id=?", (fid,)).fetchone()
     if not fmt:
         return JSONResponse({"error": "Format not found"})
-    specs  = from_json(fmt['specifications'], [])
+    specs = from_json(fmt["specifications"], [])
     matched = evaluate_custom_format(specs, title, 0, 0)
     return JSONResponse({"matched": matched, "title": title})
 
@@ -268,9 +280,9 @@ def evaluate_custom_format(
     title: str,
     size_bytes: int,
     quality_rank: int,
-    release_group: str = '',
-    indexer: str = '',
-    language: str = '',
+    release_group: str = "",
+    indexer: str = "",
+    language: str = "",
 ) -> bool:
     """
     Returns True if ALL required specifications match (AND logic).
@@ -281,18 +293,18 @@ def evaluate_custom_format(
       indexer        — indexer name (e.g. 'NyaaTorrents')
       language       — detected language code (e.g. 'en')
     """
-    title_lower  = title.lower()
-    rgroup_lower = (release_group or '').lower()
-    idx_lower    = (indexer or '').lower()
-    lang_lower   = (language or '').lower()
+    title_lower = title.lower()
+    rgroup_lower = (release_group or "").lower()
+    idx_lower = (indexer or "").lower()
+    lang_lower = (language or "").lower()
 
     for spec in specifications:
-        spec_type = spec.get('type', '')
-        negate    = spec.get('negate', False)
-        value     = spec.get('value', '')
-        val_lower = (value or '').lower()
+        spec_type = spec.get("type", "")
+        negate = spec.get("negate", False)
+        value = spec.get("value", "")
+        val_lower = (value or "").lower()
 
-        if spec_type == 'release_title_contains':
+        if spec_type == "release_title_contains":
             hit = safe_regex_search(value, title, re.IGNORECASE)
             if hit is None:
                 # Unsafe / invalid regex → substring fallback so one bad
@@ -303,7 +315,7 @@ def evaluate_custom_format(
             if not hit:
                 return False
 
-        elif spec_type == 'release_title_not_contains':
+        elif spec_type == "release_title_not_contains":
             # Shorthand: title must NOT contain value
             hit = safe_regex_search(value, title, re.IGNORECASE)
             if hit is None:
@@ -313,42 +325,42 @@ def evaluate_custom_format(
             if hit:  # must NOT contain → if hit, spec fails
                 return False
 
-        elif spec_type == 'release_group_contains':
+        elif spec_type == "release_group_contains":
             hit = val_lower in rgroup_lower
             if negate:
                 hit = not hit
             if not hit:
                 return False
 
-        elif spec_type == 'release_group_not_contains':
+        elif spec_type == "release_group_not_contains":
             hit = val_lower in rgroup_lower
             if negate:
                 hit = not hit
             if hit:  # must NOT contain
                 return False
 
-        elif spec_type == 'indexer_is':
+        elif spec_type == "indexer_is":
             hit = idx_lower == val_lower
             if negate:
                 hit = not hit
             if not hit:
                 return False
 
-        elif spec_type == 'indexer_contains':
+        elif spec_type == "indexer_contains":
             hit = val_lower in idx_lower
             if negate:
                 hit = not hit
             if not hit:
                 return False
 
-        elif spec_type == 'language_is':
+        elif spec_type == "language_is":
             hit = lang_lower == val_lower
             if negate:
                 hit = not hit
             if not hit:
                 return False
 
-        elif spec_type == 'edition_contains':
+        elif spec_type == "edition_contains":
             # Match edition keywords in the title (Deluxe, Omnibus, Collector, etc.)
             hit = safe_regex_search(value, title, re.IGNORECASE)
             if hit is None:
@@ -358,25 +370,25 @@ def evaluate_custom_format(
             if not hit:
                 return False
 
-        elif spec_type == 'edition_is':
+        elif spec_type == "edition_is":
             # Strict enum match against the edition detected by
             # files.detect_edition_type. Empty (None) → 'single'.
-            detected = detect_edition_type(title) or 'single'
-            hit = (detected == val_lower)
+            detected = detect_edition_type(title) or "single"
+            hit = detected == val_lower
             if negate:
                 hit = not hit
             if not hit:
                 return False
 
-        elif spec_type == 'source_is':
+        elif spec_type == "source_is":
             detected = detect_source_type(title, release_group)
-            hit = (detected == val_lower)
+            hit = detected == val_lower
             if negate:
                 hit = not hit
             if not hit:
                 return False
 
-        elif spec_type == 'size_minimum':
+        elif spec_type == "size_minimum":
             try:
                 threshold = int(value) * 1024 * 1024  # value in MB
                 hit = size_bytes >= threshold
@@ -387,7 +399,7 @@ def evaluate_custom_format(
             if not hit:
                 return False
 
-        elif spec_type == 'size_maximum':
+        elif spec_type == "size_maximum":
             try:
                 threshold = int(value) * 1024 * 1024
                 hit = size_bytes <= threshold
@@ -401,10 +413,16 @@ def evaluate_custom_format(
     return True
 
 
-def score_custom_formats(db, series_id: int | None, title: str,
-                          size_bytes: int = 0, quality_rank: int = 0,
-                          release_group: str = '', indexer: str = '',
-                          language: str = '') -> int:
+def score_custom_formats(
+    db,
+    series_id: int | None,
+    title: str,
+    size_bytes: int = 0,
+    quality_rank: int = 0,
+    release_group: str = "",
+    indexer: str = "",
+    language: str = "",
+) -> int:
     """
     Return the total custom format score for a release.
     Uses the quality profile linked to the series (or the default profile).
@@ -413,7 +431,7 @@ def score_custom_formats(db, series_id: int | None, title: str,
         profile = db.execute(
             "SELECT qp.id FROM quality_profiles qp"
             " JOIN series s ON s.quality_profile_id=qp.id WHERE s.id=?",
-            (series_id,)
+            (series_id,),
         ).fetchone()
     else:
         profile = None
@@ -426,20 +444,26 @@ def score_custom_formats(db, series_id: int | None, title: str,
     if not profile:
         return 0
 
-    profile_id = profile['id']
+    profile_id = profile["id"]
     format_scores = db.execute(
         "SELECT cf.specifications, qpcf.score"
         " FROM quality_profile_custom_formats qpcf"
         " JOIN custom_formats cf ON cf.id=qpcf.format_id"
         " WHERE qpcf.profile_id=?",
-        (profile_id,)
+        (profile_id,),
     ).fetchall()
 
     total = 0
     for row in format_scores:
-        specs = from_json(row['specifications'], [])
-        if evaluate_custom_format(specs, title, size_bytes, quality_rank,
-                                   release_group=release_group,
-                                   indexer=indexer, language=language):
-            total += row['score']
+        specs = from_json(row["specifications"], [])
+        if evaluate_custom_format(
+            specs,
+            title,
+            size_bytes,
+            quality_rank,
+            release_group=release_group,
+            indexer=indexer,
+            language=language,
+        ):
+            total += row["score"]
     return total

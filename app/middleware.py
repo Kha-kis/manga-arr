@@ -16,6 +16,7 @@ carry only the in-session CSRF cookie.
 
 Pure move — no behaviour changes.
 """
+
 from __future__ import annotations
 
 import hmac
@@ -30,7 +31,9 @@ from shared import get_cfg
 
 # ── API Key middleware ───────────────────────────────────────────────────────
 
+
 class ApiKeyMiddleware(BaseHTTPMiddleware):
+    _warned_no_key = False
     """Require an X-Api-Key header (or ?apikey= query param) on /api/
     routes. Exempts the SSE endpoint and health check. In-session
     browser requests (POST/PUT/DELETE/PATCH with a csrftoken cookie)
@@ -46,50 +49,57 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if not path.startswith('/api/'):
+        if not path.startswith("/api/"):
             return await call_next(request)
-        if path in ('/api/queue-events', '/api/health'):
+        if path in ("/api/queue-events", "/api/health"):
             return await call_next(request)
-        api_key = (get_cfg('api_key', '') or '').strip()
+        api_key = (get_cfg("api_key", "") or "").strip()
         if not api_key:
-            if not getattr(ApiKeyMiddleware, '_warned_no_key', False):
-                print("[ERROR] /api/ routes denied — settings.api_key is blank. "
-                      "Restart the app to auto-seed, or set one via Settings.")
+            if not getattr(ApiKeyMiddleware, "_warned_no_key", False):
+                print(
+                    "[ERROR] /api/ routes denied — settings.api_key is blank. "
+                    "Restart the app to auto-seed, or set one via Settings."
+                )
                 ApiKeyMiddleware._warned_no_key = True
             return JSONResponse(
-                {"message": "Unauthorized",
-                 "description": "API key not configured on the server"},
+                {
+                    "message": "Unauthorized",
+                    "description": "API key not configured on the server",
+                },
                 status_code=401,
             )
-        provided = (request.headers.get('X-Api-Key') or
-                    request.query_params.get('apikey') or '')
+        provided = (
+            request.headers.get("X-Api-Key") or request.query_params.get("apikey") or ""
+        )
         if provided:
             if provided != api_key:
                 return JSONResponse(
-                    {"message": "Unauthorized",
-                     "description": "Invalid or missing API key"},
+                    {
+                        "message": "Unauthorized",
+                        "description": "Invalid or missing API key",
+                    },
                     status_code=401,
                 )
-            request.scope['mangarr_api_key_authenticated'] = True
+            request.scope["mangarr_api_key_authenticated"] = True
             return await call_next(request)
 
-        if (request.method in ('POST', 'PUT', 'DELETE', 'PATCH')
-                and request.cookies.get('csrftoken')):
-            request.scope['mangarr_api_browser_csrf_required'] = True
+        if request.method in ("POST", "PUT", "DELETE", "PATCH") and request.cookies.get(
+            "csrftoken"
+        ):
+            request.scope["mangarr_api_browser_csrf_required"] = True
             return await call_next(request)
 
         return JSONResponse(
-            {"message": "Unauthorized",
-             "description": "Invalid or missing API key"},
+            {"message": "Unauthorized", "description": "Invalid or missing API key"},
             status_code=401,
         )
 
 
 # ── CSRF middleware ──────────────────────────────────────────────────────────
 
-_CSRF_COOKIE  = "csrftoken"
-_CSRF_HEADER  = "X-CSRFToken"
-_CSRF_FIELD   = "csrf_token"
+_CSRF_COOKIE = "csrftoken"
+_CSRF_HEADER = "X-CSRFToken"
+_CSRF_FIELD = "csrf_token"
 _CSRF_SKIP_PREFIXES = ("/static/", "/covers/")
 
 
@@ -143,10 +153,8 @@ class CSRFMiddleware:
         req.state.csrf_token = token
 
         path = scope.get("path", "")
-        is_exempt = (
-            any(path.startswith(p) for p in _CSRF_SKIP_PREFIXES)
-            or (path.startswith("/api/")
-                and scope.get("mangarr_api_key_authenticated"))
+        is_exempt = any(path.startswith(p) for p in _CSRF_SKIP_PREFIXES) or (
+            path.startswith("/api/") and scope.get("mangarr_api_key_authenticated")
         )
         method = scope.get("method", "GET")
 
@@ -188,16 +196,24 @@ class CSRFMiddleware:
 
                     try:
                         if "urlencoded" in ct:
-                            params = parse_qs(raw_body.decode("latin-1"), keep_blank_values=True)
+                            params = parse_qs(
+                                raw_body.decode("latin-1"), keep_blank_values=True
+                            )
                             fv = params.get(_CSRF_FIELD, [""])[0]
                         else:
                             _replayed_once = False
+
                             async def _tmp_receive():
                                 nonlocal _replayed_once
                                 if not _replayed_once:
                                     _replayed_once = True
-                                    return {"type": "http.request", "body": raw_body, "more_body": False}
+                                    return {
+                                        "type": "http.request",
+                                        "body": raw_body,
+                                        "more_body": False,
+                                    }
                                 return {"type": "http.disconnect"}
+
                             _tmp_req = _Req(scope, _tmp_receive)
                             fd = await _tmp_req.form()
                             fv = fd.get(_CSRF_FIELD, "")
@@ -208,16 +224,24 @@ class CSRFMiddleware:
 
                     # Replay the body so the route handler can read it too
                     _replayed = False
+
                     async def _replay_receive():
                         nonlocal _replayed
                         if not _replayed:
                             _replayed = True
-                            return {"type": "http.request", "body": raw_body, "more_body": False}
+                            return {
+                                "type": "http.request",
+                                "body": raw_body,
+                                "more_body": False,
+                            }
                         return {"type": "http.disconnect"}
+
                     forward_receive = _replay_receive
 
             if not valid:
-                resp = JSONResponse({"detail": "CSRF token missing or invalid."}, status_code=403)
+                resp = JSONResponse(
+                    {"detail": "CSRF token missing or invalid."}, status_code=403
+                )
                 await resp(scope, forward_receive, send)
                 return
 
@@ -236,7 +260,12 @@ class CSRFMiddleware:
                 #   tag (see base.html) so htmx and plain-form CSRF injection
                 #   continue to work without document.cookie access.
                 # Secure: only set when the request arrived over HTTPS.
-                parts = [f"{_CSRF_COOKIE}={token}", "Path=/", "SameSite=Strict", "HttpOnly"]
+                parts = [
+                    f"{_CSRF_COOKIE}={token}",
+                    "Path=/",
+                    "SameSite=Strict",
+                    "HttpOnly",
+                ]
                 if secure_cookie:
                     parts.append("Secure")
                 cookie_val = "; ".join(parts)

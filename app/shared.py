@@ -2,6 +2,7 @@
 shared.py — Shared database + config primitives.
 Imported by both main.py and all router modules to avoid circular imports.
 """
+
 import json
 import os
 import re
@@ -14,13 +15,15 @@ DB_PATH = "/config/manga_arr.db"
 # ── In-memory config (populated at startup by load_config) ────────────────────
 CONFIG: dict = {}
 
-def get_cfg(key: str, default: str = '') -> str:
+
+def get_cfg(key: str, default: str = "") -> str:
     return CONFIG.get(key, default)
+
 
 # ── Database ──────────────────────────────────────────────────────────────────
 _DEBUG_DB_TIMING = os.environ.get("MANGARR_DEBUG_TIMING") == "1"
-_DB_SLOW_OPEN_MS = 100      # log connect+pragma sequences slower than this
-_DB_SLOW_TOTAL_MS = 200     # log whole-transaction durations slower than this
+_DB_SLOW_OPEN_MS = 100  # log connect+pragma sequences slower than this
+_DB_SLOW_TOTAL_MS = 200  # log whole-transaction durations slower than this
 
 
 async def event_loop_lag_monitor():
@@ -33,6 +36,7 @@ async def event_loop_lag_monitor():
     if not _DEBUG_DB_TIMING:
         return
     import asyncio as _a, time as _t
+
     interval = 0.05
     while True:
         t0 = _t.perf_counter()
@@ -43,7 +47,10 @@ async def event_loop_lag_monitor():
         dt_ms = (_t.perf_counter() - t0) * 1000
         lag = dt_ms - interval * 1000
         if lag > 1000:
-            print(f"[EVENT_LOOP_LAG] {lag:>8.1f}ms (CRITICAL — multi-second block)", flush=True)
+            print(
+                f"[EVENT_LOOP_LAG] {lag:>8.1f}ms (CRITICAL — multi-second block)",
+                flush=True,
+            )
         elif lag > 250:
             print(f"[EVENT_LOOP_LAG] {lag:>8.1f}ms", flush=True)
 
@@ -57,27 +64,35 @@ class timed_block:
         with timed_block("sync_mangadex_chapters", rows=n): ...
         async with timed_block("rss_loop_tick"): ...
     """
+
     __slots__ = ("label", "extra", "threshold_ms", "_t0")
+
     def __init__(self, label: str, threshold_ms: int = 100, **extra):
         self.label = label
         self.extra = extra
         self.threshold_ms = threshold_ms
         self._t0 = 0.0
+
     def __enter__(self):
         if _DEBUG_DB_TIMING:
             import time as _t
+
             self._t0 = _t.perf_counter()
         return self
+
     def __exit__(self, *a):
         if _DEBUG_DB_TIMING:
             import time as _t
+
             dt = (_t.perf_counter() - self._t0) * 1000
             if dt > self.threshold_ms:
                 extras = " ".join(f"{k}={v}" for k, v in self.extra.items())
                 print(f"[BG-LOOP] {dt:>8.1f}ms  {self.label}  {extras}", flush=True)
         return False
+
     async def __aenter__(self):
         return self.__enter__()
+
     async def __aexit__(self, *a):
         return self.__exit__(*a)
 
@@ -101,9 +116,11 @@ def ensure_wal_journal_mode() -> None:
     finally:
         conn.close()
 
+
 @contextmanager
 def get_db():
     import time as _t
+
     _t0 = _t.perf_counter() if _DEBUG_DB_TIMING else 0
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
@@ -117,7 +134,7 @@ def get_db():
         # under concurrent writers, produced 5-second busy_timeout stalls
         # that cascaded into 15-60s event-loop blocks (issue #31).
         # The mode is applied once at startup via ensure_wal_journal_mode().
-        conn.execute("PRAGMA synchronous=NORMAL")   # safe with WAL, much faster
+        conn.execute("PRAGMA synchronous=NORMAL")  # safe with WAL, much faster
         # busy_timeout: wait up to 30s on a contended write instead of
         # failing with OperationalError('database is locked').
         # Previously 5000ms — long-running writers (schema migration, qbit
@@ -128,13 +145,15 @@ def get_db():
         # production while still bounding pathological deadlocks.
         # WAL + busy_timeout: readers never block; only writers queue.
         conn.execute("PRAGMA busy_timeout=30000")
-        conn.execute("PRAGMA cache_size=-8000")      # 8MB cache (was 2MB)
-        conn.execute("PRAGMA mmap_size=67108864")    # 64MB memory-mapped I/O
+        conn.execute("PRAGMA cache_size=-8000")  # 8MB cache (was 2MB)
+        conn.execute("PRAGMA mmap_size=67108864")  # 64MB memory-mapped I/O
         if _DEBUG_DB_TIMING:
             _t_open = (_t.perf_counter() - _t0) * 1000
             if _t_open > _DB_SLOW_OPEN_MS:
-                print(f"[DB-OPEN]  {_t_open:>8.1f}ms (connect={_t_connect:.1f}ms)",
-                      flush=True)
+                print(
+                    f"[DB-OPEN]  {_t_open:>8.1f}ms (connect={_t_connect:.1f}ms)",
+                    flush=True,
+                )
         yield conn
         conn.commit()
     except Exception:
@@ -146,8 +165,10 @@ def get_db():
             # (don't mask it with the rollback error), but log the rollback
             # failure so operators can see connection-level corruption.
             import logging as _logging
+
             _logging.getLogger(__name__).warning(
-                "get_db: rollback failed (connection may be corrupt): %r", _rb,
+                "get_db: rollback failed (connection may be corrupt): %r",
+                _rb,
             )
         raise
     finally:
@@ -159,10 +180,10 @@ def get_db():
 
 
 # ── Tiny helpers used in routers ─────────────────────────────────────────────
-def fmt_bytes(n: int) -> str:
-    for unit in ('B', 'KB', 'MB', 'GB', 'TB'):
+def fmt_bytes(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
         if n < 1024:
-            return f"{n:.1f} {unit}" if unit != 'B' else f"{n} B"
+            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
         n /= 1024
     return f"{n:.1f} PB"
 
@@ -196,29 +217,36 @@ def cascade_chapters(db, series_id: int, volume_ids, status: str, **kwargs) -> i
     Only updates monitored=1 chapters. Returns count of updated rows.
     """
     allowed_cols = {
-        'grabbed_at', 'torrent_name', 'torrent_url', 'indexer',
-        'protocol', 'client', 'download_id', 'release_group', 'size_bytes',
-        'import_path',
+        "grabbed_at",
+        "torrent_name",
+        "torrent_url",
+        "indexer",
+        "protocol",
+        "client",
+        "download_id",
+        "release_group",
+        "size_bytes",
+        "import_path",
     }
     extra_cols = [c for c in kwargs if c in allowed_cols]
     extra_vals = [kwargs[c] for c in extra_cols]
-    set_parts  = ['status=?'] + [f'{c}=?' for c in extra_cols]
-    set_clause = ', '.join(set_parts)
-    base_vals  = [status] + extra_vals
+    set_parts = ["status=?"] + [f"{c}=?" for c in extra_cols]
+    set_clause = ", ".join(set_parts)
+    base_vals = [status] + extra_vals
 
     if volume_ids is None:
         cur = db.execute(
             f"UPDATE chapters SET {set_clause} WHERE series_id=? AND monitored=1",
-            base_vals + [series_id]
+            base_vals + [series_id],
         )
     else:
         if not volume_ids:
             return 0
-        ph = ','.join('?' * len(volume_ids))
+        ph = ",".join("?" * len(volume_ids))
         cur = db.execute(
             f"UPDATE chapters SET {set_clause}"
             f" WHERE series_id=? AND volume_id IN ({ph}) AND monitored=1",
-            base_vals + [series_id] + list(volume_ids)
+            base_vals + [series_id] + list(volume_ids),
         )
     return cur.rowcount
 
@@ -226,19 +254,19 @@ def cascade_chapters(db, series_id: int, volume_ids, status: str, **kwargs) -> i
 # ── Volume / quality helpers (shared between main + routers) ──────────────────
 
 QUALITY_RANK: dict[str, int] = {
-    'cbz':  5,
-    'zip':  5,
-    'cbr':  4,
-    'rar':  4,
-    'epub': 3,
-    'mobi': 2,
-    'pdf':  1,
+    "cbz": 5,
+    "zip": 5,
+    "cbr": 4,
+    "rar": 4,
+    "epub": 3,
+    "mobi": 2,
+    "pdf": 1,
 }
 
 
 def quality_rank(q: str | None) -> int:
     """Return numeric rank for a quality string. None/unknown = 0."""
-    return QUALITY_RANK.get((q or '').lower(), 0)
+    return QUALITY_RANK.get((q or "").lower(), 0)
 
 
 def vol_num_to_display(vol_num) -> str:
@@ -246,9 +274,9 @@ def vol_num_to_display(vol_num) -> str:
     None->''  3.0->3  3.01->3a  3.02->3b  3.5->3½  3.25->3¼  3.75->3¾  3.14->3.14
     """
     if vol_num is None:
-        return ''
-    _INT_TO_LETTER = {1: 'a', 2: 'b', 3: 'c', 4: 'd'}
-    _INT_TO_FRAC   = {50: '½', 25: '¼', 75: '¾'}
+        return ""
+    _INT_TO_LETTER = {1: "a", 2: "b", 3: "c", 4: "d"}
+    _INT_TO_FRAC = {50: "½", 25: "¼", 75: "¾"}
     try:
         base = int(vol_num)
         frac = round((float(vol_num) - base) * 100)
@@ -272,7 +300,7 @@ def vol_num_to_search(vol_num) -> str:
     None->''  3.0->'3'  3.01->'3'  3.5->'3.5'  3.25->'3.25'  3.75->'3.75'
     """
     if vol_num is None:
-        return ''
+        return ""
     try:
         base = int(vol_num)
         frac = round((float(vol_num) - base) * 100)
@@ -289,12 +317,14 @@ def build_volume_label(vol_num, vol_range, pack_type) -> str:
     """Build a human-readable label like 'Vol 5', 'Vol 1–5', 'Complete Series', 'Pack'."""
     if vol_num is not None:
         return f"Vol {vol_num_to_display(vol_num)}"
-    if pack_type == 'complete':
+    if pack_type == "complete":
         return "Complete Series"
-    if pack_type == 'chapter':
+    if pack_type == "chapter":
         return "Chapter"
     if vol_range:
-        return f"Vol {vol_num_to_display(vol_range[0])}–{vol_num_to_display(vol_range[1])}"
+        return (
+            f"Vol {vol_num_to_display(vol_range[0])}–{vol_num_to_display(vol_range[1])}"
+        )
     return "Pack"
 
 
@@ -383,7 +413,9 @@ def with_flash(path: str, msg: str, type: str = "info") -> str:
     qs = dict(parse_qsl(parts.query, keep_blank_values=True))
     qs["flash_msg"] = msg
     qs["flash_type"] = type
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(qs), parts.fragment))
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(qs), parts.fragment)
+    )
 
 
 # ── SQL ORDER BY allowlist helper ─────────────────────────────────────────────
@@ -394,10 +426,13 @@ def with_flash(path: str, msg: str, type: str = "info") -> str:
 _VALID_ORDER_DIRECTIONS = frozenset({"asc", "desc"})
 
 
-def build_order_by(sort_key: str, *,
-                   allowed: "dict[str, str]",
-                   default_key: str,
-                   direction: "str | None" = None) -> str:
+def build_order_by(
+    sort_key: str,
+    *,
+    allowed: "dict[str, str]",
+    default_key: str,
+    direction: "str | None" = None,
+) -> str:
     """Build a safe ORDER BY fragment from an allowlist.
 
     Never interpolates request values into SQL. Only values present in
@@ -427,7 +462,7 @@ def build_order_by(sort_key: str, *,
         return column
     d = (direction or "").strip().lower()
     if d not in _VALID_ORDER_DIRECTIONS:
-        return column   # invalid / empty direction: return column alone
+        return column  # invalid / empty direction: return column alone
     return f"{column} {d.upper()}"
 
 

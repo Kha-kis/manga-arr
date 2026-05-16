@@ -19,6 +19,7 @@ mid-flight, a concurrent SQLite writer with a short busy_timeout must
 commit successfully. Without the fix the probe would block on the
 held write lock until busy_timeout elapsed and raise OperationalError.
 """
+
 import asyncio
 import os
 import sqlite3
@@ -58,6 +59,7 @@ def lock_env(tmp_path, monkeypatch):
 
     async def _noop_async(*a, **kw):
         return None
+
     monkeypatch.setattr(main, "notify_discord", _noop_async)
     monkeypatch.setattr(main, "trigger_komga_scan", _noop_async)
     monkeypatch.setattr(main, "broadcast_queue_event", _noop_async)
@@ -144,13 +146,11 @@ def test_phase2_does_not_hold_db_write_lock(lock_env, monkeypatch):
     1-second busy_timeout and raises OperationalError.
     Post-fix: probe succeeds immediately.
     """
-    import import_pipeline
+    import import_staging
+    import import_execute
 
     qid, sid = _seed(lock_env["db_path"], lock_env["src_root"])
 
-    # Look up the file_id so we can target it with a volume_overrides
-    # mapping. The override forces an UPDATE on import_queue_files
-    # before file I/O - which on pre-fix code escalates the write lock.
     with sqlite3.connect(lock_env["db_path"]) as c:
         file_id = c.execute(
             "SELECT id FROM import_queue_files WHERE queue_id=?", (qid,)
@@ -159,20 +159,19 @@ def test_phase2_does_not_hold_db_write_lock(lock_env, monkeypatch):
     in_phase_2 = threading.Event()
     resume_phase_2 = threading.Event()
 
-    real_inject = import_pipeline._try_inject_comicinfo
+    real_inject = import_staging._try_inject_comicinfo
 
     def _slow_inject(*args, **kwargs):
         in_phase_2.set()
-        # Wait for the test to verify the lock is free.
         if not resume_phase_2.wait(timeout=10):
             raise TimeoutError("test never resumed Phase 2")
         return real_inject(*args, **kwargs)
 
-    monkeypatch.setattr(import_pipeline, "_try_inject_comicinfo", _slow_inject)
+    monkeypatch.setattr(import_staging, "_try_inject_comicinfo", _slow_inject)
 
     async def _drive():
         import_task = asyncio.create_task(
-            import_pipeline._execute_import_impl(
+            import_execute._execute_import_impl(
                 qid,
                 volume_overrides={file_id: 2.0},
             )
@@ -186,9 +185,7 @@ def test_phase2_does_not_hold_db_write_lock(lock_env, monkeypatch):
             # IMMEDIATE would block on busy_timeout (=1s) and then
             # raise OperationalError: database is locked.
             with sqlite3.connect(lock_env["db_path"], timeout=1.0) as c:
-                c.execute(
-                    "UPDATE series SET title='probe' WHERE id=?", (sid,)
-                )
+                c.execute("UPDATE series SET title='probe' WHERE id=?", (sid,))
                 c.commit()
 
         try:
@@ -204,7 +201,7 @@ def test_phase2_does_not_hold_db_write_lock(lock_env, monkeypatch):
     # Confirm the probe actually committed.
     with sqlite3.connect(lock_env["db_path"]) as c:
         c.row_factory = sqlite3.Row
-        title = c.execute(
-            "SELECT title FROM series WHERE id=?", (sid,)
-        ).fetchone()["title"]
+        title = c.execute("SELECT title FROM series WHERE id=?", (sid,)).fetchone()[
+            "title"
+        ]
     assert title == "probe", "probe write did not commit"

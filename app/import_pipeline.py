@@ -8,6 +8,7 @@ This module re-exports symbols from the split modules:
 
 For the full pipeline implementation, see the split modules.
 """
+
 from __future__ import annotations
 
 # Re-export from split modules
@@ -38,6 +39,7 @@ from import_execute import (
     _get_import_sem,
 )
 
-    # Re-export symbols that tests monkeypatch
+from comicinfo import _try_inject_comicinfo
 from notifications import notify_discord, make_complete_embed, trigger_komga_scan
 from events import broadcast_queue_event, add_history
+from comicinfo import _try_inject_comicinfo
