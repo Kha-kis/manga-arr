@@ -11,7 +11,7 @@
 
 # Web framework + ASGI server
 fastapi==0.136.1
-uvicorn[standard]==0.46.0
+uvicorn[standard]==0.47.0
 
 # Async HTTP client (used by SSRF guard, indexer adapters, etc.)
 httpx==0.28.1
@@ -20,7 +20,7 @@ httpx==0.28.1
 jinja2==3.1.6
 
 # multipart/form-data parser — required for any FastAPI Form() endpoint
-python-multipart==0.0.27
+python-multipart==0.0.29
 
 # CBR (RAR-archive) extraction in the import pipeline
 rarfile==4.2
