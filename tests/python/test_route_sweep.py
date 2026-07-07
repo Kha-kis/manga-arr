@@ -94,8 +94,29 @@ def app_with_temp_db():
                 os.unlink(p)
 
 
+def _iter_routes(routes):
+    """Yield concrete routes from FastAPI/Starlette route containers.
+
+    FastAPI 0.137 preserves included APIRouter instances instead of flattening
+    everything into app.routes. Walk nested route containers so this sweep keeps
+    covering the real page routes on both old and new FastAPI releases.
+    """
+    seen = set()
+    stack = list(routes)
+    while stack:
+        route = stack.pop(0)
+        ident = id(route)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        yield route
+        nested = getattr(route, "routes", None)
+        if nested:
+            stack[0:0] = list(nested)
+
+
 def _gather_renderable_routes(app):
-    return [r for r in app.routes if _is_renderable_html_get(r)]
+    return [r for r in _iter_routes(app.routes) if _is_renderable_html_get(r)]
 
 
 def test_route_sweep_finds_routes(app_with_temp_db):
@@ -112,7 +133,7 @@ def test_no_skiplist_drift(app_with_temp_db):
     """Any path on the skiplist must still exist on the app. If a route is
     deleted, remove it from _SKIP_PATHS too — otherwise we silently lose
     coverage if a renamed path comes back later."""
-    all_paths = {r.path for r in app_with_temp_db.routes if hasattr(r, "path")}
+    all_paths = {r.path for r in _iter_routes(app_with_temp_db.routes) if hasattr(r, "path")}
     stale = [p for p in _SKIP_PATHS if not any(ap.startswith(p) for ap in all_paths)]
     assert not stale, f"_SKIP_PATHS contains paths no longer registered: {stale}"
 

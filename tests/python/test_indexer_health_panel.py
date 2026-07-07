@@ -232,7 +232,7 @@ def test_indexers_page_shows_last_grab_timestamp_when_present(env):
         )
         c.execute(
             "INSERT INTO history(event_type, indexer, source_title, created_at)"
-            " VALUES('grabbed', 'Grabby', 'a', '2026-04-30 12:00:00')"
+            " VALUES('grabbed', 'Grabby', 'a', datetime('now', '-1 day'))"
         )
 
     client = _client()

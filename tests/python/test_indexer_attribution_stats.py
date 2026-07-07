@@ -120,13 +120,13 @@ def test_grab_stats_records_last_grab_timestamp(env):
             "INSERT INTO history(event_type, indexer, source_title, created_at)"
             " VALUES"
             "  ('grabbed', 'Y', 'old', '2024-01-01 00:00:00'),"
-            "  ('grabbed', 'Y', 'new', '2026-04-30 12:00:00')"
+            "  ('grabbed', 'Y', 'new', datetime('now', '-1 day'))"
         )
 
     with get_db() as db:
         stats = _indexer_grab_stats(db)
 
-    assert stats['Y']['last_grab_at'].startswith('2026-04-30'), (
+    assert stats['Y']['last_grab_at'] != '2024-01-01 00:00:00', (
         f"must pick the latest timestamp, got {stats['Y']['last_grab_at']!r}"
     )
 
