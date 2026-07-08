@@ -2015,6 +2015,63 @@
       .remote-path-muted { color: var(--text-2); }
       .remote-path-optional { color: var(--text-3); }
 
+      .health-row { border-bottom: 1px solid var(--edge); }
+      .health-row.is-critical {
+        background: var(--ruby-tint);
+        border-left: 3px solid var(--ruby);
+      }
+      .health-row.is-high {
+        background: var(--ember-tint);
+        border-left: 3px solid var(--ember);
+      }
+      .health-row.is-warning {
+        background: var(--gold-tint);
+        border-left: 3px solid var(--gold);
+      }
+      .health-cell { min-width: 0; }
+      .health-icon { font-size: var(--text-lg); }
+      .health-name { font-size: var(--text-base); font-weight: 600; }
+      .health-badge {
+        font-size: var(--text-2xs);
+        text-transform: uppercase;
+      }
+      .health-row.is-critical .health-severity { color: var(--ruby); }
+      .health-row.is-high .health-severity { color: var(--ember); }
+      .health-row.is-warning .health-severity { color: var(--gold); }
+      .health-row.is-critical .health-badge {
+        background: var(--ruby-tint);
+        border-color: var(--ruby-strong);
+      }
+      .health-row.is-high .health-badge {
+        background: var(--ember-tint);
+        border-color: var(--ember-strong);
+      }
+      .health-row.is-warning .health-badge {
+        background: var(--gold-tint);
+        border-color: var(--gold-strong);
+      }
+      .health-message {
+        font-size: var(--text-sm);
+        color: var(--text-2);
+        text-align: right;
+      }
+      .health-kv-label,
+      .health-issue-row { font-size: var(--text-base); }
+      .health-kv-value { font-size: var(--text-sm); color: var(--text-2); }
+      .health-panel-title.is-gold { color: var(--gold); }
+      .health-panel-title.is-amber { color: var(--amber); }
+      .health-panel-title.is-iris { color: var(--iris); }
+      .health-panel-body-flat { padding: 0; }
+      .health-ok-message { font-size: var(--text-base); color: var(--jade); }
+      .health-volume-note { color: var(--text-2); }
+      .health-date-note { font-size: var(--text-sm); color: var(--text-3); }
+      .health-import-name { font-size: var(--text-xs); color: var(--text-3); }
+      .health-error-row {
+        border-bottom: 1px solid var(--edge);
+        font-size: var(--text-sm);
+      }
+      .health-error-time { font-size: var(--text-xs); color: var(--text-3); }
+
       {% block head_styles %}{% endblock %}
 
       /* ═══════════════════════════════════════════════════════════════
