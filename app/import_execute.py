@@ -6,6 +6,13 @@ import os
 from shared import get_cfg, get_db
 from events import log_event, add_history, broadcast_queue_event
 from import_staging import _ImportStaging, _stage_files, _StageOutcome
+from import_plan import (
+    _FilePlan as _SplitFilePlan,
+    _ImportPlan as _SplitImportPlan,
+    _plan_import as _split_plan_import,
+)
+from import_commit import _commit_import as _split_commit_import
+from import_download import _mark_downloaded as _split_mark_downloaded
 from parsing import extract_chapter_num
 from files import quality_from_filename, build_filename, build_volume_label
 from cover_images import extract_cbz_cover, download_cover
@@ -142,7 +149,7 @@ async def _execute_import_impl(
 
     # ── Phase 1 — short DB tx for planning ──────────────────────────────
     with get_db() as _db1:
-        plan = _plan_import(
+        plan = _split_plan_import(
             _db1,
             queue_id,
             volume_overrides,
@@ -187,7 +194,7 @@ async def _execute_import_impl(
 
     # ── Phase 3 — short DB tx for replay ────────────────────────────────
     with get_db() as _db3:
-        ok, imported_count, new_status = _commit_import(
+        ok, imported_count, new_status = _split_commit_import(
             _db3,
             plan,
             outcomes,
@@ -1198,3 +1205,9 @@ async def _process_auto_import(queue_id: int):
                 "error",
                 f"Auto-import failed to mark queue {queue_id} as failed: {_db_e}",
             )
+
+
+# Legacy re-exports: keep old import paths pointing at the canonical split modules.
+_FilePlan = _SplitFilePlan
+_ImportPlan = _SplitImportPlan
+_mark_downloaded = _split_mark_downloaded
