@@ -1276,6 +1276,8 @@
       .text-ruby   { color: var(--ruby)   !important; }
       .text-sky    { color: var(--sky)    !important; }
       .text-muted  { color: var(--text-2) !important; }
+      .text-muted-2 { color: var(--text-2) !important; }
+      .text-muted-3 { color: var(--text-3) !important; }
       .text-main   { color: var(--text)   !important; }
 
       /* Legacy compat aliases */
@@ -1285,6 +1287,8 @@
       .text-red    { color: var(--ruby)   !important; }
 
       .monitored-off { opacity: 0.45; }
+      .is-muted { opacity: 0.45; }
+      .row-clickable { cursor: pointer; }
       .pill-badges { display: flex; flex-wrap: wrap; gap: 4px; }
 
       /* Kbd shortcut chips */
@@ -1588,6 +1592,11 @@
       }
       .btn-icon:hover { color: var(--text); background: var(--ink-3); }
       .btn-icon:active { transform: scale(0.92); transition-duration: 0.06s; }
+      .btn-icon.btn-icon-xs {
+        width: 18px;
+        height: 18px;
+        font-size: var(--text-xs);
+      }
 
       .btn-action {
         min-height: 32px;
@@ -1596,6 +1605,37 @@
         font-size: var(--text-sm);
         font-family: var(--font-ui);
         font-weight: 600;
+      }
+
+      .btn-soft-iris {
+        color: var(--iris);
+        border: 1px solid var(--iris-medium);
+        background: var(--iris-bg);
+      }
+      .btn-soft-ember {
+        color: var(--ember);
+        border: 1px solid var(--ember-medium);
+        background: var(--ember-bg);
+      }
+      .btn-soft-neutral {
+        color: var(--text-2);
+        border: 1px solid var(--edge-2);
+        background: transparent;
+      }
+      .btn-soft-gold {
+        color: var(--gold);
+        border: 1px solid var(--gold-medium);
+        background: var(--gold-bg);
+      }
+      .btn-soft-ruby {
+        color: var(--ruby);
+        border: 1px solid var(--ruby-soft);
+        background: var(--ruby-bg);
+      }
+      .btn-soft-jade {
+        color: var(--jade);
+        border: 1px solid var(--jade-soft);
+        background: var(--jade-bg);
       }
 
       @media (pointer: coarse) {
@@ -1641,6 +1681,84 @@
 
       .bar-hover { opacity: 0.75; transition: opacity 0.15s; }
       .bar-hover:hover { opacity: 1; }
+
+      .file-chip-truncate { max-width: 220px; }
+      .spinner-compact {
+        width: 0.5rem;
+        height: 0.5rem;
+        border-width: 2px;
+      }
+      .chapter-mini-bar {
+        height: 3px;
+        width: 70px;
+        gap: 1px;
+        overflow: hidden;
+        border-radius: 2px;
+        background: var(--ink-5);
+      }
+      .chapter-mini-bar-segment { width: var(--segment-width, 0%); }
+      .chapter-mini-bar-segment.is-downloaded { background: var(--jade); }
+      .chapter-mini-bar-segment.is-grabbed { background: var(--ember); }
+      .chapter-rows-cell {
+        padding: 8px 14px 10px 42px;
+        background: var(--void-tint);
+      }
+      .legend-swatch {
+        width: 10px;
+        height: 10px;
+        vertical-align: middle;
+        margin-right: 3px;
+      }
+      .legend-swatch.is-downloaded {
+        background: var(--jade-soft);
+        border: 1px solid var(--jade-strong);
+      }
+      .legend-swatch.is-grabbed {
+        background: var(--ember-soft);
+        border: 1px solid var(--ember-strong);
+      }
+      .legend-swatch.is-wanted {
+        background: var(--ruby-bg);
+        border: 1px solid var(--ruby-strong);
+      }
+
+      .queue-col-volume { width: 85px; }
+      .queue-col-size { width: 65px; }
+      .queue-col-status { width: 150px; }
+      .queue-col-progress { width: 160px; }
+      .queue-col-actions { width: 90px; }
+      .queue-col-progress-wide { width: 180px; }
+      .queue-col-status-compact { width: 110px; }
+      .queue-release-title {
+        display: block;
+        max-width: 280px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .queue-row-pending { opacity: 0.7; }
+      .queue-note { margin-top: 2px; }
+      .queue-progress-track {
+        height: 3px;
+        overflow: hidden;
+        margin-bottom: 3px;
+        border-radius: 2px;
+        background: var(--ink-5);
+      }
+      .queue-progress-fill {
+        height: 100%;
+        width: var(--progress, 0%);
+        border-radius: 2px;
+        background: var(--ember);
+      }
+      .queue-progress-fill.is-error { background: var(--ruby); }
+      .queue-progress-fill.is-stalled { background: var(--amber); }
+      .queue-progress-fill.is-review { background: var(--iris); }
+      .queue-progress-fill.is-ddl { background: var(--jade); }
+      .badge-warning-soft {
+        color: var(--gold);
+        background: var(--gold-bg);
+      }
 
       {% block head_styles %}{% endblock %}
 
