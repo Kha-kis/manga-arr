@@ -1,8 +1,7 @@
 {% extends "base.html" %} {% block title %}Library — Mangarr{% endblock %} {%
 block title_short %}Library{% endblock %} {% block topbar_title
 %}<strong>Library</strong>{% if total_count %}<span
-  class="ms-2 text-muted"
-  style="font-weight: 400"
+  class="ms-2 text-muted library-topbar-count"
   >{{ total_count }} series</span
 >{% endif %}{% endblock %} {% block nav_library %}active{% endblock %} {% block
 content %}
@@ -41,37 +40,37 @@ content %}
     await this.quickSave(p);
   }
 }"
-  :style="sel.length > 0 ? 'padding-bottom:72px' : ''"
+  :class="{ 'library-selection-active': sel.length > 0 }"
 >
   {# ══════════════════════════════════════════════════════════════════════════
   PAGE HEAD
   ══════════════════════════════════════════════════════════════════════════ #}
   <header class="page-head">
     <div class="running-head">
-      <span><i class="bi bi-book" style="margin-right: 4px"></i>Library</span>
+      <span><i class="bi bi-book me-1"></i>Library</span>
       {% if q or filter_tag or filter_status or filter_monitored or
       filter_missing %}
       <span class="divider">·</span>
-      <span style="color: var(--ember)">filtered</span>
+      <span class="text-ember">filtered</span>
       {% endif %}
     </div>
 
     <div class="d-flex flex-wrap gap-4 align-items-end justify-content-between">
-      <div style="min-width: 0; flex: 1 1 auto">
+      <div class="library-heading-copy">
         <h1 class="hero-title">Collection</h1>
         <p class="page-subtitle">
           {% if stats_bar.series_count == 0 %} An empty shelf. Search and add
           your first manga to begin the archive. {% else %} {% if q %}Filtered
           to
-          <strong style="color: var(--text); font-style: normal"
+          <strong class="library-filter-query"
             >"{{ q }}"</strong
           >
           — {% endif %}currently tracking
-          <span class="font-mono tabular-num" style="color: var(--text)"
+          <span class="font-mono tabular-num text-main"
             >{{ stats_bar.series_count }}</span
           >
           series across
-          <span class="font-mono tabular-num" style="color: var(--text)"
+          <span class="font-mono tabular-num text-main"
             >{{ stats_bar.tracked }}</span
           >
           volumes. {{ stats_bar.pct }}% of the collection is complete. {% endif
@@ -81,8 +80,7 @@ content %}
 
       {# ── Action cluster (right side of masthead) ── #}
       <div
-        class="d-flex gap-2 align-items-center flex-wrap"
-        style="flex: 0 0 auto"
+        class="d-flex gap-2 align-items-center flex-wrap library-action-cluster"
       >
         <button
           class="btn btn-secondary btn-sm"
@@ -92,7 +90,7 @@ content %}
         >
           <i class="bi bi-check2-square me-1"></i>Select series
         </button>
-        <div class="d-none gap-1" :class="{ 'd-flex': mode, 'd-none': !mode }">
+        <div class="d-flex gap-1" x-show="mode" x-cloak>
           <button class="btn btn-outline-ember btn-sm" @click="setAll(true)">
             <i class="bi bi-check-all me-1"></i>All
           </button>
@@ -133,14 +131,7 @@ content %}
   </header>
 
   {# ── Editorial stats row — oversized mono tabular numbers ── #}
-  <div
-    class="mb-5"
-    style="
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 40px 32px;
-    "
-  >
+  <div class="library-stat-grid mb-5">
     <div class="editorial-num">
       <div class="num">{{ '{:,}'.format(stats_bar.series_count) }}</div>
       <div class="lbl">Series Tracked</div>
@@ -154,9 +145,8 @@ content %}
       <div class="lbl">On Disk</div>
     </div>
     <a
-      class="editorial-num"
+      class="editorial-num library-stat-link"
       href="/wanted"
-      style="text-decoration: none"
       aria-label="View wanted volumes"
     >
       <div class="num ruby">{{ '{:,}'.format(stats_bar.wanted) }}</div>
@@ -166,7 +156,7 @@ content %}
       <div
         class="num {% if stats_bar.pct == 100 %}jade{% else %}accent{% endif %}"
       >
-        {{ stats_bar.pct }}<span style="font-size: 0.5em; color: var(--text-3)"
+        {{ stats_bar.pct }}<span class="library-percent-unit"
           >%</span
         >
       </div>
@@ -205,10 +195,9 @@ content %}
           type="text"
           name="q"
           id="library-search-input"
-          class="form-control form-control-sm"
+          class="form-control form-control-sm w-40"
           placeholder="Filter…"
           value="{{ q or '' }}"
-          class="w-40"
           aria-label="Search library by title"
         />
         <button
@@ -238,8 +227,7 @@ content %}
         %}
         <a
           href="/?q={{ q|urlencode }}&sort={{ sv }}&filter_status={{ filter_status }}&filter_tag={{ filter_tag }}&filter_monitored={{ filter_monitored }}&filter_missing={{ filter_missing }}&view={{ view }}"
-          class="btn btn-sm {% if sort == sv %}btn-ember{% else %}btn-secondary{% endif %}"
-          style="white-space: nowrap"
+          class="btn btn-sm text-nowrap {% if sort == sv %}btn-ember{% else %}btn-secondary{% endif %}"
           >{{ sl }}</a
         >
         {% endfor %}
@@ -373,7 +361,7 @@ content %}
 
     {# Clear #} {% if q or filter_tag or filter_status or filter_monitored or
     filter_missing %}
-    <div class="filter-group" style="justify-content: flex-end">
+    <div class="filter-group library-filter-end">
       <label>&nbsp;</label>
       <a
         href="/?sort={{ sort }}&view={{ view }}"
@@ -390,6 +378,7 @@ content %}
           href="/?q={{ q|urlencode }}&sort={{ sort }}&filter_status={{ filter_status }}&filter_tag={{ filter_tag }}&filter_monitored={{ filter_monitored }}&filter_missing={{ filter_missing }}&view=grid"
           class="btn btn-sm {% if view == 'grid' %}btn-ember{% else %}btn-secondary{% endif %}"
           title="Grid"
+          aria-label="Grid view"
         >
           <i class="bi bi-grid-3x3-gap"></i
         ></a>
@@ -397,6 +386,7 @@ content %}
           href="/?q={{ q|urlencode }}&sort={{ sort }}&filter_status={{ filter_status }}&filter_tag={{ filter_tag }}&filter_monitored={{ filter_monitored }}&filter_missing={{ filter_missing }}&view=list"
           class="btn btn-sm {% if view == 'list' %}btn-ember{% else %}btn-secondary{% endif %}"
           title="List"
+          aria-label="List view"
         >
           <i class="bi bi-list-ul"></i
         ></a>
@@ -410,70 +400,48 @@ content %}
     <table class="table table-sm mb-0">
       <thead>
         <tr>
-          <th style="width: 52px"></th>
+          <th class="library-col-cover"></th>
           <th>Title</th>
-          <th style="width: 120px">Status</th>
-          <th style="width: 90px">Monitored</th>
-          <th style="width: 210px">Progress</th>
-          <th style="width: 80px">Collected</th>
+          <th class="library-col-status">Status</th>
+          <th class="library-col-monitored">Monitored</th>
+          <th class="library-col-progress">Progress</th>
+          <th class="library-col-collected">Collected</th>
         </tr>
       </thead>
       <tbody>
         {% for item in series %} {% set s = item.row %} {% set st = item.stats
         %}
         <tr
-          class="{% if not s['monitored'] %}opacity-50{% endif %}"
-          style="cursor: pointer"
+          class="library-row {% if not s['monitored'] %}opacity-50{% endif %}"
           :class="{'table-active': has('{{ s['id'] }}')}"
           @click="mode ? pick('{{ s['id'] }}') : (location.href='/series/{{ s['id'] }}')"
         >
-          <td class="p-1 ps-2" style="width: 52px" @click.stop>
+          <td class="p-1 ps-2 library-col-cover" @click.stop>
             <div x-show="!mode">
               {% if s['cover_url'] %}
               <img
                 src="/covers/{{ s['id'] }}.jpg"
                 alt="{{ s['title'] }}"
-                style="
-                  width: 36px;
-                  height: 52px;
-                  object-fit: cover;
-                  border-radius: 4px;
-                  display: block;
-                "
+                class="library-list-cover"
                 onerror="this.src='{{ s['cover_url'] }}'"
                 loading="lazy"
               />
               {% else %}
               <div
-                style="
-                  width: 36px;
-                  height: 52px;
-                  background: var(--ink-4);
-                  border-radius: 4px;
-                  display: flex;
-                  align-items: center;
-                  justify-content: center;
-                  color: var(--text-3);
-                "
+                class="library-list-cover-placeholder"
               >
                 <i class="bi bi-book"></i>
               </div>
               {% endif %}
             </div>
             <div
-              class="d-none"
-              :class="{ 'd-flex': mode, 'd-none': !mode }"
-              style="
-                width: 36px;
-                height: 52px;
-                align-items: center;
-                justify-content: center;
-              "
+              class="library-list-select"
+              x-show="mode"
+              x-cloak
             >
               <input
                 type="checkbox"
-                class="form-check-input"
-                style="margin: 0"
+                class="form-check-input library-select-input"
                 :checked="has('{{ s['id'] }}')"
                 @change="pick('{{ s['id'] }}')"
                 aria-label="Select {{ s['title']|e }}"
@@ -483,8 +451,7 @@ content %}
           <td>
             <a
               href="/series/{{ s['id'] }}"
-              class="text-main fw-semibold"
-              style="font-size: var(--text-lg)"
+              class="text-main fw-semibold library-list-title"
               onclick="event.stopPropagation()"
             >
               {{ s['title'] }}
@@ -509,22 +476,22 @@ content %}
               ><i class="bi bi-eye me-1"></i>Yes</span
             >
             {% else %}
-            <span class="text-xs" style="color: var(--text-3)"
+            <span class="text-xs text-muted-3"
               ><i class="bi bi-eye-slash me-1"></i>No</span
             >
             {% endif %}
           </td>
           <td>
             {% if st.total > 0 %} {% set pct = (st.have / st.total * 100)|int %}
-            <div class="vol-bar">
-              <div
-                class="fill {% if pct == 100 %}complete{% endif %}"
-                style="width:{{ pct }}%"
-              ></div>
-            </div>
+            <progress
+              class="library-progress {% if pct == 100 %}is-complete{% endif %}"
+              value="{{ pct }}"
+              max="100"
+              aria-label="{{ s['title'] }} volume progress: {{ pct }}%"
+            ></progress>
             {% endif %}
           </td>
-          <td class="text-sm" style="color: var(--text-2)">
+          <td class="text-sm text-muted-2">
             {% if st.total > 0 %} {{ st.have }}/{{ st.total }} {% if st.wanted >
             0 %}
             <span class="text-ruby text-xs">({{ st.wanted }} missing)</span>
@@ -545,14 +512,12 @@ content %}
     <div
       class="col series-col"
       data-id="{{ s['id'] }}"
-      style="position:relative; --i:{{ loop.index0 if loop.index0 < 32 else 32 }}"
       x-data="{ mon: {{ 'true' if s['monitored'] else 'false' }} }"
     >
       <a
         href="/series/{{ s['id'] }}"
         class="d-block card-link"
-        :class="{ 'monitored-off': !mon }"
-        :style="mode ? 'pointer-events:none' : ''"
+        :class="{ 'monitored-off': !mon, 'library-card-disabled': mode }"
       >
         <div class="manga-card">
           <div class="cover-wrap">
@@ -586,17 +551,16 @@ content %}
             </div>
 
             {% if st.total > 0 %} {% set pct = (st.have / st.total * 100)|int %}
-            <div class="vol-bar">
-              <div
-                class="fill {% if pct == 100 %}complete{% endif %}"
-                style="width:{{ pct }}%"
-              ></div>
-            </div>
+            <progress
+              class="library-progress {% if pct == 100 %}is-complete{% endif %}"
+              value="{{ pct }}"
+              max="100"
+              aria-label="{{ s['title'] }} volume progress: {{ pct }}%"
+            ></progress>
             <div class="vol-count">
               {{ st.have }}/{{ st.total }} vol{% if st.total != 1 %}s{% endif %}
               {% if pct == 100 %}&nbsp;<i
-                class="bi bi-check-circle-fill text-jade"
-                style="font-size: var(--text-2xs)"
+                class="bi bi-check-circle-fill text-jade text-2xs"
               ></i
               >{% endif %}
             </div>
@@ -607,7 +571,7 @@ content %}
             <div
               class="vol-count text-ruby mt-1"
               x-show="!mon"
-              style="{% if s['monitored'] %}display:none{% endif %}"
+              {% if s['monitored'] %}x-cloak{% endif %}
             >
               <i class="bi bi-eye-slash me-1"></i>Unmonitored
             </div>
@@ -618,29 +582,14 @@ content %}
       {# Monitored toggle — top-right corner #}
       <button
         class="monitored-toggle"
-        style="
-          position: absolute;
-          top: 6px;
-          right: 6px;
-          background: rgba(8, 8, 16, 0.75);
-          backdrop-filter: blur(4px);
-          border: 1px solid rgba(255, 255, 255, 0.08);
-          border-radius: var(--radius-xs);
-          width: 26px;
-          height: 26px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          cursor: pointer;
-          transition: all 0.15s;
-        "
         x-show="!mode"
+        x-cloak
         @click.stop="mon=!mon; fetch('/series/{{ s['id'] }}/toggle', {method:'POST', headers:{'X-CSRFToken':_csrfToken()}})"
         :title="mon ? 'Monitored — click to unmonitor' : 'Unmonitored — click to monitor'"
+        aria-label="Toggle monitoring"
       >
         <i
-          :class="mon ? 'bi bi-bookmark-fill' : 'bi bi-bookmark'"
-          :style="'font-size:var(--text-sm); color:' + (mon ? 'var(--ember)' : 'var(--text-3)')"
+          :class="mon ? 'bi bi-bookmark-fill text-ember' : 'bi bi-bookmark text-muted-3'"
         ></i>
       </button>
 
@@ -648,48 +597,23 @@ content %}
       <div
         class="select-overlay"
         x-show="mode"
+        x-cloak
         role="checkbox"
         tabindex="0"
         :aria-checked="has({{ s['id'] }}) ? 'true' : 'false'"
         aria-label="Select {{ s['title']|e }}"
-        style="
-          display: none;
-          position: absolute;
-          inset: 0;
-          border-radius: var(--radius-lg);
-          border: 2px solid transparent;
-          cursor: pointer;
-          transition: all 0.15s;
-        "
-        :style="has({{ s['id'] }}) ?
-           { borderColor: 'var(--ember)', background: 'rgba(240,132,40,0.15)' } :
-           { borderColor: 'transparent', background: 'var(--ember-tint)' }"
+        :class="{ 'is-selected': has({{ s['id'] }}) }"
         @click="pick({{ s['id'] }})"
         @keydown.space.prevent="pick({{ s['id'] }})"
         @keydown.enter.prevent="pick({{ s['id'] }})"
       >
         <div
           class="select-check"
-          style="
-            position: absolute;
-            top: 7px;
-            left: 7px;
-            width: 22px;
-            height: 22px;
-            border-radius: var(--radius-xs);
-            border: 2px solid var(--text-3);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-          "
-          :style="has({{ s['id'] }}) ?
-             { background: 'var(--ember)', borderColor: 'var(--ember)' } :
-             { background: 'rgba(8,8,16,0.8)', borderColor: 'var(--text-3)' }"
+          :class="{ 'is-selected': has({{ s['id'] }}) }"
         >
           <i
             class="bi bi-check"
             x-show="has({{ s['id'] }})"
-            style="font-size: var(--text-base); color: white"
             aria-hidden="true"
           ></i>
         </div>
@@ -711,7 +635,7 @@ content %}
     </a>
     {% else %}
     <p class="fw-semibold">No manga tracked yet.</p>
-    <p class="text-sm" style="color: var(--text-3)">
+    <p class="text-sm text-muted-3">
       Search for manga to start building your library.
     </p>
     <a href="/search" class="btn btn-ember mt-2"
@@ -728,7 +652,7 @@ total_pages > 1 %} {% set _base = 'q=' ~ (q|urlencode) ~ '&sort=' ~ sort ~
 '&filter_monitored=' ~ filter_monitored ~ '&filter_missing=' ~ filter_missing ~
 '&view=' ~ view %}
 <div class="d-flex align-items-center justify-content-between mt-2 mb-5">
-  <span style="font-size: var(--text-base); color: var(--text-3)"
+  <span class="library-pagination-summary"
     >{{ total_count }} series · Page {{ page }} of {{ total_pages }}</span
   >
   <div class="pill-group">
@@ -759,31 +683,18 @@ total_pages > 1 %} {% set _base = 'q=' ~ (q|urlencode) ~ '&sort=' ~ sort ~
 </div>
 <div class="d-flex align-items-center justify-content-between mb-3">
   <p
-    class="font-serif"
-    style="
-      font-style: italic;
-      color: var(--text-2);
-      font-size: var(--text-lg);
-      margin: 0;
-    "
+    class="font-serif library-chronicle-copy"
   >
     The most recent additions to the archive.
   </p>
   <a
     href="/activity"
-    class="font-ui"
-    style="
-      font-size: var(--text-sm);
-      color: var(--text-2);
-      text-decoration: none;
-      border-bottom: 1px solid var(--edge-3);
-      padding-bottom: 2px;
-    "
+    class="font-ui library-chronicle-link"
   >
     View full chronicle <i class="bi bi-arrow-right ms-1"></i>
   </a>
 </div>
-<div class="panel-editorial" style="margin-bottom: 0">
+<div class="panel-editorial library-activity-panel">
   {% for a in activity %}
   <div class="activity-item">
     <div
@@ -793,8 +704,8 @@ total_pages > 1 %} {% set _base = 'q=' ~ (q|urlencode) ~ '&sort=' ~ sort ~
         class="bi bi-{% if a['event_type'] == 'imported' %}check-circle-fill{% else %}cloud-download-fill{% endif %}"
       ></i>
     </div>
-    <div style="flex: 1; min-width: 0">
-      <div style="display: flex; align-items: baseline; gap: 6px; min-width: 0">
+    <div class="library-activity-main">
+      <div class="library-activity-title-row">
         <a href="/series/{{ a['series_id'] }}" class="activity-series"
           >{{ a['series_title'] }}</a
         >
@@ -802,7 +713,7 @@ total_pages > 1 %} {% set _base = 'q=' ~ (q|urlencode) ~ '&sort=' ~ sort ~
         <span class="activity-vol"
           >{{ a['first_vol'] }} – {{ a['last_vol'] }}</span
         >
-        <span class="activity-vol" style="opacity: 0.6"
+        <span class="activity-vol library-activity-vol-count"
           >({{ a['vol_count'] }})</span
         >
         {% elif a['first_vol'] %}
@@ -810,7 +721,7 @@ total_pages > 1 %} {% set _base = 'q=' ~ (q|urlencode) ~ '&sort=' ~ sort ~
         {% endif %}
       </div>
       {% if a['vol_count'] == 1 %}
-      <div class="activity-name" style="font-size: var(--text-xs)">
+      <div class="activity-name text-xs">
         {{ a['source_title'] }}
       </div>
       {% endif %}
@@ -832,27 +743,13 @@ total_pages > 1 %} {% set _base = 'q=' ~ (q|urlencode) ~ '&sort=' ~ sort ~
 {% endif %} {# ── Sticky selection action bar
 ─────────────────────────────────────────── #}
 <div
+  class="library-selection-bar"
   x-show="sel.length > 0"
   x-cloak
   x-transition
-  style="
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    z-index: var(--z-tooltip);
-    background: var(--ink-1);
-    border-top: 1px solid var(--edge-2);
-    padding: 12px 24px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-  "
 >
   <span
-    style="font-size: var(--text-base); font-weight: 600; color: var(--ember)"
+    class="library-selection-count"
     x-text="sel.length + ' series selected'"
   ></span>
   <div class="ms-auto d-flex gap-2 flex-wrap">
@@ -882,6 +779,7 @@ total_pages > 1 %} {% set _base = 'q=' ~ (q|urlencode) ~ '&sort=' ~ sort ~
       class="btn btn-secondary btn-sm"
       @click="sel = []; mode = false"
       title="Clear selection"
+      aria-label="Clear selection"
     >
       <i class="bi bi-x"></i>
     </button>
@@ -898,18 +796,18 @@ total_pages > 1 %} {% set _base = 'q=' ~ (q|urlencode) ~ '&sort=' ~ sort ~
           <i class="bi bi-pencil-square me-2"></i>Edit Selected
           <span
             x-text="'(' + sel.length + ' series)'"
-            class="ms-1"
-            style="font-size: var(--text-base); color: var(--text-2)"
+            class="ms-1 library-modal-count"
           ></span>
         </h6>
         <button
           type="button"
           class="btn-close btn-close-white"
           data-bs-dismiss="modal"
+          aria-label="Close"
         ></button>
       </div>
       <div class="modal-body">
-        <p class="text-muted" style="font-size: var(--text-base)">
+        <p class="text-muted library-modal-help">
           Only fields you change will be applied. Leave
           <em>— no change —</em> to skip a field.
         </p>
@@ -987,8 +885,7 @@ total_pages > 1 %} {% set _base = 'q=' ~ (q|urlencode) ~ '&sort=' ~ sort ~
             <label class="form-label"
               >Add Tags
               <span
-                class="text-muted fw-normal"
-                style="font-size: var(--text-sm)"
+                class="text-muted fw-normal text-sm"
                 >(comma-separated)</span
               ></label
             >
@@ -1003,8 +900,7 @@ total_pages > 1 %} {% set _base = 'q=' ~ (q|urlencode) ~ '&sort=' ~ sort ~
             <label class="form-label"
               >Remove Tags
               <span
-                class="text-muted fw-normal"
-                style="font-size: var(--text-sm)"
+                class="text-muted fw-normal text-sm"
                 >(comma-separated)</span
               ></label
             >
