@@ -2867,6 +2867,107 @@ body {
   color: var(--text-3);
 }
 
+.history-count {
+  color: var(--text-2);
+}
+
+.history-status-result {
+  display: none;
+}
+
+.history-status-result.is-visible {
+  display: inline;
+}
+
+.history-status-result.is-checking {
+  color: var(--gold);
+}
+
+.history-status-result.is-ok {
+  color: var(--jade);
+}
+
+.history-status-result.is-error {
+  color: var(--ruby);
+}
+
+.history-filter-action {
+  justify-content: flex-end;
+}
+
+.history-col-event {
+  width: 135px;
+}
+
+.history-col-series {
+  width: 155px;
+}
+
+.history-col-volume {
+  width: 75px;
+}
+
+.history-col-indexer {
+  width: 120px;
+}
+
+.history-col-client {
+  width: 85px;
+}
+
+.history-col-size {
+  width: 70px;
+}
+
+.history-col-date {
+  width: 120px;
+}
+
+.history-col-actions {
+  width: 50px;
+}
+
+.history-dash {
+  color: var(--text-3);
+}
+
+.history-volume {
+  color: var(--gold);
+}
+
+.history-release-title,
+.history-cell-muted {
+  color: var(--text-2);
+}
+
+.history-release-title,
+.history-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+  max-width: 320px;
+}
+
+.history-path,
+.history-detail-muted,
+.history-page-copy,
+.history-empty-copy {
+  color: var(--text-3);
+}
+
+.history-failure-reason {
+  color: var(--ruby);
+}
+
+.history-date {
+  white-space: nowrap;
+}
+
+.history-page-link {
+  min-width: 32px;
+}
+
 /* ═══════════════════════════════════════════════════════════════
    FOCUS VISIBILITY — keyboard nav
 ════════════════════════════════════════════════════════════════ */

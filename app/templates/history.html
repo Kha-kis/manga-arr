@@ -7,7 +7,7 @@
 <div class="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
   <div class="page-heading mb-0"><i class="bi bi-clock-history"></i>History</div>
   <div class="d-flex gap-2 align-items-center flex-wrap">
-    {% if total %}<span class="text-xs" style="color:var(--text-2)">{{ total }} records</span>{% endif %}
+    {% if total %}<span class="text-xs history-count">{{ total }} records</span>{% endif %}
     <a href="/history?{% if filter_type %}event_type={{ filter_type }}&{% endif %}{% if filter_series %}series_id={{ filter_series }}&{% endif %}export=csv"
        class="btn btn-secondary btn-sm">
       <i class="bi bi-download me-1"></i>CSV
@@ -22,7 +22,7 @@
             hx-confirm="Delete all failed history entries?">
       <i class="bi bi-trash me-1"></i>Clear Failed
     </button>
-    <span id="status-result" class="text-xs" style="display:none"></span>
+    <span id="status-result" class="text-xs history-status-result"></span>
   </div>
 </div>
 
@@ -75,7 +75,7 @@
     </form>
   </div>
   {% if filter_type or filter_series %}
-  <div class="filter-group" style="justify-content:flex-end">
+  <div class="filter-group history-filter-action">
     <label>&nbsp;</label>
     <a href="/history" class="btn btn-secondary btn-sm"><i class="bi bi-x-circle me-1"></i>Clear</a>
   </div>
@@ -106,15 +106,15 @@
   <table class="table table-sm mb-0">
     <thead>
       <tr>
-        <th style="width:135px">Event</th>
-        <th style="width:155px">Series</th>
-        <th style="width:75px">Volume</th>
+        <th class="history-col-event">Event</th>
+        <th class="history-col-series">Series</th>
+        <th class="history-col-volume">Volume</th>
         <th>Source Title</th>
-        <th style="width:120px">Indexer</th>
-        <th style="width:85px">Client</th>
-        <th style="width:70px">Size</th>
-        <th style="width:120px">Date</th>
-        <th style="width:50px"></th>
+        <th class="history-col-indexer">Indexer</th>
+        <th class="history-col-client">Client</th>
+        <th class="history-col-size">Size</th>
+        <th class="history-col-date">Date</th>
+        <th class="history-col-actions"></th>
       </tr>
     </thead>
     <tbody>
@@ -126,7 +126,7 @@
           {% elif e['event_type'] == 'import_failed' %}<span class="badge-status badge-wanted"><i class="bi bi-x-circle me-1"></i>Imp.Failed</span>
           {% elif e['event_type'] == 'grab_failed' %}<span class="badge-status badge-wanted"><i class="bi bi-exclamation-circle me-1"></i>Grab Failed</span>
           {% elif e['event_type'] == 'file_deleted' %}<span class="badge-status badge-unknown"><i class="bi bi-trash me-1"></i>Deleted</span>
-          {% elif e['event_type'] == 'series_added' %}<span class="badge-status badge-downloaded" style="background:var(--jade-bg); color:var(--jade)"><i class="bi bi-plus-circle me-1"></i>Added</span>
+          {% elif e['event_type'] == 'series_added' %}<span class="badge-status badge-downloaded"><i class="bi bi-plus-circle me-1"></i>Added</span>
           {% elif e['event_type'] == 'series_deleted' %}<span class="badge-status badge-wanted"><i class="bi bi-dash-circle me-1"></i>Removed</span>
           {% elif e['event_type'] == 'volume_marked_downloaded' %}<span class="badge-status badge-downloaded"><i class="bi bi-check-circle me-1"></i>Marked DL</span>
           {% elif e['event_type'] == 'volume_marked_wanted' %}<span class="badge-status badge-unknown"><i class="bi bi-arrow-counterclockwise me-1"></i>Wanted</span>
@@ -137,26 +137,26 @@
         <td>
           {% if e['series_id'] %}
           <a href="/series/{{ e['series_id'] }}" class="fw-semibold text-ember text-sm">{{ e['series_title'] or '—' }}</a>
-          {% else %}<span class="text-sm" style="color:var(--text-3)">—</span>{% endif %}
+          {% else %}<span class="text-sm history-dash">—</span>{% endif %}
         </td>
         <td>
-          <span class="text-xs" style="color:var(--gold)">{{ e['volume_label'] or '—' }}</span>
+          <span class="text-xs history-volume">{{ e['volume_label'] or '—' }}</span>
         </td>
         <td>
-          <span class="text-xs" style="color:var(--text-2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block; max-width:320px"
+          <span class="text-xs history-release-title"
                 title="{{ e['source_title'] or '' }}">{{ e['source_title'] or '—' }}</span>
           {% if e['data'] %}
           {%- set d = e['data']|from_json -%}
           {% if e['event_type'] == 'imported' and d.dst_dir %}
-          <div class="text-2xs" style="color:var(--text-3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:320px" title="{{ d.dst_dir }}">
+          <div class="text-2xs history-path" title="{{ d.dst_dir }}">
             <i class="bi bi-folder2-open me-1"></i>{{ d.dst_dir }}
           </div>
           {% endif %}
           {% if e['event_type'] == 'grabbed' and d.score is defined %}
-          <span class="text-2xs" style="color:var(--text-3)"><i class="bi bi-star-half me-1"></i>score {{ d.score }}</span>
+          <span class="text-2xs history-detail-muted"><i class="bi bi-star-half me-1"></i>score {{ d.score }}</span>
           {% endif %}
           {% if e['event_type'] == 'grab_failed' and d.reason %}
-          <div class="text-2xs" style="color:var(--ruby)"><i class="bi bi-x-circle me-1"></i>{{ d.reason|replace('_',' ') }}</div>
+          <div class="text-2xs history-failure-reason"><i class="bi bi-x-circle me-1"></i>{{ d.reason|replace('_',' ') }}</div>
           {% endif %}
           {% endif %}
           {% if e['release_group'] %}<span class="badge-status badge-unknown d-block mt-1">{{ e['release_group'] }}</span>{% endif %}
@@ -169,18 +169,19 @@
         </td>
         <td>
           {% if e['client'] %}<span class="badge-status badge-client">{{ e['client']|format_client }}</span>
-          {% else %}<span class="text-xs" style="color:var(--text-3)">—</span>{% endif %}
+          {% else %}<span class="text-xs history-dash">—</span>{% endif %}
         </td>
-        <td class="text-xs" style="color:var(--text-2)">
+        <td class="text-xs history-cell-muted">
           {{ e['size_bytes']|format_bytes if e['size_bytes'] else '—' }}
         </td>
-        <td class="text-xs" style="color:var(--text-2); white-space:nowrap">
+        <td class="text-xs history-cell-muted history-date">
           {{ e['created_at'] | format_date if e['created_at'] else '—' }}
         </td>
         <td class="text-end pe-2">
           <div class="d-flex gap-1 justify-content-end">
           {% if e['event_type'] == 'grabbed' %}
-          <button class="btn p-0 px-1 text-ruby text-sm" style="border:none; background:transparent" title="Mark failed / blocklist"
+          <button class="btn-icon text-ruby" title="Mark failed / blocklist"
+                  aria-label="Mark history entry failed and blocklist release"
                   hx-post="/history/{{ e['id'] }}/mark-failed"
                   hx-swap="none"
                   hx-disabled-elt="this"
@@ -188,7 +189,8 @@
             <i class="bi bi-x-octagon"></i>
           </button>
           {% endif %}
-          <button class="btn p-0 px-1 text-sm" style="border:none; background:transparent; color:var(--text-3)" title="Delete entry"
+          <button class="btn-icon history-dash" title="Delete entry"
+                  aria-label="Delete history entry"
                   hx-post="/history/{{ e['id'] }}/delete"
                   hx-swap="none"
                   hx-disabled-elt="this">
@@ -207,13 +209,13 @@
 <div class="d-flex gap-2 justify-content-center align-items-center mt-2 flex-wrap">
   {% if page > 1 %}<a href="{{ _base ~ (page - 1) }}" class="btn btn-sm btn-secondary"><i class="bi bi-chevron-left"></i> Prev</a>{% endif %}
   {% set ws = [1, page - 4]|max %}{% set we = [pages, page + 4]|min %}
-  {% if ws > 1 %}<a href="{{ _base }}1" class="btn btn-sm btn-secondary">1</a>{% if ws > 2 %}<span style="color:var(--text-3)">…</span>{% endif %}{% endif %}
+  {% if ws > 1 %}<a href="{{ _base }}1" class="btn btn-sm btn-secondary">1</a>{% if ws > 2 %}<span class="history-page-copy">…</span>{% endif %}{% endif %}
   {% for p in range(ws, we + 1) %}
-  <a href="{{ _base ~ p }}" class="btn btn-sm {% if p == page %}btn-ember{% else %}btn-secondary{% endif %}" style="min-width:32px">{{ p }}</a>
+  <a href="{{ _base ~ p }}" class="btn btn-sm history-page-link {% if p == page %}btn-ember{% else %}btn-secondary{% endif %}">{{ p }}</a>
   {% endfor %}
-  {% if we < pages %}{% if we < pages - 1 %}<span style="color:var(--text-3)">…</span>{% endif %}<a href="{{ _base ~ pages }}" class="btn btn-sm btn-secondary">{{ pages }}</a>{% endif %}
+  {% if we < pages %}{% if we < pages - 1 %}<span class="history-page-copy">…</span>{% endif %}<a href="{{ _base ~ pages }}" class="btn btn-sm btn-secondary">{{ pages }}</a>{% endif %}
   {% if page < pages %}<a href="{{ _base ~ (page + 1) }}" class="btn btn-sm btn-secondary">Next <i class="bi bi-chevron-right"></i></a>{% endif %}
-  <span class="text-xs" style="color:var(--text-3)">Page {{ page }} of {{ pages }}</span>
+  <span class="text-xs history-page-copy">Page {{ page }} of {{ pages }}</span>
 </div>
 {% endif %}
 
@@ -221,7 +223,7 @@
 <div class="empty-state">
   <div class="empty-icon"><i class="bi bi-clock-history"></i></div>
   <p class="fw-semibold">No history yet</p>
-  <p class="text-sm" style="color:var(--text-3)">
+  <p class="text-sm history-empty-copy">
     Grabs, imports, and failures appear here automatically.
     {% if filter_type or filter_series %}<a href="/history" class="text-ember ms-1">Clear filters</a>{% endif %}
   </p>
@@ -235,16 +237,15 @@ async function checkStatus() {
   const btn = document.getElementById('check-btn');
   const res = document.getElementById('status-result');
   btn.disabled = true;
-  res.style.display = 'inline';
-  res.style.color = 'var(--gold)';
+  res.className = 'text-xs history-status-result is-visible is-checking';
   res.textContent = 'Checking…';
   try {
     const r = await fetch('/api/check-downloads', {method: 'POST'});
     const d = await r.json();
-    res.style.color = 'var(--jade)';
+    res.className = 'text-xs history-status-result is-visible is-ok';
     res.textContent = d.message;
   } catch(e) {
-    res.style.color = 'var(--ruby)';
+    res.className = 'text-xs history-status-result is-visible is-error';
     res.textContent = 'Failed';
   }
   btn.disabled = false;
