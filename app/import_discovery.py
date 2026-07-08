@@ -358,7 +358,6 @@ async def _check_download_status_impl():
                                         )
     except Exception as e:
         log_event("error", f"qBit status check failed: {e}")
-        print(f"[Status/qBit] {e}")
 
     # ── SABnzbd ───────────────────────────────────────────────────────────────
     with get_db() as _cdb:
@@ -526,14 +525,12 @@ async def _check_download_status_impl():
                     asyncio.create_task(_process_auto_import(_sqid))
         except Exception as e:
             log_event("error", f"SABnzbd status check failed: {e}")
-            print(f"[Status/SAB] {e}")
 
     # ── Suwayomi ─────────────────────────────────────────────────────────────
     try:
         await _swy_router.check_suwayomi_jobs()
     except Exception as e:
         log_event("error", f"Suwayomi status check failed: {e}")
-        print(f"[Status/Suwayomi] {e}")
 
 
 async def _process_auto_import(queue_id: int):

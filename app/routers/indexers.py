@@ -7,6 +7,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from routers._templates import templates
 
+from events import log_event
 from shared import get_db, from_json, get_cfg, get_secret_health_summary
 from security import (
     validate_outbound_url,
@@ -533,7 +534,7 @@ async def _list_prowlarr_subs_for_ui(url: str, key: str, cats: list) -> list[dic
         result.sort(key=lambda r: (not r["will_be_polled"], r["name"].lower()))
         return result
     except Exception as e:
-        print(f"[Prowlarr] sub-indexer list failed for UI: {e}")
+        log_event("error", f"[Prowlarr] sub-indexer list failed for UI: {e}")
         return []
 
 
@@ -943,14 +944,14 @@ async def _fetch_rss_for_indexer(idx: dict) -> list[dict]:
     is_off, deadline = _indexer_is_backed_off(idx_id)
     if is_off:
         wait_s = int(deadline - time.time())
-        print(f"[Indexer:{name}] skipping RSS poll — backoff active ({wait_s}s left)")
+        log_event("info", f"[Indexer:{name}] skipping RSS poll — backoff active ({wait_s}s left)")
         return []
 
     try:
         # LAN indexers permitted; loopback/link-local/etc. still blocked.
         validate_outbound_url(url, allow_private=True)
     except UnsafeURLError as e:
-        print(f"[Indexer:{name}] URL rejected: {e}")
+        log_event("error", f"[Indexer:{name}] URL rejected: {e}")
         return []
 
     try:
@@ -989,9 +990,10 @@ async def _fetch_rss_for_indexer(idx: dict) -> list[dict]:
                     retry_after_header=r.headers.get("Retry-After"),
                     reason=reason,
                 )
-                print(
+                log_event(
+                    "info",
                     f"[Indexer:{name}] backoff set — {reason}; next retry at "
-                    f"{int(dl)} ({int(dl - time.time())}s from now)"
+                    f"{int(dl)} ({int(dl - time.time())}s from now)",
                 )
                 return []
             _indexer_record_success(idx_id)
@@ -1000,7 +1002,7 @@ async def _fetch_rss_for_indexer(idx: dict) -> list[dict]:
             )
 
     except Exception as e:
-        print(f"[Indexer:{name}] RSS error: {e}")
+        log_event("error", f"[Indexer:{name}] RSS error: {e}")
         # Unknown failure — increment counter but with shorter backoff
         _indexer_record_failure(
             idx_id,
@@ -1035,7 +1037,7 @@ async def _get_prowlarr_indexers(url: str, key: str, cats: list) -> list[tuple]:
             result.append((idx["id"], idx.get("name", str(idx["id"])), proto))
         return result
     except Exception as e:
-        print(f"[Prowlarr] Failed to list indexers: {e}")
+        log_event("error", f"[Prowlarr] Failed to list indexers: {e}")
         return []
 
 
@@ -1050,7 +1052,7 @@ async def _fetch_prowlarr_rss(url, key, indexer_id, name, protocol, cats) -> lis
             )
         return _parse_torznab_rss(r.text, name, protocol)
     except Exception as e:
-        print(f"[Prowlarr:{name}] RSS error: {e}")
+        log_event("error", f"[Prowlarr:{name}] RSS error: {e}")
         return []
 
 
@@ -1251,7 +1253,7 @@ async def _search_indexer(idx: dict, query: str) -> list[dict]:
     is_off, deadline = _indexer_is_backed_off(idx_id)
     if is_off:
         wait_s = int(deadline - time.time())
-        print(f"[Indexer:{name}] skipping search — backoff active ({wait_s}s left)")
+        log_event("info", f"[Indexer:{name}] skipping search — backoff active ({wait_s}s left)")
         return []
 
     try:
@@ -1300,7 +1302,7 @@ async def _search_indexer(idx: dict, query: str) -> list[dict]:
         # produced uninformative logs like "[Indexer:Prowlarr] search
         # error:" with nothing after the colon. The recorded failure
         # reason already includes the class name; the print should too.
-        print(f"[Indexer:{name}] search error: {type(e).__name__}: {e}")
+        log_event("error", f"[Indexer:{name}] search error: {type(e).__name__}: {e}")
         _indexer_record_failure(
             idx_id,
             status=None,

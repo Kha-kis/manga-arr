@@ -218,7 +218,7 @@ async def grab_item(
         try:
             ch_map = json.loads(s_row["chapter_vol_map"])
         except Exception as e:
-            print(f"[grab_item] chapter_vol_map parse failed: {e}")
+            log_event("error", f"[grab_item] chapter_vol_map parse failed: {e}", series_id)
 
     pack_type = (
         detect_pack_type(title, vol_rng, total_vols) if vol_num is None else None
@@ -243,7 +243,11 @@ async def grab_item(
         if _coverage_already_grabbed(
             series_id, pack_type, vol_rng, ch_range, ch_map, total_chs, total_vols
         ):
-            print(f"[Grab] Skipping '{title[:60]}' — coverage already satisfied")
+            log_event(
+                "grab",
+                f"[Grab] Skipping '{title[:60]}' — coverage already satisfied",
+                series_id,
+            )
             return False
     elif vol_num is not None:
         # Single volume — skip if already grabbed or downloaded, UNLESS this is a quality upgrade
@@ -848,15 +852,17 @@ def _collect_and_score(items: list[dict], seen_in_results: set[str]) -> list[dic
                 min_size = qdef.get("min_size") or 0
                 max_size = qdef.get("max_size") or 0
                 if min_size > 0 and size_mb < min_size:
-                    print(
+                    log_event(
+                        "grab",
                         f"[QualDef] Skipping '{it['title']}' — {qname} too small: "
-                        f"{size_mb:.1f} MB (min: {min_size} MB)"
+                        f"{size_mb:.1f} MB (min: {min_size} MB)",
                     )
                     continue
                 if max_size > 0 and size_mb > max_size:
-                    print(
+                    log_event(
+                        "grab",
                         f"[QualDef] Skipping '{it['title']}' — {qname} too large: "
-                        f"{size_mb:.1f} MB (max: {max_size} MB)"
+                        f"{size_mb:.1f} MB (max: {max_size} MB)",
                     )
                     continue
 

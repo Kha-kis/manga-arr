@@ -25,6 +25,7 @@ import secrets
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+import logging
 
 from shared import get_cfg
 
@@ -56,7 +57,7 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         api_key = (get_cfg("api_key", "") or "").strip()
         if not api_key:
             if not getattr(ApiKeyMiddleware, "_warned_no_key", False):
-                print(
+                logging.getLogger(__name__).error(
                     "[ERROR] /api/ routes denied — settings.api_key is blank. "
                     "Restart the app to auto-seed, or set one via Settings."
                 )

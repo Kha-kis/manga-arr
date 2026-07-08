@@ -42,4 +42,3 @@ from import_execute import (
 from comicinfo import _try_inject_comicinfo
 from notifications import notify_discord, make_complete_embed, trigger_komga_scan
 from events import broadcast_queue_event, add_history
-from comicinfo import _try_inject_comicinfo

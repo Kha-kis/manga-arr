@@ -98,7 +98,10 @@ class _ImportStaging:
                 except FileNotFoundError:
                     pass
                 except OSError as e:
-                    print(f"[Import] could not remove source {rec['src_path']}: {e}")
+                    log_event(
+                        "error",
+                        f"[Import] could not remove source {rec['src_path']}: {e}",
+                    )
         self._cleanup()
 
     def rollback(self) -> None:
@@ -111,7 +114,10 @@ class _ImportStaging:
         except FileNotFoundError:
             pass
         except OSError as e:
-            print(f"[Import] failed to clean staging dir {self.staging_dir}: {e}")
+            log_event(
+                "error",
+                f"[Import] failed to clean staging dir {self.staging_dir}: {e}",
+            )
 
 
 async def _stage_files(

@@ -198,7 +198,6 @@ async def download_clients_page(request: Request):
             return (row["value"] if row else "0") == "1"
 
         options = {
-            "completed_download_handling": _opt("completed_download_handling"),
             "failed_download_handling": _opt("failed_download_handling"),
             "redownload_failed_interactive": _opt("redownload_failed_interactive"),
         }
@@ -315,15 +314,11 @@ async def delete_remote_path_mapping(mapping_id: int):
 # ── Download Client Options ───────────────────────────────────────────────────
 @router.post("/download-clients/options")
 async def save_download_client_options(
-    completed_download_handling: str = Form("0"),
     failed_download_handling: str = Form("0"),
     redownload_failed_interactive: str = Form("0"),
 ):
     with get_db() as db:
         for k, v in {
-            "completed_download_handling": "1"
-            if completed_download_handling == "1"
-            else "0",
             "failed_download_handling": "1" if failed_download_handling == "1" else "0",
             "redownload_failed_interactive": "1"
             if redownload_failed_interactive == "1"

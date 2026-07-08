@@ -124,7 +124,7 @@ async def fetch_anilist_aliases(series_id: int, anilist_id: int, main_title: str
             )
         data = r.json().get("data", {}).get("Media", {})
     except Exception as e:
-        print(f"[AniList] alias fetch error: {e}")
+        log_event("metadata_fetch_failed", f"[AniList] alias fetch error: {e}", series_id)
         return
 
     candidates = []
@@ -160,11 +160,13 @@ async def fetch_anilist_aliases(series_id: int, anilist_id: int, main_title: str
                     "INSERT OR IGNORE INTO series_tags(series_id, tag) VALUES(?,?)",
                     (series_id, g),
                 )
-    print(
-        f"[AniList] aliases populated for series {series_id}: {[a for a in candidates if _is_useful(a)]}"
+    log_event(
+        "metadata",
+        f"[AniList] aliases populated for series {series_id}: {[a for a in candidates if _is_useful(a)]}",
+        series_id,
     )
     if genres:
-        print(f"[AniList] genres tagged for series {series_id}: {genres[:8]}")
+        log_event("metadata", f"[AniList] genres tagged for series {series_id}: {genres[:8]}", series_id)
 
 
 async def anilist_search(query: str) -> list[dict]:
@@ -178,15 +180,13 @@ async def anilist_search(query: str) -> list[dict]:
                 )
             if r.status_code == 429:
                 retry_after = int(r.headers.get("Retry-After", "60"))
-                print(
-                    f"[AniList] Rate limited — waiting {retry_after}s (attempt {attempt + 1}/3)"
-                )
+                log_event("metadata", f"[AniList] Rate limited — waiting {retry_after}s (attempt {attempt + 1}/3)")
                 await asyncio.sleep(min(retry_after, 120))
                 continue
             data = r.json()
             break
         except Exception as e:
-            print(f"[AniList] error (attempt {attempt + 1}/3): {e}")
+            log_event("metadata_fetch_failed", f"[AniList] error (attempt {attempt + 1}/3): {e}")
             if attempt < 2:
                 await asyncio.sleep(5 * (attempt + 1))
             else:
@@ -230,7 +230,7 @@ async def mu_search(query: str) -> list[dict]:
             )
         data = r.json()
     except Exception as e:
-        print(f"[MangaUpdates] search error: {e}")
+        log_event("metadata_fetch_failed", f"[MangaUpdates] search error: {e}")
         return []
     results = []
     for item in data.get("results", []):
@@ -355,7 +355,6 @@ async def fetch_mangadex_id(
         if best_id:
             return best_id, best_links
     except Exception as e:
-        print(f"[MangaDex] ID lookup error: {e}")
         log_event(
             "metadata_fetch_failed",
             f"mangadex id lookup failed: {type(e).__name__}: {str(e)[:120]}",
@@ -390,7 +389,6 @@ async def fetch_chapter_volume_map(mangadex_id: str) -> dict:
                     mapping[ch_key] = vol_num
         return mapping
     except Exception as e:
-        print(f"[MangaDex] aggregate error: {e}")
         log_event(
             "metadata_fetch_failed",
             f"mangadex aggregate failed for {mangadex_id}: "
@@ -448,9 +446,7 @@ async def fetch_kitsu_chapter_map(
                         headers={"Accept": "application/vnd.api+json"},
                     )
                 except asyncio.CancelledError:
-                    print(
-                        f"[Kitsu] chapter map fetch cancelled for kitsu_id={kitsu_id}"
-                    )
+                    log_event("metadata", f"[Kitsu] chapter map fetch cancelled for kitsu_id={kitsu_id}")
                     raise
                 page = r.json()
                 rows = page.get("data", [])
@@ -486,7 +482,6 @@ async def fetch_kitsu_chapter_map(
 
         return mapping
     except Exception as e:
-        print(f"[Kitsu] chapter map error: {e}")
         log_event(
             "metadata_fetch_failed",
             f"kitsu chapter-map failed: {type(e).__name__}: {str(e)[:120]}",
@@ -529,10 +524,11 @@ def _trim_cvm_to_vol_range(
             continue
         kept[k] = v
     if dropped:
-        print(
+        log_event(
+            "metadata",
             f"[{source}] dropped {dropped} cvm entries targeting "
             f"vol > {total_volumes} (likely continuous-numbering "
-            f"contamination across series parts)"
+            f"contamination across series parts)",
         )
     return kept
 
@@ -546,12 +542,10 @@ def _validate_chapter_map(
     if total_chapters and total_chapters > 10:
         coverage = len(mapping) / total_chapters
         if coverage < 0.5:
-            print(
-                f"[{source}] map covers only {len(mapping)}/{total_chapters} chapters ({coverage:.0%}) — discarding"
-            )
+            log_event("metadata", f"[{source}] map covers only {len(mapping)}/{total_chapters} chapters ({coverage:.0%}) — discarding")
             return False
     if len(set(mapping.values())) < 2:
-        print(f"[{source}] all chapters map to same volume — discarding")
+        log_event("metadata", f"[{source}] all chapters map to same volume — discarding")
         return False
     return True
 

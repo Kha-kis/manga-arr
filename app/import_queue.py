@@ -164,13 +164,6 @@ def _queue_import(
             return existing["id"], bool(has_review)
         return None, False
 
-    cur = db.execute(
-        "INSERT INTO import_queue(series_id, download_id, torrent_name, torrent_url, volume_num, src_dir, status)"
-        " VALUES(?,?,?,?,?,?,'pending')",
-        (series_id, download_id, torrent_name, torrent_url, volume_num, src_dir),
-    )
-    queue_id = cur.lastrowid
-
     if scan_paths is None:
         scan_paths = []
         for root, dirs, files in os.walk(src_dir):
@@ -179,6 +172,7 @@ def _queue_import(
                 scan_paths.append(os.path.join(root, fname))
 
     mapped = unmapped = 0
+    file_rows = []
     for src_path in scan_paths:
         fname = os.path.basename(src_path)
         if os.path.splitext(fname)[1].lower() not in MANGA_EXTENSIONS:
@@ -324,15 +318,8 @@ def _queue_import(
             unmapped += 1
         else:
             mapped += 1
-        db.execute(
-            "INSERT INTO import_queue_files"
-            "(queue_id, filename, src_path, dst_path, proposed_volume, proposed_chapter,"
-            " proposed_volume_range_start, proposed_volume_range_end,"
-            " proposed_chapter_range_end, proposed_pack_type, proposed_is_special,"
-            " file_type, status)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'pending')",
+        file_rows.append(
             (
-                queue_id,
                 dst_fname,
                 src_path,
                 dst_path,
@@ -344,11 +331,10 @@ def _queue_import(
                 proposed_pack_type,
                 proposed_is_special,
                 file_type,
-            ),
+            )
         )
 
     if mapped == 0 and unmapped == 0:
-        db.execute("DELETE FROM import_queue WHERE id=?", (queue_id,))
         log_event(
             "import",
             f"No manga files found in {src_dir} — skipping: {torrent_name}",
@@ -357,6 +343,23 @@ def _queue_import(
             dedup=True,
         )
         return None, False
+
+    cur = db.execute(
+        "INSERT INTO import_queue(series_id, download_id, torrent_name, torrent_url, volume_num, src_dir, status)"
+        " VALUES(?,?,?,?,?,?,'pending')",
+        (series_id, download_id, torrent_name, torrent_url, volume_num, src_dir),
+    )
+    queue_id = cur.lastrowid
+
+    db.executemany(
+        "INSERT INTO import_queue_files"
+        "(queue_id, filename, src_path, dst_path, proposed_volume, proposed_chapter,"
+        " proposed_volume_range_start, proposed_volume_range_end,"
+        " proposed_chapter_range_end, proposed_pack_type, proposed_is_special,"
+        " file_type, status)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'pending')",
+        [(queue_id, *row) for row in file_rows],
+    )
 
     needs_review = unmapped > 0
     if unmapped > 0:

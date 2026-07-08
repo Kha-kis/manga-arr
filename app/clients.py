@@ -25,6 +25,7 @@ import time
 
 import httpx
 
+from events import log_event
 from parsing import normalize
 from shared import get_cfg, get_db
 
@@ -162,7 +163,7 @@ async def qbit_grab(
                         break
 
             if not dl_id:
-                print(f"[qBit] grab added but hash not found for: {torrent_name!r}")
+                log_event("error", f"[qBit] grab added but hash not found for: {torrent_name!r}")
                 return False, None, True
 
             if _state == "forced" and dl_id:
@@ -176,7 +177,7 @@ async def qbit_grab(
 
             return True, dl_id, True
     except Exception as e:
-        print(f"[qBit] grab error: {e}")
+        log_event("error", f"[qBit] grab error: {e}")
         return False, None, False
 
 
@@ -209,7 +210,7 @@ async def qbit_remove(download_id: str, delete_files: bool = False) -> bool:
             )
             return r2.status_code == 200
     except Exception as e:
-        print(f"[qBit] remove error: {e}")
+        log_event("error", f"[qBit] remove error: {e}")
         return False
 
 
@@ -240,7 +241,7 @@ async def sab_remove(nzo_id: str) -> bool:
             )
             return r.status_code == 200
     except Exception as e:
-        print(f"[SAB] remove error: {e}")
+        log_event("error", f"[SAB] remove error: {e}")
         return False
 
 
@@ -271,7 +272,7 @@ async def sab_grab(
                 return (True, nzo_ids[0], True) if nzo_ids else (False, None, True)
             return False, None, True
     except Exception as e:
-        print(f"[SAB] grab error: {e}")
+        log_event("error", f"[SAB] grab error: {e}")
         return False, None, False
 
 
@@ -300,7 +301,7 @@ async def nzbget_grab(
                 return True, str(nzb_id), True
             return False, None, True
     except Exception as e:
-        print(f"[NZBGet] grab error: {e}")
+        log_event("error", f"[NZBGet] grab error: {e}")
         return False, None, False
 
 
@@ -311,7 +312,7 @@ async def blackhole_grab(
     Returns (success, dl_id, client_healthy)."""
     folder = (client.get("host") or "").strip()
     if not folder or not os.path.isdir(folder):
-        print(f"[Blackhole] Folder not found: {folder!r}")
+        log_event("error", f"[Blackhole] Folder not found: {folder!r}")
         return False, None, False
     fname = (torrent_name or "download") + ".torrent"
     fname = re.sub(r'[<>:"/\\|?*]', "_", fname)
@@ -330,7 +331,7 @@ async def blackhole_grab(
                 f.write(r.content)
         return True, os.path.basename(dest), True
     except Exception as e:
-        print(f"[Blackhole] grab error: {e}")
+        log_event("error", f"[Blackhole] grab error: {e}")
         return False, None, False
 
 
@@ -385,12 +386,12 @@ async def grab_url(
         client = get_client_for_protocol(_tdb, detected_protocol, series_tags)
 
     if not client:
-        print(f"[grab_url] No download client configured for {detected_protocol}")
+        log_event("error", f"[grab_url] No download client configured for {detected_protocol}")
         return False, "none", None, False
 
     client_id = client.get("id", 0) or 0
     if _cb_is_open(client_id):
-        print(f"[grab_url] Circuit open for client {client['name']} — skipping grab")
+        log_event("error", f"[grab_url] Circuit open for client {client['name']} — skipping grab")
         return False, client["name"], None, False
 
     ctype = client["type"]
@@ -407,7 +408,7 @@ async def grab_url(
     elif ctype == "nzbget":
         ok, dl_id, healthy = await nzbget_grab(url, client=client)
     else:
-        print(f"[grab_url] Client type '{ctype}' not yet implemented")
+        log_event("error", f"[grab_url] Client type '{ctype}' not yet implemented")
         return False, client["name"], None, False
 
     if healthy:

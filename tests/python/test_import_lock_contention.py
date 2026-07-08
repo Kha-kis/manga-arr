@@ -205,3 +205,83 @@ def test_phase2_does_not_hold_db_write_lock(lock_env, monkeypatch):
             "title"
         ]
     assert title == "probe", "probe write did not commit"
+
+
+def test_queue_import_does_not_hold_write_lock_while_scanning(lock_env, monkeypatch):
+    """_queue_import must not hold a write transaction while parsing files.
+
+    The queue builder used to insert the import_queue parent row before
+    walking/parsing files. Because callers wrap it in get_db(), that insert
+    opened a write transaction until the scan finished. This pins the
+    intended shape: file classification can be slow, but concurrent writers
+    still get through because DB inserts happen after classification.
+    """
+    import main
+    import import_queue
+
+    src_dir = os.path.join(lock_env["src_root"], "Test Series v01")
+    os.makedirs(src_dir)
+    src_file = os.path.join(src_dir, "Test Series v01.cbz")
+    with open(src_file, "wb") as f:
+        f.write(b"PK\x03\x04" + b"x" * 200)
+
+    with sqlite3.connect(lock_env["db_path"]) as c:
+        c.execute(
+            "INSERT INTO series(title, search_pattern, monitored, root_folder_id)"
+            " VALUES(?,?,1,1)",
+            ("Test Series", "test-series"),
+        )
+        sid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+        c.commit()
+
+    in_scan = threading.Event()
+    resume_scan = threading.Event()
+    real_read_comic_info = import_queue.read_comic_info
+
+    def _slow_read_comic_info(*args, **kwargs):
+        in_scan.set()
+        if not resume_scan.wait(timeout=10):
+            raise TimeoutError("test never resumed queue scan")
+        return real_read_comic_info(*args, **kwargs)
+
+    monkeypatch.setattr(import_queue, "read_comic_info", _slow_read_comic_info)
+
+    worker_error: list[BaseException] = []
+    worker_result: list[tuple[int | None, bool]] = []
+
+    def _drive_queue_import():
+        try:
+            with main.get_db() as db:
+                worker_result.append(
+                    import_queue._queue_import(
+                        db,
+                        sid,
+                        "dl-queue-lock",
+                        "Test Series v01",
+                        "magnet:queue-lock",
+                        1.0,
+                        src_dir,
+                    )
+                )
+        except BaseException as exc:
+            worker_error.append(exc)
+
+    worker = threading.Thread(target=_drive_queue_import)
+    worker.start()
+    try:
+        assert in_scan.wait(timeout=10), "queue import never reached ComicInfo scan"
+
+        with sqlite3.connect(lock_env["db_path"], timeout=1.0) as c:
+            c.execute("UPDATE series SET title='queue probe' WHERE id=?", (sid,))
+            c.commit()
+    finally:
+        resume_scan.set()
+        worker.join(timeout=10)
+
+    assert not worker.is_alive(), "queue import worker did not finish"
+    assert not worker_error, f"queue import failed: {worker_error!r}"
+    assert worker_result and worker_result[0][0] is not None
+
+    with sqlite3.connect(lock_env["db_path"]) as c:
+        title = c.execute("SELECT title FROM series WHERE id=?", (sid,)).fetchone()[0]
+    assert title == "queue probe", "probe write did not commit"

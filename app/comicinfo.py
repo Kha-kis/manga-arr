@@ -23,6 +23,8 @@ from __future__ import annotations
 import os
 import zipfile
 
+from events import log_event
+
 # ET is imported only for ParseError (an exception class, not a parser entry
 # point) and for the serialize-only XML write in build_comicinfo_xml. All
 # actual parsing uses _safe_xml_parse from defusedxml below.
@@ -190,7 +192,7 @@ def inject_comicinfo(cbz_path: str, xml_content: str) -> bool:
                 zf.writestr(name, data)
         return True
     except (zipfile.BadZipFile, OSError, Exception) as e:
-        print(f"[ComicInfo] Failed to inject into {cbz_path}: {e}")
+        log_event("error", f"[ComicInfo] Failed to inject into {cbz_path}: {e}")
         return False
 
 
@@ -217,4 +219,4 @@ def _try_inject_comicinfo(
         )
         inject_comicinfo(dst_path, xml)
     except Exception as e:
-        print(f"[ComicInfo] Inject failed for {dst_path}: {e}")
+        log_event("error", f"[ComicInfo] Inject failed for {dst_path}: {e}")

@@ -297,7 +297,7 @@ async def refresh_mangadex_map(series_id: int) -> bool:
         except Exception:
             pass
     if not mdx_id:
-        print(f"[MangaDex] Could not find ID for series {series_id}")
+        log_event("metadata_fetch_failed", f"[MangaDex] Could not find ID for series {series_id}", series_id)
         return False
     with get_db() as db:
         meta = db.execute(
@@ -329,8 +329,10 @@ async def refresh_mangadex_map(series_id: int) -> bool:
             cbz_dir = _series_library_dir(db, series_id)
         cbz_map = _extract_map_from_cbzs(cbz_dir) if cbz_dir else {}
         cbz_map = _trim_cvm_to_vol_range(cbz_map, total_vol, "CBZ")
-        print(
-            f"[CBZ] series {series_id}: dir={cbz_dir}, entries={len(cbz_map)}, total_ch={total_ch}"
+        log_event(
+            "metadata",
+            f"[CBZ] series {series_id}: dir={cbz_dir}, entries={len(cbz_map)}, total_ch={total_ch}",
+            series_id,
         )
         if _validate_chapter_map(cbz_map, total_ch, "CBZ"):
             mapping = cbz_map
@@ -357,13 +359,17 @@ async def refresh_mangadex_map(series_id: int) -> bool:
         )
         if mapping:
             ch_created = populate_chapters(db, series_id)
-            print(
+            log_event(
+                "metadata",
                 f"[{map_source.upper()}] Stored {len(mapping)} chapter→vol entries for series {series_id}"
-                + (f", created {ch_created} chapter stubs" if ch_created else "")
+                + (f", created {ch_created} chapter stubs" if ch_created else ""),
+                series_id,
             )
         else:
-            print(
-                f"[MangaDex] No chapter map for {mdx_id} — cross-refs only (no fallback data)"
+            log_event(
+                "metadata",
+                f"[MangaDex] No chapter map for {mdx_id} — cross-refs only (no fallback data)",
+                series_id,
             )
     return True
 
@@ -420,10 +426,10 @@ async def fetch_wikipedia_volume_count(
             if wikitext:
                 break
         except Exception as e:
-            print(f"[Wikipedia] series {series_id} '{search_title}': {e}")
+            log_event("metadata_fetch_failed", f"[Wikipedia] series {series_id} '{search_title}': {e}", series_id)
 
     if not wikitext:
-        print(f"[Wikipedia] series {series_id} '{title}': no article found")
+        log_event("metadata_fetch_failed", f"[Wikipedia] series {series_id} '{title}': no article found", series_id)
         return None
 
     # Strip <ref> footnotes — they contain long URLs that inflate character
@@ -457,9 +463,11 @@ async def fetch_wikipedia_volume_count(
                     candidates.append(count)
 
     if not candidates:
-        print(
+        log_event(
+            "metadata",
             f"[Wikipedia] series {series_id} '{title}' ({edition_type}): "
-            f"no volume counts found near edition keywords"
+            f"no volume counts found near edition keywords",
+            series_id,
         )
         return None
 
@@ -490,10 +498,12 @@ async def fetch_wikipedia_volume_count(
             # rather than returning nothing
 
     best = max(candidates)
-    print(
+    log_event(
+        "metadata",
         f"[Wikipedia] series {series_id} '{title}' ({edition_type}): "
         f"found {best} volumes (all candidates: {sorted(set(candidates))}, "
-        f"std_count={std_count})"
+        f"std_count={std_count})",
+        series_id,
     )
     return best
 
@@ -516,8 +526,10 @@ async def fetch_edition_volume_count(
         ).fetchone()
     current_source = (src_row["vol_count_source"] if src_row else None) or "anilist"
     if current_source in ("google_books", "wikipedia", "manual"):
-        print(
-            f"[GoogleBooks] series {series_id}: skipping — source already '{current_source}'"
+        log_event(
+            "metadata",
+            f"[GoogleBooks] series {series_id}: skipping — source already '{current_source}'",
+            series_id,
         )
         return None
 
@@ -537,15 +549,17 @@ async def fetch_edition_volume_count(
                     headers={"User-Agent": "mangarr/1.0"},
                 )
             if _r.status_code == 429:
-                print(
+                log_event(
+                    "metadata_fetch_failed",
                     f"[GoogleBooks] series {series_id}: daily quota exceeded. "
-                    f"Add a Google Books API key in Settings to increase the limit."
+                    f"Add a Google Books API key in Settings to increase the limit.",
+                    series_id,
                 )
                 return None  # signal quota — stop all queries
             _r.raise_for_status()
             return _r.json().get("items", [])
         except Exception as e:
-            print(f"[GoogleBooks] series {series_id} query '{q}': {e}")
+            log_event("metadata_fetch_failed", f"[GoogleBooks] series {series_id} query '{q}': {e}", series_id)
             return []
 
     def _extract_vols(items: list[dict]) -> set[int]:
@@ -595,9 +609,11 @@ async def fetch_edition_volume_count(
         return None
 
     if len(found_volumes) < 2 or (max(found_volumes) - min(found_volumes)) < 1:
-        print(
+        log_event(
+            "metadata",
             f"[GoogleBooks] series {series_id} '{title}' ({edition_type}): "
-            f"insufficient data — found volumes {sorted(found_volumes)}"
+            f"insufficient data — found volumes {sorted(found_volumes)}",
+            series_id,
         )
 
         # Fallback 1: Try Wikipedia for edition-specific volume count
@@ -614,10 +630,6 @@ async def fetch_edition_volume_count(
                 f"[Wikipedia] {edition_type} edition: {wiki_count} volumes "
                 f"(Google Books had insufficient data)",
                 series_id,
-            )
-            print(
-                f"[Wikipedia] series {series_id} '{title}' ({edition_type}): "
-                f"set total_volumes={wiki_count}"
             )
             return wiki_count
 
@@ -639,10 +651,6 @@ async def fetch_edition_volume_count(
                 f"may be inaccurate. Use 'Refresh Edition Metadata' for the correct count.",
                 series_id,
             )
-            print(
-                f"[GoogleBooks/Wikipedia] series {series_id} '{title}': "
-                f"provisional fallback — {al_count} stubs from AniList"
-            )
         return None
 
     best_count = max(found_volumes)
@@ -657,10 +665,6 @@ async def fetch_edition_volume_count(
         f"[GoogleBooks] {edition_type} edition: {best_count} volumes "
         f"(keywords tried: {keywords[: len(found_volumes)]})",
         series_id,
-    )
-    print(
-        f"[GoogleBooks] series {series_id} '{title}' ({edition_type}): "
-        f"set total_volumes={best_count}"
     )
     return best_count
 
@@ -735,10 +739,6 @@ async def fetch_mu_metadata(series_id: int, title: str) -> dict | None:
                 "metadata",
                 f"[MangaUpdates] updated vol count: {current_vols}→{mu_vol_count}",
                 series_id,
-            )
-            print(
-                f"[MangaUpdates] series {series_id} '{title}': "
-                f"vol count {current_vols}→{mu_vol_count}"
             )
 
     return {

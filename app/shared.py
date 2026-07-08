@@ -4,6 +4,7 @@ Imported by both main.py and all router modules to avoid circular imports.
 """
 
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -24,6 +25,7 @@ def get_cfg(key: str, default: str = "") -> str:
 _DEBUG_DB_TIMING = os.environ.get("MANGARR_DEBUG_TIMING") == "1"
 _DB_SLOW_OPEN_MS = 100  # log connect+pragma sequences slower than this
 _DB_SLOW_TOTAL_MS = 200  # log whole-transaction durations slower than this
+_log = logging.getLogger(__name__)
 
 
 async def event_loop_lag_monitor():
@@ -47,12 +49,11 @@ async def event_loop_lag_monitor():
         dt_ms = (_t.perf_counter() - t0) * 1000
         lag = dt_ms - interval * 1000
         if lag > 1000:
-            print(
+            _log.warning(
                 f"[EVENT_LOOP_LAG] {lag:>8.1f}ms (CRITICAL — multi-second block)",
-                flush=True,
             )
         elif lag > 250:
-            print(f"[EVENT_LOOP_LAG] {lag:>8.1f}ms", flush=True)
+            _log.warning(f"[EVENT_LOOP_LAG] {lag:>8.1f}ms")
 
 
 class timed_block:
@@ -87,7 +88,7 @@ class timed_block:
             dt = (_t.perf_counter() - self._t0) * 1000
             if dt > self.threshold_ms:
                 extras = " ".join(f"{k}={v}" for k, v in self.extra.items())
-                print(f"[BG-LOOP] {dt:>8.1f}ms  {self.label}  {extras}", flush=True)
+                _log.warning(f"[BG-LOOP] {dt:>8.1f}ms  {self.label}  {extras}")
         return False
 
     async def __aenter__(self):
@@ -150,9 +151,8 @@ def get_db():
         if _DEBUG_DB_TIMING:
             _t_open = (_t.perf_counter() - _t0) * 1000
             if _t_open > _DB_SLOW_OPEN_MS:
-                print(
+                _log.warning(
                     f"[DB-OPEN]  {_t_open:>8.1f}ms (connect={_t_connect:.1f}ms)",
-                    flush=True,
                 )
         yield conn
         conn.commit()
@@ -176,7 +176,7 @@ def get_db():
         if _DEBUG_DB_TIMING:
             _t_total = (_t.perf_counter() - _t0) * 1000
             if _t_total > _DB_SLOW_TOTAL_MS:
-                print(f"[DB-SLOW] {_t_total:>8.1f}ms total", flush=True)
+                _log.warning(f"[DB-SLOW] {_t_total:>8.1f}ms total")
 
 
 # ── Tiny helpers used in routers ─────────────────────────────────────────────

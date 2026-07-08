@@ -69,7 +69,7 @@ async def _guarded_execute_import(
     """Claim the queue row, then run _execute_import under the semaphore."""
     with get_db() as _claim_db:
         if not claim_import_queue_row(_claim_db, queue_id):
-            print(f"[Import] queue {queue_id}: claim lost")
+            log_event("info", f"[Import] queue {queue_id}: claim lost", db=_claim_db)
             return False
     async with _get_import_sem():
         try:
@@ -1182,8 +1182,10 @@ async def _process_auto_import(queue_id: int):
     except Exception as e:
         import traceback
 
-        log_event("error", f"Auto-import failed for queue {queue_id}: {e}")
-        print(f"[AutoImport] {e}\n{traceback.format_exc()}")
+        log_event(
+            "error",
+            f"Auto-import failed for queue {queue_id}: {e}\n{traceback.format_exc()}",
+        )
         try:
             with get_db() as _db_err:
                 _db_err.execute(
@@ -1192,4 +1194,7 @@ async def _process_auto_import(queue_id: int):
                     (queue_id,),
                 )
         except Exception as _db_e:
-            print(f"[AutoImport] failed to mark queue {queue_id} as failed: {_db_e}")
+            log_event(
+                "error",
+                f"Auto-import failed to mark queue {queue_id} as failed: {_db_e}",
+            )

@@ -410,37 +410,43 @@ def _print_report(findings: list) -> None:
     verify_e2e._print_legacy(findings)
 
 
+def _out(text: str = "", *, stream=None) -> None:
+    if stream is None:
+        stream = sys.stdout
+    stream.write(f"{text}\n")
+
+
 def _print_plan(actions: list[RepairAction]) -> None:
     if not actions:
-        print("No reconciliation actions proposed. DB is in a clean state.")
+        _out("No reconciliation actions proposed. DB is in a clean state.")
         return
     by_risk: dict[str, list[RepairAction]] = {"low": [], "medium": [], "high": []}
     for a in actions:
         by_risk[a.risk].append(a)
-    print("=" * 60)
-    print(f"DRY-RUN REPAIR PLAN ({len(actions)} actions)")
-    print("=" * 60)
+    _out("=" * 60)
+    _out(f"DRY-RUN REPAIR PLAN ({len(actions)} actions)")
+    _out("=" * 60)
     for risk in ("high", "medium", "low"):
         bucket = by_risk[risk]
         if not bucket:
             continue
-        print(f"\n── {risk.upper()} RISK ({len(bucket)}) " + "─" * (40 - len(risk)))
+        _out(f"\n── {risk.upper()} RISK ({len(bucket)}) " + "─" * (40 - len(risk)))
         for a in bucket:
             tbl, tid = a.target
             review = " [MANUAL REVIEW]" if a.requires_manual_review else ""
-            print(f"  {a.action} on {tbl}#{tid}{review}")
-            print(f"      reason: {a.reason}")
+            _out(f"  {a.action} on {tbl}#{tid}{review}")
+            _out(f"      reason: {a.reason}")
             if a.would_mutate:
                 cols = ", ".join(f"{k}={v!r}" for k, v in a.would_mutate.items())
-                print(f"      would set: {cols}")
+                _out(f"      would set: {cols}")
             else:
-                print(f"      would set: (review only — no mutation proposed)")
-    print()
-    print(
+                _out(f"      would set: (review only — no mutation proposed)")
+    _out()
+    _out(
         f"Summary: {len(by_risk['high'])} high, {len(by_risk['medium'])} medium, "
         f"{len(by_risk['low'])} low risk"
     )
-    print("This was a DRY RUN. No rows were modified.")
+    _out("This was a DRY RUN. No rows were modified.")
 
 
 _USAGE = """\
@@ -456,7 +462,7 @@ This script never modifies data.
 
 def main(argv: list[str]) -> int:
     if len(argv) < 2 or argv[1] in ("-h", "--help"):
-        print(_USAGE, file=sys.stderr)
+        _out(_USAGE, stream=sys.stderr)
         return 0 if len(argv) >= 2 and argv[1] in ("-h", "--help") else 2
     cmd = argv[1]
     db_path = argv[2] if len(argv) > 2 else DEFAULT_DB_PATH
@@ -466,7 +472,7 @@ def main(argv: list[str]) -> int:
     if cmd == "plan":
         _print_plan(plan(db_path))
         return 0
-    print(_USAGE, file=sys.stderr)
+    _out(_USAGE, stream=sys.stderr)
     return 2
 
 

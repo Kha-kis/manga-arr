@@ -29,7 +29,6 @@ async def grab_existing(series_id: int, title: str, pattern: str) -> int:
         log_event(
             "error", f"[grab_existing] Unhandled error for '{title}': {e}", series_id
         )
-        print(f"[grab_existing] series {series_id} '{title}': {e}")
         return 0
 
 
@@ -284,10 +283,12 @@ async def search_complete_pack(
         1 for item in all_items if any(_matches(p, item["title"]) for p in all_patterns)
     )
     n_queries = len(search_terms) * (3 if end_str else 2) + len(gaps)
-    print(
+    log_event(
+        "backlog_search",
         f"[CompleteSearch] '{title}': {n_queries} queries ({len(search_terms)} terms), "
         f"{len(all_items)} raw candidates, {title_matched} title-matched, "
-        f"{len(packs_to_grab)} packs + {gap_grabbed} gaps = {grabbed} grabbed"
+        f"{len(packs_to_grab)} packs + {gap_grabbed} gaps = {grabbed} grabbed",
+        series_id,
     )
     log_event(
         "search",

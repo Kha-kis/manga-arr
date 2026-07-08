@@ -2082,7 +2082,11 @@ async def refresh_all_series(request: Request):
                             _m.create_volume_stubs(db2, s["id"], int(match["volumes"]))
                     refreshed += 1
             except Exception as e:
-                print(f"[RefreshAll] Error refreshing {s['title']}: {e}")
+                _m.log_event(
+                    "error",
+                    f"[RefreshAll] Error refreshing {s['title']}: {e}",
+                    s["id"],
+                )
             await asyncio.sleep(1.5)
         _m.log_event(
             "refresh", f"Refresh all: {refreshed}/{len(series)} series updated"
