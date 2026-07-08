@@ -838,7 +838,7 @@ function toggleChapters(volId) {
   if (!row) return;
   const isOpen = row.style.display !== 'none';
   row.style.display = isOpen ? 'none' : 'table-row';
-  if (icon) icon.className = isOpen ? 'bi bi-chevron-right' : 'bi bi-chevron-down';
+  if (icon) icon.className = isOpen ? 'bi bi-chevron-right text-xs text-muted-3' : 'bi bi-chevron-down text-xs text-muted-3';
 }
 
 document.addEventListener('mouseover', e => {

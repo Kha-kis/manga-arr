@@ -21,23 +21,23 @@
     <thead>
       <tr>
         <th>Series</th>
-        <th style="width:85px">Volume</th>
+        <th class="queue-col-volume">Volume</th>
         <th>Release</th>
-        <th style="width:65px">Size</th>
-        <th style="width:150px">Status</th>
-        <th style="width:160px">Progress</th>
-        <th style="width:90px"></th>
+        <th class="queue-col-size">Size</th>
+        <th class="queue-col-status">Status</th>
+        <th class="queue-col-progress">Progress</th>
+        <th class="queue-col-actions"></th>
       </tr>
     </thead>
     <tbody>
     {% for row in queue_rows %}
-    <tr id="qrow-{{ row.hash or row.pending_id or loop.index }}" {% if row.stage == 'pending' %}style="opacity:0.7"{% endif %}>
+    <tr id="qrow-{{ row.hash or row.pending_id or loop.index }}" class="{% if row.stage == 'pending' %}queue-row-pending{% endif %}">
 
       <td>
         {% if row.series_id %}
         <a href="/series/{{ row.series_id }}" class="fw-semibold text-ember text-sm">{{ row.series_title }}</a>
         {% else %}
-        <span class="text-sm" style="color:var(--text-2)">{{ row.series_title or '—' }}</span>
+        <span class="text-sm text-muted-2">{{ row.series_title or '—' }}</span>
         {% endif %}
       </td>
 
@@ -45,12 +45,12 @@
         {% if row.vol_label %}
         <span class="badge-status badge-grabbed text-2xs">{{ row.vol_label }}</span>
         {% else %}
-        <span class="text-xs" style="color:var(--text-3)">—</span>
+        <span class="text-xs text-muted-3">—</span>
         {% endif %}
       </td>
 
       <td>
-        <span class="text-xs" style="color:var(--text-2); display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:280px"
+        <span class="text-xs text-muted-2 queue-release-title"
               title="{{ row.torrent_name }}">{{ row.torrent_name or '—' }}</span>
         <div class="pill-badges mt-1">
           {% if row.indexer %}<span class="badge-status badge-indexer">{{ row.indexer }}</span>{% endif %}
@@ -58,7 +58,7 @@
         </div>
       </td>
 
-      <td class="text-xs" style="color:var(--text-2); white-space:nowrap">
+      <td class="text-xs text-muted-2 whitespace-nowrap">
         {% if row.size_bytes and row.size_bytes > 0 %}{{ row.size_bytes|format_bytes }}{% else %}—{% endif %}
       </td>
 
@@ -68,27 +68,26 @@
         {% elif row.stage == 'stalled' %}<span class="badge-status badge-stalled"><i class="bi bi-exclamation-triangle me-1"></i>Stalled</span>
         {% elif row.stage == 'paused' %}<span class="badge-status badge-unknown"><i class="bi bi-pause-circle me-1"></i>Paused</span>
         {% elif row.stage == 'error' %}<span class="badge-status badge-wanted"><i class="bi bi-x-circle me-1"></i>Error</span>
-        {% elif row.stage == 'warning' %}<span class="badge-status badge-grabbed" style="color:var(--gold); background:var(--gold-bg)"><i class="bi bi-exclamation-diamond me-1"></i>Missing</span>
+        {% elif row.stage == 'warning' %}<span class="badge-status badge-grabbed badge-warning-soft"><i class="bi bi-exclamation-diamond me-1"></i>Missing</span>
         {% elif row.stage == 'review' %}<span class="badge-status badge-hiatus"><i class="bi bi-exclamation-circle me-1"></i>Needs Review</span>
         {% elif row.stage == 'pending' %}<span class="badge-status badge-not_yet_released"><i class="bi bi-hourglass-split me-1"></i>Pending</span>
         {% endif %}
         {% if row.error_message %}
-        <div class="text-2xs" style="color:var(--ruby); margin-top:2px" title="{{ row.error_message }}">
+        <div class="text-2xs text-ruby queue-note" title="{{ row.error_message }}">
           {{ row.error_message[:55] }}{% if row.error_message|length > 55 %}…{% endif %}
         </div>
         {% endif %}
         {% if row.stage == 'warning' %}
-        <div class="text-2xs" style="color:var(--text-3); margin-top:2px">Not found in download client</div>
+        <div class="text-2xs text-muted-3 queue-note">Not found in download client</div>
         {% endif %}
       </td>
 
       <td>
         {% if row.stage in ('downloading', 'queued_dl', 'stalled', 'paused', 'error') %}
-        <div style="height:3px; background:var(--ink-5); border-radius:2px; overflow:hidden; margin-bottom:3px">
-          <div style="height:100%; width:{{ row.progress }}%; border-radius:2px;
-                      background:{% if row.stage == 'error' %}var(--ruby){% elif row.stage == 'stalled' %}var(--amber){% else %}var(--ember){% endif %}"></div>
+        <div class="queue-progress-track">
+          <div class="queue-progress-fill{% if row.stage == 'error' %} is-error{% elif row.stage == 'stalled' %} is-stalled{% endif %}" style="--progress:{{ row.progress }}%"></div>
         </div>
-        <span class="text-2xs" style="color:var(--text-3)">
+        <span class="text-2xs text-muted-3">
           {{ row.progress }}%
           {%- if row.dlspeed and row.dlspeed > 0 %} · {{ row.dlspeed|format_bytes }}/s{% endif %}
           {%- set eta = row.eta|int %}
@@ -98,12 +97,12 @@
           {%- endif %}
         </span>
         {% elif row.stage == 'review' %}
-        <div style="height:3px; background:var(--ink-5); border-radius:2px; overflow:hidden; margin-bottom:3px">
-          <div style="height:100%; width:100%; background:var(--iris); border-radius:2px"></div>
+        <div class="queue-progress-track">
+          <div class="queue-progress-fill is-review" style="--progress:100%"></div>
         </div>
-        <span class="text-2xs" style="color:var(--text-3)">Download complete</span>
+        <span class="text-2xs text-muted-3">Download complete</span>
         {% elif row.stage == 'pending' %}
-        <span class="text-2xs" style="color:var(--text-3)">
+        <span class="text-2xs text-muted-3">
           <i class="bi bi-clock me-1"></i>Since {{ row.grabbed_at | format_date if row.grabbed_at else '—' }}
         </span>
         {% endif %}
@@ -112,8 +111,7 @@
       <td class="text-end pe-3">
         {% if row.stage == 'review' %}
         <div class="d-flex gap-1 justify-content-end">
-          <button class="btn btn-sm px-2 py-1 text-xs"
-                  style="color:var(--iris); border:1px solid var(--iris-medium); background:var(--iris-bg)"
+          <button class="btn btn-sm px-2 py-1 text-xs btn-soft-iris"
                   data-bs-toggle="modal" data-bs-target="#review-{{ row.queue_id }}">
             <i class="bi bi-box-arrow-in-down me-1"></i>Import
           </button>
@@ -125,8 +123,7 @@
         </div>
         {% elif row.stage == 'pending' %}
         <div class="d-flex gap-1 justify-content-end">
-          <button class="btn btn-sm px-2 py-1 text-ember text-xs"
-                  style="border:1px solid var(--ember-medium); background:var(--ember-bg)"
+          <button class="btn btn-sm px-2 py-1 text-xs btn-soft-ember"
                   title="Force grab now — bypass delay profile"
                   hx-post="/queue/pending/{{ row.pending_id }}/force-grab"
                   hx-target="#queue-body"
@@ -134,8 +131,7 @@
                   hx-disabled-elt="this">
             <i class="bi bi-lightning-charge me-1"></i>Grab Now
           </button>
-          <button class="btn btn-sm px-2 py-1 text-xs"
-                  style="color:var(--text-2); border:1px solid var(--edge-2)"
+          <button class="btn btn-sm px-2 py-1 text-xs btn-soft-neutral"
                   title="Dismiss — remove from delay queue without grabbing"
                   hx-post="/queue/pending/{{ row.pending_id }}/dismiss"
                   hx-target="#queue-body"
@@ -147,8 +143,7 @@
         </div>
         {% elif row.stage == 'warning' %}
         <div class="d-flex gap-1 justify-content-end">
-          <button class="btn btn-sm px-2 py-1 text-gold text-xs"
-                  style="border:1px solid var(--gold-medium); background:var(--gold-bg)"
+          <button class="btn btn-sm px-2 py-1 text-xs btn-soft-gold"
                   title="Reset volumes to wanted and re-search"
                   hx-post="/queue/grabbed/{{ row.hash }}/reset-all"
                   hx-target="#queue-body"
@@ -160,8 +155,7 @@
         </div>
         {% elif row.hash %}
         <div class="d-flex gap-1 justify-content-end">
-          <button class="btn btn-sm px-2 py-1 text-xs"
-                  style="color:var(--ruby); border:1px solid var(--ruby-soft); background:var(--ruby-bg)"
+          <button class="btn btn-sm px-2 py-1 text-xs btn-soft-ruby"
                   data-bs-toggle="modal" data-bs-target="#rm-{{ row.hash }}">
             <i class="bi bi-x-circle me-1"></i>Remove
           </button>
@@ -319,17 +313,17 @@
 <div class="panel mb-4">
   <div class="panel-header">
     <i class="bi bi-cloud-arrow-down me-1"></i>Suwayomi Downloads
-    <span class="ms-2 text-xs" style="color:var(--text-3);font-weight:400">{{ suwayomi_rows|length }} active</span>
+    <span class="ms-2 text-xs text-muted-3 fw-normal">{{ suwayomi_rows|length }} active</span>
   </div>
   <div class="table-wrap mb-0">
     <table class="table table-sm mb-0">
       <thead>
         <tr>
           <th>Series</th>
-          <th style="width:85px">Volume</th>
-          <th style="width:180px">Progress</th>
-          <th style="width:110px">Status</th>
-          <th style="width:90px"></th>
+          <th class="queue-col-volume">Volume</th>
+          <th class="queue-col-progress-wide">Progress</th>
+          <th class="queue-col-status-compact">Status</th>
+          <th class="queue-col-actions"></th>
         </tr>
       </thead>
       <tbody>
@@ -343,17 +337,17 @@
         </td>
         <td>
           {% if job.status == 'error' %}
-          <div style="height:3px; background:var(--ink-5); border-radius:2px; overflow:hidden; margin-bottom:3px">
-            <div style="height:100%; width:100%; background:var(--ruby); border-radius:2px"></div>
+          <div class="queue-progress-track">
+            <div class="queue-progress-fill is-error" style="--progress:100%"></div>
           </div>
-          <span class="text-2xs" style="color:var(--ruby)" title="{{ job.error }}">
+          <span class="text-2xs text-ruby" title="{{ job.error }}">
             {{ (job.error or 'Import failed')[:45] }}{% if (job.error or '')|length > 45 %}…{% endif %}
           </span>
           {% else %}
-          <div style="height:3px; background:var(--ink-5); border-radius:2px; overflow:hidden; margin-bottom:3px">
-            <div style="height:100%; width:{{ job.progress }}%; background:var(--jade); border-radius:2px"></div>
+          <div class="queue-progress-track">
+            <div class="queue-progress-fill is-ddl" style="--progress:{{ job.progress }}%"></div>
           </div>
-          <span class="text-2xs" style="color:var(--text-3)">{{ job.done }}/{{ job.total }} chapters</span>
+          <span class="text-2xs text-muted-3">{{ job.done }}/{{ job.total }} chapters</span>
           {% endif %}
         </td>
         <td>
@@ -368,8 +362,7 @@
         <td class="text-end pe-3">
           <div class="d-flex gap-1 justify-content-end">
             {% if job.status == 'error' %}
-            <button class="btn btn-sm px-2 py-1 text-xs"
-                    style="color:var(--jade); border:1px solid var(--jade-soft); background:var(--jade-bg)"
+            <button class="btn btn-sm px-2 py-1 text-xs btn-soft-jade"
                     title="Retry this download"
                     hx-post="/api/suwayomi/jobs/{{ job.job_id }}/retry"
                     hx-swap="none"
@@ -378,8 +371,7 @@
               <i class="bi bi-arrow-repeat me-1"></i>Retry
             </button>
             {% endif %}
-            <button class="btn btn-sm px-2 py-1 text-xs"
-                    style="color:var(--text-2); border:1px solid var(--edge-2)"
+            <button class="btn btn-sm px-2 py-1 text-xs btn-soft-neutral"
                     title="Cancel and remove from queue" aria-label="Cancel and remove from queue"
                     hx-post="/api/suwayomi/jobs/{{ job.job_id }}/cancel"
                     hx-swap="none"
@@ -560,6 +552,6 @@
 <div class="empty-state">
   <div class="empty-icon"><i class="bi bi-check-circle-fill text-jade"></i></div>
   <p class="fw-semibold">Queue is empty</p>
-  <p class="text-sm" style="color:var(--text-3)">No active downloads, pending releases, or items awaiting review.</p>
+  <p class="text-sm text-muted-3">No active downloads, pending releases, or items awaiting review.</p>
 </div>
 {% endif %}

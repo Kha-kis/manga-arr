@@ -15,15 +15,14 @@
 
 <tbody id="vol-tbody-{{ v['id'] }}">
   <tr id="vol-row-{{ v['id'] }}"
-      {% if vchs %}onclick="toggleChapters({{ v['id'] }})" style="cursor:pointer;{% if not v['monitored'] %} opacity:0.45;{% endif %}"
-      {% elif not v['monitored'] %}style="opacity:0.45"{% endif %}>
+      class="{% if vchs %}row-clickable{% endif %}{% if not v['monitored'] %} is-muted{% endif %}"
+      {% if vchs %}onclick="toggleChapters({{ v['id'] }})"{% endif %}>
     <td onclick="event.stopPropagation()" class="ps-2">
       <form method="POST" action="/series/{{ s['id'] }}/volumes/{{ v['id'] }}/toggle-monitor"
             hx-post="/series/{{ s['id'] }}/volumes/{{ v['id'] }}/toggle-monitor"
             hx-target="{{ _hx_target }}"
             hx-swap="outerHTML">
-        <button class="btn-icon"
-                style="color:{% if v['monitored'] %}var(--ember){% else %}var(--text-3){% endif %}"
+        <button class="btn-icon {% if v['monitored'] %}text-ember{% else %}text-muted-3{% endif %}"
                 aria-label="{% if v['monitored'] %}Unmonitor{% else %}Monitor{% endif %}"
                 title="{% if v['monitored'] %}Unmonitor{% else %}Monitor{% endif %}"
                 hx-disabled-elt="this">
@@ -34,11 +33,11 @@
     <td>
       <div class="d-flex align-items-center gap-1">
         {% if vchs %}
-        <i class="bi bi-chevron-right text-xs" style="color:var(--text-3)" id="exp-icon-{{ v['id'] }}"></i>
+        <i class="bi bi-chevron-right text-xs text-muted-3" id="exp-icon-{{ v['id'] }}"></i>
         {% endif %}
         <span class="fw-semibold text-ember">Vol {{ v['volume_num']|vol_display }}</span>
         {% if v['covered_by_pack'] %}
-        <div class="ms-auto" style="font-size:var(--text-2xs); color:var(--sky)">
+        <div class="ms-auto text-2xs text-sky">
           <i class="bi bi-archive"></i>
         </div>
         {% endif %}
@@ -49,13 +48,13 @@
       {% set ch_grab  = vct.get('grabbed', 0) %}
       {% set ch_want  = vct.get('wanted', 0) %}
       <div class="mt-1 ps-3">
-        <div class="d-flex overflow-hidden" style="height:3px; border-radius:2px; background:var(--ink-5); width:70px; gap:1px">
+        <div class="d-flex chapter-mini-bar">
           {% if ch_total > 0 %}
-          <div style="width:{{ (ch_done / ch_total * 100)|int }}%; background:var(--jade)"></div>
-          <div style="width:{{ (ch_grab / ch_total * 100)|int }}%; background:var(--ember)"></div>
+          <div class="chapter-mini-bar-segment is-downloaded" style="--segment-width:{{ (ch_done / ch_total * 100)|int }}%"></div>
+          <div class="chapter-mini-bar-segment is-grabbed" style="--segment-width:{{ (ch_grab / ch_total * 100)|int }}%"></div>
           {% endif %}
         </div>
-        <div class="text-2xs mt-0" style="color:var(--text-3); white-space:nowrap">
+        <div class="text-2xs mt-0 text-muted-3 whitespace-nowrap">
           {% if ch_done == ch_total and ch_total > 0 %}
           <span class="text-jade"><i class="bi bi-check-lg"></i> {{ ch_total }} ch</span>
           {% else %}
@@ -78,24 +77,24 @@
       <span class="badge-status badge-grabbed ms-1 text-2xs text-uppercase">{{ v['language'] }}</span>
       {% endif %}
     </td>
-    <td class="text-xs" style="white-space:nowrap">
+    <td class="text-xs whitespace-nowrap">
       {% if v['grabbed_at'] %}
-      <div style="color:var(--text-2)"><i class="bi bi-arrow-down-short"></i> {{ v['grabbed_at'] | format_date }}</div>
+      <div class="text-muted-2"><i class="bi bi-arrow-down-short"></i> {{ v['grabbed_at'] | format_date }}</div>
       {% endif %}
       {% if v['imported_at'] %}
       <div class="text-jade"><i class="bi bi-check-lg"></i> {{ v['imported_at'] | format_date }}</div>
       {% elif not v['grabbed_at'] %}
-      <span style="color:var(--text-3)">—</span>
+      <span class="text-muted-3">—</span>
       {% endif %}
     </td>
-    <td class="text-xs col-num" style="color:var(--text-2); white-space:nowrap">
+    <td class="text-xs col-num text-muted-2 whitespace-nowrap">
       {{ v['size_bytes']|format_bytes or '—' }}
     </td>
     <td>
       {%- set dl_id = (v['download_id'] or '')|lower -%}
       {% if v['status'] == 'downloaded' %}
         {% if v['import_path'] %}
-        <div class="text-2xs text-jade text-truncate" style="max-width:220px"
+        <div class="text-2xs text-jade text-truncate file-chip-truncate"
              title="{{ v['import_path'] }}"><i class="bi bi-file-earmark-zip me-1"></i>{{ v['import_path'].split('/')[-1] }}</div>
         {% endif %}
         {% if v['release_group'] or v['indexer'] or v['client'] %}
@@ -108,10 +107,10 @@
         {% endif %}
       {% elif v['status'] == 'grabbed' %}
         {% if dl_id and dl_id in review_dl_ids %}
-        <a href="/import" class="badge-status badge-hiatus" style="text-decoration:none"><i class="bi bi-exclamation-circle me-1"></i>Needs Review</a>
+        <a href="/import" class="badge-status badge-hiatus text-decoration-none"><i class="bi bi-exclamation-circle me-1"></i>Needs Review</a>
         {% elif dl_id and dl_id in pending_dl_ids %}
         <span class="badge-status badge-sky">
-          <span class="spinner-border spinner-border-sm me-1" style="width:0.5rem;height:0.5rem;border-width:2px"></span>Awaiting Import
+          <span class="spinner-border spinner-border-sm me-1 spinner-compact"></span>Awaiting Import
         </span>
         {% elif dl_id and dl_id in active_dl_ids %}
           {%- set _stage = dl_stages.get(dl_id, 'downloading') -%}
@@ -134,7 +133,7 @@
         <span class="badge-status badge-stalled"><i class="bi bi-exclamation-diamond me-1"></i>Missing from client</span>
         {% endif %}
       {% else %}
-      <span class="text-xs" style="color:var(--text-3)">—</span>
+      <span class="text-xs text-muted-3">—</span>
       {% endif %}
     </td>
     <td onclick="event.stopPropagation()">
@@ -160,7 +159,7 @@
         </button>
       </form>
       {% elif v['status'] in ('grabbed', 'downloaded') %}
-      <button class="btn-icon" style="color:var(--text-3)"
+      <button class="btn-icon text-muted-3"
               onclick="openSearch({{ s['id'] }}, {{ v['id'] }}, 'Vol {{ v['volume_num']|vol_display }}')"
               title="Search / upgrade" aria-label="Search / upgrade">
         <i class="bi bi-search"></i>
@@ -186,7 +185,7 @@
             hx-target="{{ _hx_target }}"
             hx-swap="outerHTML"
             hx-confirm="Reset to Wanted?">
-        <button class="btn-icon" style="color:var(--text-3)" title="Reset to wanted" aria-label="Reset to wanted" hx-disabled-elt="this">
+        <button class="btn-icon text-muted-3" title="Reset to wanted" aria-label="Reset to wanted" hx-disabled-elt="this">
           <i class="bi bi-arrow-counterclockwise"></i>
         </button>
       </form>
@@ -219,7 +218,7 @@
   {# Chapter pill grid — hidden by default, toggled by toggleChapters() JS #}
   {% if vchs %}
   <tr id="ch-rows-{{ v['id'] }}" style="display:none">
-    <td colspan="7" style="padding:8px 14px 10px 42px; background:rgba(8,8,16,0.4)">
+    <td colspan="7" class="chapter-rows-cell">
       <div class="d-flex flex-wrap gap-1">
         {% for ch in vchs %}
         {% set ch_num = ch | ch_label %}
@@ -240,12 +239,12 @@
              title="Ch {{ ch_num }}{% if ch['title'] %} · {{ ch['title'] }}{% endif %} · wanted">
           {{ ch_num }}
           <span class="ch-pill-actions">
-            <button class="btn-icon" style="width:18px;height:18px;color:var(--ember);font-size:var(--text-xs)" title="Grab" aria-label="Grab chapter {{ ch_num }}"
+            <button class="btn-icon btn-icon-xs text-ember" title="Grab" aria-label="Grab chapter {{ ch_num }}"
                     hx-post="/series/{{ s['id'] }}/chapters/{{ ch['id'] }}/grab"
                     hx-target="{{ _hx_target }}"
                     hx-swap="outerHTML"
                     hx-disabled-elt="this"><i class="bi bi-cloud-download"></i></button>
-            <button class="btn-icon" style="width:18px;height:18px;color:var(--jade);font-size:var(--text-xs)" title="Mark downloaded" aria-label="Mark chapter {{ ch_num }} downloaded"
+            <button class="btn-icon btn-icon-xs text-jade" title="Mark downloaded" aria-label="Mark chapter {{ ch_num }} downloaded"
                     hx-post="/series/{{ s['id'] }}/chapters/{{ ch['id'] }}/mark-downloaded"
                     hx-target="{{ _hx_target }}"
                     hx-swap="outerHTML"
@@ -255,10 +254,10 @@
         {% endif %}
         {% endfor %}
       </div>
-      <div class="mt-1 d-flex gap-3 text-2xs" style="color:var(--text-3)">
-        <span><span class="d-inline-block rounded" style="width:10px;height:10px;background:var(--jade-soft);border:1px solid var(--jade-strong);vertical-align:middle;margin-right:3px"></span>downloaded</span>
-        <span><span class="d-inline-block rounded" style="width:10px;height:10px;background:var(--ember-soft);border:1px solid var(--ember-strong);vertical-align:middle;margin-right:3px"></span>grabbed</span>
-        <span><span class="d-inline-block rounded" style="width:10px;height:10px;background:rgba(240,80,80,0.15);border:1px solid var(--ruby-strong);vertical-align:middle;margin-right:3px"></span>wanted</span>
+      <div class="mt-1 d-flex gap-3 text-2xs text-muted-3">
+        <span><span class="d-inline-block rounded legend-swatch is-downloaded"></span>downloaded</span>
+        <span><span class="d-inline-block rounded legend-swatch is-grabbed"></span>grabbed</span>
+        <span><span class="d-inline-block rounded legend-swatch is-wanted"></span>wanted</span>
       </div>
     </td>
   </tr>
