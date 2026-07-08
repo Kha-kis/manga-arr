@@ -58,33 +58,34 @@
       <div class="panel-body">
         <div class="row g-2 text-center mb-3">
           <div class="col-3">
-            <div class="font-mono tabular-num fw-bold text-ember" style="font-size:1.4rem">{{ volumes_stats.total or 0 }}</div>
+            <div class="font-mono tabular-num fw-bold text-ember stats-mini-value">{{ volumes_stats.total or 0 }}</div>
             <div class="stats-mini-lbl">Tracked</div>
           </div>
           <div class="col-3">
-            <div class="font-mono tabular-num fw-bold text-jade" style="font-size:1.4rem">{{ volumes_stats.downloaded or 0 }}</div>
+            <div class="font-mono tabular-num fw-bold text-jade stats-mini-value">{{ volumes_stats.downloaded or 0 }}</div>
             <div class="stats-mini-lbl">Have</div>
           </div>
           <div class="col-3">
-            <div class="font-mono tabular-num fw-bold text-gold" style="font-size:1.4rem">{{ volumes_stats.grabbed or 0 }}</div>
+            <div class="font-mono tabular-num fw-bold text-gold stats-mini-value">{{ volumes_stats.grabbed or 0 }}</div>
             <div class="stats-mini-lbl">Grabbed</div>
           </div>
           <div class="col-3">
-            <div class="font-mono tabular-num fw-bold text-ruby" style="font-size:1.4rem">{{ volumes_stats.wanted or 0 }}</div>
+            <div class="font-mono tabular-num fw-bold text-ruby stats-mini-value">{{ volumes_stats.wanted or 0 }}</div>
             <div class="stats-mini-lbl">Wanted</div>
           </div>
         </div>
         {% if volumes_stats.total and volumes_stats.total > 0 %}
         {% set pct = ((volumes_stats.downloaded or 0) / volumes_stats.total * 100)|int %}
-        <div style="height:8px;background:var(--ink-5);border-radius:4px;overflow:hidden">
-          <div style="width:{{ pct }}%;height:100%;border-radius:4px;background:{% if pct == 100 %}var(--jade){% else %}var(--ember){% endif %};transition:width .3s"></div>
-        </div>
-        <div class="text-center mt-1" style="font-size:var(--text-sm); color:var(--text-2)">
+        <progress class="stats-progress{% if pct == 100 %} is-jade{% endif %}"
+                  max="100"
+                  value="{{ pct }}"
+                  aria-label="Downloaded volume completion"></progress>
+        <div class="text-center mt-1 text-sm stats-muted">
           {{ pct }}% complete
         </div>
         {% endif %}
         {% if volumes_stats.total_bytes %}
-        <div class="text-center mt-2" style="font-size:var(--text-base); color:var(--text-2)">
+        <div class="text-center mt-2 stats-muted">
           <i class="bi bi-hdd me-1"></i>{{ volumes_stats.total_bytes|format_bytes }} on disk
         </div>
         {% endif %}
@@ -109,23 +110,26 @@
           {% for etype, (badge, icon) in event_styles.items() %}
           {% set cnt = hist_map.get(etype, 0) %}
           <div class="d-flex align-items-center gap-2">
-            <span class="badge-status {{ badge }}" style="width:95px; text-align:center">
+            <span class="badge-status {{ badge }} stats-event-badge">
               <i class="bi {{ icon }} me-1"></i>{{ etype|replace('_', ' ')|title }}
             </span>
-            <div style="flex:1; height:6px; background:var(--ink-5); border-radius:3px; overflow:hidden">
-              {% if hist_map and hist_map.values()|list|sum > 0 %}
-              {% set max_val = hist_map.values()|list|max %}
-              {% set bar_pct = (cnt / max_val * 100)|int if max_val > 0 else 0 %}
-              <div style="width:{{ bar_pct }}%; height:100%; background:var(--ember); border-radius:3px"></div>
-              {% endif %}
-            </div>
-            <span style="font-size:var(--text-base); color:var(--text-2); min-width:30px; text-align:right">{{ cnt }}</span>
+            {% if hist_map and hist_map.values()|list|sum > 0 %}
+            {% set max_val = hist_map.values()|list|max %}
+            {% set bar_pct = (cnt / max_val * 100)|int if max_val > 0 else 0 %}
+            {% else %}
+            {% set bar_pct = 0 %}
+            {% endif %}
+            <progress class="stats-progress is-thin"
+                      max="100"
+                      value="{{ bar_pct }}"
+                      aria-label="{{ etype|replace('_', ' ')|title }} share"></progress>
+            <span class="stats-count">{{ cnt }}</span>
           </div>
           {% endfor %}
         </div>
         <div class="mt-3">
           <a href="/history" class="btn btn-outline-ember btn-sm"><i class="bi bi-clock-history me-1"></i>View Full History</a>
-          <span class="ms-3" style="font-size:var(--text-sm);color:var(--text-2)">
+          <span class="ms-3 text-sm stats-muted">
             <i class="bi bi-hourglass me-1"></i>{{ pending_count }} pending
             &nbsp;·&nbsp;
             <i class="bi bi-x-octagon me-1"></i>{{ bl_count }} blocklisted
@@ -146,13 +150,16 @@
     <div id="grab-chart"
          role="img"
          aria-label="Bar chart of daily grabs over the last 30 days. Total {{ _total_grabs }} grabs. Peak {{ _peak_day.cnt }} on {{ _peak_day.day }}."
-         style="height:120px; display:flex; align-items:flex-end; gap:3px; padding:4px 0">
+         class="stats-chart">
       {% set max_cnt = daily_grabs|map(attribute='cnt')|list|max if daily_grabs else 1 %}
       {% for day in daily_grabs %}
       {% set bar_h = ((day['cnt'] / max_cnt) * 100)|int %}
-      <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; cursor:default"
+      <div class="stats-chart-bar-wrap"
            title="{{ day['day'] }}: {{ day['cnt'] }} grab{% if day['cnt'] != 1 %}s{% endif %}">
-        <div class="bar-hover" style="width:100%; background:var(--ember); border-radius:2px 2px 0 0; height:{{ bar_h }}%; min-height:2px"></div>
+        <progress class="bar-hover stats-chart-bar"
+                  max="100"
+                  value="{{ bar_h }}"
+                  aria-label="{{ day['day'] }}: {{ day['cnt'] }} grab{% if day['cnt'] != 1 %}s{% endif %}"></progress>
       </div>
       {% endfor %}
     </div>
@@ -175,11 +182,12 @@
         {% set max_idx = top_indexers[0]['cnt'] if top_indexers else 1 %}
         {% for row in top_indexers %}
         <div class="d-flex align-items-center gap-2 mb-2">
-          <span class="badge-status badge-indexer" style="min-width:80px; text-align:center">{{ row['indexer'] }}</span>
-          <div style="flex:1; height:6px; background:var(--ink-5); border-radius:3px; overflow:hidden">
-            <div style="width:{{ ((row['cnt'] / max_idx) * 100)|int }}%; height:100%; background:var(--jade); border-radius:3px"></div>
-          </div>
-          <span style="font-size:var(--text-sm); color:var(--text-2); min-width:28px; text-align:right">{{ row['cnt'] }}</span>
+          <span class="badge-status badge-indexer stats-indexer-badge">{{ row['indexer'] }}</span>
+          <progress class="stats-progress is-thin is-jade"
+                    max="100"
+                    value="{{ ((row['cnt'] / max_idx) * 100)|int }}"
+                    aria-label="{{ row['indexer'] }} grab share"></progress>
+          <span class="stats-count-sm">{{ row['cnt'] }}</span>
         </div>
         {% endfor %}
       </div>
@@ -195,13 +203,13 @@
         {% set max_sc = top_series[0]['cnt'] if top_series else 1 %}
         {% for row in top_series %}
         <div class="d-flex align-items-center gap-2 mb-2">
-          <a href="/series/{{ row['id'] }}" class="text-ember"
-             style="font-size:var(--text-base); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1"
+          <a href="/series/{{ row['id'] }}" class="text-ember stats-series-link"
              title="{{ row['title'] }}">{{ row['title'] }}</a>
-          <div style="width:80px; height:6px; background:var(--ink-5); border-radius:3px; overflow:hidden; flex-shrink:0">
-            <div style="width:{{ ((row['cnt'] / max_sc) * 100)|int }}%; height:100%; background:var(--gold); border-radius:3px"></div>
-          </div>
-          <span style="font-size:var(--text-sm); color:var(--text-2); min-width:50px; text-align:right; flex-shrink:0">
+          <progress class="stats-progress is-thin is-gold stats-series-progress"
+                    max="100"
+                    value="{{ ((row['cnt'] / max_sc) * 100)|int }}"
+                    aria-label="{{ row['title'] }} activity share"></progress>
+          <span class="stats-count-wide">
             {{ row['cnt'] }} grab{% if row['cnt'] != 1 %}s{% endif %}
           </span>
         </div>
@@ -222,17 +230,16 @@
       {% for d in disk_info %}
       <div class="col-12 col-md-6">
         <div class="d-flex justify-content-between mb-1">
-          <span style="font-size:var(--text-base); font-weight:600">{{ d['label'] }}</span>
-          <span style="font-size:var(--text-sm); color:var(--text-2)">
+          <span class="stats-disk-label">{{ d['label'] }}</span>
+          <span class="stats-disk-meta">
             {{ d['used']|format_bytes }} / {{ d['total']|format_bytes }} ({{ d['pct'] }}%)
           </span>
         </div>
-        <div style="height:10px; background:var(--ink-5); border-radius:var(--radius-xs); overflow:hidden">
-          <div style="width:{{ d['pct'] }}%; height:100%; border-radius:var(--radius-xs);
-                background:{% if d['pct'] > 90 %}var(--ruby){% elif d['pct'] > 75 %}var(--gold){% else %}var(--ember){% endif %}">
-          </div>
-        </div>
-        <div style="font-size:var(--text-xs); color:var(--text-2); margin-top:2px">
+        <progress class="stats-progress is-disk{% if d['pct'] > 90 %} is-ruby{% elif d['pct'] > 75 %} is-gold{% endif %}"
+                  max="100"
+                  value="{{ d['pct'] }}"
+                  aria-label="{{ d['label'] }} disk usage"></progress>
+        <div class="stats-disk-free">
           {{ d['free']|format_bytes }} free
         </div>
       </div>
