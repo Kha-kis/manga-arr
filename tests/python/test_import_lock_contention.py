@@ -19,6 +19,7 @@ mid-flight, a concurrent SQLite writer with a short busy_timeout must
 commit successfully. Without the fix the probe would block on the
 held write lock until busy_timeout elapsed and raise OperationalError.
 """
+
 import asyncio
 import os
 import sqlite3
@@ -58,6 +59,7 @@ def lock_env(tmp_path, monkeypatch):
 
     async def _noop_async(*a, **kw):
         return None
+
     monkeypatch.setattr(main, "notify_discord", _noop_async)
     monkeypatch.setattr(main, "trigger_komga_scan", _noop_async)
     monkeypatch.setattr(main, "broadcast_queue_event", _noop_async)
@@ -144,13 +146,11 @@ def test_phase2_does_not_hold_db_write_lock(lock_env, monkeypatch):
     1-second busy_timeout and raises OperationalError.
     Post-fix: probe succeeds immediately.
     """
-    import import_pipeline
+    import import_staging
+    import import_execute
 
     qid, sid = _seed(lock_env["db_path"], lock_env["src_root"])
 
-    # Look up the file_id so we can target it with a volume_overrides
-    # mapping. The override forces an UPDATE on import_queue_files
-    # before file I/O - which on pre-fix code escalates the write lock.
     with sqlite3.connect(lock_env["db_path"]) as c:
         file_id = c.execute(
             "SELECT id FROM import_queue_files WHERE queue_id=?", (qid,)
@@ -159,20 +159,19 @@ def test_phase2_does_not_hold_db_write_lock(lock_env, monkeypatch):
     in_phase_2 = threading.Event()
     resume_phase_2 = threading.Event()
 
-    real_inject = import_pipeline._try_inject_comicinfo
+    real_inject = import_staging._try_inject_comicinfo
 
     def _slow_inject(*args, **kwargs):
         in_phase_2.set()
-        # Wait for the test to verify the lock is free.
         if not resume_phase_2.wait(timeout=10):
             raise TimeoutError("test never resumed Phase 2")
         return real_inject(*args, **kwargs)
 
-    monkeypatch.setattr(import_pipeline, "_try_inject_comicinfo", _slow_inject)
+    monkeypatch.setattr(import_staging, "_try_inject_comicinfo", _slow_inject)
 
     async def _drive():
         import_task = asyncio.create_task(
-            import_pipeline._execute_import_impl(
+            import_execute._execute_import_impl(
                 qid,
                 volume_overrides={file_id: 2.0},
             )
@@ -186,9 +185,7 @@ def test_phase2_does_not_hold_db_write_lock(lock_env, monkeypatch):
             # IMMEDIATE would block on busy_timeout (=1s) and then
             # raise OperationalError: database is locked.
             with sqlite3.connect(lock_env["db_path"], timeout=1.0) as c:
-                c.execute(
-                    "UPDATE series SET title='probe' WHERE id=?", (sid,)
-                )
+                c.execute("UPDATE series SET title='probe' WHERE id=?", (sid,))
                 c.commit()
 
         try:
@@ -204,7 +201,87 @@ def test_phase2_does_not_hold_db_write_lock(lock_env, monkeypatch):
     # Confirm the probe actually committed.
     with sqlite3.connect(lock_env["db_path"]) as c:
         c.row_factory = sqlite3.Row
-        title = c.execute(
-            "SELECT title FROM series WHERE id=?", (sid,)
-        ).fetchone()["title"]
+        title = c.execute("SELECT title FROM series WHERE id=?", (sid,)).fetchone()[
+            "title"
+        ]
     assert title == "probe", "probe write did not commit"
+
+
+def test_queue_import_does_not_hold_write_lock_while_scanning(lock_env, monkeypatch):
+    """_queue_import must not hold a write transaction while parsing files.
+
+    The queue builder used to insert the import_queue parent row before
+    walking/parsing files. Because callers wrap it in get_db(), that insert
+    opened a write transaction until the scan finished. This pins the
+    intended shape: file classification can be slow, but concurrent writers
+    still get through because DB inserts happen after classification.
+    """
+    import main
+    import import_queue
+
+    src_dir = os.path.join(lock_env["src_root"], "Test Series v01")
+    os.makedirs(src_dir)
+    src_file = os.path.join(src_dir, "Test Series v01.cbz")
+    with open(src_file, "wb") as f:
+        f.write(b"PK\x03\x04" + b"x" * 200)
+
+    with sqlite3.connect(lock_env["db_path"]) as c:
+        c.execute(
+            "INSERT INTO series(title, search_pattern, monitored, root_folder_id)"
+            " VALUES(?,?,1,1)",
+            ("Test Series", "test-series"),
+        )
+        sid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+        c.commit()
+
+    in_scan = threading.Event()
+    resume_scan = threading.Event()
+    real_read_comic_info = import_queue.read_comic_info
+
+    def _slow_read_comic_info(*args, **kwargs):
+        in_scan.set()
+        if not resume_scan.wait(timeout=10):
+            raise TimeoutError("test never resumed queue scan")
+        return real_read_comic_info(*args, **kwargs)
+
+    monkeypatch.setattr(import_queue, "read_comic_info", _slow_read_comic_info)
+
+    worker_error: list[BaseException] = []
+    worker_result: list[tuple[int | None, bool]] = []
+
+    def _drive_queue_import():
+        try:
+            with main.get_db() as db:
+                worker_result.append(
+                    import_queue._queue_import(
+                        db,
+                        sid,
+                        "dl-queue-lock",
+                        "Test Series v01",
+                        "magnet:queue-lock",
+                        1.0,
+                        src_dir,
+                    )
+                )
+        except BaseException as exc:
+            worker_error.append(exc)
+
+    worker = threading.Thread(target=_drive_queue_import)
+    worker.start()
+    try:
+        assert in_scan.wait(timeout=10), "queue import never reached ComicInfo scan"
+
+        with sqlite3.connect(lock_env["db_path"], timeout=1.0) as c:
+            c.execute("UPDATE series SET title='queue probe' WHERE id=?", (sid,))
+            c.commit()
+    finally:
+        resume_scan.set()
+        worker.join(timeout=10)
+
+    assert not worker.is_alive(), "queue import worker did not finish"
+    assert not worker_error, f"queue import failed: {worker_error!r}"
+    assert worker_result and worker_result[0][0] is not None
+
+    with sqlite3.connect(lock_env["db_path"]) as c:
+        title = c.execute("SELECT title FROM series WHERE id=?", (sid,)).fetchone()[0]
+    assert title == "queue probe", "probe write did not commit"

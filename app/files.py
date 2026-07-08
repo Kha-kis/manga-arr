@@ -30,6 +30,7 @@ import zipfile
 
 from parsing import vol_num_to_display
 from shared import get_cfg
+from events import log_event
 
 
 MANGA_EXTENSIONS = {'.cbz', '.cbr', '.zip', '.rar', '.pdf', '.epub', '.mobi'}
@@ -470,7 +471,7 @@ def convert_cbr_to_cbz(cbr_path: str) -> str | None:
     try:
         import rarfile as _rarfile
     except ImportError:
-        print("[CBR→CBZ] rarfile not available; cannot convert CBR")
+        log_event("error", "[CBR→CBZ] rarfile not available; cannot convert CBR")
         return None
 
     cbz_path = os.path.splitext(cbr_path)[0] + '.cbz'
@@ -489,7 +490,7 @@ def convert_cbr_to_cbz(cbr_path: str) -> str | None:
                 zf.writestr(name, data)
         return cbz_path
     except Exception as e:
-        print(f"[CBR→CBZ] Failed to convert {cbr_path}: {e}")
+        log_event("error", f"[CBR→CBZ] Failed to convert {cbr_path}: {e}")
         if os.path.exists(cbz_path):
             try:
                 os.remove(cbz_path)
@@ -577,7 +578,7 @@ def pack_image_dir_to_cbz(src_dir: str, dst_cbz: str) -> int | None:
                 zf.write(os.path.join(src_dir, f), arcname=f)
         return os.path.getsize(dst_cbz)
     except Exception as e:
-        print(f"[auto-pack] Failed to pack {src_dir} → {dst_cbz}: {e}")
+        log_event("error", f"[auto-pack] Failed to pack {src_dir} → {dst_cbz}: {e}")
         # Clean up partial archive on failure
         try:
             if os.path.exists(dst_cbz):
@@ -602,10 +603,16 @@ def _maybe_convert_to_cbz(path: str) -> str:
         if os.path.abspath(cbz_path) != os.path.abspath(path):
             try:
                 os.remove(path)
-                print(f"[CBR→CBZ] Converted and removed original: {os.path.basename(path)}")
+                log_event(
+                    "import",
+                    f"[CBR→CBZ] Converted and removed original: {os.path.basename(path)}",
+                )
             except OSError as e:
-                print(f"[CBR→CBZ] Converted but could not remove original: {e}")
+                log_event("error", f"[CBR→CBZ] Converted but could not remove original: {e}")
         else:
-            print(f"[CBR→CBZ] Converted in-place (was CBR with .cbz extension): {os.path.basename(path)}")
+            log_event(
+                "import",
+                f"[CBR→CBZ] Converted in-place (was CBR with .cbz extension): {os.path.basename(path)}",
+            )
         return cbz_path
     return path

@@ -2,6 +2,7 @@
 No downloading happens here. This is metadata only: chapter UUIDs, volume/chapter
 numbers, scanlation groups, and page counts stored in mangadex_chapters table.
 """
+
 import asyncio
 import logging
 import time
@@ -15,15 +16,26 @@ from shared import get_cfg, get_db, timed_block
 log = logging.getLogger(__name__)
 
 MANGADEX_API = "https://api.mangadex.org"
-_PAGE_LIMIT   = 500          # MangaDex max per request
-_RATE_SLEEP   = 1.0          # seconds between paginated requests
+_PAGE_LIMIT = 500  # MangaDex max per request
+_RATE_SLEEP = 1.0  # seconds between paginated requests
 
 # Groups known to upload official/publisher content on MangaDex.
 # Used when source_type='official_only' to filter results.
 KNOWN_OFFICIAL_GROUPS = {
-    "official", "viz media", "viz", "kodansha", "square enix", "shueisha",
-    "yen press", "seven seas", "dark horse", "tokyopop", "mangaplus",
-    "manga plus", "shonen jump", "jump+",
+    "official",
+    "viz media",
+    "viz",
+    "kodansha",
+    "square enix",
+    "shueisha",
+    "yen press",
+    "seven seas",
+    "dark horse",
+    "tokyopop",
+    "mangaplus",
+    "manga plus",
+    "shonen jump",
+    "jump+",
 }
 
 router = APIRouter()
@@ -46,6 +58,7 @@ async def _get_sync_lock(series_id: int) -> asyncio.Lock:
 
 # ── Core sync ─────────────────────────────────────────────────────────────────
 
+
 async def sync_mangadex_chapters(series_id: int) -> dict:
     """
     Fetch the full chapter feed from MangaDex for a series, paginated 500/page.
@@ -61,19 +74,22 @@ async def sync_mangadex_chapters(series_id: int) -> dict:
 
 async def _sync_mangadex_chapters_impl(series_id: int) -> dict:
     with get_db() as db:
-        row = db.execute("SELECT mangadex_id, ddl_language FROM series WHERE id=?",
-                         (series_id,)).fetchone()
-    if not row or not row['mangadex_id']:
+        row = db.execute(
+            "SELECT mangadex_id, ddl_language FROM series WHERE id=?", (series_id,)
+        ).fetchone()
+    if not row or not row["mangadex_id"]:
         raise ValueError(f"Series {series_id} has no mangadex_id")
 
-    language = row['ddl_language'] or get_cfg('ddl_language', 'en')
-    mangadex_id = row['mangadex_id']
+    language = row["ddl_language"] or get_cfg("ddl_language", "en")
+    mangadex_id = row["mangadex_id"]
 
     all_chapters: list[dict] = []
     offset = 0
     total_remote = None
 
-    async with httpx.AsyncClient(timeout=20, headers={"User-Agent": "Mangarr/1.0"}) as client:
+    async with httpx.AsyncClient(
+        timeout=20, headers={"User-Agent": "Mangarr/1.0"}
+    ) as client:
         while True:
             params = {
                 "limit": _PAGE_LIMIT,
@@ -120,27 +136,39 @@ async def _sync_mangadex_chapters_impl(series_id: int) -> dict:
     # Instrumentation for issue #31 follow-up A: this block holds a single
     # write transaction across N chapter upserts. For large series (200+
     # chapters) it can dominate the event loop and stall other DB work.
-    with timed_block("sync_mangadex_chapters.db_upsert",
-                     series_id=series_id, rows=len(all_chapters)), \
-         get_db() as db:
+    with (
+        timed_block(
+            "sync_mangadex_chapters.db_upsert",
+            series_id=series_id,
+            rows=len(all_chapters),
+        ),
+        get_db() as db,
+    ):
         for item in all_chapters:
             parsed = _parse_chapter(item, series_id)
-            if parsed['is_external']:
+            if parsed["is_external"]:
                 external_skipped += 1
                 # Still store it so we can show availability (just can't grab it)
             existing = db.execute(
                 "SELECT id FROM mangadex_chapters WHERE mangadex_chapter_id=?",
-                (parsed['mangadex_chapter_id'],)
+                (parsed["mangadex_chapter_id"],),
             ).fetchone()
             if existing:
                 db.execute(
                     "UPDATE mangadex_chapters SET chapter_num=?,volume_num=?,title=?,"
                     " pages=?,scanlation_group=?,language=?,is_external=?,publish_at=?,"
                     " synced_at=datetime('now') WHERE mangadex_chapter_id=?",
-                    (parsed['chapter_num'], parsed['volume_num'], parsed['title'],
-                     parsed['pages'], parsed['scanlation_group'], parsed['language'],
-                     parsed['is_external'], parsed['publish_at'],
-                     parsed['mangadex_chapter_id'])
+                    (
+                        parsed["chapter_num"],
+                        parsed["volume_num"],
+                        parsed["title"],
+                        parsed["pages"],
+                        parsed["scanlation_group"],
+                        parsed["language"],
+                        parsed["is_external"],
+                        parsed["publish_at"],
+                        parsed["mangadex_chapter_id"],
+                    ),
                 )
                 updated += 1
             else:
@@ -149,15 +177,29 @@ async def _sync_mangadex_chapters_impl(series_id: int) -> dict:
                     " (series_id,mangadex_chapter_id,chapter_num,volume_num,title,"
                     "  pages,scanlation_group,language,is_external,publish_at)"
                     " VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (series_id, parsed['mangadex_chapter_id'], parsed['chapter_num'],
-                     parsed['volume_num'], parsed['title'], parsed['pages'],
-                     parsed['scanlation_group'], parsed['language'],
-                     parsed['is_external'], parsed['publish_at'])
+                    (
+                        series_id,
+                        parsed["mangadex_chapter_id"],
+                        parsed["chapter_num"],
+                        parsed["volume_num"],
+                        parsed["title"],
+                        parsed["pages"],
+                        parsed["scanlation_group"],
+                        parsed["language"],
+                        parsed["is_external"],
+                        parsed["publish_at"],
+                    ),
                 )
                 added += 1
 
-    log.info("MangaDex sync series=%d lang=%s: +%d updated=%d external=%d",
-             series_id, language, added, updated, external_skipped)
+    log.info(
+        "MangaDex sync series=%d lang=%s: +%d updated=%d external=%d",
+        series_id,
+        language,
+        added,
+        updated,
+        external_skipped,
+    )
     return {
         "added": added,
         "updated": updated,
@@ -194,45 +236,49 @@ def _parse_chapter(item: dict, series_id: int) -> dict:
 
     return {
         "mangadex_chapter_id": item["id"],
-        "series_id":           series_id,
-        "chapter_num":         chapter_num,
-        "volume_num":          volume_num,
-        "title":               attrs.get("title") or None,
-        "pages":               attrs.get("pages", 0) or 0,
-        "scanlation_group":    group_name,
-        "language":            attrs.get("translatedLanguage", "en"),
-        "is_external":         1 if attrs.get("externalUrl") else 0,
-        "publish_at":          attrs.get("publishAt"),
+        "series_id": series_id,
+        "chapter_num": chapter_num,
+        "volume_num": volume_num,
+        "title": attrs.get("title") or None,
+        "pages": attrs.get("pages", 0) or 0,
+        "scanlation_group": group_name,
+        "language": attrs.get("translatedLanguage", "en"),
+        "is_external": 1 if attrs.get("externalUrl") else 0,
+        "publish_at": attrs.get("publishAt"),
     }
 
 
 # ── Query helpers used by other modules ──────────────────────────────────────
 
-def get_chapter_availability(series_id: int, language: str = None) -> dict:
+
+def get_chapter_availability(series_id: int, language: str | None = None) -> dict:
     """
     Returns {volume_num: {'chapter_count': N, 'has_external': bool, 'groups': [...]}}
     volume_num None = chapters with no volume assignment.
     """
-    lang = language or get_cfg('ddl_language', 'en')
+    lang = language or get_cfg("ddl_language", "en")
     with get_db() as db:
         rows = db.execute(
             "SELECT volume_num, scanlation_group, is_external, COUNT(*) as cnt"
             " FROM mangadex_chapters"
             " WHERE series_id=? AND language=?"
             " GROUP BY volume_num, scanlation_group, is_external",
-            (series_id, lang)
+            (series_id, lang),
         ).fetchall()
 
     result: dict = {}
     for row in rows:
-        key = row['volume_num']
+        key = row["volume_num"]
         if key not in result:
-            result[key] = {'chapter_count': 0, 'has_external': False, 'groups': []}
-        result[key]['chapter_count'] += row['cnt']
-        if row['is_external']:
-            result[key]['has_external'] = True
-        if row['scanlation_group'] and row['scanlation_group'] not in result[key]['groups']:
-            result[key]['groups'].append(row['scanlation_group'])
+            result[key] = {"chapter_count": 0, "has_external": False, "groups": []}
+        result[key]["chapter_count"] += row["cnt"]
+        if row["is_external"]:
+            result[key]["has_external"] = True
+        if (
+            row["scanlation_group"]
+            and row["scanlation_group"] not in result[key]["groups"]
+        ):
+            result[key]["groups"].append(row["scanlation_group"])
     return result
 
 
@@ -261,44 +307,50 @@ def select_best_chapters_for_volume(
                 "SELECT * FROM mangadex_chapters"
                 " WHERE series_id=? AND volume_num IS NULL AND language=? AND is_external=0"
                 " ORDER BY chapter_num ASC, pages DESC",
-                (series_id, language)
+                (series_id, language),
             ).fetchall()
         else:
             rows = db.execute(
                 "SELECT * FROM mangadex_chapters"
                 " WHERE series_id=? AND volume_num=? AND language=? AND is_external=0"
                 " ORDER BY chapter_num ASC, pages DESC",
-                (series_id, volume_num, language)
+                (series_id, volume_num, language),
             ).fetchall()
 
     rows = [dict(r) for r in rows]
 
     # Apply source_type filter
-    if source_type == 'official_only':
-        official = [r for r in rows if (r.get('scanlation_group') or '').lower()
-                    in KNOWN_OFFICIAL_GROUPS]
+    if source_type == "official_only":
+        official = [
+            r
+            for r in rows
+            if (r.get("scanlation_group") or "").lower() in KNOWN_OFFICIAL_GROUPS
+        ]
         if official:
             rows = official
-    elif source_type == 'fan_only':
-        rows = [r for r in rows if (r.get('scanlation_group') or '').lower()
-                not in KNOWN_OFFICIAL_GROUPS]
+    elif source_type == "fan_only":
+        rows = [
+            r
+            for r in rows
+            if (r.get("scanlation_group") or "").lower() not in KNOWN_OFFICIAL_GROUPS
+        ]
 
     # Group by chapter_num, pick best per chapter
     chapter_map: dict[float | None, list[dict]] = {}
     for row in rows:
-        key = row['chapter_num']
+        key = row["chapter_num"]
         chapter_map.setdefault(key, []).append(row)
 
     preferred_lower = [g.lower() for g in preferred_groups]
 
     def _rank(ch: dict) -> tuple:
-        group = (ch.get('scanlation_group') or '').lower()
+        group = (ch.get("scanlation_group") or "").lower()
         pref_score = 0
         for i, pg in enumerate(preferred_lower):
             if pg in group or group in pg:
                 pref_score = len(preferred_lower) - i
                 break
-        return (pref_score, ch.get('pages', 0), ch.get('publish_at') or '')
+        return (pref_score, ch.get("pages", 0), ch.get("publish_at") or "")
 
     best: list[dict] = []
     for ch_num in sorted(chapter_map.keys(), key=lambda x: (x is None, x or 0)):
@@ -309,6 +361,7 @@ def select_best_chapters_for_volume(
 
 
 # ── Router endpoints ──────────────────────────────────────────────────────────
+
 
 @router.post("/api/series/{series_id}/mangadex/sync")
 async def api_sync_chapters(series_id: int):
@@ -333,20 +386,22 @@ async def api_availability(series_id: int):
 
 
 @router.get("/api/series/{series_id}/mangadex/chapters")
-async def api_chapters(series_id: int, volume_num: float = None, language: str = None):
+async def api_chapters(
+    series_id: int, volume_num: float | None = None, language: str | None = None
+):
     """List raw mangadex_chapters rows for a series (optionally filtered)."""
-    lang = language or get_cfg('ddl_language', 'en')
+    lang = language or get_cfg("ddl_language", "en")
     with get_db() as db:
         if volume_num is not None:
             rows = db.execute(
                 "SELECT * FROM mangadex_chapters WHERE series_id=? AND volume_num=? AND language=?"
                 " ORDER BY chapter_num ASC",
-                (series_id, volume_num, lang)
+                (series_id, volume_num, lang),
             ).fetchall()
         else:
             rows = db.execute(
                 "SELECT * FROM mangadex_chapters WHERE series_id=? AND language=?"
                 " ORDER BY volume_num ASC, chapter_num ASC",
-                (series_id, lang)
+                (series_id, lang),
             ).fetchall()
     return JSONResponse([dict(r) for r in rows])

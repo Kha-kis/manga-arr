@@ -35,6 +35,7 @@ from parsing import (
     is_complete_pack,
     is_foreign_language,
 )
+from events import log_event
 from shared import from_json as _cfj, get_cfg, get_db
 
 
@@ -74,7 +75,7 @@ def score_release(title: str, series_id: int | None = None,
                         except (TypeError, ValueError):
                             pass
         except Exception as e:
-            print(f"[score_release] language profile lookup failed: {e}")
+            log_event("error", f"[score_release] language profile lookup failed: {e}")
 
     if _series_lang_profile_id is None and is_foreign_language(title):
         return -999
@@ -90,7 +91,7 @@ def score_release(title: str, series_id: int | None = None,
                 ).fetchall()]
                 profile_score = score_from_release_profiles(title, _rp_tags, _rp_db)
         except Exception as e:
-            print(f"[score_release] release profile scoring failed: {e}")
+            log_event("error", f"[score_release] release profile scoring failed: {e}")
 
     if profile_score is not None:
         if profile_score <= -1000:
@@ -125,7 +126,7 @@ def score_release(title: str, series_id: int | None = None,
                 if _s_bg and _s_bg['blocked_groups']:
                     blocked_groups += [g.strip().lower() for g in json.loads(_s_bg['blocked_groups']) if g.strip()]
         except Exception as e:
-            print(f"[score_release] blocked groups lookup failed: {e}")
+            log_event("error", f"[score_release] blocked groups lookup failed: {e}")
     for grp in blocked_groups:
         if grp in t:
             return -999
@@ -147,7 +148,7 @@ def score_release(title: str, series_id: int | None = None,
                     elif _st == 'fan_only' and is_official_release(title):
                         return -999
         except Exception as e:
-            print(f"[score_release] source type check failed: {e}")
+            log_event("error", f"[score_release] source type check failed: {e}")
 
     # ── Required source (strict name match) ───────────────────────────────────
     # If set, only releases whose title contains this exact string are grabbed.
@@ -163,7 +164,7 @@ def score_release(title: str, series_id: int | None = None,
                     if _req_sc and _req_sc not in t:
                         return -999
         except Exception as e:
-            print(f"[score_release] required source check failed: {e}")
+            log_event("error", f"[score_release] required source check failed: {e}")
 
     # ── Language profile check ────────────────────────────────────────────────
     if _series_lang_profile_id is not None:
@@ -174,7 +175,7 @@ def score_release(title: str, series_id: int | None = None,
             if not _lp_allowed:
                 return -9999
         except Exception as e:
-            print(f"[score_release] language profile check failed: {e}")
+            log_event("error", f"[score_release] language profile check failed: {e}")
 
     # Preferred release groups — global + per-series boost
     pref_groups = [g.strip().lower() for g in get_cfg('preferred_groups', '').split(',') if g.strip()]
@@ -185,7 +186,7 @@ def score_release(title: str, series_id: int | None = None,
                 if _s_pg and _s_pg['preferred_groups']:
                     pref_groups += [g.strip().lower() for g in json.loads(_s_pg['preferred_groups']) if g.strip()]
         except Exception as e:
-            print(f"[score_release] preferred groups lookup failed: {e}")
+            log_event("error", f"[score_release] preferred groups lookup failed: {e}")
     for grp in pref_groups:
         if grp in t:
             score += 15
@@ -224,7 +225,7 @@ def score_release(title: str, series_id: int | None = None,
                 if _op_row and _op_row['omnibus_preference']:
                     _omnibus_pref = _op_row['omnibus_preference']
         except Exception as e:
-            print(f"[score_release] omnibus preference lookup failed: {e}")
+            log_event("error", f"[score_release] omnibus preference lookup failed: {e}")
 
     if _omnibus_pref == 'only_individual':
         # Reject any omnibus/multi-volume release
@@ -288,7 +289,7 @@ def score_release(title: str, series_id: int | None = None,
                                             indexer=indexer, language=language)
         score += cf_score
     except Exception as e:
-        print(f"[score_release] custom format scoring failed: {e}")
+        log_event("error", f"[score_release] custom format scoring failed: {e}")
 
     return score
 

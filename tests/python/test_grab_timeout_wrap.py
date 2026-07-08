@@ -1,6 +1,7 @@
 """PR 4b: grab_item wraps grab_url in asyncio.wait_for so an indexer
 or client that hangs can't pin a URL in _GRABBING_URLS indefinitely.
 On timeout, the URL is released and a grab_timeout event is logged."""
+
 import asyncio
 import os
 import sqlite3
@@ -17,8 +18,10 @@ import conftest  # noqa: F401
 @pytest.fixture
 def env():
     import main, shared, security
+
     db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    db.close(); os.unlink(db.name)
+    db.close()
+    os.unlink(db.name)
     key_dir = tempfile.mkdtemp(prefix="mangarr-grab-keys-")
 
     orig_main_db = main.DB_PATH
@@ -55,34 +58,34 @@ def env():
 
 def test_grab_url_timeout_returns_false_and_releases_url(env):
     import main
+    import grab_core
 
     async def _hanging_grab(*a, **kw):
-        # Simulate a grab_url that never returns
         await asyncio.sleep(60)
 
     item = {
-        'url': 'https://example.test/hang.torrent',
-        'title': 'HangTest vol 01',
-        'protocol': 'torrent',
+        "url": "https://example.test/hang.torrent",
+        "title": "HangTest vol 01",
+        "protocol": "torrent",
     }
 
     async def _run():
-        # Patch wait_for to use a short timeout so the test doesn't hang for 45s.
-        # Our production code asks for timeout=45, so we stub it via monkey-patching
-        # asyncio.wait_for to override the timeout argument.
         original = asyncio.wait_for
+
         async def _short_wait_for(coro, timeout=None):
             return await original(coro, timeout=0.1)
-        import grab
-        with patch.object(grab, 'grab_url', _hanging_grab), \
-             patch.object(grab.asyncio, 'wait_for', _short_wait_for):
+
+        with (
+            patch.object(grab_core, "grab_url", _hanging_grab),
+            patch.object(asyncio, "wait_for", _short_wait_for),
+        ):
             return await main.grab_item(item, series_id=9)
 
     result = asyncio.run(_run())
     assert result is False
 
     # URL must be released from the in-flight dedup set
-    assert item['url'] not in main._GRABBING_URLS
+    assert item["url"] not in main._GRABBING_URLS
 
     # A grab_timeout event must be logged
     with sqlite3.connect(env) as c:
@@ -90,25 +93,24 @@ def test_grab_url_timeout_returns_false_and_releases_url(env):
             "SELECT event_type, message FROM events WHERE event_type='grab_timeout'"
         ).fetchall()
     assert len(evs) == 1
-    assert 'HangTest vol 01' in evs[0][1]
+    assert "HangTest vol 01" in evs[0][1]
 
 
 def test_successful_grab_still_works(env):
-    """Regression guard — the timeout wrap must not break the happy path."""
     import main
+    import grab_core
 
     async def _ok_grab(*a, **kw):
-        return (True, 'qbit-client', 'dl-id-123', True)
+        return (True, "qbit-client", "dl-id-123", True)
 
     item = {
-        'url': 'https://example.test/ok.torrent',
-        'title': 'HangTest vol 01',
-        'protocol': 'torrent',
+        "url": "https://example.test/ok.torrent",
+        "title": "HangTest vol 01",
+        "protocol": "torrent",
     }
 
     async def _run():
-        import grab
-        with patch.object(grab, 'grab_url', _ok_grab):
+        with patch.object(grab_core, "grab_url", _ok_grab):
             return await main.grab_item(item, series_id=9)
 
     result = asyncio.run(_run())

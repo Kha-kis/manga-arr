@@ -1,4 +1,5 @@
 """Release Profiles — named profiles for release filtering (Sonarr parity)."""
+
 import json
 import re
 from fastapi import APIRouter, Form, Request
@@ -16,9 +17,9 @@ def _all_profiles(db):
     result = []
     for p in profiles:
         tags = db.execute(
-            "SELECT tag FROM release_profile_tags WHERE profile_id=?", (p['id'],)
+            "SELECT tag FROM release_profile_tags WHERE profile_id=?", (p["id"],)
         ).fetchall()
-        result.append({**dict(p), 'tags': [t['tag'] for t in tags]})
+        result.append({**dict(p), "tags": [t["tag"] for t in tags]})
     return result
 
 
@@ -27,11 +28,20 @@ def _all_profiles(db):
 async def release_profiles_page(request: Request):
     with get_db() as db:
         profiles = _all_profiles(db)
-        all_tags = [r['tag'] for r in db.execute("SELECT DISTINCT tag FROM series_tags ORDER BY tag").fetchall()]
-    return templates.TemplateResponse(request, "release_profiles.html", {
-        "profiles": profiles,
-        "all_tags": all_tags,
-    })
+        all_tags = [
+            r["tag"]
+            for r in db.execute(
+                "SELECT DISTINCT tag FROM series_tags ORDER BY tag"
+            ).fetchall()
+        ]
+    return templates.TemplateResponse(
+        request,
+        "release_profiles.html",
+        {
+            "profiles": profiles,
+            "all_tags": all_tags,
+        },
+    )
 
 
 # ── Create ────────────────────────────────────────────────────────────────────
@@ -49,13 +59,21 @@ async def create_release_profile(
         cur = db.execute(
             "INSERT INTO release_profiles(name,enabled,required,ignored,preferred,include_preferred_when_renaming)"
             " VALUES(?,?,?,?,?,?)",
-            (name.strip(), enabled, required.strip(), ignored.strip(),
-             preferred, include_preferred_when_renaming)
+            (
+                name.strip(),
+                enabled,
+                required.strip(),
+                ignored.strip(),
+                preferred,
+                include_preferred_when_renaming,
+            ),
         )
         profile_id = cur.lastrowid
-        for tag in [t.strip() for t in tags.split(',') if t.strip()]:
-            db.execute("INSERT OR IGNORE INTO release_profile_tags(profile_id,tag) VALUES(?,?)",
-                       (profile_id, tag))
+        for tag in [t.strip() for t in tags.split(",") if t.strip()]:
+            db.execute(
+                "INSERT OR IGNORE INTO release_profile_tags(profile_id,tag) VALUES(?,?)",
+                (profile_id, tag),
+            )
     return RedirectResponse("/release-profiles", status_code=303)
 
 
@@ -68,15 +86,19 @@ async def edit_release_profile(request: Request, profile_id: int):
     absent leaves alone).
     """
     from routers._form_helpers import submitted_subset, bool_int
+
     submitted = await request.form()
 
     plain_fields = {
-        'name':                            ('name',                            lambda v: str(v or '').strip()),
-        'enabled':                         ('enabled',                         bool_int),
-        'required':                        ('required',                        lambda v: str(v or '').strip()),
-        'ignored':                         ('ignored',                         lambda v: str(v or '').strip()),
-        'preferred':                       ('preferred',                       lambda v: str(v or '')),
-        'include_preferred_when_renaming': ('include_preferred_when_renaming', bool_int),
+        "name": ("name", lambda v: str(v or "").strip()),
+        "enabled": ("enabled", bool_int),
+        "required": ("required", lambda v: str(v or "").strip()),
+        "ignored": ("ignored", lambda v: str(v or "").strip()),
+        "preferred": ("preferred", lambda v: str(v or "")),
+        "include_preferred_when_renaming": (
+            "include_preferred_when_renaming",
+            bool_int,
+        ),
     }
 
     with get_db() as db:
@@ -84,15 +106,18 @@ async def edit_release_profile(request: Request, profile_id: int):
         if updates:
             params.append(profile_id)
             db.execute(
-                f"UPDATE release_profiles SET {', '.join(updates)} WHERE id=?",
-                params
+                f"UPDATE release_profiles SET {', '.join(updates)} WHERE id=?", params
             )
-        if 'tags' in submitted:
-            db.execute("DELETE FROM release_profile_tags WHERE profile_id=?", (profile_id,))
-            for tag in [t.strip() for t in str(submitted['tags'] or '').split(',') if t.strip()]:
+        if "tags" in submitted:
+            db.execute(
+                "DELETE FROM release_profile_tags WHERE profile_id=?", (profile_id,)
+            )
+            for tag in [
+                t.strip() for t in str(submitted["tags"] or "").split(",") if t.strip()
+            ]:
                 db.execute(
                     "INSERT OR IGNORE INTO release_profile_tags(profile_id,tag) VALUES(?,?)",
-                    (profile_id, tag)
+                    (profile_id, tag),
                 )
     return RedirectResponse("/release-profiles", status_code=303)
 
@@ -114,15 +139,15 @@ def _parse_term_list(raw: str) -> list:
     """
     if not raw:
         return []
-    terms = []
-    for part in raw.split(','):
+    terms: list[str | dict] = []
+    for part in raw.split(","):
         part = part.strip()
         if not part:
             continue
-        if part.startswith('{'):
+        if part.startswith("{"):
             try:
                 obj = json.loads(part)
-                if isinstance(obj, dict) and obj.get('term'):
+                if isinstance(obj, dict) and obj.get("term"):
                     terms.append(obj)
                     continue
             except json.JSONDecodeError:
@@ -134,8 +159,8 @@ def _parse_term_list(raw: str) -> list:
 def _profile_term_match(term, title_lower: str) -> bool:
     """Match a profile term (string or dict with is_regex) against a lowercased title."""
     if isinstance(term, dict):
-        t = (term.get('term') or '').lower()
-        if term.get('is_regex'):
+        t = (term.get("term") or "").lower()
+        if term.get("is_regex"):
             # safe_regex_search returns None when the pattern is rejected
             # as unsafe/invalid; fall back to substring match.
             r = safe_regex_search(t, title_lower, re.IGNORECASE)
@@ -147,10 +172,10 @@ def _profile_term_match(term, title_lower: str) -> bool:
 
 def _profile_pref_match(pref: dict, title_lower: str) -> bool:
     """Match a preferred term dict against a lowercased title, respecting is_regex."""
-    term = (pref.get('term') or '').lower()
+    term = (pref.get("term") or "").lower()
     if not term:
         return False
-    if pref.get('is_regex'):
+    if pref.get("is_regex"):
         r = safe_regex_search(term, title_lower, re.IGNORECASE)
         if r is not None:
             return r
@@ -167,22 +192,25 @@ def get_applicable_profiles(db, series_tags: list[str]) -> list[dict]:
     Terms in 'required' and 'ignored' are parsed via _parse_term_list(), which
     supports both plain strings and dict objects with is_regex=true.
     """
-    profiles = db.execute(
-        "SELECT * FROM release_profiles WHERE enabled=1"
-    ).fetchall()
+    profiles = db.execute("SELECT * FROM release_profiles WHERE enabled=1").fetchall()
     result = []
     for p in profiles:
-        profile_tags = {r['tag'] for r in db.execute(
-            "SELECT tag FROM release_profile_tags WHERE profile_id=?", (p['id'],)
-        ).fetchall()}
+        profile_tags = {
+            r["tag"]
+            for r in db.execute(
+                "SELECT tag FROM release_profile_tags WHERE profile_id=?", (p["id"],)
+            ).fetchall()
+        }
         if not profile_tags or profile_tags & set(series_tags):
-            preferred = from_json(p['preferred'], [])
-            result.append({
-                'id':        p['id'],
-                'required':  _parse_term_list(p['required'] or ''),
-                'ignored':   _parse_term_list(p['ignored']  or ''),
-                'preferred': preferred,  # list of {term, score[, is_regex]}
-            })
+            preferred = from_json(p["preferred"], [])
+            result.append(
+                {
+                    "id": p["id"],
+                    "required": _parse_term_list(p["required"] or ""),
+                    "ignored": _parse_term_list(p["ignored"] or ""),
+                    "preferred": preferred,  # list of {term, score[, is_regex]}
+                }
+            )
     return result
 
 
@@ -204,14 +232,16 @@ def score_from_release_profiles(title: str, series_tags: list[str], db) -> int |
     total_score = 0
     for p in profiles:
         # Must contain at least one required term (if any)
-        if p['required'] and not any(_profile_term_match(t, title_lower) for t in p['required']):
+        if p["required"] and not any(
+            _profile_term_match(t, title_lower) for t in p["required"]
+        ):
             return -1000
         # Must not contain any ignored term
-        if any(_profile_term_match(t, title_lower) for t in p['ignored']):
+        if any(_profile_term_match(t, title_lower) for t in p["ignored"]):
             return -1000
         # Add preferred term scores
-        for pref in p['preferred']:
-            score = int(pref.get('score', 0))
+        for pref in p["preferred"]:
+            score = int(pref.get("score", 0))
             if _profile_pref_match(pref, title_lower):
                 total_score += score
     return total_score

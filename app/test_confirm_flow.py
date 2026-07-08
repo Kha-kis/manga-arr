@@ -3,6 +3,7 @@ Static analysis test for the confirm modal + CSRF + HTMX interaction flow.
 Traces the logic through each event phase to verify the claimed behavior.
 """
 import re
+import sys
 
 import os
 _BASE_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates', 'base.html')
@@ -68,11 +69,15 @@ checks.append((':focus-visible rule defined', ':focus-visible' in full))
 # 13. Toast container has aria-live
 checks.append(('Toast container aria-live="polite"', 'aria-live="polite"' in full))
 
-print("Static flow analysis:")
+def _out(text: str = "") -> None:
+    sys.stdout.write(f"{text}\n")
+
+
+_out("Static flow analysis:")
 for name, ok in checks:
     marker = '  OK' if ok else 'FAIL'
-    print(f'  [{marker}] {name}')
+    _out(f'  [{marker}] {name}')
 
 failed = [c for c in checks if not c[1]]
-print(f"\n{len(checks) - len(failed)}/{len(checks)} passed")
+_out(f"\n{len(checks) - len(failed)}/{len(checks)} passed")
 exit(1 if failed else 0)

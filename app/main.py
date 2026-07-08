@@ -465,6 +465,9 @@ async def lifespan(app: FastAPI):
     # other flows that read settings post-migration get the plaintext
     # round-tripped through Fernet — same value, just paranoid consistency.
     load_config()
+    # Initialize import concurrency semaphore (max_concurrent_imports setting)
+    from import_pipeline import initialize_import_semaphore
+    initialize_import_semaphore()
     backfill_pack_ranges()
     # Create qBit manga category on startup
     try:
@@ -626,8 +629,10 @@ if os.environ.get("MANGARR_DEBUG_TIMING") == "1":
             finally:
                 dt_ms = (_time_mod.perf_counter() - t0) * 1000
                 path = scope.get("path", "")
-                print(f"[TIMING] {dt_ms:>8.1f}ms  {status_holder['code']}  {path}",
-                      flush=True)
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    f"[TIMING] {dt_ms:>8.1f}ms  {status_holder['code']}  {path}"
+                )
     app.add_middleware(_TimingMiddleware)
 
 app.add_middleware(CSRFMiddleware)
@@ -783,4 +788,3 @@ def backfill_pack_ranges():
                     )
                     total_marked += cur.rowcount
     return total_marked
-

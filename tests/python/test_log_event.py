@@ -14,6 +14,7 @@ These tests verify both paths and guard against regressions via a
 performance floor (an import that emits many log_event calls from
 inside the transaction must finish well under the SQLITE_BUSY window).
 """
+
 import asyncio
 import os
 import sqlite3
@@ -37,6 +38,7 @@ def _run(coro):
 def fresh_db(monkeypatch):
     import main
     import shared
+
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
     os.unlink(tmp.name)
@@ -55,6 +57,7 @@ def fresh_db(monkeypatch):
 
 # ───────────────────── helper: event row counting ─────────────────────
 
+
 def _events_for(db_path, event_type=None):
     with sqlite3.connect(db_path) as c:
         c.row_factory = sqlite3.Row
@@ -69,10 +72,12 @@ def _events_for(db_path, event_type=None):
 
 # ───────────────────── signature + backward compatibility ─────────────────────
 
+
 def test_log_event_without_db_still_works(fresh_db):
     """Callers who don't pass db (HTTP handlers, one-shot tasks, background
     loops) must continue to see the original behavior."""
     import main
+
     main.log_event("test", "no db passed", series_id=None)
     rows = _events_for(fresh_db, "test")
     assert len(rows) == 1
@@ -82,13 +87,12 @@ def test_log_event_without_db_still_works(fresh_db):
 def test_log_event_with_db_writes_on_existing_connection(fresh_db):
     """When a db is passed, the INSERT must go through that connection."""
     import main
+
     # Seed a real series so the events FK (ON DELETE CASCADE) is satisfied.
     # Prior to PR 5 series_id was unconstrained and this test wrote
     # series_id=42 against no real row; now we need a real FK target.
     with main.get_db() as db:
-        db.execute(
-            "INSERT INTO series(id, title, search_pattern) VALUES(42, 'T', 'T')"
-        )
+        db.execute("INSERT INTO series(id, title, search_pattern) VALUES(42, 'T', 'T')")
     with main.get_db() as db:
         before = db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         main.log_event("test", "with db", series_id=42, db=db)
@@ -105,23 +109,28 @@ def test_log_event_does_not_open_new_connection_when_db_passed(fresh_db, monkeyp
     """With db passed in, main.get_db must NOT be called. We wrap get_db
     in a counter and confirm zero invocations during the log_event call."""
     import main
+
     get_db_calls = {"n": 0}
     orig_get_db = main.get_db
+
     def counting_get_db(*a, **kw):
         get_db_calls["n"] += 1
         return orig_get_db(*a, **kw)
+
     monkeypatch.setattr(main, "get_db", counting_get_db)
 
     # Open one connection OURSELVES (bypassing the counter)
     import sqlite3 as _sql
+
     conn = _sql.connect(fresh_db, timeout=15)
     conn.row_factory = _sql.Row
     try:
         # Sanity: log_event with db=conn should not touch main.get_db
         main.log_event("test", "no-nest", db=conn)
         conn.commit()
-        assert get_db_calls["n"] == 0, \
+        assert get_db_calls["n"] == 0, (
             f"log_event(db=...) unexpectedly opened {get_db_calls['n']} new connection(s)"
+        )
     finally:
         conn.close()
 
@@ -134,6 +143,7 @@ def test_log_event_swallows_errors_in_both_modes(fresh_db):
     """log_event is best-effort: a broken db must not raise through to
     the caller in either mode."""
     import main
+
     # Mode 1: db=None, and the events table has been dropped
     with main.get_db() as db:
         db.execute("DROP TABLE events")
@@ -150,12 +160,14 @@ def test_log_event_swallows_errors_in_both_modes(fresh_db):
 
 # ───────────────────── performance regression ─────────────────────
 
+
 def test_in_transaction_log_event_is_fast(fresh_db):
     """A write transaction that makes many log_event calls must not pay
     the SQLITE_BUSY timeout for each. Pre-fix, this would have taken
     N × 15s (one per call). Post-fix, all calls reuse the open
     connection and the whole sequence is sub-second."""
     import main
+
     N = 20
     t0 = time.monotonic()
     with main.get_db() as db:
@@ -171,8 +183,9 @@ def test_in_transaction_log_event_is_fast(fresh_db):
     # Generous ceiling: even a slow CI box should finish 20 INSERTs +
     # 20 log_event calls inside one transaction well under a second.
     # The old pre-fix code would have hit 15+ seconds here.
-    assert elapsed < 3.0, \
+    assert elapsed < 3.0, (
         f"in-transaction log_event is too slow: {elapsed:.2f}s for {N} calls"
+    )
     # All rows landed
     rows = _events_for(fresh_db, "test")
     stress_events = [r for r in rows if r["message"].startswith("stress-event-")]
@@ -189,7 +202,10 @@ def test_execute_import_has_no_standalone_log_event_inside_transaction():
     calls that are missing `db=db`.
     """
     import pathlib
-    src = (pathlib.Path(__file__).resolve().parents[2] / "app" / "import_pipeline.py").read_text()
+
+    src = (
+        pathlib.Path(__file__).resolve().parents[2] / "app" / "import_execute.py"
+    ).read_text()
 
     # Extract _execute_import body by line scan.
     lines = src.splitlines()
@@ -213,16 +229,24 @@ def test_execute_import_has_no_standalone_log_event_inside_transaction():
         # Multi-line calls are flagged via the closing line being examined
         # too; we only check single-line forms here because the multi-line
         # forms in _execute_import already include db=db on their arguments.
-        if "log_event(" in stripped and "db=" not in stripped and not stripped.endswith("log_event("):
+        if (
+            "log_event(" in stripped
+            and "db=" not in stripped
+            and not stripped.endswith("log_event(")
+        ):
             bad.append((i, stripped))
 
     # Allow log_event calls in the tail error-handler (outside the with
     # block) — scan only up to the line where `await trigger_komga_scan`
     # marks the start of the post-with region.
     bad_in_tx = [
-        (i, s) for i, s in bad
-        if not any(marker in "\n".join(lines[start:i])
-                   for marker in ("await trigger_komga_scan",))
+        (i, s)
+        for i, s in bad
+        if not any(
+            marker in "\n".join(lines[start:i])
+            for marker in ("await trigger_komga_scan",)
+        )
     ]
-    assert bad_in_tx == [], \
+    assert bad_in_tx == [], (
         f"log_event calls inside _execute_import missing db=db: {bad_in_tx}"
+    )

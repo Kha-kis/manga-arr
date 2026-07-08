@@ -18,6 +18,7 @@ event loop is still responsive during the import, the ticker records
 ticks throughout the whole 2 s window. If it isn't, we see a gap
 bigger than the stall threshold and the assertion fails.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -52,8 +53,10 @@ def _make_zip(path: str, name: str = "page.png") -> str:
 @pytest.fixture
 def env(tmp_path):
     import main, shared, security
+
     db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    db.close(); os.unlink(db.name)
+    db.close()
+    os.unlink(db.name)
     key_dir = tempfile.mkdtemp(prefix="mangarr-evloop-keys-")
     orig_main_db = main.DB_PATH
     orig_shared_db = shared.DB_PATH
@@ -65,11 +68,12 @@ def env(tmp_path):
     main.load_config()
     src_root = tmp_path / "src"
     lib_root = tmp_path / "library"
-    src_root.mkdir(); lib_root.mkdir()
+    src_root.mkdir()
+    lib_root.mkdir()
     with sqlite3.connect(db.name) as c:
         c.execute(
             "INSERT OR REPLACE INTO settings(key, value) VALUES('save_path', ?)",
-            (str(lib_root),)
+            (str(lib_root),),
         )
         # Force copy mode so staging.stage goes through shutil.copy2
         # (the real offender observed in prod). Hardlink mode uses
@@ -89,9 +93,14 @@ def env(tmp_path):
                 os.unlink(p)
 
 
-def _seed_chapter_queue(db_path: str, src_path: str, *, series_id: int = 7,
-                         chap_num: float = 1.0,
-                         library_root: str | None = None) -> int:
+def _seed_chapter_queue(
+    db_path: str,
+    src_path: str,
+    *,
+    series_id: int = 7,
+    chap_num: float = 1.0,
+    library_root: str | None = None,
+) -> int:
     """Insert a minimal queue row with one chapter file to import.
 
     Library destination now requires a root folder (PR C removed the
@@ -107,26 +116,30 @@ def _seed_chapter_queue(db_path: str, src_path: str, *, series_id: int = 7,
             sp_row = c.execute(
                 "SELECT value FROM settings WHERE key='save_path'"
             ).fetchone()
-            library_root = sp_row[0] if sp_row else (os.path.dirname(src_path) or '/tmp')
+            library_root = (
+                sp_row[0] if sp_row else (os.path.dirname(src_path) or "/tmp")
+            )
         c.execute(
             "INSERT OR REPLACE INTO root_folders(id, path, label, is_default)"
             " VALUES(1, ?, 'Manga', 1)",
-            (library_root,)
+            (library_root,),
         )
-        c.execute("INSERT INTO series(id, title, search_pattern, root_folder_id)"
-                  " VALUES(?, ?, ?, 1)",
-                  (series_id, "EvLoopTest", "EvLoopTest"))
+        c.execute(
+            "INSERT INTO series(id, title, search_pattern, root_folder_id)"
+            " VALUES(?, ?, ?, 1)",
+            (series_id, "EvLoopTest", "EvLoopTest"),
+        )
         cur = c.execute(
             "INSERT INTO import_queue(series_id, torrent_name, status, created_at)"
             " VALUES(?, 'evloop-torrent', 'pending', datetime('now'))",
-            (series_id,)
+            (series_id,),
         )
         qid = cur.lastrowid
         c.execute(
             "INSERT INTO import_queue_files(queue_id, src_path, filename,"
             " file_type, proposed_volume, proposed_chapter, status)"
             " VALUES(?, ?, ?, 'chapter', NULL, ?, 'pending')",
-            (qid, src_path, os.path.basename(src_path), chap_num)
+            (qid, src_path, os.path.basename(src_path), chap_num),
         )
         return qid
 
@@ -134,15 +147,17 @@ def _seed_chapter_queue(db_path: str, src_path: str, *, series_id: int = 7,
 class _SlowCopyTracker:
     """Stand-in for shutil.copy2 that sleeps synchronously on a worker
     thread. Records when it was called so we can assert it ran at all."""
+
     def __init__(self, delay_seconds: float = 2.0):
         self.delay = delay_seconds
         self.calls: list[tuple[float, float]] = []
 
     def __call__(self, src, dst, *args, **kwargs):
         import shutil
+
         t0 = time.perf_counter()
         time.sleep(self.delay)  # SYNC sleep — would freeze the event loop
-                                # if not on a worker thread
+        # if not on a worker thread
         shutil.copyfile(src, dst)
         self.calls.append((t0, time.perf_counter()))
         return dst
@@ -172,6 +187,7 @@ def _max_gap(ticks: list[float]) -> float:
 
 # ─────────── main contract ─────────────────────────────────────────
 
+
 def test_execute_import_does_not_block_event_loop(env):
     """Run an import whose staging copy takes 2 seconds, while a
     parallel ticker coroutine fires every 50 ms. The ticker must keep
@@ -179,6 +195,7 @@ def test_execute_import_does_not_block_event_loop(env):
     scheduling other work during the file copy."""
     import shutil
     import main
+
     src = _make_zip(str(env["src_root"] / "c001.zip"))
     qid = _seed_chapter_queue(env["db_path"], src, chap_num=1.0)
 
@@ -192,7 +209,7 @@ def test_execute_import_does_not_block_event_loop(env):
         ticks = await ticker_task
         return result, ticks
 
-    with patch("main.shutil.copy2", new=slow):
+    with patch("import_staging.shutil.copy2", new=slow):
         result, ticks = asyncio.run(_run())
 
     assert result is True, "import should complete"
@@ -217,12 +234,13 @@ def test_rollback_also_runs_off_event_loop(env):
     """The rollback path (shutil.rmtree on the staging dir) must also
     yield. Simulate a failure mid-stage so rollback fires."""
     import main
+
     src = _make_zip(str(env["src_root"] / "c005.zip"))
     qid = _seed_chapter_queue(env["db_path"], src, chap_num=5.0)
 
     slow = _SlowCopyTracker(delay_seconds=0.2)  # succeed quickly so
-                                                 # we don't blow the
-                                                 # 30s test budget
+    # we don't blow the
+    # 30s test budget
 
     # We don't have a reliable way to force a rollback without touching
     # DB or FS mid-import. Instead, drive a successful import and pin
@@ -234,6 +252,7 @@ def test_rollback_also_runs_off_event_loop(env):
     # _execute_import_impl now.)
     import inspect
     from import_pipeline import _execute_import_impl
+
     src_code = inspect.getsource(_execute_import_impl)
     assert "await asyncio.to_thread(staging.commit_all" in src_code, (
         "_execute_import_impl must call staging.commit_all via asyncio.to_thread"
@@ -248,11 +267,13 @@ def test_inject_comicinfo_runs_off_event_loop(env):
     I/O; must go through asyncio.to_thread."""
     import inspect
     from import_pipeline import _execute_import_impl
+
     src = inspect.getsource(_execute_import_impl)
     # Every _try_inject_comicinfo call inside _execute_import is
     # prefixed with asyncio.to_thread. A bare `_try_inject_comicinfo(`
     # call (no `to_thread` before it) would regress.
     import re
+
     bare_calls = re.findall(
         r"(?<!to_thread,\s)_try_inject_comicinfo\(",
         src,
@@ -277,6 +298,7 @@ def test_maybe_convert_to_cbz_runs_off_event_loop(env):
     write). Same rule as above."""
     import inspect, re
     from import_pipeline import _execute_import_impl
+
     src = inspect.getsource(_execute_import_impl)
     bad = re.findall(
         r"^\s+stage_after\s*=\s*_maybe_convert_to_cbz\(",

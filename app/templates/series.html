@@ -735,12 +735,7 @@
       <span style="font-size:var(--text-xs); font-weight:400; text-transform:none; letter-spacing:0; color:var(--text-3)">
         {{ packs|length }}{% if superseded_count %} · {{ superseded_count }} superseded{% endif %}
       </span>
-      <button class="ms-auto action-btn btn-action"
-              data-bs-toggle="collapse" data-bs-target="#packsTable">
-        <i class="bi bi-chevron-expand"></i>Toggle
-      </button>
     </div>
-    <div class="collapse show" id="packsTable">
     <div class="table-wrap mb-4">
       <table class="table table-sm mb-0" style="font-size:var(--text-base)">
         <thead>
@@ -771,10 +766,14 @@
               {% endif %}
             </td>
             <td style="font-size:var(--text-sm); color:var(--text-2)">
-              {% if p['pack_type'] == 'complete' %}All
-              {% elif p['vol_label'] and p['ch_label'] %}
+              {% if p['pack_type'] == 'complete' and not p['covers'] and p['vol_label'] == 'Complete Series' %}
+              <span class="text-ember">Complete Series</span>
+              {% elif p['vol_label'] %}
               <span class="{% if not p['superseded'] %}text-ember{% endif %}">{{ p['vol_label'] }}</span>{% if not p['covers'] %}<span style="color:var(--text-3)"> (approx)</span>{% endif %}
               {% else %}—{% endif %}
+              {% if p.get('overlap') %}
+              <div style="font-size:var(--text-2xs); color:var(--amber)"><i class="bi bi-exclamation-triangle me-1"></i>overlaps with {{ p['overlap']|length }} other pack{{ 's' if p['overlap']|length > 1 else '' }}</div>
+              {% endif %}
             </td>
             <td style="font-size:var(--text-sm)">
               {% if p['dup_count'] > 1 %}<span class="badge-status badge-wanted">×{{ p['dup_count'] }}</span>
@@ -810,7 +809,6 @@
   </div>
 </div>
 
-{% block scripts %}
 <script>
 async function searchCompletePack(seriesId) {
   const btn = document.getElementById('complete-pack-btn');
@@ -1103,8 +1101,40 @@ function onEditionChange(edition) {
     if (hint) hint.innerHTML = 'Filters grabs by source. <em>Official only</em> rejects fan scans; <em>Fan only</em> rejects publisher releases.';
   }
 }
+// Toggle Packs/Omnibus section icon
+const _packsToggleIcon = document.getElementById('packsToggleIcon');
+const _packsTable = document.getElementById('packsTable');
+let _packsLock = false;
+if (_packsTable && _packsToggleIcon) {
+    _packsTable.addEventListener('hidden.bs.collapse', (e) => {
+        console.log('[packs] hidden.bs.collapse', Date.now());
+        if (_packsLock) {
+            console.log('[packs] locked, skipping');
+            return;
+        }
+        _packsLock = true;
+        console.log('[packs] locked for 500ms');
+        setTimeout(() => { 
+            _packsLock = false; 
+            console.log('[packs] lock released');
+        }, 500);
+    });
+    _packsTable.addEventListener('shown.bs.collapse', (e) => {
+        console.log('[packs] shown.bs.collapse', Date.now());
+        if (_packsLock) {
+            console.log('[packs] locked, skipping icon update');
+            return;
+        }
+        _packsLock = true;
+        console.log('[packs] locked for 500ms, updating icon');
+        _packsToggleIcon.className = 'bi bi-chevron-contract';
+        setTimeout(() => { 
+            _packsLock = false; 
+            console.log('[packs] lock released');
+        }, 500);
+    });
+}
 </script>
-{% endblock %}
 
 {# ══════════════════════════════ MODALS ══════════════════════════════════ #}
 

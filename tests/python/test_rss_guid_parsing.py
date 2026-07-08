@@ -13,6 +13,7 @@ results loop) now populate the `guid` field. grab.py's existing
 `SELECT 1 FROM seen WHERE release_guid=?` check then catches the
 duplicate.
 """
+
 import os
 import sys
 import tempfile
@@ -42,9 +43,9 @@ def test_torznab_rss_parser_extracts_guid():
       </channel>
     </rss>"""
 
-    items = _parse_torznab_rss(xml, indexer='Test', default_protocol='torrent')
+    items = _parse_torznab_rss(xml, indexer="Test", default_protocol="torrent")
     assert len(items) == 1
-    assert items[0]['guid'] == 'berserk-v41-unique-id-1234', (
+    assert items[0]["guid"] == "berserk-v41-unique-id-1234", (
         f"guid not extracted: {items[0]!r}"
     )
 
@@ -65,9 +66,9 @@ def test_torznab_rss_parser_falls_back_to_torznab_guid_attr():
         </item>
       </channel>
     </rss>"""
-    items = _parse_torznab_rss(xml, indexer='Test')
+    items = _parse_torznab_rss(xml, indexer="Test")
     assert len(items) == 1
-    assert items[0]['guid'] == 'attr-style-guid-987'
+    assert items[0]["guid"] == "attr-style-guid-987"
 
 
 def test_torznab_rss_parser_empty_guid_when_missing():
@@ -84,10 +85,10 @@ def test_torznab_rss_parser_empty_guid_when_missing():
         </item>
       </channel>
     </rss>"""
-    items = _parse_torznab_rss(xml, indexer='Test')
+    items = _parse_torznab_rss(xml, indexer="Test")
     assert len(items) == 1
-    assert 'guid' in items[0]
-    assert items[0]['guid'] == ''
+    assert "guid" in items[0]
+    assert items[0]["guid"] == ""
 
 
 # ───────────────────── End-to-end: grab dedup ─────────────────────
@@ -96,8 +97,10 @@ def test_torznab_rss_parser_empty_guid_when_missing():
 @pytest.fixture
 def env(tmp_path):
     import main, shared, security, sqlite3
+
     db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    db.close(); os.unlink(db.name)
+    db.close()
+    os.unlink(db.name)
     key_dir = tempfile.mkdtemp(prefix="mangarr-rss-guid-")
     main.DB_PATH = db.name
     shared.DB_PATH = db.name
@@ -107,7 +110,7 @@ def env(tmp_path):
     main.load_config()
     main.ensure_api_key()
     try:
-        yield {'db_path': db.name}
+        yield {"db_path": db.name}
     finally:
         for ext in ("", "-wal", "-shm"):
             p = db.name + ext
@@ -122,10 +125,10 @@ def test_same_guid_different_url_blocks_re_grab(env):
     import asyncio
     import sqlite3
     from unittest.mock import patch
-    import grab as grab_mod
+    import grab_core
 
     # Seed a series + wanted volume
-    with sqlite3.connect(env['db_path']) as c:
+    with sqlite3.connect(env["db_path"]) as c:
         c.execute(
             "INSERT INTO series(id, title, search_pattern, monitored, status,"
             " total_volumes) VALUES(1, 'Test', 'test', 1, 'RELEASING', 5)"
@@ -137,45 +140,47 @@ def test_same_guid_different_url_blocks_re_grab(env):
 
     # Stub grab_url to claim success
     async def _ok_stub(url, **kw):
-        return True, 'qbittorrent', 'hash-' + url[-6:], True
+        return True, "qbittorrent", "hash-" + url[-6:], True
 
     item_v1 = {
-        'url':        'http://prowlarr/dl?session=session-A',
-        'title':      'Test Vol 3',
-        'indexer':    'Test',
-        'protocol':   'torrent',
-        'size_bytes': 50_000_000,
-        'guid':       'release-12345',  # SAME guid
+        "url": "http://prowlarr/dl?session=session-A",
+        "title": "Test Vol 3",
+        "indexer": "Test",
+        "protocol": "torrent",
+        "size_bytes": 50_000_000,
+        "guid": "release-12345",  # SAME guid
     }
     item_v2 = {
-        'url':        'http://prowlarr/dl?session=session-B',  # DIFFERENT url
-        'title':      'Test Vol 3',
-        'indexer':    'Test',
-        'protocol':   'torrent',
-        'size_bytes': 50_000_000,
-        'guid':       'release-12345',  # SAME guid
+        "url": "http://prowlarr/dl?session=session-B",  # DIFFERENT url
+        "title": "Test Vol 3",
+        "indexer": "Test",
+        "protocol": "torrent",
+        "size_bytes": 50_000_000,
+        "guid": "release-12345",  # SAME guid
     }
 
-    call_count = {'n': 0}
-    async def _counting_stub(url, protocol='', save_path=None, torrent_name=None,
-                             series_id=None):
-        call_count['n'] += 1
-        return True, 'qbittorrent', f"hash-{call_count['n']}", True
+    call_count = {"n": 0}
 
-    with patch.object(grab_mod, 'grab_url', _counting_stub):
+    async def _counting_stub(
+        url, protocol="", save_path=None, torrent_name=None, series_id=None
+    ):
+        call_count["n"] += 1
+        return True, "qbittorrent", f"hash-{call_count['n']}", True
+
+    with patch.object(grab_core, "grab_url", _counting_stub):
         # First grab: should succeed and insert seen with guid
-        asyncio.run(grab_mod.grab_item(item_v1, series_id=1))
+        asyncio.run(grab_core.grab_item(item_v1, series_id=1))
         # Second grab: same guid, different URL → must short-circuit
         # at the GUID-dedup layer in grab_item:152
-        asyncio.run(grab_mod.grab_item(item_v2, series_id=1))
+        asyncio.run(grab_core.grab_item(item_v2, series_id=1))
 
-    assert call_count['n'] == 1, (
+    assert call_count["n"] == 1, (
         f"grab_url called {call_count['n']} times — GUID dedup must "
         "short-circuit the second call (different URL but same guid)"
     )
 
     # Verify only one seen row exists for this content
-    with sqlite3.connect(env['db_path']) as c:
+    with sqlite3.connect(env["db_path"]) as c:
         n = c.execute(
             "SELECT COUNT(*) FROM seen WHERE release_guid='release-12345'"
         ).fetchone()[0]

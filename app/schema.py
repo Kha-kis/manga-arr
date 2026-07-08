@@ -113,17 +113,18 @@ def init_db():
                 data          TEXT,
                 created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
-            CREATE TABLE IF NOT EXISTS import_queue (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                series_id    INTEGER REFERENCES series(id),
-                download_id  TEXT,
-                torrent_name TEXT,
-                torrent_url  TEXT,
-                volume_num   REAL,
-                src_dir      TEXT,
-                status       TEXT DEFAULT 'pending',
-                created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
+             CREATE TABLE IF NOT EXISTS import_queue (
+                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                 series_id    INTEGER REFERENCES series(id),
+                 download_id  TEXT,
+                 torrent_name TEXT,
+                 torrent_url  TEXT,
+                 volume_num   REAL,
+                 src_dir      TEXT,
+                 status       TEXT DEFAULT 'pending',
+                 failed_at    TIMESTAMP,
+                 created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+             );
             CREATE TABLE IF NOT EXISTS import_queue_files (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
                 queue_id         INTEGER REFERENCES import_queue(id),
@@ -238,6 +239,7 @@ def init_db():
         add_col('import_queue_files', 'proposed_chapter_range_end',   'REAL')
         add_col('import_queue_files', 'proposed_pack_type',           'TEXT')
         add_col('import_queue_files', 'proposed_is_special',          'INTEGER DEFAULT 0')
+        add_col('import_queue',            'failed_at',                'TIMESTAMP')
         # Side-story / oneshot persistence on the final volumes row.
         # Stage 2 only stores this flag; Stage 3 adds the coverage
         # exclusion that makes it load-bearing. Non-null default so

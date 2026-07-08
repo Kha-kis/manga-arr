@@ -15,6 +15,8 @@ import zipfile
 
 import httpx
 
+from events import log_event
+
 # Ensure the covers dir exists at import time. If the container
 # filesystem isn't writable (tests that redirect /config via
 # conftest's makedirs redirect), the caller's redirected path is
@@ -46,7 +48,7 @@ async def download_cover(series_id: int, cover_url: str) -> None:
     try:
         validate_outbound_url(cover_url)
     except UnsafeURLError as e:
-        print(f"[Cover] URL rejected for series {series_id}: {e}")
+        log_event("error", f"[Cover] URL rejected for series {series_id}: {e}", series_id)
         return
     try:
         async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
@@ -55,7 +57,7 @@ async def download_cover(series_id: int, cover_url: str) -> None:
                 with open(dest, 'wb') as f:
                     f.write(r.content)
     except Exception as e:
-        print(f"[Cover] download error for series {series_id}: {e}")
+        log_event("error", f"[Cover] download error for series {series_id}: {e}", series_id)
 
 
 def extract_cbz_cover(series_id: int, cbz_path: str) -> None:
@@ -79,4 +81,4 @@ def extract_cbz_cover(series_id: int, cbz_path: str) -> None:
                     with open(dest, 'wb') as out:
                         out.write(img_file.read())
     except Exception as e:
-        print(f"[Cover] CBZ extract error: {e}")
+        log_event("error", f"[Cover] CBZ extract error: {e}", series_id)

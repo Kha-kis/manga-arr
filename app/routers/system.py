@@ -1,4 +1,5 @@
 """System router — status, tasks, backup, and tags pages for Mangarr."""
+
 import asyncio
 import os
 import platform
@@ -10,7 +11,12 @@ from io import BytesIO
 from typing import Optional
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 
 from routers._templates import templates
 from shared import DB_PATH, get_cfg, get_db
@@ -25,15 +31,50 @@ BACKUP_DIR = "/config/backups"
 
 # ── Task registry ─────────────────────────────────────────────────────────────
 TASKS: list[dict] = [
-    {"name": "RSS Sync",            "key": "RssSyncAll",        "interval": "15 min",  "manual": False},
-    {"name": "Check Downloads",     "key": "CheckDownloads",    "interval": "1 min",   "manual": False},
-    {"name": "Backlog Search",      "key": "BacklogSearch",     "interval": "24 hr",   "manual": True},
-    {"name": "Refresh Metadata",    "key": "RefreshMetadata",   "interval": "24 hr",   "manual": True},
-    {"name": "Import List Sync",    "key": "ImportListSync",    "interval": "12 hr",   "manual": True},
-    {"name": "Auto Backup",         "key": "Backup",            "interval": "daily",   "manual": True},
-    {"name": "Reset Stuck Grabs",   "key": "ResetStuckGrabs",   "interval": "manual",  "manual": True},
-    {"name": "Cleanup Seen Cache",  "key": "CleanupSeen",       "interval": "manual",  "manual": True},
-    {"name": "Recycle Bin Purge",   "key": "RecycleBinPurge",   "interval": "6 hr",    "manual": True},
+    {"name": "RSS Sync", "key": "RssSyncAll", "interval": "15 min", "manual": False},
+    {
+        "name": "Check Downloads",
+        "key": "CheckDownloads",
+        "interval": "1 min",
+        "manual": False,
+    },
+    {
+        "name": "Backlog Search",
+        "key": "BacklogSearch",
+        "interval": "24 hr",
+        "manual": True,
+    },
+    {
+        "name": "Refresh Metadata",
+        "key": "RefreshMetadata",
+        "interval": "24 hr",
+        "manual": True,
+    },
+    {
+        "name": "Import List Sync",
+        "key": "ImportListSync",
+        "interval": "12 hr",
+        "manual": True,
+    },
+    {"name": "Auto Backup", "key": "Backup", "interval": "daily", "manual": True},
+    {
+        "name": "Reset Stuck Grabs",
+        "key": "ResetStuckGrabs",
+        "interval": "manual",
+        "manual": True,
+    },
+    {
+        "name": "Cleanup Seen Cache",
+        "key": "CleanupSeen",
+        "interval": "manual",
+        "manual": True,
+    },
+    {
+        "name": "Recycle Bin Purge",
+        "key": "RecycleBinPurge",
+        "interval": "6 hr",
+        "manual": True,
+    },
 ]
 
 TASK_STATE: dict[str, dict] = {
@@ -41,7 +82,9 @@ TASK_STATE: dict[str, dict] = {
 }
 
 
-def update_task_state(key: str, last_run: Optional[datetime] = None, next_run: Optional[datetime] = None):
+def update_task_state(
+    key: str, last_run: Optional[datetime] = None, next_run: Optional[datetime] = None
+):
     """Called by main.py to update task last_run/next_run timestamps."""
     if key in TASK_STATE:
         if last_run is not None:
@@ -74,7 +117,7 @@ def _db_size() -> int:
         return 0
 
 
-def _fmt_bytes(n: int) -> str:
+def _fmt_bytes(n: float) -> str:
     n = int(n)
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if n < 1024:
@@ -91,21 +134,29 @@ def _root_folders_disk(db) -> list[dict]:
         try:
             usage = shutil.disk_usage(path)
             used_pct = int(usage.used / usage.total * 100) if usage.total else 0
-            result.append({
-                "path": path,
-                "free": usage.free,
-                "total": usage.total,
-                "used": usage.used,
-                "used_pct": used_pct,
-                "free_fmt": _fmt_bytes(usage.free),
-                "total_fmt": _fmt_bytes(usage.total),
-            })
+            result.append(
+                {
+                    "path": path,
+                    "free": usage.free,
+                    "total": usage.total,
+                    "used": usage.used,
+                    "used_pct": used_pct,
+                    "free_fmt": _fmt_bytes(usage.free),
+                    "total_fmt": _fmt_bytes(usage.total),
+                }
+            )
         except OSError:
-            result.append({
-                "path": path,
-                "free": 0, "total": 0, "used": 0, "used_pct": 0,
-                "free_fmt": "N/A", "total_fmt": "N/A",
-            })
+            result.append(
+                {
+                    "path": path,
+                    "free": 0,
+                    "total": 0,
+                    "used": 0,
+                    "used_pct": 0,
+                    "free_fmt": "N/A",
+                    "total_fmt": "N/A",
+                }
+            )
     return result
 
 
@@ -113,27 +164,39 @@ def _root_folders_disk(db) -> list[dict]:
 @router.get("/system/status", response_class=HTMLResponse)
 async def system_status_page(request: Request):
     with get_db() as db:
-        series_count     = db.execute("SELECT COUNT(*) FROM series WHERE deleted_at IS NULL").fetchone()[0]
-        volumes_count    = db.execute("SELECT COUNT(*) FROM volumes WHERE volume_num IS NOT NULL").fetchone()[0]
-        downloaded_count = db.execute("SELECT COUNT(*) FROM volumes WHERE status='downloaded'").fetchone()[0]
-        wanted_count     = db.execute("SELECT COUNT(*) FROM volumes WHERE status='wanted' AND monitored=1").fetchone()[0]
+        series_count = db.execute(
+            "SELECT COUNT(*) FROM series WHERE deleted_at IS NULL"
+        ).fetchone()[0]
+        volumes_count = db.execute(
+            "SELECT COUNT(*) FROM volumes WHERE volume_num IS NOT NULL"
+        ).fetchone()[0]
+        downloaded_count = db.execute(
+            "SELECT COUNT(*) FROM volumes WHERE status='downloaded'"
+        ).fetchone()[0]
+        wanted_count = db.execute(
+            "SELECT COUNT(*) FROM volumes WHERE status='wanted' AND monitored=1"
+        ).fetchone()[0]
         root_folders = _root_folders_disk(db)
 
     db_size = _db_size()
-    return templates.TemplateResponse(request, "system_status.html", {
-        "app_version":      APP_VERSION,
-        "python_version":   sys.version.split()[0],
-        "os_system":        platform.system(),
-        "os_release":       platform.release(),
-        "db_path":          DB_PATH,
-        "db_size":          _fmt_bytes(db_size),
-        "uptime":           _fmt_uptime(_STARTUP_TIME),
-        "series_count":     series_count,
-        "volumes_count":    volumes_count,
-        "downloaded_count": downloaded_count,
-        "wanted_count":     wanted_count,
-        "root_folders":     root_folders,
-    })
+    return templates.TemplateResponse(
+        request,
+        "system_status.html",
+        {
+            "app_version": APP_VERSION,
+            "python_version": sys.version.split()[0],
+            "os_system": platform.system(),
+            "os_release": platform.release(),
+            "db_path": DB_PATH,
+            "db_size": _fmt_bytes(db_size),
+            "uptime": _fmt_uptime(_STARTUP_TIME),
+            "series_count": series_count,
+            "volumes_count": volumes_count,
+            "downloaded_count": downloaded_count,
+            "wanted_count": wanted_count,
+            "root_folders": root_folders,
+        },
+    )
 
 
 # ── Task Scheduler ────────────────────────────────────────────────────────────
@@ -141,17 +204,23 @@ async def system_status_page(request: Request):
 async def system_tasks_page(request: Request):
     tasks_with_state = []
     for t in TASKS:
-        state    = TASK_STATE.get(t["key"], {})
-        last_run = state.get("last_run")   # datetime | None
-        next_run = state.get("next_run")   # datetime | None
-        tasks_with_state.append({
-            **t,
-            "last_run_dt": last_run,
-            "next_run_dt": next_run,
-        })
-    return templates.TemplateResponse(request, "system_tasks.html", {
-        "tasks": tasks_with_state,
-    })
+        state = TASK_STATE.get(t["key"], {})
+        last_run = state.get("last_run")  # datetime | None
+        next_run = state.get("next_run")  # datetime | None
+        tasks_with_state.append(
+            {
+                **t,
+                "last_run_dt": last_run,
+                "next_run_dt": next_run,
+            }
+        )
+    return templates.TemplateResponse(
+        request,
+        "system_tasks.html",
+        {
+            "tasks": tasks_with_state,
+        },
+    )
 
 
 # ── Command API ───────────────────────────────────────────────────────────────
@@ -163,7 +232,7 @@ async def run_command(request: Request):
     try:
         import main as main_module  # lazy import to avoid circular deps
     except ImportError:
-        main_module = None
+        main_module = None  # type: ignore[assignment]
 
     def _create(coro, name: str):
         """Schedule a coroutine safely regardless of whether we have a running loop."""
@@ -190,10 +259,10 @@ async def run_command(request: Request):
             _create(main_module.backlog_search(), name)
     elif name == "RefreshMetadata":
         if main_module and hasattr(main_module, "refresh_ongoing_loop"):
-            _create(main_module.refresh_ongoing_loop())
+            _create(main_module.refresh_ongoing_loop(), name)
     elif name == "ImportListSync":
         if main_module and hasattr(main_module, "import_list_sync"):
-            _create(main_module.import_list_sync())
+            _create(main_module.import_list_sync(), name)
     elif name == "CleanupSeen":
         with get_db() as db:
             # Delete seen entries older than 90 days where the volume was never downloaded
@@ -208,10 +277,13 @@ async def run_command(request: Request):
             count = result.rowcount
         try:
             import main as _m
-            _m.log_event('info', f"Seen cache cleanup: removed {count} old entries")
+
+            _m.log_event("info", f"Seen cache cleanup: removed {count} old entries")
         except Exception:
             pass
-        return JSONResponse({"ok": True, "message": f"Removed {count} stale seen-cache entries"})
+        return JSONResponse(
+            {"ok": True, "message": f"Removed {count} stale seen-cache entries"}
+        )
     elif name == "ResetStuckGrabs":
         with get_db() as db:
             result = db.execute(
@@ -228,12 +300,19 @@ async def run_command(request: Request):
             count = result.rowcount
         try:
             import main as _m
-            _m.log_event('info', f"Reset {count} stuck grabbed volume(s) back to wanted")
+
+            _m.log_event(
+                "info", f"Reset {count} stuck grabbed volume(s) back to wanted"
+            )
         except Exception:
             pass
-        return JSONResponse({"ok": True, "message": f"Reset {count} stuck grabbed volume(s) to wanted"})
+        return JSONResponse(
+            {"ok": True, "message": f"Reset {count} stuck grabbed volume(s) to wanted"}
+        )
     else:
-        return JSONResponse({"ok": False, "message": f"Unknown command: {name}"}, status_code=400)
+        return JSONResponse(
+            {"ok": False, "message": f"Unknown command: {name}"}, status_code=400
+        )
 
     return JSONResponse({"ok": True, "message": f"{name} started"})
 
@@ -250,19 +329,27 @@ async def system_backup_page(request: Request):
             fpath = os.path.join(BACKUP_DIR, fname)
             try:
                 stat = os.stat(fpath)
-                backups.append({
-                    "filename": fname,
-                    "size": _fmt_bytes(stat.st_size),
-                    "date": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-                    "mtime": stat.st_mtime,
-                })
+                backups.append(
+                    {
+                        "filename": fname,
+                        "size": _fmt_bytes(stat.st_size),
+                        "date": datetime.fromtimestamp(stat.st_mtime).strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        ),
+                        "mtime": stat.st_mtime,
+                    }
+                )
             except OSError:
                 pass
     except OSError:
         pass
-    return templates.TemplateResponse(request, "system_backup.html", {
-        "backups": backups,
-    })
+    return templates.TemplateResponse(
+        request,
+        "system_backup.html",
+        {
+            "backups": backups,
+        },
+    )
 
 
 @router.post("/api/system/backup/create")
@@ -295,7 +382,9 @@ async def delete_backup(filename: str):
     # Safety: only allow .zip files, no path traversal
     safe_name = os.path.basename(filename)
     if not safe_name.endswith(".zip"):
-        return JSONResponse({"ok": False, "message": "Invalid filename"}, status_code=400)
+        return JSONResponse(
+            {"ok": False, "message": "Invalid filename"}, status_code=400
+        )
     fpath = os.path.join(BACKUP_DIR, safe_name)
     try:
         os.remove(fpath)
@@ -324,10 +413,7 @@ async def rename_tag(old_name: str = Form(...), new_name: str = Form(...)):
     if not new_name:
         return RedirectResponse("/tags", status_code=303)
     with get_db() as db:
-        db.execute(
-            "UPDATE series_tags SET tag=? WHERE tag=?",
-            (new_name, old_name)
-        )
+        db.execute("UPDATE series_tags SET tag=? WHERE tag=?", (new_name, old_name))
     return RedirectResponse("/tags", status_code=303)
 
 

@@ -76,13 +76,20 @@ async def rss_loop():
     while True:
         try:
             await poll_rss()
+        except asyncio.CancelledError:
+            log_event('info', '[RSS] Loop cancelled during shutdown')
+            raise
         except Exception as e:
             log_event('error', f"RSS poll error: {e}")
         interval = max(60, int(get_cfg('rss_interval', '900')))
         now = datetime.now(timezone.utc)
         update_task_state('RssSyncAll', last_run=now,
                           next_run=datetime.fromtimestamp(now.timestamp() + interval, tz=timezone.utc))
-        await asyncio.sleep(interval)
+        try:
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            log_event('info', '[RSS] Loop cancelled during shutdown')
+            raise
 
 
 async def status_loop():
@@ -92,12 +99,19 @@ async def status_loop():
     while True:
         try:
             await check_download_status()
+        except asyncio.CancelledError:
+            log_event('info', '[StatusLoop] Loop cancelled during shutdown')
+            raise
         except Exception as e:
             log_event('error', f"Download status check error: {e}")
         now = datetime.now(timezone.utc)
         update_task_state('CheckDownloads', last_run=now,
                           next_run=datetime.fromtimestamp(now.timestamp() + 300, tz=timezone.utc))
-        await asyncio.sleep(300)
+        try:
+            await asyncio.sleep(300)
+        except asyncio.CancelledError:
+            log_event('info', '[StatusLoop] Loop cancelled during shutdown')
+            raise
 
 
 _THROTTLED_REFRESH_DAYS = 7   # how many days between refreshes for 'throttled' series
@@ -169,16 +183,27 @@ async def refresh_ongoing_loop():
                                   f"Auto-refresh: {old_vols}→{new_vols} vols, status={new_status}",
                                   s['id'])
                         updated += 1
-                await asyncio.sleep(1)  # rate-limit AniList requests
+                try:
+                    await asyncio.sleep(1)  # rate-limit AniList requests
+                except asyncio.CancelledError:
+                    log_event('info', '[RefreshLoop] Loop cancelled during shutdown')
+                    raise
             if updated:
                 log_event('refresh', f"Auto-refresh complete: {updated} series updated")
+        except asyncio.CancelledError:
+            log_event('info', '[RefreshLoop] Loop cancelled during shutdown')
+            raise
         except Exception as e:
-            print(f"[Refresh] Error: {e}")
+            log_event('error', f"[Refresh] Error: {e}")
         from routers.system import update_task_state
         now = datetime.now(timezone.utc)
         update_task_state('RefreshMetadata', last_run=now,
                           next_run=datetime.fromtimestamp(now.timestamp() + interval, tz=timezone.utc))
-        await asyncio.sleep(interval)
+        try:
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            log_event('info', '[RefreshLoop] Loop cancelled during shutdown')
+            raise
 
 
 _MDX_BACKOFF_UNTIL: float = 0.0
@@ -199,7 +224,7 @@ def _mdx_set_backoff(seconds: float, reason: str) -> None:
     deadline = _t.time() + max(seconds, 1.0)
     if deadline > _MDX_BACKOFF_UNTIL:
         _MDX_BACKOFF_UNTIL = deadline
-        print(f"[Backfill] MangaDex backoff set: {int(seconds)}s ({reason})")
+        log_event('info', f"[Backfill] MangaDex backoff set: {int(seconds)}s ({reason})")
 
 
 async def _backfill_metadata_loop():
@@ -223,13 +248,24 @@ async def _backfill_metadata_loop():
         while _mdx_backoff_active():
             import time as _t
             wait = max(1.0, _MDX_BACKOFF_UNTIL - _t.time())
-            await asyncio.sleep(min(wait, 30))
+            try:
+                await asyncio.sleep(min(wait, 30))
+            except asyncio.CancelledError:
+                log_event('info', f"[Startup] backfill cancelled during backoff for series {row['id']}")
+                return
         try:
             await refresh_mangadex_map(row['id'])
+        except asyncio.CancelledError:
+            log_event('info', f"[Startup] backfill cancelled for series {row['id']}")
+            raise
         except Exception as e:
-            print(f"[Startup] metadata backfill error for series {row['id']}: {e}")
+            log_event('error', f"[Startup] metadata backfill error for series {row['id']}: {e}")
             _maybe_backoff_from_exception(e)
-        await asyncio.sleep(2)  # ~0.5 req/s — well under MangaDex limit
+        try:
+            await asyncio.sleep(2)
+        except asyncio.CancelledError:
+            log_event('info', f"[Startup] backfill cancelled after series {row['id']}")
+            raise
 
     # Sync MangaDex chapter manifests for series that have mangadex_id but no chapter rows
     with get_db() as db:
@@ -242,13 +278,24 @@ async def _backfill_metadata_loop():
         while _mdx_backoff_active():
             import time as _t
             wait = max(1.0, _MDX_BACKOFF_UNTIL - _t.time())
-            await asyncio.sleep(min(wait, 30))
+            try:
+                await asyncio.sleep(min(wait, 30))
+            except asyncio.CancelledError:
+                log_event('info', f"[Startup] chapter sync cancelled during backoff for series {row['id']}")
+                return
         try:
             await _mdx_router.sync_mangadex_chapters(row['id'])
+        except asyncio.CancelledError:
+            log_event('info', f"[Startup] chapter sync cancelled for series {row['id']}")
+            raise
         except Exception as e:
-            print(f"[Startup] MangaDex chapter sync error for series {row['id']}: {e}")
+            log_event('error', f"[Startup] MangaDex chapter sync error for series {row['id']}: {e}")
             _maybe_backoff_from_exception(e)
-        await asyncio.sleep(1.5)
+        try:
+            await asyncio.sleep(1.5)
+        except asyncio.CancelledError:
+            log_event('info', f"[Startup] chapter sync cancelled after sleep for series {row['id']}")
+            raise
 
 
 def _maybe_backoff_from_exception(exc: Exception) -> None:
@@ -558,10 +605,17 @@ async def _stuck_state_cleanup_loop():
         try:
             stats = cleanup_stuck_state()
             if any(stats.values()):
-                print(f"[stuck-cleanup] {stats}")
+                log_event('info', f"[stuck-cleanup] {stats}")
+        except asyncio.CancelledError:
+            log_event('info', "[stuck-cleanup] Loop cancelled during shutdown")
+            raise
         except Exception as e:
-            print(f"[stuck-cleanup] error: {e}")
-        await asyncio.sleep(3600)   # 1 hour
+            log_event('error', f"[stuck-cleanup] error: {e}")
+        try:
+            await asyncio.sleep(3600)   # 1 hour
+        except asyncio.CancelledError:
+            log_event('info', "[stuck-cleanup] Loop cancelled during shutdown")
+            raise
 
 
 async def backlog_search_loop():
@@ -582,6 +636,9 @@ async def backlog_search_loop():
             if ddl_only:
                 from routers.suwayomi_ import _get_series_source
             for s in wanted_series:
+                if asyncio.current_task() and asyncio.current_task().cancelled():
+                    log_event('info', "[Backlog] Loop cancelled during series iteration")
+                    return
                 # In DDL-only mode, skip indexer search for series tracked via Suwayomi/MangaDex
                 if ddl_only and _get_series_source(s['id'], dict(s)):
                     continue
@@ -589,20 +646,36 @@ async def backlog_search_loop():
                     grabbed = await grab_existing(s['id'], s['title'], s['search_pattern'])
                     if grabbed:
                         searched += grabbed
+                except asyncio.CancelledError:
+                    log_event('info', f"[Backlog] Loop cancelled during {s['title']} search")
+                    raise
                 except Exception as e:
                     import traceback
-                    print(f"[Backlog] Error searching {s['title']}: {e}")
-                    print(traceback.format_exc())
-                await asyncio.sleep(2)  # rate-limit: ~0.5 series/sec
+                    log_event(
+                        'error',
+                        f"[Backlog] Error searching {s['title']}: {e}\n{traceback.format_exc()}",
+                    )
+                try:
+                    await asyncio.sleep(2)  # rate-limit: ~0.5 series/sec
+                except asyncio.CancelledError:
+                    log_event('info', "[Backlog] Loop cancelled during sleep")
+                    raise
             if wanted_series:
                 log_event('backlog_search', f"Backlog search complete: {len(wanted_series)} series, {searched} grabbed")
+        except asyncio.CancelledError:
+            log_event('info', "[Backlog] Main loop cancelled during shutdown")
+            raise
         except Exception as e:
-            print(f"[Backlog] Error: {e}")
+            log_event('error', f"[Backlog] Error: {e}")
         from routers.system import update_task_state
         now = datetime.now(timezone.utc)
         update_task_state('BacklogSearch', last_run=now,
                           next_run=datetime.fromtimestamp(now.timestamp() + interval, tz=timezone.utc))
-        await asyncio.sleep(interval)
+        try:
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            log_event('info', "[Backlog] Main loop cancelled during shutdown")
+            raise
 
 
 async def backlog_search():
@@ -621,7 +694,7 @@ async def backlog_search():
             if grabbed:
                 searched += grabbed
         except Exception as e:
-            print(f"[Backlog] Error searching {s['title']}: {e}")
+            log_event('error', f"[Backlog] Error searching {s['title']}: {e}")
         await asyncio.sleep(2)
     if wanted_series:
         log_event('backlog_search', f"Backlog search: {len(wanted_series)} series, {searched} grabbed")
@@ -635,7 +708,6 @@ async def import_list_sync():
         log_event('import_list_sync', "Import list sync completed")
     except Exception as e:
         log_event('error', f"Import list sync failed: {e}")
-        print(f"[ImportListSync] {e}")
 
 
 async def rescan_loop():
@@ -647,9 +719,16 @@ async def rescan_loop():
     while True:
         try:
             await _rescan_all_impl()
+        except asyncio.CancelledError:
+            log_event('info', '[RescanLoop] Loop cancelled during shutdown')
+            raise
         except Exception as e:
             log_event('error', f"Periodic rescan error: {e}")
-        await asyncio.sleep(interval_h * 3600)
+        try:
+            await asyncio.sleep(interval_h * 3600)
+        except asyncio.CancelledError:
+            log_event('info', '[RescanLoop] Loop cancelled during shutdown')
+            raise
 
 
 async def _import_list_loop():
@@ -660,13 +739,20 @@ async def _import_list_loop():
             from routers.import_lists import _sync_all_lists
             await _sync_all_lists()
             log_event('import_list_sync', "Scheduled import list sync completed")
+        except asyncio.CancelledError:
+            log_event('info', '[ImportListLoop] Loop cancelled during shutdown')
+            raise
         except Exception as e:
             log_event('error', f"Import list sync error: {e}")
         from routers.system import update_task_state
         now = datetime.now(timezone.utc)
         update_task_state('ImportListSync', last_run=now,
                           next_run=datetime.fromtimestamp(now.timestamp() + 43200, tz=timezone.utc))
-        await asyncio.sleep(43200)  # 12 hours
+        try:
+            await asyncio.sleep(43200)  # 12 hours
+        except asyncio.CancelledError:
+            log_event('info', '[ImportListLoop] Loop cancelled during shutdown')
+            raise
 
 
 async def _backup_loop():
@@ -699,9 +785,16 @@ async def _backup_loop():
             update_task_state('Backup', last_run=now,
                               next_run=datetime.fromtimestamp(now.timestamp() + interval_days * 86400, tz=timezone.utc))
             log_event('backup', f"Auto-backup created: {fname} (retaining last {retention})")
+        except asyncio.CancelledError:
+            log_event('info', '[BackupLoop] Loop cancelled during shutdown')
+            raise
         except Exception as e:
             log_event('error', f"Auto-backup failed: {e}")
-        await asyncio.sleep(interval_days * 86400)
+        try:
+            await asyncio.sleep(interval_days * 86400)
+        except asyncio.CancelledError:
+            log_event('info', '[BackupLoop] Loop cancelled during shutdown')
+            raise
 
 
 # ── Recycle-bin reaper (PR-3 of the recycle-bin epic) ────────────────────────

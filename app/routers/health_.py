@@ -411,8 +411,12 @@ async def trigger_backlog_search():
                 grabbed += await _m.grab_existing(s['id'], s['title'], s['search_pattern'])
             except Exception as e:
                 import traceback
-                print(f"[Backlog Manual] Error searching {s['title']}: {e}")
-                print(traceback.format_exc())
+                _m.log_event(
+                    'error',
+                    f"[Backlog Manual] Error searching {s['title']}: {e}\n"
+                    f"{traceback.format_exc()}",
+                    s['id'],
+                )
             await asyncio.sleep(1)
         _m.log_event('backlog_search',
                      f"Manual backlog search: {len(wanted_series)} series, {grabbed} grabbed")

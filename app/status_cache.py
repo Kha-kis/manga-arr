@@ -20,6 +20,7 @@ Purpose:
     The cache never mutates the DB and never raises out of refresh() —
     upstream failures are recorded and the loop continues.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -46,9 +47,9 @@ STATUS_REFRESH_INTERVAL_SECONDS = 20.0
 STATUS_UPSTREAM_TIMEOUT_SECONDS = 5.0
 
 # Freshness thresholds (seconds since last successful refresh).
-FRESHNESS_LIVE_MAX_AGE         = 60      # <60s → "live"
-FRESHNESS_STALE_MAX_AGE        = 300     # 60-300s → "stale"
-                                         # >300s → "unavailable"
+FRESHNESS_LIVE_MAX_AGE = 60  # <60s → "live"
+FRESHNESS_STALE_MAX_AGE = 300  # 60-300s → "stale"
+# >300s → "unavailable"
 
 FreshnessLabel = Literal["warming_up", "live", "stale", "unavailable"]
 
@@ -66,10 +67,11 @@ class DownloadClientSnapshot:
     error             - short error string from the last failed attempt,
                         None when last attempt succeeded.
     """
-    items:            dict
-    fetched_at:       datetime
-    last_success_at:  datetime | None = None
-    error:            str | None = None
+
+    items: dict
+    fetched_at: datetime
+    last_success_at: datetime | None = None
+    error: str | None = None
 
 
 def _now() -> datetime:
@@ -84,35 +86,35 @@ async def _fetch_qbit(qc: dict) -> dict:
     """
     if not qc:
         return {}
-    host = (qc.get('host') or '').rstrip('/')
-    user = qc.get('username') or ''
-    pw   = qc.get('password') or ''
-    cat  = qc.get('category') or get_cfg('category')
+    host = (qc.get("host") or "").rstrip("/")
+    user = qc.get("username") or ""
+    pw = qc.get("password") or ""
+    cat = qc.get("category") or get_cfg("category")
     async with httpx.AsyncClient(timeout=STATUS_UPSTREAM_TIMEOUT_SECONDS) as client:
         r = await client.post(
             f"{host}/api/v2/auth/login",
-            data={'username': user, 'password': pw},
+            data={"username": user, "password": pw},
         )
-        if 'Ok' not in r.text:
+        if "Ok" not in r.text:
             raise RuntimeError(f"qBit auth failed (HTTP {r.status_code})")
         r2 = await client.get(
             f"{host}/api/v2/torrents/info",
-            params={'category': cat},
+            params={"category": cat},
         )
         if r2.status_code != 200:
             raise RuntimeError(f"qBit torrents/info HTTP {r2.status_code}")
         out: dict = {}
         for t in r2.json():
-            h = t.get('hash', '').lower()
+            h = t.get("hash", "").lower()
             out[h] = {
-                'hash':          h,
-                'name':          t.get('name', ''),
-                'state':         t.get('state', ''),
-                'progress':      round(t.get('progress', 0) * 100, 1),
-                'dlspeed':       t.get('dlspeed', 0),
-                'eta':           t.get('eta', -1),
-                'client':        'qbittorrent',
-                'error_message': t.get('stateMessage', ''),
+                "hash": h,
+                "name": t.get("name", ""),
+                "state": t.get("state", ""),
+                "progress": round(t.get("progress", 0) * 100, 1),
+                "dlspeed": t.get("dlspeed", 0),
+                "eta": t.get("eta", -1),
+                "client": "qbittorrent",
+                "error_message": t.get("stateMessage", ""),
             }
         return out
 
@@ -121,28 +123,28 @@ async def _fetch_sab(sc: dict) -> dict:
     """Query SABnzbd. Returns {nzo_id: info} or raises on any failure."""
     if not sc:
         return {}
-    host   = (sc.get('host') or '').rstrip('/')
-    apikey = sc.get('password') or ''
+    host = (sc.get("host") or "").rstrip("/")
+    apikey = sc.get("password") or ""
     if not apikey:
         return {}
     async with httpx.AsyncClient(timeout=STATUS_UPSTREAM_TIMEOUT_SECONDS) as client:
         r = await client.get(
             f"{host}/api",
-            params={'mode': 'queue', 'apikey': apikey, 'output': 'json'},
+            params={"mode": "queue", "apikey": apikey, "output": "json"},
         )
         if r.status_code != 200:
             raise RuntimeError(f"SAB HTTP {r.status_code}")
         out: dict = {}
-        for s in r.json().get('queue', {}).get('slots', []):
-            nzo = s.get('nzo_id', '')
+        for s in r.json().get("queue", {}).get("slots", []):
+            nzo = s.get("nzo_id", "")
             out[nzo] = {
-                'hash':     nzo,
-                'name':     s.get('filename', ''),
-                'state':    s.get('status', '').lower(),
-                'progress': float(s.get('percentage', 0)),
-                'dlspeed':  0,
-                'eta':      s.get('timeleft', ''),
-                'client':   'sabnzbd',
+                "hash": nzo,
+                "name": s.get("filename", ""),
+                "state": s.get("status", "").lower(),
+                "progress": float(s.get("percentage", 0)),
+                "dlspeed": 0,
+                "eta": s.get("timeleft", ""),
+                "client": "sabnzbd",
             }
         return out
 
@@ -152,7 +154,7 @@ class DownloadStatusCache:
 
     def __init__(self) -> None:
         self._qbit: DownloadClientSnapshot | None = None
-        self._sab:  DownloadClientSnapshot | None = None
+        self._sab: DownloadClientSnapshot | None = None
         # Single-flight: multiple concurrent refresh() callers collapse
         # into a single poll. The second caller returns immediately.
         self._refresh_lock = asyncio.Lock()
@@ -205,19 +207,21 @@ class DownloadStatusCache:
             from shared import get_db as _get_db
 
             with _get_db() as db:
-                qc = _gcp(db, 'torrent')
-                sc = _gcp(db, 'nzb')
+                qc = _gcp(db, "torrent")
+                sc = _gcp(db, "nzb")
 
             # Run the two polls concurrently. A qBit failure must not
             # stop SAB (and vice-versa) — hence return_exceptions=True.
+            qbit_result: dict | BaseException
+            sab_result: dict | BaseException
             qbit_result, sab_result = await asyncio.gather(
                 _fetch_qbit(qc) if qc else _noop_dict(),
-                _fetch_sab(sc)  if sc else _noop_dict(),
+                _fetch_sab(sc) if sc else _noop_dict(),
                 return_exceptions=True,
             )
 
             self._qbit = _merge_snapshot(self._qbit, qbit_result)
-            self._sab  = _merge_snapshot(self._sab,  sab_result)
+            self._sab = _merge_snapshot(self._sab, sab_result)
             return True
 
 
@@ -226,7 +230,7 @@ async def _noop_dict() -> dict:
 
 
 def _merge_snapshot(
-    prev: DownloadClientSnapshot | None, result
+    prev: DownloadClientSnapshot | None, result: dict | BaseException
 ) -> DownloadClientSnapshot:
     """Apply one refresh result to a previous snapshot, preserving
     last-known-good items when the refresh itself failed."""
@@ -242,6 +246,7 @@ def _merge_snapshot(
             error=f"{type(result).__name__}: {str(result)[:120]}",
         )
     # Success path.
+    assert isinstance(result, dict)
     return DownloadClientSnapshot(
         items=result,
         fetched_at=now,
@@ -267,6 +272,13 @@ async def download_status_refresh_loop() -> None:
     while True:
         try:
             await DOWNLOAD_STATUS_CACHE.refresh()
+        except asyncio.CancelledError:
+            log.warning("download_status_refresh_loop:cancelled during shutdown")
+            raise
         except Exception as e:
             log.warning("download_status_refresh_loop iteration failed: %r", e)
-        await asyncio.sleep(STATUS_REFRESH_INTERVAL_SECONDS)
+        try:
+            await asyncio.sleep(STATUS_REFRESH_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            log.warning("download_status_refresh_loop:cancelled during shutdown")
+            raise

@@ -9,6 +9,7 @@ from routers._templates import templates
 
 from shared import get_db, from_json
 from security import validate_outbound_url, UnsafeURLError
+from events import log_event
 
 router = APIRouter()
 
@@ -174,7 +175,7 @@ async def _sync_all_lists():
         try:
             await _sync_list(lst)
         except Exception as e:
-            print(f"[ImportList:{lst['name']}] Sync error: {e}")
+            log_event("error", f"[ImportList:{lst['name']}] Sync error: {e}")
 
 
 async def _sync_list(lst: dict):
@@ -185,7 +186,7 @@ async def _sync_list(lst: dict):
     try:
         series_list = await _fetch_list(t, settings)
     except Exception as e:
-        print(f"[ImportList:{lst['name']}] Fetch error: {e}")
+        log_event("error", f"[ImportList:{lst['name']}] Fetch error: {e}")
         return
 
     if not series_list:
@@ -279,7 +280,6 @@ async def _sync_list(lst: dict):
             _m.create_background_task(_m.fetch_mu_metadata(series_id, title), name=f"import_list:{series_id}:fetch_mu")
             _m.create_background_task(_m.grab_existing(series_id, title, search_pattern), name=f"import_list:{series_id}:grab_existing")
         except Exception as e:
-            print(f"[ImportList] Post-add tasks failed for '{title}': {e}")
             try:
                 import main as _m
                 _m.log_event(
@@ -292,7 +292,10 @@ async def _sync_list(lst: dict):
                 pass
 
     added_count = len(added_entries)
-    print(f"[ImportList:{lst['name']}] Synced {len(series_list)} items, added {added_count} new")
+    log_event(
+        "import_list_sync",
+        f"[ImportList:{lst['name']}] Synced {len(series_list)} items, added {added_count} new",
+    )
 
 
 async def _fetch_list(list_type: str, settings: dict) -> list[dict]:

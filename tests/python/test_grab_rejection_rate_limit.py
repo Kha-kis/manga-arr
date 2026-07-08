@@ -26,66 +26,71 @@ import conftest  # noqa: F401
 def reset_rejection_cache():
     """Clear the module-level rate-limit cache between tests so they
     don't leak state into each other."""
-    import grab
-    grab._rejection_log_last.clear()
+    import grab_dedup
+    grab_dedup._rejection_log_last.clear()
     yield
-    grab._rejection_log_last.clear()
+    grab_dedup._rejection_log_last.clear()
 
 
 def test_first_call_logs(reset_rejection_cache, monkeypatch):
-    import grab
+    import grab_dedup
+    import events
     calls = []
-    monkeypatch.setattr(grab, 'log_event',
+    monkeypatch.setattr(events, 'log_event',
                         lambda *a, **kw: calls.append((a, kw)))
-    grab._log_grab_rejection(1, 'Foo Vol 1', 'edition mismatch')
+    grab_dedup._log_grab_rejection(1, 'Foo Vol 1', 'edition mismatch')
     assert len(calls) == 1, "first rejection must log"
 
 
 def test_repeat_same_key_within_ttl_is_silent(reset_rejection_cache, monkeypatch):
-    import grab
+    import grab_dedup
+    import events
     calls = []
-    monkeypatch.setattr(grab, 'log_event',
+    monkeypatch.setattr(events, 'log_event',
                         lambda *a, **kw: calls.append(a))
     for _ in range(20):
-        grab._log_grab_rejection(1, 'Foo Vol 1', 'edition mismatch')
+        grab_dedup._log_grab_rejection(1, 'Foo Vol 1', 'edition mismatch')
     assert len(calls) == 1, (
         f"expected only the first call to log; got {len(calls)} log_event calls"
     )
 
 
 def test_different_series_id_logs_independently(reset_rejection_cache, monkeypatch):
-    import grab
+    import grab_dedup
+    import events
     calls = []
-    monkeypatch.setattr(grab, 'log_event',
+    monkeypatch.setattr(events, 'log_event',
                         lambda *a, **kw: calls.append(a))
     # Same title/reason but different series — separate cache entries
-    grab._log_grab_rejection(1, 'Foo Vol 1', 'edition mismatch')
-    grab._log_grab_rejection(2, 'Foo Vol 1', 'edition mismatch')
-    grab._log_grab_rejection(3, 'Foo Vol 1', 'edition mismatch')
+    grab_dedup._log_grab_rejection(1, 'Foo Vol 1', 'edition mismatch')
+    grab_dedup._log_grab_rejection(2, 'Foo Vol 1', 'edition mismatch')
+    grab_dedup._log_grab_rejection(3, 'Foo Vol 1', 'edition mismatch')
     assert len(calls) == 3
 
 
 def test_different_titles_log_independently(reset_rejection_cache, monkeypatch):
-    import grab
+    import grab_dedup
+    import events
     calls = []
-    monkeypatch.setattr(grab, 'log_event',
+    monkeypatch.setattr(events, 'log_event',
                         lambda *a, **kw: calls.append(a))
-    grab._log_grab_rejection(1, 'Foo Vol 1', 'edition mismatch')
-    grab._log_grab_rejection(1, 'Foo Vol 2', 'edition mismatch')
-    grab._log_grab_rejection(1, 'Foo Vol 3', 'edition mismatch')
+    grab_dedup._log_grab_rejection(1, 'Foo Vol 1', 'edition mismatch')
+    grab_dedup._log_grab_rejection(1, 'Foo Vol 2', 'edition mismatch')
+    grab_dedup._log_grab_rejection(1, 'Foo Vol 3', 'edition mismatch')
     assert len(calls) == 3
 
 
 def test_different_reasons_log_independently(reset_rejection_cache, monkeypatch):
     """A release rejected for different reasons (e.g. edition then
     quality) should log each — they're distinct diagnostic signals."""
-    import grab
+    import grab_dedup
+    import events
     calls = []
-    monkeypatch.setattr(grab, 'log_event',
+    monkeypatch.setattr(events, 'log_event',
                         lambda *a, **kw: calls.append(a))
-    grab._log_grab_rejection(1, 'Foo Vol 1', 'edition mismatch (a, b)')
-    grab._log_grab_rejection(1, 'Foo Vol 1', 'quality below cutoff')
-    grab._log_grab_rejection(1, 'Foo Vol 1', 'blocked group')
+    grab_dedup._log_grab_rejection(1, 'Foo Vol 1', 'edition mismatch (a, b)')
+    grab_dedup._log_grab_rejection(1, 'Foo Vol 1', 'quality below cutoff')
+    grab_dedup._log_grab_rejection(1, 'Foo Vol 1', 'blocked group')
     assert len(calls) == 3
 
 
@@ -94,17 +99,18 @@ def test_log_again_after_ttl_expires(reset_rejection_cache, monkeypatch):
     long-running operators still see periodic confirmation that the
     filter is firing for unchanged releases (sanity, not silenced
     forever)."""
-    import grab
+    import grab_dedup
+    import events
     calls = []
-    monkeypatch.setattr(grab, 'log_event',
+    monkeypatch.setattr(events, 'log_event',
                         lambda *a, **kw: calls.append(a))
     # Force the TTL to be tiny for this test
-    monkeypatch.setattr(grab, '_REJECTION_LOG_TTL_S', 0.05)
-    grab._log_grab_rejection(1, 'Foo Vol 1', 'edition mismatch')
-    grab._log_grab_rejection(1, 'Foo Vol 1', 'edition mismatch')  # silenced
+    monkeypatch.setattr(grab_dedup, '_REJECTION_LOG_TTL_S', 0.05)
+    grab_dedup._log_grab_rejection(1, 'Foo Vol 1', 'edition mismatch')
+    grab_dedup._log_grab_rejection(1, 'Foo Vol 1', 'edition mismatch')  # silenced
     import time
     time.sleep(0.1)
-    grab._log_grab_rejection(1, 'Foo Vol 1', 'edition mismatch')  # logs again
+    grab_dedup._log_grab_rejection(1, 'Foo Vol 1', 'edition mismatch')  # logs again
     assert len(calls) == 2, (
         f"expected 2 log_events (first + after-TTL); got {len(calls)}"
     )
@@ -112,11 +118,12 @@ def test_log_again_after_ttl_expires(reset_rejection_cache, monkeypatch):
 
 def test_log_event_failure_does_not_break_grab(reset_rejection_cache, monkeypatch):
     """The except: pass guard. log_event raising must not propagate."""
-    import grab
+    import grab_dedup
+    import events
     def _boom(*a, **kw): raise RuntimeError("DB write failed")
-    monkeypatch.setattr(grab, 'log_event', _boom)
+    monkeypatch.setattr(events, 'log_event', _boom)
     # Must not raise
-    grab._log_grab_rejection(1, 'Foo Vol 1', 'edition mismatch')
+    grab_dedup._log_grab_rejection(1, 'Foo Vol 1', 'edition mismatch')
 
 
 def test_cache_does_not_grow_unboundedly_across_ttl_cycles(reset_rejection_cache, monkeypatch):
@@ -124,26 +131,27 @@ def test_cache_does_not_grow_unboundedly_across_ttl_cycles(reset_rejection_cache
     This is the property that matters in production — a long-running
     process polling thousands of releases per cycle for months on end
     must not accumulate cache entries indefinitely."""
-    import grab
+    import grab_dedup
+    import events
     import time
-    monkeypatch.setattr(grab, 'log_event', lambda *a, **kw: None)
-    monkeypatch.setattr(grab, '_REJECTION_LOG_TTL_S', 0.05)
+    monkeypatch.setattr(events, 'log_event', lambda *a, **kw: None)
+    monkeypatch.setattr(grab_dedup, '_REJECTION_LOG_TTL_S', 0.05)
 
     # Three TTL cycles, ~500 unique entries per cycle.
     for cycle in range(3):
         for i in range(500):
-            grab._log_grab_rejection(i + cycle * 1000, f'Title-{cycle}-{i}', 'reason')
+            grab_dedup._log_grab_rejection(i + cycle * 1000, f'Title-{cycle}-{i}', 'reason')
         # Sleep past the TTL so next cycle's entries start fresh
         time.sleep(0.06)
 
     # One more call to trigger the prune branch (>1000)
-    grab._log_grab_rejection(99999, 'final', 'reason')
+    grab_dedup._log_grab_rejection(99999, 'final', 'reason')
 
     # Across 3 cycles we wrote 1500 entries; if pruning never ran we'd
     # have 1500+1=1501. The prune cap is 1000 entries; after the final
     # call's prune, only the most-recent-cycle entries plus the fresh
     # 'final' should remain. Allow generous slack: <= 1000 means the
     # cap is doing its job.
-    assert len(grab._rejection_log_last) <= 1000, (
-        f"cache grew past prune cap; size = {len(grab._rejection_log_last)}"
+    assert len(grab_dedup._rejection_log_last) <= 1000, (
+        f"cache grew past prune cap; size = {len(grab_dedup._rejection_log_last)}"
     )

@@ -130,8 +130,8 @@ def test_grab_writes_seen_and_marks_volume_grabbed(env):
         return (True, 'TestQbit', 'dl-id-1', True)
 
     async def _run():
-        import grab
-        with patch.object(grab, 'grab_url', _fake_grab_url):
+        import grab_core
+        with patch.object(grab_core, 'grab_url', _fake_grab_url):
             return await main.grab_item(item, series_id=1)
 
     result = asyncio.run(_run())
@@ -175,8 +175,8 @@ def test_second_grab_attempt_is_blocked_by_seen_table(env):
         return (True, 'TestQbit', f"dl-{grab_url_call_count['n']}", True)
 
     async def _run():
-        import grab
-        with patch.object(grab, 'grab_url', _counting_grab_url):
+        import grab_core
+        with patch.object(grab_core, 'grab_url', _counting_grab_url):
             r1 = await main.grab_item(item, series_id=1)
             r2 = await main.grab_item(item, series_id=1)
             return r1, r2
@@ -209,8 +209,8 @@ def test_grab_failure_does_not_pollute_seen(env):
         return (False, 'TestQbit', None, False)
 
     async def _run():
-        import grab
-        with patch.object(grab, 'grab_url', _failing_grab_url):
+        import grab_core
+        with patch.object(grab_core, 'grab_url', _failing_grab_url):
             return await main.grab_item(item, series_id=1)
 
     result = asyncio.run(_run())
@@ -266,8 +266,8 @@ def test_guid_dedup_blocks_same_content_different_url(env):
         return (True, 'TestQbit', f"dl-{grab_url_call_count['n']}", True)
 
     async def _run():
-        import grab
-        with patch.object(grab, 'grab_url', _counting_grab_url):
+        import grab_core
+        with patch.object(grab_core, 'grab_url', _counting_grab_url):
             r1 = await main.grab_item(item_a, series_id=1)
             r2 = await main.grab_item(item_b, series_id=1)
             return r1, r2
@@ -304,8 +304,8 @@ def test_missing_guid_falls_back_to_url_only_dedup(env):
         return (True, 'TestQbit', 'dl-no-guid', True)
 
     async def _run():
-        import grab
-        with patch.object(grab, 'grab_url', _ok):
+        import grab_core
+        with patch.object(grab_core, 'grab_url', _ok):
             r1 = await main.grab_item(item, series_id=1)
             r2 = await main.grab_item(item, series_id=1)
             return r1, r2
@@ -353,8 +353,8 @@ def test_empty_string_guid_treated_as_missing(env):
         return (True, 'TestQbit', 'dl-empty-guid', True)
 
     async def _run():
-        import grab
-        with patch.object(grab, 'grab_url', _ok):
+        import grab_core
+        with patch.object(grab_core, 'grab_url', _ok):
             r1 = await main.grab_item(item_a, series_id=1)
             r2 = await main.grab_item(item_b, series_id=1)
             return r1, r2
@@ -393,8 +393,8 @@ def test_guid_dedup_does_not_block_different_guids(env):
         return (True, 'TestQbit', 'dl-x', True)
 
     async def _run():
-        import grab
-        with patch.object(grab, 'grab_url', _ok):
+        import grab_core
+        with patch.object(grab_core, 'grab_url', _ok):
             r1 = await main.grab_item(item_a, series_id=1)
             r2 = await main.grab_item(item_b, series_id=1)
             return r1, r2
@@ -431,8 +431,8 @@ def test_full_pipeline_grabbed_to_downloaded(env):
         return (True, 'TestQbit', 'dl-e2e-1', True)
 
     async def _grab():
-        import grab
-        with patch.object(grab, 'grab_url', _fake_grab_url):
+        import grab_core
+        with patch.object(grab_core, 'grab_url', _fake_grab_url):
             return await main.grab_item(item, series_id=1)
 
     assert asyncio.run(_grab()) is True
