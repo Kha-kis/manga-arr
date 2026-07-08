@@ -111,6 +111,9 @@ def _iter_routes(routes):
         seen.add(ident)
         yield route
         nested = getattr(route, "routes", None)
+        original_router = getattr(route, "original_router", None)
+        if not nested and original_router is not None:
+            nested = getattr(original_router, "routes", None)
         if nested:
             stack[0:0] = list(nested)
 
