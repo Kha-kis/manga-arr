@@ -8,14 +8,14 @@
   <div class="page-heading mb-0"><i class="bi bi-gear-fill"></i>Settings</div>
 </div>
 
-<div class="row g-0" style="min-height:70vh">
+<div class="row g-0 settings-shell">
 
   <!-- Sidebar -->
   <div class="col-12 col-md-3 col-lg-2 pe-md-3 mb-3 mb-md-0">
-    <div class="panel h-100" style="min-height:auto; margin-bottom:0">
+    <div class="panel h-100 settings-nav-panel">
       <div class="panel-body p-2">
 
-        <div class="mb-1 px-2" style="font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Mangarr</div>
+        <div class="mb-1 px-2 settings-section-label">Mangarr</div>
         <a href="/settings#media" class="settings-sidebar-item settings-sidebar-link">
           <i class="bi bi-folder2-open me-2"></i>Media Management
         </a>
@@ -24,7 +24,7 @@
         </a>
 
         <div class="settings-divider"></div>
-        <div class="mb-1 px-2 mt-2" style="font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Profiles</div>
+        <div class="mb-1 px-2 mt-2 settings-section-label">Profiles</div>
         <a href="/quality-profiles" class="settings-sidebar-item settings-sidebar-link">
           <i class="bi bi-trophy me-2"></i>Quality Profiles
         </a>
@@ -45,7 +45,7 @@
         </a>
 
         <div class="settings-divider"></div>
-        <div class="mb-1 px-2 mt-2" style="font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Sources</div>
+        <div class="mb-1 px-2 mt-2 settings-section-label">Sources</div>
         <a href="/indexers" class="settings-sidebar-item settings-sidebar-link">
           <i class="bi bi-search me-2"></i>Indexers
         </a>
@@ -57,7 +57,7 @@
         </a>
 
         <div class="settings-divider"></div>
-        <div class="mb-1 px-2 mt-2" style="font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Notifications</div>
+        <div class="mb-1 px-2 mt-2 settings-section-label">Notifications</div>
         <a href="/notifications" class="settings-sidebar-item settings-sidebar-link">
           <i class="bi bi-bell me-2"></i>Connect
         </a>
@@ -69,9 +69,7 @@
   <div class="col-12 col-md-9 col-lg-10">
 
     {% if saved %}
-    <div class="d-flex align-items-center gap-2 mb-3 px-3 py-2"
-         class="text-sm rounded-lg"
-         style="background:var(--jade-bg);border:1px solid var(--jade-soft);color:var(--jade)"
+    <div class="d-flex align-items-center gap-2 mb-3 px-3 py-2 text-sm rounded-lg settings-saved-alert"
          id="saved-toast">
       <i class="bi bi-check-circle-fill"></i>Settings saved successfully.
     </div>
@@ -79,19 +77,19 @@
     {% endif %}
 
     {% if secret_health.has_warning %}
-    <div class="panel" style="border-color:rgba(220,53,69,.35)">
+    <div class="panel settings-secret-warning">
       <div class="panel-body">
         <div class="d-flex align-items-start gap-3">
-          <i class="bi bi-exclamation-triangle-fill" style="color:var(--ruby);font-size:var(--text-2xl)"></i>
+          <i class="bi bi-exclamation-triangle-fill text-ruby settings-notice-icon"></i>
           <div>
             <div class="fw-semibold mb-1">Encrypted credentials need recovery</div>
-            <div style="font-size:var(--text-base);color:var(--text-2)">
+            <div class="settings-copy">
               Mangarr cannot decrypt {{ secret_health.affected_count }} stored credential{% if secret_health.affected_count != 1 %}s{% endif %} with the active key.
               Restore the matching {% if secret_key_source == 'environment' %}<code>MANGARR_SECRET_KEY</code>{% else %}<code>/config/.mangarr-secret-key</code>{% endif %}
               or re-enter the affected credentials. Integrations fail closed until the key or credentials are fixed.
             </div>
             {% if secret_health.affected_items %}
-            <div class="mt-2" style="font-size:var(--text-sm);color:var(--text-3)">
+            <div class="mt-2 settings-subcopy">
               Affected examples: {{ secret_health.affected_items | join(', ') }}
             </div>
             {% endif %}
@@ -105,8 +103,8 @@
     <div class="panel">
       <div class="panel-body">
         <div class="d-flex align-items-start gap-3">
-          <i class="bi bi-info-circle-fill" style="color:var(--sky);font-size:var(--text-2xl)"></i>
-          <div style="font-size:var(--text-base);color:var(--text-2)">
+          <i class="bi bi-info-circle-fill text-sky settings-notice-icon"></i>
+          <div class="settings-copy">
             First boot generated an API key and {% if secret_key_source == 'environment' %}expects <code>MANGARR_SECRET_KEY</code> from your deployment{% else %}created <code>/config/.mangarr-secret-key</code>{% endif %} for secret encryption.
             Back up the database and the active key source together before configuring indexers, download clients, or notifications.
           </div>
@@ -160,7 +158,7 @@
             <button type="button" class="btn btn-outline-ember btn-sm" onclick="regenerateApiKey()">
               <i class="bi bi-arrow-clockwise me-1"></i>Regenerate
             </button>
-            <span id="regen-result" class="connection-status ms-2" style="display:none"></span>
+            <span id="regen-result" class="connection-status ms-2 settings-hidden"></span>
           </div>
         </div>
       </div>
@@ -172,7 +170,7 @@
       <div class="panel-body">
         <div class="row g-3">
           <div class="col-6 col-sm-3 col-md-2">
-            <label class="form-label">Entry TTL <span style="color:var(--text-3)">(days)</span></label>
+            <label class="form-label">Entry TTL <span class="text-muted-3">(days)</span></label>
             <input type="number" name="blocklist_ttl_days" class="form-control"
                    value="{{ cfg.blocklist_ttl_days or '90' }}" min="0" max="3650">
             <div class="form-text">Days before a blocked entry expires and the release can be re-grabbed. 0 = never expire.</div>
@@ -190,7 +188,7 @@
       <div class="panel-body">
         <div class="row g-3">
           <div class="col-6 col-sm-3 col-md-2">
-            <label class="form-label">Retention <span style="color:var(--text-3)">(days)</span></label>
+            <label class="form-label">Retention <span class="text-muted-3">(days)</span></label>
             <input type="number" name="recycle_bin_retention_days" class="form-control"
                    value="{{ cfg.recycle_bin_retention_days or '30' }}" min="1" max="365">
             <div class="form-text">Days a soft-deleted series sits in the recycle bin before the reaper permanently deletes it.</div>
@@ -244,13 +242,13 @@
                    value="{{ cfg.backup_folder or '/config/backups/' }}" placeholder="/config/backups/">
           </div>
           <div class="col-6 col-sm-3 col-md-2">
-            <label class="form-label">Interval <span style="color:var(--text-3)">(days)</span></label>
+            <label class="form-label">Interval <span class="text-muted-3">(days)</span></label>
             <input type="number" name="backup_interval_days" class="form-control"
                    value="{{ cfg.backup_interval_days or '7' }}" min="1" max="365">
             <div class="form-text">How often to create a backup.</div>
           </div>
           <div class="col-6 col-sm-3 col-md-2">
-            <label class="form-label">Retention <span style="color:var(--text-3)">(count)</span></label>
+            <label class="form-label">Retention <span class="text-muted-3">(count)</span></label>
             <input type="number" name="backup_retention" class="form-control"
                    value="{{ cfg.backup_retention or '10' }}" min="1" max="100">
             <div class="form-text">Backups to keep before pruning.</div>
@@ -259,7 +257,7 @@
         <div>
           <a href="/system/backup" class="text-ember text-sm"><i class="bi bi-box-arrow-up-right me-1"></i>Manage backups</a>
         </div>
-        <div class="mt-3" style="font-size:var(--text-base);color:var(--text-2)">
+        <div class="mt-3 settings-copy">
           A valid restore needs both the database and the active secret key source.
           File-backed installs must preserve <code>/config/.mangarr-secret-key</code>.
           Env-backed installs must preserve the deployment secret that provides <code>MANGARR_SECRET_KEY</code>.

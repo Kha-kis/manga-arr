@@ -2387,6 +2387,97 @@ body {
   font-weight: 600;
 }
 
+.settings-shell {
+  min-height: 70vh;
+}
+
+.settings-nav-panel {
+  min-height: auto;
+  margin-bottom: 0;
+}
+
+.settings-section-label {
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--text-3);
+}
+
+.settings-secret-warning {
+  border-color: var(--ruby-medium);
+}
+
+.settings-saved-alert {
+  color: var(--jade);
+  border: 1px solid var(--jade-soft);
+  background: var(--jade-bg);
+}
+
+.settings-notice-icon {
+  font-size: var(--text-2xl);
+}
+
+.settings-copy {
+  font-size: var(--text-base);
+  color: var(--text-2);
+}
+
+.settings-subcopy {
+  font-size: var(--text-sm);
+  color: var(--text-3);
+}
+
+.settings-col-default {
+  width: 80px;
+}
+
+.settings-col-actions {
+  width: 60px;
+}
+
+.settings-col-lang {
+  width: 80px;
+}
+
+.settings-col-type {
+  width: 90px;
+}
+
+.settings-col-status,
+.settings-col-extension-actions {
+  width: 100px;
+}
+
+.settings-mono-cell {
+  font-size: var(--text-base);
+  font-family: var(--font-mono);
+}
+
+.settings-base-cell {
+  font-size: var(--text-base);
+}
+
+.settings-preview-mono {
+  font-family: var(--font-mono);
+}
+
+.settings-alert {
+  font-size: var(--text-base);
+  color: var(--text-2);
+  border: 1px solid var(--edge-2);
+  border-radius: var(--radius-md);
+  background: var(--ink-4);
+}
+
+.settings-extension-toolbar {
+  border-bottom: 1px solid var(--edge);
+}
+
+.settings-hidden {
+  display: none;
+}
+
 /* ═══════════════════════════════════════════════════════════════
    FOCUS VISIBILITY — keyboard nav
 ════════════════════════════════════════════════════════════════ */
