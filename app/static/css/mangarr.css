@@ -2655,6 +2655,93 @@ body {
   font-size: var(--text-2xs);
 }
 
+.download-client-card.is-disabled {
+  opacity: 0.5;
+}
+
+.download-client-meta {
+  font-size: var(--text-base);
+}
+
+.download-client-priority {
+  font-size: var(--text-sm);
+  color: var(--text-2);
+}
+
+.download-client-small-badge {
+  font-size: var(--text-2xs);
+}
+
+.download-client-label {
+  color: var(--text-2);
+}
+
+.download-client-post-category {
+  color: var(--sky);
+}
+
+.download-client-state.is-paused {
+  color: var(--gold);
+}
+
+.download-client-state.is-forced {
+  color: var(--ruby);
+}
+
+.download-client-state.is-normal {
+  color: var(--text);
+}
+
+.download-client-toggle.is-on {
+  color: var(--jade);
+}
+
+.download-client-toggle.is-off {
+  color: var(--text-2);
+}
+
+.download-client-modal-body {
+  max-height: 75vh;
+  overflow-y: auto;
+}
+
+.download-client-field-note {
+  color: var(--text-2);
+}
+
+.download-client-switch-note {
+  display: block;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+
+.download-client-empty-copy {
+  font-size: var(--text-base);
+  color: var(--text-3);
+}
+
+.download-client-test-result {
+  display: none;
+}
+
+.remote-path-copy,
+.download-client-option-note {
+  font-size: var(--text-base);
+  color: var(--text-2);
+}
+
+.remote-path-table {
+  font-size: var(--text-base);
+}
+
+.remote-path-muted {
+  color: var(--text-2);
+}
+
+.remote-path-optional {
+  color: var(--text-3);
+}
+
 /* ═══════════════════════════════════════════════════════════════
    FOCUS VISIBILITY — keyboard nav
 ════════════════════════════════════════════════════════════════ */

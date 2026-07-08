@@ -12,11 +12,11 @@
 </div>
 
 {% if secret_health.has_warning %}
-<div class="panel" style="border-color:rgba(220,53,69,.35)">
+<div class="panel notice-alert is-ruby">
   <div class="panel-body">
     <div class="d-flex align-items-start gap-3">
-      <i class="bi bi-exclamation-triangle-fill" style="color:var(--ruby);font-size:var(--text-2xl)"></i>
-      <div style="font-size:var(--text-base);color:var(--text-2)">
+      <i class="bi bi-exclamation-triangle-fill settings-notice-icon text-ruby"></i>
+      <div class="download-client-meta">
         Some encrypted credentials could not be decrypted with the active key. Restore the matching key or re-enter the affected credentials before testing integrations.
       </div>
     </div>
@@ -27,17 +27,17 @@
 <div class="row g-3">
 {% for c in clients %}
 <div class="col-12">
-  <div class="panel mb-0" style="{% if not c.enabled %}opacity:.5{% endif %}">
+  <div class="panel mb-0 download-client-card{% if not c.enabled %} is-disabled{% endif %}">
     <div class="panel-header d-flex align-items-center gap-2">
       <i class="bi bi-{% if c.type == 'qbittorrent' %}hdd-fill{% elif c.type == 'sabnzbd' %}archive-fill{% else %}download{% endif %}"></i>
       {{ c.name }}
-      <span class="badge-status badge-unknown" style="font-size:var(--text-2xs)">{{ c.type }}</span>
+      <span class="badge-status badge-unknown download-client-small-badge">{{ c.type }}</span>
       {% if not c.enabled %}
-      <span class="badge-status badge-wanted" style="font-size:var(--text-2xs)">DISABLED</span>
+      <span class="badge-status badge-wanted download-client-small-badge">DISABLED</span>
       {% endif %}
-      <span style="font-size:var(--text-sm);color:var(--text-2)">Priority: {{ c.priority }}</span>
+      <span class="download-client-priority">Priority: {{ c.priority }}</span>
       {% for t in c.tags %}
-      <span class="badge-status badge-indexer" style="font-size:var(--text-2xs)">{{ t }}</span>
+      <span class="badge-status badge-indexer download-client-small-badge">{{ t }}</span>
       {% endfor %}
       <div class="ms-auto d-flex gap-2">
         <button class="btn btn-sm btn-secondary"
@@ -54,29 +54,29 @@
       </div>
     </div>
     <div class="panel-body">
-      <div class="row g-3" style="font-size:var(--text-base)">
+      <div class="row g-3 download-client-meta">
         <div class="col-auto">
-          <span style="color:var(--text-2)">Host: </span><span class="text-ember">{{ c.host or '—' }}</span>
+          <span class="download-client-label">Host: </span><span class="text-ember">{{ c.host or '—' }}</span>
         </div>
         <div class="col-auto">
-          <span style="color:var(--text-2)">Category: </span><span>{{ c.category or 'manga' }}</span>
+          <span class="download-client-label">Category: </span><span>{{ c.category or 'manga' }}</span>
         </div>
         {% if c.post_import_category %}
         <div class="col-auto">
-          <span style="color:var(--text-2)">Post-Import: </span><span style="color:var(--sky)">{{ c.post_import_category }}</span>
+          <span class="download-client-label">Post-Import: </span><span class="download-client-post-category">{{ c.post_import_category }}</span>
         </div>
         {% endif %}
         {% if c.type == 'qbittorrent' %}
         <div class="col-auto">
-          <span style="color:var(--text-2)">Initial State: </span>
-          <span style="color:{% if c.initial_state == 'paused' %}var(--gold){% elif c.initial_state == 'forced' %}var(--ruby){% else %}var(--text){% endif %}">
+          <span class="download-client-label">Initial State: </span>
+          <span class="download-client-state {% if c.initial_state == 'paused' %}is-paused{% elif c.initial_state == 'forced' %}is-forced{% else %}is-normal{% endif %}">
             {{ {'normal':'Start','paused':'Paused','forced':'Force Start'}.get(c.initial_state or 'normal','Start') }}
           </span>
         </div>
         {% endif %}
         <div class="col-auto">
-          <span style="color:var(--text-2)">Remove on Import: </span>
-          <span style="color:{% if c.remove_completed %}var(--jade){% else %}var(--text-2){% endif %}">
+          <span class="download-client-label">Remove on Import: </span>
+          <span class="download-client-toggle {% if c.remove_completed %}is-on{% else %}is-off{% endif %}">
             {% if c.remove_completed %}Yes{% else %}No{% endif %}
           </span>
         </div>
@@ -95,7 +95,7 @@
           <h6 class="modal-title text-ember"><i class="bi bi-pencil me-2"></i>Edit: {{ c.name }}</h6>
           <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
         </div>
-        <div class="modal-body" style="max-height:75vh;overflow-y:auto">
+        <div class="modal-body download-client-modal-body">
 
           <!-- Identity -->
           <div class="dc-section-label">Identity</div>
@@ -133,7 +133,7 @@
               <div class="form-text" x-show="isSuwayomi()">Base URL of your Suwayomi server.</div>
             </div>
             <div class="col-12 mt-2" x-show="isSuwayomi()" x-cloak>
-              <label class="form-label">Library Path <small style="color:var(--text-2)">— path visible to Mangarr that matches Suwayomi's download root</small></label>
+              <label class="form-label">Library Path <small class="download-client-field-note">— path visible to Mangarr that matches Suwayomi's download root</small></label>
               <input type="text" name="download_path" class="form-control" value="{{ c.download_path or '' }}"
                      placeholder="/data/media/manga">
               <div class="form-text">Suwayomi reports its download path (e.g. <code>/manga</code>). Enter the equivalent path on this server as Mangarr sees it.</div>
@@ -160,7 +160,7 @@
               </div>
             </div>
             <div class="col-12" x-show="!isSuwayomi()" x-cloak>
-              <label class="form-label">URL Base <small style="color:var(--text-2)">— optional prefix for reverse-proxy setups</small></label>
+              <label class="form-label">URL Base <small class="download-client-field-note">— optional prefix for reverse-proxy setups</small></label>
               <input type="text" name="url_base" class="form-control" value="{{ c.url_base or '' }}"
                      placeholder="/qbittorrent">
             </div>
@@ -241,7 +241,7 @@
                   <input class="form-check-input" type="checkbox" name="sequential_order" value="1"
                          {% if c.sequential_order %}checked{% endif %} id="seq{{ c.id }}">
                   <label class="form-check-label" for="seq{{ c.id }}">Sequential Order
-                    <small style="display:block;color:var(--text-2);font-size:var(--text-sm)">Download first piece first</small>
+                    <small class="download-client-switch-note">Download first piece first</small>
                   </label>
                 </div>
               </div>
@@ -251,7 +251,7 @@
                   <input class="form-check-input" type="checkbox" name="first_last_first" value="1"
                          {% if c.first_last_first %}checked{% endif %} id="flf{{ c.id }}">
                   <label class="form-check-label" for="flf{{ c.id }}">First and Last First
-                    <small style="display:block;color:var(--text-2);font-size:var(--text-sm)">Prioritize first and last pieces</small>
+                    <small class="download-client-switch-note">Prioritize first and last pieces</small>
                   </label>
                 </div>
               </div>
@@ -271,7 +271,7 @@
                 <input class="form-check-input" type="checkbox" name="remove_completed" value="1"
                        {% if c.remove_completed %}checked{% endif %} id="rc{{ c.id }}">
                 <label class="form-check-label" for="rc{{ c.id }}">Remove Completed
-                  <small style="display:block;color:var(--text-2);font-size:var(--text-sm)">Remove from client after import when seeding is finished</small>
+                  <small class="download-client-switch-note">Remove from client after import when seeding is finished</small>
                 </label>
               </div>
               <div class="form-check form-switch">
@@ -279,12 +279,12 @@
                 <input class="form-check-input" type="checkbox" name="remove_failed" value="1"
                        {% if c.remove_failed %}checked{% endif %} id="rf{{ c.id }}">
                 <label class="form-check-label" for="rf{{ c.id }}">Remove Failed
-                  <small style="display:block;color:var(--text-2);font-size:var(--text-sm)">Delete stalled or failed downloads from this client</small>
+                  <small class="download-client-switch-note">Delete stalled or failed downloads from this client</small>
                 </label>
               </div>
             </div>
             <div class="col-12">
-              <label class="form-label">Tags <small style="color:var(--text-2)">(comma-separated — match series tags to route downloads to this client)</small></label>
+              <label class="form-label">Tags <small class="download-client-field-note">(comma-separated — match series tags to route downloads to this client)</small></label>
               <input type="text" name="tags" class="form-control" value="{{ c.tags | join(', ') }}">
             </div>
           </div>
@@ -305,7 +305,7 @@
   <div class="empty-state">
     <div class="empty-icon"><i class="bi bi-hdd-stack"></i></div>
     <p class="fw-semibold">No download clients configured</p>
-    <p style="font-size:var(--text-base);color:var(--text-3)">Add qBittorrent, SABnzbd, Deluge, or other clients to enable automatic downloading.</p>
+    <p class="download-client-empty-copy">Add qBittorrent, SABnzbd, Deluge, or other clients to enable automatic downloading.</p>
   </div>
 </div>
 {% endif %}
@@ -335,7 +335,7 @@
           <h6 class="modal-title text-ember"><i class="bi bi-plus-circle me-2"></i>Add Download Client</h6>
           <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
         </div>
-        <div class="modal-body" style="max-height:75vh;overflow-y:auto">
+        <div class="modal-body download-client-modal-body">
 
           <!-- Identity -->
           <div class="dc-section-label">Identity</div>
@@ -373,7 +373,7 @@
               </div>
             </div>
             <div class="col-12 mt-2" x-show="isSuwayomi()" x-cloak>
-              <label class="form-label">Library Path <small style="color:var(--text-2)">— path visible to Mangarr that matches Suwayomi's download root</small></label>
+              <label class="form-label">Library Path <small class="download-client-field-note">— path visible to Mangarr that matches Suwayomi's download root</small></label>
               <input type="text" name="download_path" class="form-control"
                      placeholder="/data/media/manga">
               <div class="form-text">Suwayomi reports its download path (e.g. <code>/manga</code>). Enter the equivalent path on this server as Mangarr sees it.</div>
@@ -397,7 +397,7 @@
               </div>
             </div>
             <div class="col-12" x-show="!isSuwayomi()" x-cloak>
-              <label class="form-label">URL Base <small style="color:var(--text-2)">— optional prefix for reverse-proxy setups</small></label>
+              <label class="form-label">URL Base <small class="download-client-field-note">— optional prefix for reverse-proxy setups</small></label>
               <input type="text" name="url_base" class="form-control" placeholder="/qbittorrent">
             </div>
             <div class="col-6" x-show="!isSuwayomi()" x-cloak>
@@ -466,7 +466,7 @@
                   <div class="form-check form-switch">
                     <input class="form-check-input" type="checkbox" name="sequential_order" value="1" id="seq_new">
                     <label class="form-check-label" for="seq_new">Sequential Order
-                      <small style="display:block;color:var(--text-2);font-size:var(--text-sm)">Download first piece first</small>
+                      <small class="download-client-switch-note">Download first piece first</small>
                     </label>
                   </div>
                 </div>
@@ -474,7 +474,7 @@
                   <div class="form-check form-switch">
                     <input class="form-check-input" type="checkbox" name="first_last_first" value="1" id="flf_new">
                     <label class="form-check-label" for="flf_new">First and Last First
-                      <small style="display:block;color:var(--text-2);font-size:var(--text-sm)">Prioritize first and last pieces</small>
+                      <small class="download-client-switch-note">Prioritize first and last pieces</small>
                     </label>
                   </div>
                 </div>
@@ -493,20 +493,20 @@
               <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" name="remove_completed" value="1" id="rc_new">
                 <label class="form-check-label" for="rc_new">Remove Completed
-                  <small style="display:block;color:var(--text-2);font-size:var(--text-sm)">Remove from client after import when seeding is finished</small>
+                  <small class="download-client-switch-note">Remove from client after import when seeding is finished</small>
                 </label>
               </div>
               <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" name="remove_failed" value="1" id="rf_new">
                 <label class="form-check-label" for="rf_new">Remove Failed
-                  <small style="display:block;color:var(--text-2);font-size:var(--text-sm)">Delete stalled or failed downloads from this client</small>
+                  <small class="download-client-switch-note">Delete stalled or failed downloads from this client</small>
                 </label>
               </div>
             </div>
           </div>
 
         </div>
-        <div id="new-download-client-test-result" class="mx-3 mb-2" style="display:none"></div>
+        <div id="new-download-client-test-result" class="mx-3 mb-2 download-client-test-result"></div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
           <button type="button" class="btn btn-secondary btn-sm" id="new-download-client-test-btn"
@@ -525,14 +525,14 @@
     Remote Path Mappings
   </div>
   <div class="panel-body">
-    <p style="font-size:var(--text-base);color:var(--text-2)" class="mb-3">
+    <p class="mb-3 remote-path-copy">
       Used when the download client and Mangarr use different paths for the same folder.<br>
       <em>Example: qBittorrent saves to <code>/downloads/</code> but Mangarr sees it as <code>/data/downloads/</code></em>
     </p>
 
     {% if mappings %}
     <div class="table-wrap mb-3">
-    <table class="table table-sm mb-0" style="font-size:var(--text-base)">
+    <table class="table table-sm mb-0 remote-path-table">
       <thead>
         <tr>
           <th>Host</th>
@@ -545,9 +545,9 @@
       <tbody>
         {% for m in mappings %}
         <tr>
-          <td style="color:var(--text-2)">{{ m.host or '<em>any</em>' }}</td>
+          <td class="remote-path-muted">{{ m.host or '<em>any</em>' }}</td>
           <td class="text-ember">{{ m.remote_path }}</td>
-          <td style="color:var(--text-2)" class="px-1">→</td>
+          <td class="px-1 remote-path-muted">→</td>
           <td>{{ m.local_path }}</td>
           <td>
             <form method="POST" action="/download-clients/remote-path-mappings/{{ m.id }}/delete"
@@ -564,12 +564,12 @@
     </table>
     </div>
     {% else %}
-    <p style="font-size:var(--text-base);color:var(--text-2)" class="mb-3">No mappings configured.</p>
+    <p class="mb-3 remote-path-copy">No mappings configured.</p>
     {% endif %}
 
     <form method="POST" action="/download-clients/remote-path-mappings" class="row g-2 align-items-end">
       <div class="col-3">
-        <label class="form-label small mb-1">Host <span style="color:var(--text-3)">(optional)</span></label>
+        <label class="form-label small mb-1">Host <span class="remote-path-optional">(optional)</span></label>
         <input type="text" name="host" class="form-control form-control-sm"
                placeholder="http://qbittorrent:8090">
       </div>
@@ -595,7 +595,7 @@
   <div class="panel-header d-flex align-items-center gap-2">
     <i class="bi bi-sliders"></i>
     Completed Download Handling
-    {% if saved %}<span class="badge-status badge-downloaded ms-auto" style="font-size:var(--text-2xs)">Saved</span>{% endif %}
+    {% if saved %}<span class="badge-status badge-downloaded ms-auto download-client-small-badge">Saved</span>{% endif %}
   </div>
   <div class="panel-body">
     <form method="POST" action="/download-clients/options">
@@ -606,7 +606,7 @@
                    value="1" id="opt_fdh" {% if options.failed_download_handling %}checked{% endif %}>
             <label class="form-check-label" for="opt_fdh">
               Redownload Failed
-              <small style="display:block;color:var(--text-2);font-size:var(--text-base)">Blocklist and automatically re-search when a download enters a failed state. Whether to remove the file from the client is configured per-client.</small>
+              <small class="download-client-option-note d-block">Blocklist and automatically re-search when a download enters a failed state. Whether to remove the file from the client is configured per-client.</small>
             </label>
           </div>
         </div>
@@ -616,7 +616,7 @@
                    value="1" id="opt_rfi" {% if options.redownload_failed_interactive %}checked{% endif %}>
             <label class="form-check-label" for="opt_rfi">
               Redownload Failed from Interactive Search
-              <small style="display:block;color:var(--text-2);font-size:var(--text-base)">When a download fails, skip the automatic re-grab and leave the series for manual selection via interactive search.</small>
+              <small class="download-client-option-note d-block">When a download fails, skip the automatic re-grab and leave the series for manual selection via interactive search.</small>
             </label>
           </div>
         </div>
