@@ -3054,6 +3054,100 @@ body {
   display: none !important;
 }
 
+.calendar-summary,
+.calendar-section-count,
+.calendar-meta-label,
+.calendar-meta {
+  color: var(--text-2);
+}
+
+.calendar-section-count {
+  text-transform: none;
+  font-weight: 400;
+}
+
+.calendar-cover,
+.calendar-cover-placeholder {
+  width: 56px;
+  height: 80px;
+  border-radius: var(--radius-xs);
+  flex-shrink: 0;
+}
+
+.calendar-cover {
+  object-fit: cover;
+}
+
+.calendar-cover-placeholder {
+  background: var(--ink-4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.calendar-cover-placeholder i {
+  color: var(--ember);
+}
+
+.calendar-title,
+.calendar-row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calendar-progress {
+  display: block;
+  width: 100%;
+  height: 4px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+  background: var(--ink-5);
+}
+
+.calendar-progress::-webkit-progress-bar {
+  background: var(--ink-5);
+}
+
+.calendar-progress::-webkit-progress-value {
+  background: var(--ember);
+}
+
+.calendar-progress::-moz-progress-bar {
+  background: var(--ember);
+}
+
+.calendar-progress.is-complete::-webkit-progress-value {
+  background: var(--jade);
+}
+
+.calendar-progress.is-complete::-moz-progress-bar {
+  background: var(--jade);
+}
+
+.calendar-missing {
+  color: var(--ruby);
+}
+
+.calendar-grabbed {
+  color: var(--gold);
+}
+
+.calendar-separator,
+.calendar-more,
+.calendar-empty-copy {
+  color: var(--text-3);
+}
+
+.calendar-list-row {
+  border-bottom: 1px solid var(--edge);
+}
+
+.calendar-nowrap {
+  white-space: nowrap;
+}
+
 /* ═══════════════════════════════════════════════════════════════
    FOCUS VISIBILITY — keyboard nav
 ════════════════════════════════════════════════════════════════ */
