@@ -2968,6 +2968,92 @@ body {
   min-width: 32px;
 }
 
+.recycle-count {
+  font-size: var(--text-base);
+}
+
+.recycle-retention-note,
+.recycle-help-copy,
+.recycle-empty-copy {
+  font-size: var(--text-sm);
+  color: var(--text-3);
+}
+
+.recycle-cover-col {
+  width: 60px;
+}
+
+.recycle-volume-col {
+  width: 90px;
+}
+
+.recycle-reason-col {
+  width: 120px;
+}
+
+.recycle-deleted-col {
+  width: 140px;
+}
+
+.recycle-days-col {
+  width: 130px;
+}
+
+.recycle-actions-col {
+  width: 200px;
+}
+
+.recycle-cover {
+  width: 40px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: var(--radius-xs);
+  background: var(--ink-3);
+}
+
+.recycle-title {
+  font-size: var(--text-base);
+}
+
+.recycle-cell-muted {
+  font-size: var(--text-sm);
+}
+
+.recycle-days {
+  font-size: var(--text-sm);
+}
+
+.recycle-days.is-safe {
+  color: var(--jade);
+}
+
+.recycle-days.is-warning {
+  color: var(--gold);
+}
+
+.recycle-days.is-overdue {
+  color: var(--ruby);
+}
+
+.recycle-empty-state {
+  padding: 3rem 1rem;
+}
+
+.recycle-empty-icon {
+  font-size: 3rem;
+  color: var(--text-3);
+  margin-bottom: 1rem;
+  display: block;
+}
+
+.recycle-empty-title {
+  font-size: var(--text-base);
+}
+
+.is-hidden {
+  display: none !important;
+}
+
 /* ═══════════════════════════════════════════════════════════════
    FOCUS VISIBILITY — keyboard nav
 ════════════════════════════════════════════════════════════════ */
