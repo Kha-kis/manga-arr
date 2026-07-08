@@ -2478,6 +2478,183 @@ body {
   display: none;
 }
 
+.notice-alert {
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  border: 1px solid var(--edge-2);
+}
+
+.notice-alert.is-ruby {
+  border-color: var(--ruby-soft);
+  background: var(--ruby-tint);
+}
+
+.notice-alert.is-gold {
+  border-color: var(--gold-soft);
+  background: var(--gold-tint);
+}
+
+.notice-alert.is-jade {
+  color: var(--jade);
+  border-color: var(--jade-soft);
+  background: var(--jade-bg);
+}
+
+.notice-alert.is-gold-strong {
+  color: var(--gold);
+  border-color: var(--gold-soft);
+  background: var(--gold-bg);
+}
+
+.indexer-disabled {
+  opacity: 0.5;
+}
+
+.indexer-warning-panel {
+  border-color: var(--gold-medium);
+}
+
+.indexer-detail-row {
+  font-size: var(--text-base);
+}
+
+.indexer-meta-label {
+  color: var(--text-2);
+}
+
+.indexer-priority {
+  font-size: var(--text-sm);
+  color: var(--text-2);
+}
+
+.indexer-chip-row {
+  font-size: var(--text-2xs);
+}
+
+.indexer-health {
+  font-size: var(--text-sm);
+  color: var(--text-2);
+}
+
+.indexer-health.is-backoff {
+  border: 1px solid var(--ruby-soft);
+  background: var(--ruby-tint);
+}
+
+.indexer-health.is-warning {
+  border: 1px solid var(--gold-soft);
+  background: var(--gold-tint);
+}
+
+.indexer-health-note {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+
+.indexer-health-hint {
+  font-size: var(--text-2xs);
+  color: var(--text-3);
+}
+
+.indexer-subhost {
+  display: none;
+}
+
+.indexer-empty-copy {
+  font-size: var(--text-base);
+  color: var(--text-3);
+}
+
+.indexer-form-row {
+  font-size: var(--text-base);
+}
+
+.indexer-help-inline {
+  color: var(--text-2);
+}
+
+.indexer-help-note {
+  color: var(--text-3);
+  font-size: var(--text-2xs);
+}
+
+.indexer-category-chip {
+  cursor: pointer;
+}
+
+.indexer-test-result {
+  display: none;
+}
+
+.prowlarr-heading {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.prowlarr-heading-detail {
+  color: var(--text-2);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.prowlarr-list {
+  gap: 6px;
+}
+
+.prowlarr-list.is-scrollable {
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.prowlarr-row {
+  font-size: var(--text-sm);
+  border: 1px solid var(--edge-2);
+  background: var(--ink-3);
+}
+
+.prowlarr-row.is-polled {
+  border-color: var(--jade-soft);
+  background: var(--jade-tint);
+}
+
+.prowlarr-row.is-imported {
+  border-color: var(--iris-soft);
+  background: var(--iris-tint);
+}
+
+.prowlarr-row.is-muted {
+  opacity: 0.65;
+}
+
+.prowlarr-row.is-selectable {
+  cursor: pointer;
+}
+
+.prowlarr-row.is-disabled {
+  cursor: not-allowed;
+}
+
+.prowlarr-name {
+  font-weight: 600;
+}
+
+.prowlarr-categories {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-3);
+}
+
+.prowlarr-footnote {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+
+.prowlarr-action-xs {
+  font-size: var(--text-2xs);
+}
+
 /* ═══════════════════════════════════════════════════════════════
    FOCUS VISIBILITY — keyboard nav
 ════════════════════════════════════════════════════════════════ */

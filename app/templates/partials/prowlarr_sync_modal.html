@@ -1,23 +1,20 @@
 {# Prowlarr sub-indexer import modal — rendered by GET /indexers/{id}/sync-prowlarr-preview.
    Submitted via POST /indexers/{id}/sync-prowlarr (form, follow-redirect to /indexers). #}
 {% if error %}
-  <div class="d-flex align-items-center gap-2 px-3 py-2 rounded"
-       style="background:var(--ruby-tint); color:var(--text-2); font-size:var(--text-sm); border:1px solid var(--ruby-soft)">
-    <i class="bi bi-exclamation-triangle-fill" style="color:var(--ruby)"></i>
+  <div class="d-flex align-items-center gap-2 px-3 py-2 rounded notice-alert is-ruby">
+    <i class="bi bi-exclamation-triangle-fill text-ruby"></i>
     <span>{{ error }}</span>
   </div>
 {% elif not subs %}
-  <div class="d-flex align-items-center gap-2 px-3 py-2 rounded"
-       style="background:var(--gold-tint); color:var(--text-2); font-size:var(--text-sm); border:1px solid var(--gold-soft)">
-    <i class="bi bi-info-circle-fill" style="color:var(--gold)"></i>
+  <div class="d-flex align-items-center gap-2 px-3 py-2 rounded notice-alert is-gold">
+    <i class="bi bi-info-circle-fill text-gold"></i>
     <span>No sub-indexers returned by Prowlarr. Either none are configured, or the request failed (check the API key + URL via the test button).</span>
   </div>
 {% else %}
   <form method="POST" action="/indexers/{{ indexer.id }}/sync-prowlarr">
     <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrftoken', '') }}">
 
-    <div class="d-flex align-items-center gap-2 mb-3"
-         style="font-size:var(--text-sm); color:var(--text-2)">
+    <div class="d-flex align-items-center gap-2 mb-3 text-sm text-muted-2">
       <i class="bi bi-info-circle"></i>
       <span>
         Each selected indexer becomes its own row in <a href="/indexers" class="text-ember">Indexers</a> —
@@ -28,61 +25,53 @@
       </span>
     </div>
 
-    <div class="d-flex align-items-center gap-2 mb-2"
-         style="font-size:var(--text-xs); color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em">
+    <div class="d-flex align-items-center gap-2 mb-2 prowlarr-heading">
       <span>Available sub-indexers</span>
-      <span style="color:var(--text-2); text-transform:none; letter-spacing:0">
+      <span class="prowlarr-heading-detail">
         ({{ subs | rejectattr('already_imported') | selectattr('will_be_polled') | list | length }} new + manga-compatible)
       </span>
       <button type="button" class="btn btn-sm btn-secondary ms-auto"
               onclick="document.querySelectorAll('input[name=selected]:not([disabled])').forEach(c=>c.checked=true)"
-              style="font-size:var(--text-2xs)">
+              class="prowlarr-action-xs">
         Select all eligible
       </button>
       <button type="button" class="btn btn-sm btn-secondary"
               onclick="document.querySelectorAll('input[name=selected]').forEach(c=>c.checked=false)"
-              style="font-size:var(--text-2xs)">
+              class="prowlarr-action-xs">
         Clear
       </button>
     </div>
 
-    <div class="d-flex flex-column" style="gap:6px; max-height:50vh; overflow-y:auto">
+    <div class="d-flex flex-column prowlarr-list is-scrollable">
       {% for sub in subs %}
       {% set disabled_reason = '' %}
       {% if sub.already_imported %}{% set disabled_reason = 'already imported' %}
       {% elif not sub.enable %}{% set disabled_reason = 'disabled in Prowlarr' %}
       {% elif not sub.manga_compatible %}{% set disabled_reason = 'no manga categories' %}
       {% endif %}
-      <label class="d-flex align-items-center gap-2 px-3 py-2 rounded"
-             style="
-                cursor: {% if disabled_reason %}not-allowed{% else %}pointer{% endif %};
-                background: {% if sub.already_imported %}var(--iris-tint){% elif sub.will_be_polled %}var(--jade-tint){% else %}var(--ink-3){% endif %};
-                border: 1px solid {% if sub.already_imported %}var(--iris-soft){% elif sub.will_be_polled %}var(--jade-soft){% else %}var(--edge-2){% endif %};
-                font-size:var(--text-sm);
-                {% if disabled_reason and not sub.already_imported %}opacity:0.65;{% endif %}
-             ">
+      <label class="d-flex align-items-center gap-2 px-3 py-2 rounded prowlarr-row {% if sub.already_imported %}is-imported{% elif sub.will_be_polled %}is-polled{% endif %} {% if disabled_reason %}is-disabled{% else %}is-selectable{% endif %} {% if disabled_reason and not sub.already_imported %}is-muted{% endif %}">
         <input type="checkbox" name="selected" value="{{ sub.id }}"
                {% if sub.will_be_polled and not sub.already_imported %}checked{% endif %}
                {% if disabled_reason %}disabled{% endif %}>
 
-        <span style="font-weight:600">{{ sub.name }}</span>
-        <span class="badge-status badge-unknown" style="font-size:var(--text-2xs)">{{ sub.protocol }}</span>
+        <span class="prowlarr-name">{{ sub.name }}</span>
+        <span class="badge-status badge-unknown text-2xs">{{ sub.protocol }}</span>
 
         {% if sub.already_imported %}
-          <span class="badge-status badge-grabbed" style="font-size:var(--text-2xs)">ALREADY IMPORTED</span>
+          <span class="badge-status badge-grabbed text-2xs">ALREADY IMPORTED</span>
         {% elif not sub.enable %}
-          <span class="badge-status badge-wanted" style="font-size:var(--text-2xs)">DISABLED IN PROWLARR</span>
+          <span class="badge-status badge-wanted text-2xs">DISABLED IN PROWLARR</span>
         {% elif not sub.manga_compatible %}
-          <span class="badge-status badge-wanted" style="font-size:var(--text-2xs)">NO MANGA CAPS</span>
+          <span class="badge-status badge-wanted text-2xs">NO MANGA CAPS</span>
         {% else %}
-          <span class="badge-status badge-downloaded" style="font-size:var(--text-2xs)">ELIGIBLE</span>
+          <span class="badge-status badge-downloaded text-2xs">ELIGIBLE</span>
         {% endif %}
 
-        <span class="ms-auto" style="font-size:var(--text-2xs); color:var(--text-3)" title="Priority from Prowlarr — copied as-is on import">
+        <span class="ms-auto text-2xs text-muted-3" title="Priority from Prowlarr — copied as-is on import">
           pri {{ sub.priority }}
         </span>
         {% if sub.categories %}
-        <span style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-3)">
+        <span class="prowlarr-categories">
           {{ sub.categories | join(' ') }}
         </span>
         {% endif %}

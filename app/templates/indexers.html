@@ -5,9 +5,7 @@
 
 {% block content %}
 {% if saved == '1' %}
-<div class="d-flex align-items-center gap-2 mb-3 px-3 py-2"
-     class="text-sm rounded-lg"
-     style="background:var(--jade-bg);border:1px solid var(--jade-soft);color:var(--jade)"
+<div class="d-flex align-items-center gap-2 mb-3 px-3 py-2 text-sm rounded-lg notice-alert is-jade"
      id="saved-toast">
   <i class="bi bi-check-circle-fill"></i>Settings saved.
 </div>
@@ -17,14 +15,13 @@
 {% set _ps = request.query_params.get('prowlarr_sync') %}
 {% set _imp = request.query_params.get('imported', '0') %}
 {% set _skp = request.query_params.get('skipped', '0') %}
-<div class="d-flex align-items-center gap-2 mb-3 px-3 py-2 rounded-lg"
-     style="background:{% if _ps == 'ok' %}var(--jade-bg);border:1px solid var(--jade-soft);color:var(--jade){% else %}var(--gold-bg);border:1px solid var(--gold-soft);color:var(--gold){% endif %}"
+<div class="d-flex align-items-center gap-2 mb-3 px-3 py-2 rounded-lg notice-alert {% if _ps == 'ok' %}is-jade{% else %}is-gold-strong{% endif %}"
      id="sync-toast">
   {% if _ps == 'ok' %}
     <i class="bi bi-check-circle-fill"></i>
     Imported {{ _imp }} indexer(s) from Prowlarr{% if _skp != '0' %}; {{ _skp }} already-imported skipped{% endif %}.
     {% if request.query_params.get('parent_disabled') == '1' %}
-    <span style="color:var(--text-2); margin-left:auto; font-size:var(--text-xs)">
+    <span class="ms-auto text-xs text-muted-2">
       Parent Prowlarr row auto-disabled to prevent duplicate fetches. Re-enable it from /indexers if you want fan-out for non-imported subs (will double-poll the imported ones).
     </span>
     {% endif %}
@@ -46,11 +43,11 @@
 </div>
 
 {% if secret_health.has_warning %}
-<div class="panel" style="border-color:rgba(220,53,69,.35)">
+<div class="panel settings-secret-warning">
   <div class="panel-body">
     <div class="d-flex align-items-start gap-3">
-      <i class="bi bi-exclamation-triangle-fill" style="color:var(--ruby);font-size:var(--text-2xl)"></i>
-      <div style="font-size:var(--text-base);color:var(--text-2)">
+      <i class="bi bi-exclamation-triangle-fill text-ruby settings-notice-icon"></i>
+      <div class="settings-copy">
         Some encrypted credentials could not be decrypted with the active key. Restore the matching key or re-enter the affected credentials before testing integrations.
       </div>
     </div>
@@ -66,34 +63,34 @@
   {% set _auto_on = _enabled | selectattr('use_auto_search', 'ne', 0) | list %}
   {% set _interactive_on = _enabled | selectattr('use_interactive_search', 'ne', 0) | list %}
   {% if not _rss_on %}
-  <div class="panel mb-3" style="border-color:rgba(240,184,40,.5)">
-    <div class="panel-body d-flex align-items-start gap-3" style="font-size:var(--text-sm)">
-      <i class="bi bi-exclamation-triangle-fill" style="color:var(--gold);font-size:var(--text-2xl)"></i>
+  <div class="panel mb-3 indexer-warning-panel">
+    <div class="panel-body d-flex align-items-start gap-3 text-sm">
+      <i class="bi bi-exclamation-triangle-fill text-gold settings-notice-icon"></i>
       <div>
-        <div class="fw-semibold" style="color:var(--gold)">No indexer has RSS Sync enabled</div>
-        <div style="color:var(--text-2)">The RSS poll loop has nothing to fetch. New releases won't be auto-grabbed until at least one indexer has RSS Sync turned on.</div>
+        <div class="fw-semibold text-gold">No indexer has RSS Sync enabled</div>
+        <div class="text-muted-2">The RSS poll loop has nothing to fetch. New releases won't be auto-grabbed until at least one indexer has RSS Sync turned on.</div>
       </div>
     </div>
   </div>
   {% endif %}
   {% if not _auto_on %}
-  <div class="panel mb-3" style="border-color:rgba(240,184,40,.5)">
-    <div class="panel-body d-flex align-items-start gap-3" style="font-size:var(--text-sm)">
-      <i class="bi bi-exclamation-triangle-fill" style="color:var(--gold);font-size:var(--text-2xl)"></i>
+  <div class="panel mb-3 indexer-warning-panel">
+    <div class="panel-body d-flex align-items-start gap-3 text-sm">
+      <i class="bi bi-exclamation-triangle-fill text-gold settings-notice-icon"></i>
       <div>
-        <div class="fw-semibold" style="color:var(--gold)">No indexer has Automatic Search enabled</div>
-        <div style="color:var(--text-2)">The background grab loop won't search anywhere — backlog/wanted volumes can't be filled.</div>
+        <div class="fw-semibold text-gold">No indexer has Automatic Search enabled</div>
+        <div class="text-muted-2">The background grab loop won't search anywhere — backlog/wanted volumes can't be filled.</div>
       </div>
     </div>
   </div>
   {% endif %}
   {% if not _interactive_on %}
-  <div class="panel mb-3" style="border-color:rgba(240,184,40,.5)">
-    <div class="panel-body d-flex align-items-start gap-3" style="font-size:var(--text-sm)">
-      <i class="bi bi-exclamation-triangle-fill" style="color:var(--gold);font-size:var(--text-2xl)"></i>
+  <div class="panel mb-3 indexer-warning-panel">
+    <div class="panel-body d-flex align-items-start gap-3 text-sm">
+      <i class="bi bi-exclamation-triangle-fill text-gold settings-notice-icon"></i>
       <div>
-        <div class="fw-semibold" style="color:var(--gold)">No indexer has Interactive Search enabled</div>
-        <div style="color:var(--text-2)">The "find releases" button on series pages and per-volume manual searches will return nothing.</div>
+        <div class="fw-semibold text-gold">No indexer has Interactive Search enabled</div>
+        <div class="text-muted-2">The "find releases" button on series pages and per-volume manual searches will return nothing.</div>
       </div>
     </div>
   </div>
@@ -103,21 +100,21 @@
 <div class="row g-3">
 {% for idx in indexers %}
 <div class="col-12">
-  <div class="panel mb-0" style="{% if not idx.enabled %}opacity:.5{% endif %}">
+  <div class="panel mb-0 {% if not idx.enabled %}indexer-disabled{% endif %}">
     <div class="panel-header d-flex align-items-center gap-2">
       <i class="bi bi-{% if idx.type == 'prowlarr' %}binoculars-fill{% else %}rss-fill{% endif %}"></i>
       {{ idx.name }}
-      <span class="badge-status badge-unknown" style="font-size:var(--text-2xs)">{{ idx.type }}</span>
+      <span class="badge-status badge-unknown text-2xs">{{ idx.type }}</span>
       {% if idx.parent_prowlarr_id %}
         {% set parent = (indexers | selectattr('id', 'equalto', idx.parent_prowlarr_id) | list | first) %}
-        <span class="badge-status badge-grabbed" style="font-size:var(--text-2xs)" title="Imported from Prowlarr instance{% if parent %}: {{ parent.name }}{% endif %}">
+        <span class="badge-status badge-grabbed text-2xs" title="Imported from Prowlarr instance{% if parent %}: {{ parent.name }}{% endif %}">
           <i class="bi bi-cloud-download"></i> from Prowlarr{% if parent %} ({{ parent.name }}){% endif %}
         </span>
       {% endif %}
-      {% if not idx.enabled %}<span class="badge-status badge-wanted" style="font-size:var(--text-2xs)">DISABLED</span>{% endif %}
+      {% if not idx.enabled %}<span class="badge-status badge-wanted text-2xs">DISABLED</span>{% endif %}
       {# Tag badges (Sonarr-style indexer tags, PR #120). Empty = applies to all series. #}
       {% if idx.tags %}
-      <span class="d-inline-flex gap-1" style="font-size:var(--text-2xs)" title="Only applies to series sharing at least one of these tags. Empty = all series.">
+      <span class="d-inline-flex gap-1 indexer-chip-row" title="Only applies to series sharing at least one of these tags. Empty = all series.">
         {% for t in idx.tags %}
         <span class="badge-status badge-indexer">{{ t }}</span>
         {% endfor %}
@@ -125,16 +122,16 @@
       {% endif %}
       {# Per-purpose toggle badges. NULL/missing → on (backward-compat). #}
       {% if idx.enabled %}
-      <span class="d-inline-flex gap-1" style="font-size:var(--text-2xs)" title="Which flows poll this indexer">
+      <span class="d-inline-flex gap-1 indexer-chip-row" title="Which flows poll this indexer">
         <span class="badge-status {% if idx.use_rss is none or idx.use_rss %}badge-downloaded{% else %}badge-wanted{% endif %}" title="RSS Sync">RSS</span>
         <span class="badge-status {% if idx.use_auto_search is none or idx.use_auto_search %}badge-downloaded{% else %}badge-wanted{% endif %}" title="Automatic Search (background grab loop)">AS</span>
         <span class="badge-status {% if idx.use_interactive_search is none or idx.use_interactive_search %}badge-downloaded{% else %}badge-wanted{% endif %}" title="Interactive Search (user-initiated)">IS</span>
       </span>
       {% endif %}
-      <span style="font-size:var(--text-sm);color:var(--text-2)">Priority: {{ idx.priority }}</span>
+      <span class="indexer-priority">Priority: {{ idx.priority }}</span>
       {# Per-indexer 30-day grab + failure counts. Sonarr hides this; we surface it. #}
       {% if idx.grabs_30d or idx.failures_30d %}
-      <span class="d-inline-flex gap-1" style="font-size:var(--text-2xs)" title="Activity in the last 30 days">
+      <span class="d-inline-flex gap-1 indexer-chip-row" title="Activity in the last 30 days">
         {% if idx.grabs_30d %}
         <span class="badge-status badge-downloaded"
               title="{{ idx.grabs_30d }} successful grab(s) in the last 30 days{% if idx.last_grab_at %} — last on {{ idx.last_grab_at | format_date }}{% endif %}">
@@ -186,17 +183,17 @@
       </div>
     </div>
     <div class="panel-body">
-      <div class="row g-3" style="font-size:var(--text-base)">
+      <div class="row g-3 indexer-detail-row">
         <div class="col-auto">
-          <span style="color:var(--text-2)">URL: </span><span class="text-ember">{{ idx.url or '—' }}</span>
+          <span class="indexer-meta-label">URL: </span><span class="text-ember">{{ idx.url or '—' }}</span>
         </div>
         <div class="col-auto">
-          <span style="color:var(--text-2)">Categories: </span>
+          <span class="indexer-meta-label">Categories: </span>
           <span>{% set cats = idx.categories | from_json([]) %}{{ cats | join(', ') }}</span>
         </div>
         {% if idx.last_grab_at %}
         <div class="col-auto" title="Most recent successful grab — sourced from history table">
-          <span style="color:var(--text-2)">Last grab: </span>
+          <span class="indexer-meta-label">Last grab: </span>
           <span class="text-ember">{{ idx.last_grab_at | format_date }}</span>
         </div>
         {% endif %}
@@ -207,15 +204,11 @@
          Soaks up multiple Sonarr top-7 pain points (auto-disable surprises,
          "why is search empty?", health-spam ambiguity). #}
       {% if idx.backoff_active or idx.consecutive_failures > 0 %}
-      <div class="mt-3 px-3 py-2 rounded"
-           style="font-size:var(--text-sm);
-                  background: {% if idx.backoff_active %}var(--ruby-tint){% else %}var(--gold-tint){% endif %};
-                  border: 1px solid {% if idx.backoff_active %}var(--ruby-soft){% else %}var(--gold-soft){% endif %};
-                  color:var(--text-2)">
+      <div class="mt-3 px-3 py-2 rounded indexer-health {% if idx.backoff_active %}is-backoff{% else %}is-warning{% endif %}">
         <div class="d-flex align-items-center gap-2">
           <i class="bi {% if idx.backoff_active %}bi-pause-circle-fill{% else %}bi-exclamation-triangle{% endif %}"
-             style="color: {% if idx.backoff_active %}var(--ruby){% else %}var(--gold){% endif %}"></i>
-          <span class="fw-semibold" style="color: {% if idx.backoff_active %}var(--ruby){% else %}var(--gold){% endif %}">
+             class="{% if idx.backoff_active %}text-ruby{% else %}text-gold{% endif %}"></i>
+          <span class="fw-semibold {% if idx.backoff_active %}text-ruby{% else %}text-gold{% endif %}">
             {% if idx.backoff_active %}
               In backoff — next poll in {{ idx.backoff_seconds // 60 }}m {{ idx.backoff_seconds % 60 }}s
             {% else %}
@@ -224,15 +217,15 @@
           </span>
         </div>
         {% if idx.last_reason %}
-        <div class="mt-1" style="font-size:var(--text-xs); color:var(--text-3)">
-          <span style="color:var(--text-2)">Last failure:</span>
-          {% if idx.last_status %}<span style="font-family:var(--font-mono)">HTTP {{ idx.last_status }}</span> · {% endif %}
+        <div class="mt-1 indexer-health-note">
+          <span class="indexer-meta-label">Last failure:</span>
+          {% if idx.last_status %}<span class="settings-preview-mono">HTTP {{ idx.last_status }}</span> · {% endif %}
           {{ idx.last_reason }}
           {% if idx.updated_at %} · <span title="{{ idx.updated_at }}">{{ idx.updated_at | format_date }}</span>{% endif %}
         </div>
         {% endif %}
         {% if idx.backoff_active %}
-        <div class="mt-1" style="font-size:var(--text-2xs); color:var(--text-3)">
+        <div class="mt-1 indexer-health-hint">
           Backoff is automatic — Mangarr won't poll until the deadline passes.
           To clear sooner, click "Test connection" and Mangarr will retry on the next cycle if the test succeeds.
         </div>
@@ -241,7 +234,7 @@
       {% endif %}
       {% if idx.type == 'prowlarr' %}
       {# HTMX progressive load — populated when the binoculars button fires #}
-      <div id="prowlarr-subs-{{ idx.id }}" style="display:none"></div>
+      <div id="prowlarr-subs-{{ idx.id }}" class="indexer-subhost"></div>
       {% endif %}
     </div>
   </div>
@@ -259,7 +252,7 @@
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body" id="prowlarr-sync-modal-body-{{ idx.id }}">
-        <div class="d-flex align-items-center gap-2" style="font-size:var(--text-sm); color:var(--text-3)">
+        <div class="d-flex align-items-center gap-2 text-sm text-muted-3">
           <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
           <span>Loading sub-indexers from Prowlarr…</span>
         </div>
@@ -293,7 +286,7 @@
               </select>
             </div>
             <div class="col-12">
-              <label class="form-label">URL <small style="color:var(--text-2)">(Prowlarr/Torznab endpoint)</small></label>
+              <label class="form-label">URL <small class="indexer-help-inline">(Prowlarr/Torznab endpoint)</small></label>
               <input type="text" name="url" class="form-control" value="{{ idx.url or '' }}"
                      placeholder="http://prowlarr:9696/prowlarr">
             </div>
@@ -304,10 +297,10 @@
             </div>
             <div class="col-4">
               <label class="form-label" title="Tiebreaker only — applies after Quality, Custom Format Score, Protocol, and pack-shape have already chosen between releases. Lower = preferred. Ties are valid.">
-                Priority <i class="bi bi-info-circle" style="color:var(--text-3); font-size:var(--text-2xs)"></i>
+                Priority <i class="bi bi-info-circle text-muted-3 text-2xs"></i>
               </label>
               <input type="number" name="priority" class="form-control" value="{{ idx.priority }}" min="1" max="50">
-              <small style="color:var(--text-3); font-size:var(--text-2xs)">Lower = preferred. Tiebreaker only — see tooltip.</small>
+              <small class="indexer-help-note">Lower = preferred. Tiebreaker only — see tooltip.</small>
             </div>
             <div class="col-4">
               <div class="form-check form-switch mt-4">
@@ -321,8 +314,8 @@
               </div>
             </div>
             <div class="col-12">
-              <label class="form-label">Used for <small style="color:var(--text-2)">(per-flow toggles, like Sonarr/Radarr)</small></label>
-              <div class="d-flex flex-wrap gap-3" style="font-size:var(--text-sm)">
+              <label class="form-label">Used for <small class="indexer-help-inline">(per-flow toggles, like Sonarr/Radarr)</small></label>
+              <div class="d-flex flex-wrap gap-3 text-sm">
                 <div class="form-check form-switch">
                   <input type="hidden" name="use_rss" value="0">
                   <input class="form-check-input" type="checkbox" name="use_rss" value="1"
@@ -344,44 +337,44 @@
               </div>
             </div>
             <div class="col-12">
-              <label class="form-label">Tags <small style="color:var(--text-2)">(comma-separated, optional)</small></label>
+              <label class="form-label">Tags <small class="indexer-help-inline">(comma-separated, optional)</small></label>
               <input type="text" name="tags" class="form-control"
                      value="{{ idx.tags | join(', ') }}"
                      placeholder="e.g. private, premium">
-              <small style="color:var(--text-3); font-size:var(--text-2xs)">
+              <small class="indexer-help-note">
                 Empty = applies to all series. With tags, this indexer is only used for series sharing at least one matching tag (Sonarr/Radarr semantics).
               </small>
             </div>
             <div class="col-12">
-              <label class="form-label">Categories <small style="color:var(--text-2)">(comma-separated IDs)</small></label>
+              <label class="form-label">Categories <small class="indexer-help-inline">(comma-separated IDs)</small></label>
               <input type="text" name="categories" class="form-control"
                      value="{{ idx.categories | from_json([]) | join(',') }}"
                      placeholder="7000,7010,7020">
               <div class="mt-2 d-flex flex-wrap gap-1">
                 {% for cat_id, cat_name in manga_categories %}
-                <span class="badge-status badge-indexer" style="cursor:pointer"
+                <span class="badge-status badge-indexer indexer-category-chip"
                       onclick="addCat(this,'{{ idx.id }}')">{{ cat_id }} {{ cat_name }}</span>
                 {% endfor %}
               </div>
             </div>
             <div class="col-4">
-              <label class="form-label">Min Seeders <small style="color:var(--text-2)">(0 = no minimum)</small></label>
+              <label class="form-label">Min Seeders <small class="indexer-help-inline">(0 = no minimum)</small></label>
               <input type="number" name="min_seeders" class="form-control"
                      value="{{ idx.min_seeders or 0 }}" min="0">
             </div>
             <div class="col-4">
-              <label class="form-label">Seed Ratio <small style="color:var(--text-2)">(0 = no requirement)</small></label>
+              <label class="form-label">Seed Ratio <small class="indexer-help-inline">(0 = no requirement)</small></label>
               <input type="number" name="seed_ratio" class="form-control"
                      value="{{ idx.seed_ratio or 0 }}" min="0" step="0.1">
             </div>
             <div class="col-4">
-              <label class="form-label">Min Release Size (MB) <small style="color:var(--text-2)">(0 = no floor)</small></label>
+              <label class="form-label">Min Release Size (MB) <small class="indexer-help-inline">(0 = no floor)</small></label>
               <input type="number" name="min_size_mb" class="form-control"
                      value="{{ idx.min_size_mb or 0 }}" min="0"
                      title="Reject releases smaller than this size. Useful for indexers that only carry complete-volume packs.">
             </div>
             <div class="col-4">
-              <label class="form-label">Max Release Size (MB) <small style="color:var(--text-2)">(0 = no ceiling)</small></label>
+              <label class="form-label">Max Release Size (MB) <small class="indexer-help-inline">(0 = no ceiling)</small></label>
               <input type="number" name="max_size_mb" class="form-control"
                      value="{{ idx.max_size_mb or 0 }}" min="0"
                      title="Reject releases larger than this size. Useful for indexers that only carry single-chapter releases. Layered with the global indexer_max_size — tighter applies.">
@@ -412,7 +405,7 @@
   <div class="empty-state">
     <div class="empty-icon"><i class="bi bi-search"></i></div>
     <p class="fw-semibold">No indexers configured</p>
-    <p style="font-size:var(--text-base);color:var(--text-3)">Add Prowlarr, Nyaa, Torznab, or Newznab indexers to search for releases.</p>
+    <p class="indexer-empty-copy">Add Prowlarr, Nyaa, Torznab, or Newznab indexers to search for releases.</p>
   </div>
 </div>
 {% endif %}
@@ -428,21 +421,21 @@
       <div class="row g-3 align-items-end">
         <div class="col-sm-3">
           <label class="form-label">RSS Sync Interval
-            <span style="color:var(--text-3);font-size:var(--text-base)">seconds</span>
+            <span class="text-muted-3 settings-base-cell">seconds</span>
           </label>
           <input type="number" name="rss_interval" class="form-control"
                  value="{{ cfg.rss_interval }}" min="60" step="60">
         </div>
         <div class="col-sm-3">
           <label class="form-label">Maximum Size
-            <span style="color:var(--text-3);font-size:var(--text-base)">MB (0 = unlimited)</span>
+            <span class="text-muted-3 settings-base-cell">MB (0 = unlimited)</span>
           </label>
           <input type="number" name="indexer_max_size" class="form-control"
                  value="{{ cfg.indexer_max_size }}" min="0">
         </div>
         <div class="col-sm-3">
           <label class="form-label">Minimum Age
-            <span style="color:var(--text-3);font-size:var(--text-base)">minutes (0 = no limit)</span>
+            <span class="text-muted-3 settings-base-cell">minutes (0 = no limit)</span>
           </label>
           <input type="number" name="indexer_min_age" class="form-control"
                  value="{{ cfg.indexer_min_age }}" min="0">
@@ -497,7 +490,7 @@
             </div>
             <div class="col-12">
               <label class="form-label">Used for</label>
-              <div class="d-flex flex-wrap gap-3" style="font-size:var(--text-sm)">
+              <div class="d-flex flex-wrap gap-3 text-sm">
                 <div class="form-check form-switch">
                   <input class="form-check-input" type="checkbox" name="use_rss" value="1" checked id="new_use_rss">
                   <label class="form-check-label" for="new_use_rss" title="Include this indexer in the RSS poll loop">RSS Sync</label>
@@ -513,9 +506,9 @@
               </div>
             </div>
             <div class="col-12">
-              <label class="form-label">Tags <small style="color:var(--text-2)">(comma-separated, optional)</small></label>
+              <label class="form-label">Tags <small class="indexer-help-inline">(comma-separated, optional)</small></label>
               <input type="text" name="tags" class="form-control" placeholder="e.g. private, premium">
-              <small style="color:var(--text-3); font-size:var(--text-2xs)">
+              <small class="indexer-help-note">
                 Empty = applies to all series. With tags, only series sharing one of these tags will use this indexer (Sonarr semantics).
               </small>
             </div>
@@ -524,24 +517,24 @@
               <input type="text" name="categories" class="form-control" value="7000,7010,7020">
               <div class="mt-2 d-flex flex-wrap gap-1">
                 {% for cat_id, cat_name in manga_categories %}
-                <span class="badge-status badge-indexer" style="font-size:var(--text-2xs)">{{ cat_id }} {{ cat_name }}</span>
+                <span class="badge-status badge-indexer text-2xs">{{ cat_id }} {{ cat_name }}</span>
                 {% endfor %}
               </div>
             </div>
             <div class="col-4">
-              <label class="form-label">Min Seeders <small style="color:var(--text-2)">(0 = no minimum)</small></label>
+              <label class="form-label">Min Seeders <small class="indexer-help-inline">(0 = no minimum)</small></label>
               <input type="number" name="min_seeders" class="form-control" value="0" min="0">
             </div>
             <div class="col-4">
-              <label class="form-label">Seed Ratio <small style="color:var(--text-2)">(0 = no requirement)</small></label>
+              <label class="form-label">Seed Ratio <small class="indexer-help-inline">(0 = no requirement)</small></label>
               <input type="number" name="seed_ratio" class="form-control" value="0" min="0" step="0.1">
             </div>
             <div class="col-4">
-              <label class="form-label">Min Release Size (MB) <small style="color:var(--text-2)">(0 = no floor)</small></label>
+              <label class="form-label">Min Release Size (MB) <small class="indexer-help-inline">(0 = no floor)</small></label>
               <input type="number" name="min_size_mb" class="form-control" value="0" min="0">
             </div>
             <div class="col-4">
-              <label class="form-label">Max Release Size (MB) <small style="color:var(--text-2)">(0 = no ceiling)</small></label>
+              <label class="form-label">Max Release Size (MB) <small class="indexer-help-inline">(0 = no ceiling)</small></label>
               <input type="number" name="max_size_mb" class="form-control" value="0" min="0">
             </div>
             <div class="col-4">
@@ -555,7 +548,7 @@
             </div>
           </div>
         </div>
-        <div id="new-indexer-test-result" class="mx-3 mb-2" style="display:none"></div>
+        <div id="new-indexer-test-result" class="mx-3 mb-2 indexer-test-result"></div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
           <button type="button" class="btn btn-secondary btn-sm" id="new-indexer-test-btn"
