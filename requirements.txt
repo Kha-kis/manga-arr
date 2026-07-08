@@ -10,8 +10,8 @@
 # per package so a regression is easy to bisect.
 
 # Web framework + ASGI server
-fastapi==0.136.1
-uvicorn[standard]==0.46.0
+fastapi==0.139.0
+uvicorn[standard]==0.51.0
 
 # Async HTTP client (used by SSRF guard, indexer adapters, etc.)
 httpx==0.28.1
