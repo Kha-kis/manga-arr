@@ -118,6 +118,12 @@ are in `app/routers/`. Shared helpers (`get_db`, `safe_regex_search`,
 `validate_outbound_url`, `validate_sql_identifier`, `build_order_by`,
 …) live in `app/shared.py` or `app/security.py`.
 
+Planning docs:
+
+- **[`docs/sonarr-parity.md`](docs/sonarr-parity.md)** — current
+  Sonarr/Servarr parity inventory, including implemented areas,
+  remaining gaps, non-goals, and the recommended execution order.
+
 Lint and type:
 
 ```bash
