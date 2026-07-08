@@ -12,19 +12,19 @@
 </div>
 
 {% if secret_health.has_warning %}
-<div class="panel" style="border-color:rgba(220,53,69,.35)">
+<div class="panel settings-secret-warning">
   <div class="panel-body">
     <div class="d-flex align-items-start gap-3">
-      <i class="bi bi-exclamation-triangle-fill" style="color:var(--ruby);font-size:var(--text-2xl)"></i>
+      <i class="bi bi-exclamation-triangle-fill text-ruby settings-notice-icon"></i>
       <div>
         <div class="fw-semibold mb-1">Encrypted credentials could not be unlocked</div>
-        <div style="font-size:var(--text-base);color:var(--text-2)">
+        <div class="settings-copy">
           Mangarr found {{ secret_health.affected_count }} encrypted credential{% if secret_health.affected_count != 1 %}s{% endif %} that do not match the active secret key.
           Restore the matching {% if secret_key_source == 'environment' %}<code>MANGARR_SECRET_KEY</code>{% else %}<code>/config/.mangarr-secret-key</code>{% endif %}
           or re-enter the affected credentials below.
         </div>
         {% if secret_health.affected_items %}
-        <div class="mt-2" style="font-size:var(--text-sm);color:var(--text-3)">
+        <div class="mt-2 settings-subcopy">
           Affected examples: {{ secret_health.affected_items | join(', ') }}
         </div>
         {% endif %}
@@ -38,8 +38,8 @@
 <div class="panel">
   <div class="panel-body">
     <div class="d-flex align-items-start gap-3">
-      <i class="bi bi-info-circle-fill" style="color:var(--sky);font-size:var(--text-2xl)"></i>
-      <div style="font-size:var(--text-base);color:var(--text-2)">
+      <i class="bi bi-info-circle-fill text-sky settings-notice-icon"></i>
+      <div class="settings-copy">
         First boot generated an API key and {% if secret_key_source == 'environment' %}expects <code>MANGARR_SECRET_KEY</code> from your deployment{% else %}created <code>/config/.mangarr-secret-key</code>{% endif %} for secret encryption.
         Back up the database and the active key source together before adding integrations.
       </div>
@@ -48,14 +48,14 @@
 </div>
 {% endif %}
 
-<div class="row g-0" style="min-height:70vh">
+<div class="row g-0 settings-shell">
 
   <!-- Sidebar -->
   <div class="col-12 col-md-3 col-lg-2 pe-md-3 mb-3 mb-md-0">
-    <div class="panel h-100" style="min-height:auto; margin-bottom:0">
+    <div class="panel h-100 settings-nav-panel">
       <div class="panel-body p-2">
 
-        <div class="mb-1 px-2" style="font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Mangarr</div>
+        <div class="mb-1 px-2 settings-section-label">Mangarr</div>
         <a href="#media" class="settings-sidebar-item active" data-tab="media">
           <i class="bi bi-folder2-open me-2"></i>Media Management
         </a>
@@ -70,7 +70,7 @@
         </a>
 
         <div class="settings-divider"></div>
-        <div class="mb-1 px-2 mt-2" style="font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Profiles</div>
+        <div class="mb-1 px-2 mt-2 settings-section-label">Profiles</div>
         <a href="/quality-profiles" class="settings-sidebar-item settings-sidebar-link">
           <i class="bi bi-trophy me-2"></i>Quality Profiles
         </a>
@@ -91,7 +91,7 @@
         </a>
 
         <div class="settings-divider"></div>
-        <div class="mb-1 px-2 mt-2" style="font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Sources</div>
+        <div class="mb-1 px-2 mt-2 settings-section-label">Sources</div>
         <a href="/indexers" class="settings-sidebar-item settings-sidebar-link">
           <i class="bi bi-search me-2"></i>Indexers
         </a>
@@ -106,7 +106,7 @@
         </a>
 
         <div class="settings-divider"></div>
-        <div class="mb-1 px-2 mt-2" style="font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--text-3)">Notifications</div>
+        <div class="mb-1 px-2 mt-2 settings-section-label">Notifications</div>
         <a href="/notifications" class="settings-sidebar-item settings-sidebar-link">
           <i class="bi bi-bell me-2"></i>Connect
         </a>
@@ -130,13 +130,13 @@
           <div class="table-wrap mb-3">
           <table class="table table-sm mb-0">
             <thead><tr>
-              <th>Path</th><th>Label</th><th style="width:80px">Default</th><th style="width:60px"></th>
+              <th>Path</th><th>Label</th><th class="settings-col-default">Default</th><th class="settings-col-actions"></th>
             </tr></thead>
             <tbody>
               {% for rf in root_folders %}
               <tr>
-                <td style="font-size:var(--text-base);font-family:var(--font-mono)">{{ rf['path'] }}</td>
-                <td style="font-size:var(--text-base)">{{ rf['label'] or '—' }}</td>
+                <td class="settings-mono-cell">{{ rf['path'] }}</td>
+                <td class="settings-base-cell">{{ rf['label'] or '—' }}</td>
                 <td>
                   {% if rf['is_default'] %}
                   <span class="badge-status badge-downloaded"><i class="bi bi-star-fill me-1"></i>Default</span>
@@ -163,7 +163,7 @@
           </table>
           </div>
           {% else %}
-          <p style="font-size:var(--text-base);color:var(--text-2)" class="mb-3"><i class="bi bi-info-circle me-1"></i>No root folders — downloads fall back to the path in File Management below.</p>
+          <p class="mb-3 settings-copy"><i class="bi bi-info-circle me-1"></i>No root folders — downloads fall back to the path in File Management below.</p>
           {% endif %}
 
           <form method="POST" action="/settings/root-folders/add" class="d-flex gap-2 flex-wrap align-items-end">
@@ -172,7 +172,7 @@
               <input type="text" name="path" class="form-control w-56" placeholder="/data/manga" required>
             </div>
             <div>
-              <label class="form-label">Label <span style="color:var(--text-3)">(optional)</span></label>
+              <label class="form-label">Label <span class="text-muted-3">(optional)</span></label>
               <input type="text" name="label" class="form-control w-32" placeholder="Manga">
             </div>
             <div class="d-flex align-items-end pb-1">
@@ -257,11 +257,11 @@
       <div class="panel">
         <div class="panel-header"><i class="bi bi-input-cursor-text"></i>File Naming</div>
         <div class="panel-body">
-          <p style="font-size:var(--text-base);color:var(--text-2)" class="mb-2">
+          <p class="mb-2 settings-copy">
             Tokens: <code>{Series Title}</code>&nbsp;<code>{Series.Title}</code>&nbsp;<code>{Volume}</code>&nbsp;<code>{Volume:02d}</code>&nbsp;<code>{Chapter}</code>&nbsp;<code>{Chapter:04d}</code>&nbsp;<code>{Year}</code>
           </p>
           <div class="d-flex gap-2 mb-3 flex-wrap">
-            <span style="font-size:var(--text-base);color:var(--text-2);line-height:2">Presets:</span>
+            <span class="settings-copy lh-lg">Presets:</span>
             <button type="button" class="btn btn-secondary btn-sm"
               onclick="applyPreset('{Series Title} v{Volume:02d}','{Series Title} c{Chapter:04d}','{Series Title}')">
               Default
@@ -280,7 +280,7 @@
               <label class="form-label">Volume File Format</label>
               <input type="text" name="file_format" class="form-control" id="file_format"
                      value="{{ cfg.file_format or '' }}" placeholder="{Series Title} v{Volume:02d}">
-              <div class="form-text">Preview: <span id="file-preview" class="text-ember" style="font-family:var(--font-mono)">—</span></div>
+              <div class="form-text">Preview: <span id="file-preview" class="text-ember settings-preview-mono">—</span></div>
             </div>
             <div class="col-12 col-md-4">
               <label class="form-label">Chapter File Format</label>
@@ -304,7 +304,7 @@
       <div class="panel">
         <div class="panel-header"><i class="bi bi-cloud-arrow-down"></i>Direct Downloads (DDL)</div>
         <div class="panel-body">
-          <div class="alert py-2 mb-3" style="font-size:var(--text-base);background:var(--ink-4);border:1px solid var(--edge-2);color:var(--text-2);border-radius:var(--radius-md)">
+          <div class="alert py-2 mb-3 settings-alert">
             <i class="bi bi-info-circle me-1"></i>
             DDL downloads chapters directly from MangaDex or via a configured
             <a href="/download-clients" class="text-ember">Suwayomi client</a>.
@@ -342,7 +342,7 @@
               <div class="form-text">Default language for Suwayomi sources. Can be overridden per series.</div>
             </div>
             <div class="col-12 col-sm-4">
-              <label class="form-label">Monitor Check Interval <span style="color:var(--text-3)">(seconds)</span></label>
+              <label class="form-label">Monitor Check Interval <span class="text-muted-3">(seconds)</span></label>
               <input type="number" name="suwayomi_check_interval" class="form-control"
                      value="{{ cfg.suwayomi_check_interval or '21600' }}" min="3600" max="604800" step="3600">
               <div class="form-text">How often to check Suwayomi sources for new chapters (default 6h). Min 1h.</div>
@@ -376,13 +376,13 @@
           </div>
         </div>
         <div class="panel-body p-0">
-          <div class="d-flex gap-1 px-3 py-2" style="border-bottom:1px solid var(--edge)">
+          <div class="d-flex gap-1 px-3 py-2 settings-extension-toolbar">
             <button class="btn btn-sm" :class="filter==='all'?'btn-ember':'btn-secondary'" @click="filter='all'">All</button>
             <button class="btn btn-sm" :class="filter==='installed'?'btn-ember':'btn-secondary'" @click="filter='installed'">Installed</button>
             <button class="btn btn-sm" :class="filter==='official'?'btn-ember':'btn-secondary'" @click="filter='official'">Official</button>
           </div>
           <template x-if="loading">
-            <div class="p-4 text-center" style="color:var(--text-3)">
+            <div class="p-4 text-center text-muted-3">
               <span class="spinner-border spinner-border-sm me-2"></span>Loading extensions…
             </div>
           </template>
@@ -390,7 +390,7 @@
             <div class="empty-state">
               <div class="empty-icon"><i class="bi bi-puzzle"></i></div>
               <p class="fw-semibold">No extensions available</p>
-              <p class="text-sm" style="color:var(--text-3)">Make sure your Suwayomi server has an extension repository configured (e.g., Keiyoushi).</p>
+              <p class="text-sm text-muted-3">Make sure your Suwayomi server has an extension repository configured (e.g., Keiyoushi).</p>
             </div>
           </template>
           <div class="table-wrap mb-0" x-show="!loading && exts.length > 0">
@@ -398,10 +398,10 @@
               <thead>
                 <tr>
                   <th>Extension</th>
-                  <th style="width:80px">Lang</th>
-                  <th style="width:90px">Type</th>
-                  <th style="width:100px">Status</th>
-                  <th style="width:100px"></th>
+                  <th class="settings-col-lang">Lang</th>
+                  <th class="settings-col-type">Type</th>
+                  <th class="settings-col-status">Status</th>
+                  <th class="settings-col-extension-actions"></th>
                 </tr>
               </thead>
               <tbody>
@@ -413,7 +413,7 @@
                   <tr>
                     <td>
                       <span class="fw-semibold text-sm" x-text="ext.name"></span>
-                      <span class="text-2xs ms-1" style="color:var(--text-3)" x-text="ext.pkgName" x-show="false"></span>
+                      <span class="text-2xs ms-1 text-muted-3" x-text="ext.pkgName" x-show="false"></span>
                     </td>
                     <td><span class="badge-status badge-unknown text-uppercase" x-text="ext.lang"></span></td>
                     <td>
@@ -433,7 +433,7 @@
                         <span class="badge-status badge-downloaded">Installed</span>
                       </template>
                       <template x-if="!ext.isInstalled">
-                        <span class="text-xs" style="color:var(--text-3)">Not installed</span>
+                        <span class="text-xs text-muted-3">Not installed</span>
                       </template>
                     </td>
                     <td class="text-end">
@@ -501,13 +501,13 @@
         <div class="panel-body">
           <div class="row g-3">
             <div class="col-12 col-sm-4">
-              <label class="form-label">RSS Check Interval <span style="color:var(--text-3)">(seconds)</span></label>
+              <label class="form-label">RSS Check Interval <span class="text-muted-3">(seconds)</span></label>
               <input type="number" name="rss_interval" class="form-control"
                      value="{{ cfg.rss_interval or '900' }}" min="60" max="86400" step="60">
               <div class="form-text">How often to poll indexer RSS feeds. Also in <a href="/indexers" class="text-ember">Indexers → Options</a>.</div>
             </div>
             <div class="col-12 col-sm-4">
-              <label class="form-label">Global Grab Delay <span style="color:var(--text-3)">(minutes)</span></label>
+              <label class="form-label">Global Grab Delay <span class="text-muted-3">(minutes)</span></label>
               <input type="number" name="grab_delay_minutes" class="form-control"
                      value="{{ cfg.grab_delay_minutes or '0' }}" min="0" max="10080">
               <div class="form-text">Fallback when no <a href="/delay-profiles" class="text-ember">Delay Profile</a> matches.</div>
@@ -540,7 +540,7 @@
       <div class="panel">
         <div class="panel-header"><i class="bi bi-funnel"></i>Global Release Filters</div>
         <div class="panel-body">
-          <div class="alert py-2 mb-3" style="font-size:var(--text-base);background:var(--ink-4);border:1px solid var(--edge-2);color:var(--text-2);border-radius:var(--radius-md)">
+          <div class="alert py-2 mb-3 settings-alert">
             <i class="bi bi-info-circle me-1"></i>
             These are global fallbacks. For per-series filtering, use <a href="/release-profiles" class="text-ember">Release Profiles</a>.
           </div>
@@ -595,7 +595,7 @@
             <div class="col-12 col-sm-7">
               <label class="form-label">
                 Google Books API Key
-                <span class="ms-1" style="background:var(--sky-bg);color:var(--sky);border-radius:4px;font-size:var(--text-2xs);padding:1px 6px">optional</span>
+                <span class="badge-status badge-sky ms-1 text-2xs">optional</span>
               </label>
               <input type="text" name="google_books_api_key" class="form-control"
                      value="{{ cfg.google_books_api_key or '' }}"
@@ -641,7 +641,7 @@
                 <input class="form-check-input" type="checkbox" name="komga_scan_enabled"
                        id="komga_scan_enabled" value="1"
                        {% if cfg.komga_scan_enabled == 'true' %}checked{% endif %}>
-                <label class="form-check-label" for="komga_scan_enabled" style="font-size:var(--text-base)">Trigger scan on download complete</label>
+                <label class="form-check-label settings-base-cell" for="komga_scan_enabled">Trigger scan on download complete</label>
               </div>
             </div>
           </div>
@@ -649,7 +649,7 @@
             <button type="button" class="btn btn-outline-ember btn-sm" onclick="testKomga()">
               <i class="bi bi-plug me-1"></i>Test Connection
             </button>
-            <span id="komga-result" class="connection-status" style="display:none"></span>
+            <span id="komga-result" class="connection-status settings-hidden"></span>
           </div>
         </div>
       </div>
