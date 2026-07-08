@@ -180,7 +180,7 @@
           <div class="fw-bold text-ember">{{ row.series_title }}</div>
           <div class="text-muted text-xs">{{ row.torrent_name }}</div>
         </div>
-        <button type="button" class="btn-close ms-3" data-bs-dismiss="modal"></button>
+        <button type="button" class="btn-close ms-3" data-bs-dismiss="modal" aria-label="Close import review"></button>
       </div>
       {#
         Review form (Stage 2 of the mapping audit).
@@ -209,13 +209,13 @@
             <thead>
               <tr>
                 <th>Filename</th>
-                <th style="width:80px" title="Volume (accepts 3, 3.5, 3a, 3½)">Vol</th>
-                <th style="width:80px" title="Volume-range end (for packs covering v1-v3 in one file)">Vol End</th>
-                <th style="width:70px" title="Chapter number, decimals OK">Ch</th>
-                <th style="width:70px" title="Chapter-range end (for c001-002 style packs)">Ch End</th>
-                <th style="width:110px" title="Pack type">Pack</th>
-                <th style="width:50px" title="Mark as side-story / oneshot / extra">Spec</th>
-                <th style="width:50px">Skip</th>
+                <th class="queue-col-review-vol" title="Volume (accepts 3, 3.5, 3a, 3½)">Vol</th>
+                <th class="queue-col-review-vol" title="Volume-range end (for packs covering v1-v3 in one file)">Vol End</th>
+                <th class="queue-col-review-chapter" title="Chapter number, decimals OK">Ch</th>
+                <th class="queue-col-review-chapter" title="Chapter-range end (for c001-002 style packs)">Ch End</th>
+                <th class="queue-col-review-pack" title="Pack type">Pack</th>
+                <th class="queue-col-review-flag" title="Mark as side-story / oneshot / extra">Spec</th>
+                <th class="queue-col-review-flag">Skip</th>
               </tr>
             </thead>
             <tbody>
@@ -232,42 +232,38 @@
               {# Volume cell prefers the range start when a range is set — that's the operator's anchor #}
               {% set vol_input_val = vol_rs if vol_rs is not none else vol_start %}
               {% set unmapped = not vol_start and not chap_start and not vol_rs and not chap_re %}
-              <tr id="mr_{{ f['id'] }}" {% if unmapped %}style="background:var(--ruby-tint)"{% endif %}>
-                <td style="font-size:var(--text-base); font-family:var(--font-mono); word-break:break-all">
+              <tr id="mr_{{ f['id'] }}" class="{% if unmapped %}queue-review-row-unmapped{% endif %}">
+                <td class="queue-review-filename">
                   {{ f['filename'] }}
-                  {% if is_chapter %}<span class="badge-status badge-sky ms-1" style="font-size:var(--text-2xs)">chapter</span>{% endif %}
-                  {% if is_special %}<span class="badge-status badge-ember ms-1" style="font-size:var(--text-2xs)">special</span>{% endif %}
+                  {% if is_chapter %}<span class="badge-status badge-sky ms-1 text-2xs">chapter</span>{% endif %}
+                  {% if is_special %}<span class="badge-status badge-ember ms-1 text-2xs">special</span>{% endif %}
                   {% if unmapped %}<span class="badge-status badge-wanted ms-1">unmapped</span>{% endif %}
                 </td>
                 <td>
-                  <input type="text" name="vol_{{ f['id'] }}" class="form-control form-control-sm"
+                  <input type="text" name="vol_{{ f['id'] }}" class="form-control form-control-sm queue-review-input-vol"
                          value="{{ vol_input_val|vol_display if vol_input_val is not none else '' }}"
                          placeholder="?" pattern="[0-9]+([.][0-9]+)?[a-d½¼¾]?"
-                         title="e.g. 3, 3.5, 3a, 3½"
-                         style="width:75px; font-size:var(--text-base)">
+                         title="e.g. 3, 3.5, 3a, 3½">
                 </td>
                 <td>
-                  <input type="text" name="vol_end_{{ f['id'] }}" class="form-control form-control-sm"
+                  <input type="text" name="vol_end_{{ f['id'] }}" class="form-control form-control-sm queue-review-input-vol"
                          value="{{ vol_re|vol_display if vol_re is not none else '' }}"
                          placeholder="—" pattern="[0-9]+([.][0-9]+)?[a-d½¼¾]?"
-                         title="Leave blank for single volume"
-                         style="width:75px; font-size:var(--text-base)">
+                         title="Leave blank for single volume">
                 </td>
                 <td>
-                  <input type="number" name="chap_{{ f['id'] }}" class="form-control form-control-sm"
+                  <input type="number" name="chap_{{ f['id'] }}" class="form-control form-control-sm queue-review-input-chapter"
                          value="{{ chap_start if chap_start is not none else '' }}"
-                         placeholder="?" step="any" min="0" style="width:65px; font-size:var(--text-base)">
+                         placeholder="?" step="any" min="0">
                 </td>
                 <td>
-                  <input type="number" name="chap_end_{{ f['id'] }}" class="form-control form-control-sm"
+                  <input type="number" name="chap_end_{{ f['id'] }}" class="form-control form-control-sm queue-review-input-chapter"
                          value="{{ chap_re if chap_re is not none else '' }}"
                          placeholder="—" step="any" min="0"
-                         title="Leave blank for single chapter"
-                         style="width:65px; font-size:var(--text-base)">
+                         title="Leave blank for single chapter">
                 </td>
                 <td>
-                  <select name="pack_{{ f['id'] }}" class="form-select form-select-sm"
-                          style="width:105px; font-size:var(--text-sm)">
+                  <select name="pack_{{ f['id'] }}" class="form-select form-select-sm queue-review-pack-select">
                     <option value=""              {% if not pack_type %}selected{% endif %}>auto</option>
                     <option value="volume"        {% if pack_type == 'volume' %}selected{% endif %}>volume</option>
                     <option value="volume_range"  {% if pack_type == 'volume_range' %}selected{% endif %}>vol range</option>
@@ -291,7 +287,7 @@
           </table>
         </div>
         <div class="modal-footer">
-          <code class="text-2xs" style="color:var(--text-3); margin-right:auto">{{ row.src_dir }}</code>
+          <code class="text-2xs queue-review-source">{{ row.src_dir }}</code>
           <button type="button" class="btn btn-secondary btn-sm" onclick="skipAll({{ row.queue_id }})">Skip All</button>
           <button type="submit" class="btn-grab btn btn-sm px-3"><i class="bi bi-box-arrow-in-down me-1"></i>Import</button>
         </div>
@@ -304,7 +300,7 @@
 
 {% for row in queue_rows %}
 {% if row.stage == 'review' and row.queue_id %}
-<form id="skip-form-{{ row.queue_id }}" method="POST" action="/import/{{ row.queue_id }}/skip" style="display:none"></form>
+<form id="skip-form-{{ row.queue_id }}" method="POST" action="/import/{{ row.queue_id }}/skip" class="d-none"></form>
 {% endif %}
 {% endfor %}
 
@@ -394,7 +390,7 @@
 {% for row in queue_rows %}
 {% if row.hash %}
 <div class="modal fade" id="rm-{{ row.hash }}" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered" style="max-width:480px">
+  <div class="modal-dialog modal-dialog-centered queue-remove-dialog">
     <div class="modal-content">
       <div x-data="{ rfc: '1', df: false, bl: false, catVal: '{{ configured_category }}' }">
         <form method="POST" action="/queue/torrent/{{ row.hash }}/remove"
@@ -405,83 +401,79 @@
               hx-on::before-request="bootstrap.Modal.getInstance(document.getElementById('rm-{{ row.hash }}'))?.hide(); showToast('Removing from queue…', 'info'); var _r=document.getElementById('qrow-{{ row.hash }}'); if(_r) _r.style.opacity='0.3'"
               hx-on::after-request="if(event.detail.successful) showToast('Removed from queue', 'success')">
           <div class="modal-header">
-            <h6 class="modal-title" style="font-size:var(--text-lg); font-weight:700; color:var(--text)">
+            <h6 class="modal-title">
               <i class="bi bi-x-circle me-2 text-ruby"></i>Remove from Queue
             </h6>
-            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close remove dialog"></button>
           </div>
-          <div class="modal-body" style="padding:20px">
+          <div class="modal-body">
 
             {# Release name chip #}
-            <div class="mb-4 p-3 rounded" style="background:var(--ink-3); border:1px solid var(--edge-2)">
-              <div style="font-size:var(--text-2xs); font-weight:700; letter-spacing:0.1em; text-transform:uppercase; color:var(--text-3); margin-bottom:5px">
+            <div class="mb-4 p-3 rounded queue-remove-summary">
+              <div class="queue-remove-eyebrow">
                 Release
               </div>
-              <div style="font-family:var(--font-mono); font-size:var(--text-sm); color:var(--text); word-break:break-all; line-height:1.4">
+              <div class="queue-remove-title">
                 {{ row.torrent_name or '—' }}
               </div>
               {% if row.series_title %}
-              <div class="mt-2" style="font-size:var(--text-sm); color:var(--ember)">{{ row.series_title }}</div>
+              <div class="mt-2 queue-remove-series">{{ row.series_title }}</div>
               {% endif %}
             </div>
 
             {# Removal Method — three options #}
             <div class="mb-3">
-              <div style="font-size:var(--text-sm); font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-3); margin-bottom:10px">
+              <div class="queue-remove-section-title">
                 Removal Method
               </div>
               <div class="d-flex flex-column gap-2">
 
                 {# Keep in client #}
-                <label class="d-flex align-items-start gap-3 p-3 rounded"
-                       style="cursor:pointer; border:1px solid var(--edge-2); background:var(--ink-3); transition:border-color 0.15s"
-                       :style="rfc==='0' ? 'border-color:var(--ember); background:var(--ember-bg)' : ''">
+                <label class="d-flex align-items-start gap-3 p-3 rounded queue-remove-option"
+                       :class="{ 'is-selected-ember': rfc==='0' }">
                   <input type="radio" name="remove_from_client" value="0"
                          class="form-check-input flex-shrink-0 mt-1"
                          @change="rfc='0'; df=false">
                   <div>
-                    <div style="font-size:var(--text-base); font-weight:600; color:var(--text)">Keep in Download Client</div>
-                    <div style="font-size:var(--text-sm); color:var(--text-3); line-height:1.4; margin-top:3px">
+                    <div class="queue-remove-option-title">Keep in Download Client</div>
+                    <div class="queue-remove-option-copy">
                       Remove from Mangarr tracking only. Torrent continues unchanged in the client.
                     </div>
                   </div>
                 </label>
 
                 {# Change category — keep + move to new category #}
-                <label class="d-flex align-items-start gap-3 p-3 rounded"
-                       style="cursor:pointer; border:1px solid var(--edge-2); background:var(--ink-3); transition:border-color 0.15s"
-                       :style="rfc==='cat' ? 'border-color:var(--sky); background:var(--sky-bg)' : ''">
+                <label class="d-flex align-items-start gap-3 p-3 rounded queue-remove-option"
+                       :class="{ 'is-selected-sky': rfc==='cat' }">
                   <input type="radio" name="remove_from_client" value="0"
                          class="form-check-input flex-shrink-0 mt-1"
                          @change="rfc='cat'; df=false">
-                  <div style="flex:1">
-                    <div style="font-size:var(--text-base); font-weight:600; color:var(--text)">
-                      <i class="bi bi-tag me-1" :style="rfc==='cat' ? 'color:var(--sky)' : 'color:var(--text-3)'"></i>Change Category
+                  <div class="flex-grow-1">
+                    <div class="queue-remove-option-title">
+                      <i class="bi bi-tag me-1" :class="rfc==='cat' ? 'text-sky' : 'text-muted-3'"></i>Change Category
                     </div>
-                    <div style="font-size:var(--text-sm); color:var(--text-3); line-height:1.4; margin-top:3px">
+                    <div class="queue-remove-option-copy">
                       Keep in client but move to a different category — e.g. a seed-only label after Mangarr is done.
                     </div>
                     <div x-show="rfc==='cat'" x-transition class="mt-2" @click.stop>
                       <input type="text" name="change_category" x-model="catVal"
                              :disabled="rfc!=='cat'"
-                             class="form-control form-control-sm"
-                             style="font-family:var(--font-mono); font-size:var(--text-base)"
+                             class="form-control form-control-sm queue-remove-category-input"
                              autocomplete="off" spellcheck="false">
                     </div>
                   </div>
                 </label>
 
                 {# Remove from client #}
-                <label class="d-flex align-items-start gap-3 p-3 rounded"
-                       style="cursor:pointer; border:1px solid var(--edge-2); background:var(--ink-3); transition:border-color 0.15s"
-                       :style="rfc==='1' ? 'border-color:var(--ember); background:var(--ember-bg)' : ''">
+                <label class="d-flex align-items-start gap-3 p-3 rounded queue-remove-option"
+                       :class="{ 'is-selected-ember': rfc==='1' }">
                   <input type="radio" name="remove_from_client" value="1"
                          class="form-check-input flex-shrink-0 mt-1"
                          checked @change="rfc='1'">
                   <div>
-                    <div style="font-size:var(--text-base); font-weight:600; color:var(--text)">Remove from Download Client</div>
-                    <div style="font-size:var(--text-sm); color:var(--text-3); line-height:1.4; margin-top:3px">
-                      Delete the torrent from the client. Volumes reset to <span style="color:var(--ember)">Wanted</span>.
+                    <div class="queue-remove-option-title">Remove from Download Client</div>
+                    <div class="queue-remove-option-copy">
+                      Delete the torrent from the client. Volumes reset to <span class="text-ember">Wanted</span>.
                     </div>
                   </div>
                 </label>
@@ -491,18 +483,17 @@
 
             {# Delete Files — shown when removing from client #}
             <div class="mb-3" x-show="rfc==='1'" x-transition>
-              <label class="d-flex align-items-start gap-3 p-3 rounded"
-                     style="cursor:pointer; border:1px solid var(--edge-2); background:var(--ink-3); transition:border-color 0.15s"
-                     :style="df ? 'border-color:var(--ruby); background:var(--ruby-bg)' : ''">
+              <label class="d-flex align-items-start gap-3 p-3 rounded queue-remove-option"
+                     :class="{ 'is-selected-ruby': df }">
                 <input type="checkbox" name="delete_files" value="1"
                        class="form-check-input flex-shrink-0 mt-1"
                        :disabled="rfc!=='1'"
                        @change="df=$event.target.checked">
                 <div>
-                  <div style="font-size:var(--text-base); font-weight:600; color:var(--text)">
-                    <i class="bi bi-trash3 me-1" :style="df ? 'color:var(--ruby)' : ''"></i>Delete Files
+                  <div class="queue-remove-option-title">
+                    <i class="bi bi-trash3 me-1" :class="{ 'text-ruby': df }"></i>Delete Files
                   </div>
-                  <div style="font-size:var(--text-sm); color:var(--text-3); line-height:1.4; margin-top:3px">
+                  <div class="queue-remove-option-copy">
                     Also delete the downloaded file(s) from the download client.
                   </div>
                 </div>
@@ -511,20 +502,19 @@
 
             {# Options #}
             <div>
-              <div style="font-size:var(--text-sm); font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-3); margin-bottom:10px">
+              <div class="queue-remove-section-title">
                 Options
               </div>
-              <label class="d-flex align-items-start gap-3 p-3 rounded"
-                     style="cursor:pointer; border:1px solid var(--edge-2); background:var(--ink-3); transition:border-color 0.15s"
-                     :style="bl ? 'border-color:var(--gold); background:var(--gold-bg)' : ''">
+              <label class="d-flex align-items-start gap-3 p-3 rounded queue-remove-option"
+                     :class="{ 'is-selected-gold': bl }">
                 <input type="checkbox" name="blocklist" value="1"
                        class="form-check-input flex-shrink-0 mt-1"
                        @change="bl=$event.target.checked">
                 <div>
-                  <div style="font-size:var(--text-base); font-weight:600; color:var(--text)">
-                    <i class="bi bi-slash-circle me-1" :style="bl ? 'color:var(--gold)' : 'color:var(--text-3)'"></i>Blocklist Release
+                  <div class="queue-remove-option-title">
+                    <i class="bi bi-slash-circle me-1" :class="bl ? 'text-gold' : 'text-muted-3'"></i>Blocklist Release
                   </div>
-                  <div style="font-size:var(--text-sm); color:var(--text-3); line-height:1.4; margin-top:3px">
+                  <div class="queue-remove-option-copy">
                     Blocks this release from being re-downloaded via RSS or automatic search.
                   </div>
                 </div>
@@ -534,8 +524,7 @@
           </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
-            <button type="submit" class="btn btn-sm"
-                    style="background:var(--ruby-bg); border:1px solid var(--ruby-strong); color:var(--ruby); font-weight:600">
+            <button type="submit" class="btn btn-sm queue-remove-danger">
               <i class="bi bi-x-circle me-1"></i>Remove
             </button>
           </div>

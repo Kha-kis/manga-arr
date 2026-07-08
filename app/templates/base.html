@@ -1729,6 +1729,10 @@
       .queue-col-actions { width: 90px; }
       .queue-col-progress-wide { width: 180px; }
       .queue-col-status-compact { width: 110px; }
+      .queue-col-review-vol { width: 80px; }
+      .queue-col-review-chapter { width: 70px; }
+      .queue-col-review-pack { width: 110px; }
+      .queue-col-review-flag { width: 50px; }
       .queue-release-title {
         display: block;
         max-width: 280px;
@@ -1758,6 +1762,91 @@
       .badge-warning-soft {
         color: var(--gold);
         background: var(--gold-bg);
+      }
+      .queue-review-row-unmapped { background: var(--ruby-tint); }
+      .queue-review-filename {
+        font-size: var(--text-base);
+        font-family: var(--font-mono);
+        word-break: break-all;
+      }
+      .queue-review-input-vol { width: 75px; font-size: var(--text-base); }
+      .queue-review-input-chapter { width: 65px; font-size: var(--text-base); }
+      .queue-review-pack-select { width: 105px; font-size: var(--text-sm); }
+      .queue-review-source {
+        margin-right: auto;
+        color: var(--text-3);
+      }
+      .queue-remove-dialog { max-width: 480px; }
+      .queue-remove-summary {
+        background: var(--ink-3);
+        border: 1px solid var(--edge-2);
+      }
+      .queue-remove-eyebrow {
+        margin-bottom: 5px;
+        font-size: var(--text-2xs);
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--text-3);
+      }
+      .queue-remove-title {
+        font-family: var(--font-mono);
+        font-size: var(--text-sm);
+        color: var(--text);
+        word-break: break-all;
+        line-height: 1.4;
+      }
+      .queue-remove-series { font-size: var(--text-sm); color: var(--ember); }
+      .queue-remove-section-title {
+        margin-bottom: 10px;
+        font-size: var(--text-sm);
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--text-3);
+      }
+      .queue-remove-option {
+        cursor: pointer;
+        border: 1px solid var(--edge-2);
+        background: var(--ink-3);
+        transition: border-color 0.15s, background-color 0.15s;
+      }
+      .queue-remove-option.is-selected-ember {
+        border-color: var(--ember);
+        background: var(--ember-bg);
+      }
+      .queue-remove-option.is-selected-sky {
+        border-color: var(--sky);
+        background: var(--sky-bg);
+      }
+      .queue-remove-option.is-selected-ruby {
+        border-color: var(--ruby);
+        background: var(--ruby-bg);
+      }
+      .queue-remove-option.is-selected-gold {
+        border-color: var(--gold);
+        background: var(--gold-bg);
+      }
+      .queue-remove-option-title {
+        font-size: var(--text-base);
+        font-weight: 600;
+        color: var(--text);
+      }
+      .queue-remove-option-copy {
+        margin-top: 3px;
+        font-size: var(--text-sm);
+        color: var(--text-3);
+        line-height: 1.4;
+      }
+      .queue-remove-category-input {
+        font-family: var(--font-mono);
+        font-size: var(--text-base);
+      }
+      .queue-remove-danger {
+        color: var(--ruby);
+        border: 1px solid var(--ruby-strong);
+        background: var(--ruby-bg);
+        font-weight: 600;
       }
 
       {% block head_styles %}{% endblock %}
