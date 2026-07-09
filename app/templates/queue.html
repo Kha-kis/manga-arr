@@ -9,7 +9,7 @@
     <i class="bi bi-arrow-down-circle-fill"></i>Queue
   </div>
   <div class="d-flex gap-2 align-items-center">
-    <span class="htmx-indicator text-xs" style="color:var(--jade)">
+    <span class="htmx-indicator text-xs text-jade">
       <i class="bi bi-arrow-repeat text-xs"></i>
     </span>
     <span id="queue-status-badge">
@@ -30,19 +30,19 @@
 {% if disk_info %}
 <div class="d-flex gap-3 flex-wrap mb-4">
   {% for d in disk_info %}
-  <div class="panel flex-grow-1 mb-0" style="min-width:200px">
-    <div class="panel-body" style="padding:13px 16px">
+  <div class="panel flex-grow-1 mb-0 queue-disk-card">
+    <div class="panel-body queue-disk-body">
       <div class="d-flex justify-content-between align-items-center mb-2">
         <span class="fw-semibold text-sm"><i class="bi bi-hdd me-1 text-ember"></i>{{ d['label'] }}</span>
-        <span class="text-xs" style="color:var(--text-2)">{{ d['free']|format_bytes }} free</span>
+        <span class="text-xs text-muted-2">{{ d['free']|format_bytes }} free</span>
       </div>
-      <div style="height:5px; background:var(--ink-5); border-radius:3px; overflow:hidden">
-        <div style="height:100%; width:{{ d['pct'] }}%; border-radius:3px;
-                    background:{% if d['pct'] > 90 %}var(--ruby){% elif d['pct'] > 75 %}var(--gold){% else %}var(--ember){% endif %}"></div>
-      </div>
+      <progress class="queue-disk-meter{% if d['pct'] > 90 %} is-critical{% elif d['pct'] > 75 %} is-warning{% endif %}"
+                value="{{ d['pct'] }}"
+                max="100"
+                aria-label="{{ d['label'] }} disk usage"></progress>
       <div class="d-flex justify-content-between mt-1">
-        <span class="text-2xs" style="color:var(--text-3)">{{ d['used']|format_bytes }} used</span>
-        <span class="text-2xs" style="color:var(--text-3)">{{ d['total']|format_bytes }} · {{ d['pct'] }}%</span>
+        <span class="text-2xs text-muted-3">{{ d['used']|format_bytes }} used</span>
+        <span class="text-2xs text-muted-3">{{ d['total']|format_bytes }} · {{ d['pct'] }}%</span>
       </div>
     </div>
   </div>
@@ -65,7 +65,7 @@
 <script>
 function dimRow(rowId, dim) {
   const r = document.getElementById(rowId);
-  if (r) r.style.opacity = dim ? '0.35' : '1';
+  if (r) r.classList.toggle('queue-review-row-dimmed', dim);
 }
 function skipAll(queueId) {
   if (!confirm('Skip this import? Files will remain in the download directory.')) return;
