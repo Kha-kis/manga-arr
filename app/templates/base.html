@@ -339,6 +339,11 @@
         margin-left: auto;
         flex-shrink: 0;
       }
+      .settings-dropdown-menu {
+        margin-left: 0.5rem;
+        width: 13.75rem;
+        margin-bottom: 0.25rem;
+      }
 
       .sidebar-footer {
         border-top: 1px solid var(--edge);
@@ -1320,6 +1325,11 @@
       }
 
       .modal-body { padding: 20px; }
+      .global-confirm-body {
+        font-size: var(--text-sm);
+        color: var(--text);
+        white-space: pre-wrap;
+      }
       .modal-footer {
         background: var(--ink-3);
         border-top: 1px solid var(--edge);
@@ -2016,7 +2026,12 @@
         display: flex;
         align-items: center;
         gap: 10px;
+        transition: opacity 0.3s, transform 0.3s;
         animation: toast-in 0.3s cubic-bezier(0.34,1.56,0.64,1);
+      }
+      .app-toast.is-exiting {
+        opacity: 0;
+        transform: translateX(0.5rem);
       }
 
       .toast-icon { font-size: var(--text-xl); flex-shrink: 0; }
@@ -3223,9 +3238,8 @@
               <span
                 >Queue
                 <span
-                  class="nav-badge"
+                  class="nav-badge is-hidden"
                   id="queue-badge"
-                  style="display: none"
                 ></span
               ></span>
             </a>
@@ -3314,8 +3328,7 @@
               <i class="bi bi-gear-fill"></i><span>Settings</span>
             </a>
             <ul
-              class="dropdown-menu"
-              style="margin-left: 8px; width: 220px; margin-bottom: 4px"
+              class="dropdown-menu settings-dropdown-menu"
             >
               <li><div class="dropdown-header">Mangarr</div></li>
               <li>
@@ -3474,12 +3487,7 @@
             ></button>
           </div>
           <div
-            class="modal-body"
-            style="
-              font-size: 0.88rem;
-              color: var(--text);
-              white-space: pre-wrap;
-            "
+            class="modal-body global-confirm-body"
             id="globalConfirmBody"
           >
             Are you sure?
@@ -3553,7 +3561,7 @@
       fetch('/api/import/pending-count').then(r=>r.json()).then(d=>{
         if (d.count > 0) {
           const badge = document.getElementById('queue-badge');
-          if (badge) { badge.textContent = d.count; badge.style.display = ''; }
+          if (badge) { badge.textContent = d.count; badge.classList.remove('is-hidden'); }
         }
       }).catch(()=>{});
 
@@ -3736,9 +3744,7 @@
 
         document.getElementById('toast-container').appendChild(el);
         setTimeout(() => {
-          el.style.transition = 'opacity 0.3s, transform 0.3s';
-          el.style.opacity = '0';
-          el.style.transform = 'translateX(8px)';
+          el.classList.add('is-exiting');
           setTimeout(() => el.remove(), 300);
         }, duration);
       }
