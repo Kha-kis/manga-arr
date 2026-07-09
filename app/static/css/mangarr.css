@@ -2198,6 +2198,45 @@ a:hover {
   min-width: 16.25rem;
 }
 
+.cutoff-unmet-count {
+  background: var(--gold-bg);
+  color: var(--gold);
+}
+
+.cutoff-unmet-summary,
+.cutoff-unmet-grabbed {
+  color: var(--text-2);
+}
+
+.cutoff-unmet-col-volume {
+  width: 5.625rem;
+}
+
+.cutoff-unmet-col-quality {
+  width: 6.875rem;
+}
+
+.cutoff-unmet-col-grabbed {
+  width: 8.125rem;
+}
+
+.cutoff-unmet-col-action {
+  width: 3.125rem;
+}
+
+.cutoff-unmet-volume {
+  color: var(--gold);
+}
+
+.cutoff-unmet-placeholder,
+.cutoff-unmet-empty-copy {
+  color: var(--text-3);
+}
+
+.cutoff-unmet-upgrade-btn {
+  color: var(--ember);
+}
+
 .search-form {
   max-width: 37.5rem;
 }

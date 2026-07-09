@@ -8,12 +8,12 @@
   <div class="page-heading mb-0">
     <i class="bi bi-arrow-up-circle text-gold"></i>Cutoff Unmet
     {% if total %}
-    <span class="ms-1 text-xs align-middle rounded-full px-2 py-px" style="background:var(--gold-bg);color:var(--gold)">{{ total }}</span>
+    <span class="ms-1 text-xs align-middle rounded-full px-2 py-px cutoff-unmet-count">{{ total }}</span>
     {% endif %}
   </div>
   <div class="d-flex align-items-center gap-2">
     {% if cutoff_unmet %}
-    <span class="text-sm" style="color:var(--text-2)">{{ total }} volume{% if total != 1 %}s{% endif %} below quality cutoff</span>
+    <span class="text-sm cutoff-unmet-summary">{{ total }} volume{% if total != 1 %}s{% endif %} below quality cutoff</span>
     <button class="btn btn-ember btn-sm"
             x-data="{ busy: false, done: 0, n: 0 }"
             :disabled="busy"
@@ -52,11 +52,11 @@
     <thead>
       <tr>
         <th>Series</th>
-        <th style="width:90px">Volume</th>
-        <th style="width:110px">Current Quality</th>
-        <th style="width:110px">Cutoff</th>
-        <th style="width:130px">Last Grabbed</th>
-        <th style="width:50px"></th>
+        <th class="cutoff-unmet-col-volume">Volume</th>
+        <th class="cutoff-unmet-col-quality">Current Quality</th>
+        <th class="cutoff-unmet-col-quality">Cutoff</th>
+        <th class="cutoff-unmet-col-grabbed">Last Grabbed</th>
+        <th class="cutoff-unmet-col-action"></th>
       </tr>
     </thead>
     <tbody>
@@ -68,7 +68,7 @@
           </a>
         </td>
         <td>
-          <span class="text-sm" style="color:var(--gold)">
+          <span class="text-sm cutoff-unmet-volume">
             {% if item.volume_num %}Vol {{ item.volume_num|vol_display }}
             {% else %}?{% endif %}
           </span>
@@ -84,7 +84,7 @@
           {% elif cq %}
           <span class="badge-status badge-unknown">{{ cq|upper }}</span>
           {% else %}
-          <span style="color:var(--text-3)">—</span>
+          <span class="cutoff-unmet-placeholder">—</span>
           {% endif %}
         </td>
         <td>
@@ -99,13 +99,12 @@
           <span class="badge-status badge-unknown">{{ ec|upper }}</span>
           {% endif %}
         </td>
-        <td class="text-xs whitespace-nowrap" style="color:var(--text-2)">
+        <td class="text-xs whitespace-nowrap cutoff-unmet-grabbed">
           {{ item.grabbed_at | format_date if item.grabbed_at else '—' }}
         </td>
         <td class="text-end pe-2">
-          <button class="btn btn-sm p-0 px-1 text-sm leading-none bg-transparent border-0"
+          <button class="btn btn-sm p-0 px-1 text-sm leading-none bg-transparent border-0 cutoff-unmet-upgrade-btn"
                   title="Search for upgrade"
-                  style="color:var(--ember)"
                   hx-post="/series/{{ item.series_id }}/volumes/{{ item.id }}/trigger-upgrade"
                   hx-swap="none"
                   hx-disabled-elt="this"
@@ -123,7 +122,7 @@
 <div class="empty-state">
   <div class="empty-icon"><i class="bi bi-trophy text-jade"></i></div>
   <p class="fw-semibold">All volumes meet quality cutoff!</p>
-  <p class="text-sm" style="color:var(--text-3)">
+  <p class="text-sm cutoff-unmet-empty-copy">
     No downloaded volumes are below their series quality cutoff.
     Set a quality cutoff on a series or quality profile to enable cutoff tracking.
   </p>
@@ -131,4 +130,3 @@
 </div>
 {% endif %}
 {% endblock %}
-
