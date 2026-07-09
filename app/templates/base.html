@@ -1500,6 +1500,10 @@
       }
       .cf-scores-input[data-positive="true"] { background-color: var(--jade-tint) !important; }
       .cf-scores-input[data-negative="true"] { background-color: var(--ruby-tint) !important; }
+      .cf-import-subtitle {
+        color: var(--text-3);
+        font-size: var(--text-xs);
+      }
       .custom-formats-copy { color: var(--text-2); }
       .custom-formats-empty-copy { color: var(--text-3); }
       .custom-format-spec-value { color: var(--gold); }
@@ -2427,6 +2431,7 @@
         white-space: nowrap;
       }
       .queue-row-pending { opacity: 0.7; }
+      .queue-row-removing { opacity: 0.3; }
       .queue-disk-card { min-width: 12.5rem; }
       .queue-disk-body { padding: 0.8125rem 1rem; }
       .queue-disk-meter {
@@ -2475,6 +2480,46 @@
       .queue-progress-fill.is-stalled { background: var(--amber); }
       .queue-progress-fill.is-review { background: var(--iris); }
       .queue-progress-fill.is-ddl { background: var(--jade); }
+      .queue-progress-meter {
+        display: block;
+        width: 100%;
+        height: 0.1875rem;
+        margin-bottom: 0.1875rem;
+        appearance: none;
+        border: 0;
+        border-radius: var(--radius-xs);
+        overflow: hidden;
+        background: var(--ink-5);
+      }
+      .queue-progress-meter::-webkit-progress-bar {
+        background: var(--ink-5);
+        border-radius: var(--radius-xs);
+      }
+      .queue-progress-meter::-webkit-progress-value {
+        background: var(--ember);
+        border-radius: var(--radius-xs);
+      }
+      .queue-progress-meter::-moz-progress-bar {
+        background: var(--ember);
+        border-radius: var(--radius-xs);
+      }
+      .queue-progress-meter.is-error::-webkit-progress-value { background: var(--ruby); }
+      .queue-progress-meter.is-stalled::-webkit-progress-value { background: var(--amber); }
+      .queue-progress-meter.is-review::-webkit-progress-value { background: var(--iris); }
+      .queue-progress-meter.is-ddl::-webkit-progress-value { background: var(--jade); }
+      .queue-progress-meter.is-error::-moz-progress-bar { background: var(--ruby); }
+      .queue-progress-meter.is-stalled::-moz-progress-bar { background: var(--amber); }
+      .queue-progress-meter.is-review::-moz-progress-bar { background: var(--iris); }
+      .queue-progress-meter.is-ddl::-moz-progress-bar { background: var(--jade); }
+      .queue-status-pill {
+        border: 1px solid currentColor;
+        background: transparent;
+      }
+      .queue-status-pill.is-live { color: var(--jade); }
+      .queue-status-pill.is-stale { color: var(--gold); }
+      .queue-status-pill.is-warming-up { color: var(--ember); }
+      .queue-status-pill.is-unavailable { color: var(--ruby); }
+      .queue-status-dot { font-size: 0.5em; }
       .badge-warning-soft {
         color: var(--gold);
         background: var(--gold-bg);
@@ -3073,6 +3118,7 @@
 
       .reconcile-preview-body { padding: 0.875rem 1rem; }
       .reconcile-preview-alert { font-size: var(--text-base); }
+      .reconcile-refresh-alert { font-size: var(--text-lg); }
       .reconcile-col-chapter-id { width: 5.625rem; }
       .reconcile-col-chapter-num { width: 5rem; }
       .reconcile-col-volume { width: 6.875rem; }
@@ -3086,6 +3132,7 @@
         cursor: pointer;
       }
       .reconcile-review-row { opacity: 0.75; }
+      .alias-list-row:not(:last-child) { border-bottom: 1px solid var(--edge); }
 
       {% block head_styles %}{% endblock %}
 

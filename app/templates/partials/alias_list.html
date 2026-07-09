@@ -6,8 +6,7 @@
 {% if aliases %}
 <div class="panel mb-2">
   {% for a in aliases %}
-  <div class="d-flex align-items-center justify-content-between px-3 py-2"
-       {% if not loop.last %}style="border-bottom:1px solid var(--edge)"{% endif %}>
+  <div class="d-flex align-items-center justify-content-between px-3 py-2 alias-list-row">
     <span class="text-ember text-sm">{{ a['alias'] }}</span>
     <button class="btn-icon text-ruby"
             aria-label="Remove alias"

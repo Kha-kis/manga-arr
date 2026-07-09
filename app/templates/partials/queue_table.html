@@ -84,9 +84,8 @@
 
       <td>
         {% if row.stage in ('downloading', 'queued_dl', 'stalled', 'paused', 'error') %}
-        <div class="queue-progress-track">
-          <div class="queue-progress-fill{% if row.stage == 'error' %} is-error{% elif row.stage == 'stalled' %} is-stalled{% endif %}" style="--progress:{{ row.progress }}%"></div>
-        </div>
+        <progress class="queue-progress-meter{% if row.stage == 'error' %} is-error{% elif row.stage == 'stalled' %} is-stalled{% endif %}"
+                  max="100" value="{{ row.progress }}" aria-label="Download progress"></progress>
         <span class="text-2xs text-muted-3">
           {{ row.progress }}%
           {%- if row.dlspeed and row.dlspeed > 0 %} · {{ row.dlspeed|format_bytes }}/s{% endif %}
@@ -97,9 +96,7 @@
           {%- endif %}
         </span>
         {% elif row.stage == 'review' %}
-        <div class="queue-progress-track">
-          <div class="queue-progress-fill is-review" style="--progress:100%"></div>
-        </div>
+        <progress class="queue-progress-meter is-review" max="100" value="100" aria-label="Review progress"></progress>
         <span class="text-2xs text-muted-3">Download complete</span>
         {% elif row.stage == 'pending' %}
         <span class="text-2xs text-muted-3">
@@ -333,16 +330,12 @@
         </td>
         <td>
           {% if job.status == 'error' %}
-          <div class="queue-progress-track">
-            <div class="queue-progress-fill is-error" style="--progress:100%"></div>
-          </div>
+          <progress class="queue-progress-meter is-error" max="100" value="100" aria-label="Download progress"></progress>
           <span class="text-2xs text-ruby" title="{{ job.error }}">
             {{ (job.error or 'Import failed')[:45] }}{% if (job.error or '')|length > 45 %}…{% endif %}
           </span>
           {% else %}
-          <div class="queue-progress-track">
-            <div class="queue-progress-fill is-ddl" style="--progress:{{ job.progress }}%"></div>
-          </div>
+          <progress class="queue-progress-meter is-ddl" max="100" value="{{ job.progress }}" aria-label="Download progress"></progress>
           <span class="text-2xs text-muted-3">{{ job.done }}/{{ job.total }} chapters</span>
           {% endif %}
         </td>
@@ -398,7 +391,7 @@
               hx-target="#queue-body"
               hx-swap="innerHTML"
               hx-disabled-elt="find button[type='submit']"
-              hx-on::before-request="bootstrap.Modal.getInstance(document.getElementById('rm-{{ row.hash }}'))?.hide(); showToast('Removing from queue…', 'info'); var _r=document.getElementById('qrow-{{ row.hash }}'); if(_r) _r.style.opacity='0.3'"
+              hx-on::before-request="bootstrap.Modal.getInstance(document.getElementById('rm-{{ row.hash }}'))?.hide(); showToast('Removing from queue…', 'info'); var _r=document.getElementById('qrow-{{ row.hash }}'); if(_r) _r.classList.add('queue-row-removing')"
               hx-on::after-request="if(event.detail.successful) showToast('Removed from queue', 'success')">
           <div class="modal-header">
             <h6 class="modal-title">

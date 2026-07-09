@@ -11,21 +11,20 @@
 #}
 {% macro _pill(name, s) %}
   {% if s.label != 'disabled' %}
-    {% set color =
-      'var(--jade)'   if s.label == 'live' else
-      'var(--gold)'   if s.label == 'stale' else
-      'var(--ember)'  if s.label == 'warming_up' else
-      'var(--ruby)' %}
+    {% set state_class =
+      'is-live'       if s.label == 'live' else
+      'is-stale'      if s.label == 'stale' else
+      'is-warming-up' if s.label == 'warming_up' else
+      'is-unavailable' %}
     {% set age_txt =
       'just now'                                    if s.age_seconds is not none and s.age_seconds < 5 else
       (s.age_seconds|string) + 's ago'              if s.age_seconds is not none and s.age_seconds < 60 else
       ((s.age_seconds // 60)|string) + 'm ago'      if s.age_seconds is not none and s.age_seconds < 3600 else
       'never'                                       if s.age_seconds is none else
       ((s.age_seconds // 3600)|string) + 'h ago' %}
-    <span class="badge text-2xs"
-          style="background:transparent; border:1px solid {{ color }}; color:{{ color }}"
+    <span class="badge queue-status-pill {{ state_class }} text-2xs"
           title="{% if s.error %}last error: {{ s.error }}{% else %}last success: {{ age_txt }}{% endif %}">
-      <i class="bi bi-circle-fill me-1" style="font-size:0.5em"></i>{{ name }}
+      <i class="bi bi-circle-fill me-1 queue-status-dot"></i>{{ name }}
       {%- if s.label == 'warming_up' %} warming up
       {%- elif s.label == 'unavailable' %} unavailable
       {%- else %} {{ s.label }} · {{ age_txt }}
