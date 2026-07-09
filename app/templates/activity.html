@@ -7,7 +7,7 @@
 <div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
   <div class="page-heading mb-0"><i class="bi bi-lightning-fill"></i>Download Activity</div>
   <div class="d-flex gap-2 align-items-center">
-    {% if total %}<span class="text-xs" style="color:var(--text-2)">{{ total }} total</span>{% endif %}
+    {% if total %}<span class="text-xs activity-total">{{ total }} total</span>{% endif %}
     <button class="btn btn-secondary btn-sm"
             hx-post="/api/check-downloads"
             hx-swap="none"
@@ -24,11 +24,11 @@
     <thead>
       <tr>
         <th>Series</th>
-        <th style="width:80px">Volume</th>
+        <th class="activity-col-volume">Volume</th>
         <th>Release Name</th>
-        <th style="width:130px">Source</th>
-        <th style="width:110px">Client</th>
-        <th style="width:120px">Grabbed</th>
+        <th class="activity-col-source">Source</th>
+        <th class="activity-col-client">Client</th>
+        <th class="activity-col-grabbed">Grabbed</th>
       </tr>
     </thead>
     <tbody>
@@ -43,11 +43,11 @@
           {% if a['volume_num'] %}
           <span class="badge-status badge-grabbed">Vol {{ a['volume_num']|vol_display }}</span>
           {% else %}
-          <span class="text-xs" style="color:var(--text-3)">Pack</span>
+          <span class="text-xs activity-placeholder">Pack</span>
           {% endif %}
         </td>
-        <td class="text-xs" style="color:var(--text-2); max-width:280px">
-          <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block"
+        <td class="text-xs activity-release-cell">
+          <span class="activity-release-name"
                 title="{{ a['torrent_name'] }}">{{ a['torrent_name'] or '—' }}</span>
         </td>
         <td>
@@ -59,9 +59,9 @@
         <td>
           {% if a['client'] %}
           <span class="badge-status badge-client">{{ a['client']|format_client }}</span>
-          {% else %}<span class="text-xs" style="color:var(--text-3)">—</span>{% endif %}
+          {% else %}<span class="text-xs activity-placeholder">—</span>{% endif %}
         </td>
-        <td class="text-xs" style="color:var(--text-2); white-space:nowrap">
+        <td class="text-xs activity-grabbed-at">
           {{ a['grabbed_at'] | format_date }}
         </td>
       </tr>
@@ -83,8 +83,7 @@
 <div class="empty-state">
   <div class="empty-icon"><i class="bi bi-lightning"></i></div>
   <p class="fw-semibold">No downloads recorded yet.</p>
-  <p class="text-sm" style="color:var(--text-3)">Downloads appear here when Mangarr grabs releases.</p>
+  <p class="text-sm activity-empty-copy">Downloads appear here when Mangarr grabs releases.</p>
 </div>
 {% endif %}
 {% endblock %}
-
