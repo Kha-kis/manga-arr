@@ -3418,6 +3418,10 @@ body {
   opacity: 0.35;
 }
 
+.quality-profile-quality-dragging {
+  opacity: 0.4;
+}
+
 .queue-note {
   margin-top: 2px;
 }
