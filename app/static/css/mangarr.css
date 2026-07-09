@@ -2008,6 +2008,37 @@ a:hover {
   background-color: var(--ruby-tint) !important;
 }
 
+.chmap-help-text,
+.chmap-empty-copy,
+.chmap-chapter-cell,
+.chmap-save-status {
+  font-size: var(--text-base);
+}
+
+.chmap-col-chapter {
+  width: 7.5rem;
+}
+
+.chmap-col-volume {
+  width: 10rem;
+}
+
+.chmap-col-override {
+  width: 5rem;
+}
+
+.chmap-row.overridden-row,
+.chmap-row.chmap-row-dirty {
+  background: var(--gold-bg);
+  border-left: 3px solid var(--gold);
+}
+
+.chmap-override-badge {
+  background: var(--gold-bg);
+  color: var(--gold);
+  font-size: var(--text-xs);
+}
+
 .search-form {
   max-width: 37.5rem;
 }

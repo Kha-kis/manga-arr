@@ -24,7 +24,7 @@
       <i class="bi bi-arrow-counterclockwise me-1"></i>Reset to MangaDex
     </button>
   </form>
-  <span class="text-muted align-self-center ms-2" style="font-size:var(--text-base)">
+  <span class="text-muted align-self-center ms-2 chmap-help-text">
     <i class="bi bi-info-circle me-1"></i>
     Overridden rows are highlighted. Changes apply immediately to future scoring and imports.
   </span>
@@ -32,7 +32,7 @@
 
 {% if not ch_map %}
 <div class="panel">
-  <div class="panel-body text-muted" style="font-size:var(--text-base)">
+  <div class="panel-body text-muted chmap-empty-copy">
     No chapter map loaded yet — use <strong>Refresh Chapter Map</strong> on the series page to fetch data from MangaDex.
   </div>
 </div>
@@ -42,18 +42,17 @@
   <table class="table table-sm" id="chmap-table">
     <thead>
       <tr>
-        <th style="width:120px">Chapter</th>
-        <th style="width:160px">Volume Assignment</th>
-        <th style="width:80px">Override?</th>
+        <th class="chmap-col-chapter">Chapter</th>
+        <th class="chmap-col-volume">Volume Assignment</th>
+        <th class="chmap-col-override">Override?</th>
       </tr>
     </thead>
     <tbody>
       {% for ch_str, vol in ch_map_items %}
       {% set is_overridden = ch_str in overrides %}
       <tr class="chmap-row {% if is_overridden %}overridden-row{% endif %}"
-          data-chapter="{{ ch_str }}"
-          {% if is_overridden %}style="background:var(--gold-bg); border-left:3px solid var(--gold)"{% endif %}>
-        <td class="fw-semibold" style="font-size:var(--text-base)">
+          data-chapter="{{ ch_str }}">
+        <td class="fw-semibold chmap-chapter-cell">
           Ch&nbsp;{% if ch_str.replace('.','',1).isdigit() and '.' not in ch_str %}{{ ch_str|int }}{% else %}{{ ch_str }}{% endif %}
         </td>
         <td>
@@ -75,7 +74,7 @@
         </td>
         <td>
           {% if is_overridden %}
-          <span class="badge-status" style="background:var(--gold-bg); color:var(--gold); font-size:var(--text-xs)">
+          <span class="badge-status chmap-override-badge">
             <i class="bi bi-pencil me-1"></i>Overridden
           </span>
           {% endif %}
@@ -87,7 +86,7 @@
 </div>
 {% endif %}
 
-<div id="save-status" class="mt-2" style="display:none; font-size:var(--text-base);"></div>
+<div id="save-status" class="mt-2 chmap-save-status is-hidden"></div>
 {% endblock %}
 
 {% block scripts %}
@@ -115,13 +114,13 @@ function saveOverrides() {
   .then(d => {
     if (d.ok) {
       btn.innerHTML = '<i class="bi bi-check-circle me-1"></i>Saved';
-      status.style.display = 'block';
-      status.className = 'mt-2 text-jade';
+      status.classList.remove('is-hidden', 'text-ruby');
+      status.classList.add('text-jade');
       status.textContent = 'Overrides saved successfully.';
       setTimeout(() => {
         btn.disabled = false;
         btn.innerHTML = '<i class="bi bi-floppy me-1"></i>Save Overrides';
-        status.style.display = 'none';
+        status.classList.add('is-hidden');
       }, 2500);
     } else {
       throw new Error(d.error || 'Unknown error');
@@ -130,8 +129,8 @@ function saveOverrides() {
   .catch(e => {
     btn.disabled = false;
     btn.innerHTML = '<i class="bi bi-floppy me-1"></i>Save Overrides';
-    status.style.display = 'block';
-    status.className = 'mt-2 text-ruby';
+    status.classList.remove('is-hidden', 'text-jade');
+    status.classList.add('text-ruby');
     status.textContent = 'Save failed: ' + e;
   });
 }
@@ -141,8 +140,7 @@ document.querySelectorAll('.vol-select').forEach(sel => {
   sel.addEventListener('change', function() {
     const row = this.closest('tr');
     if (row) {
-      row.style.background = 'var(--gold-bg)';
-      row.style.borderLeft = '3px solid var(--gold)';
+      row.classList.add('chmap-row-dirty');
     }
   });
 });
