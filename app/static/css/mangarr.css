@@ -956,6 +956,107 @@ a:hover {
   color: var(--text-2);
 }
 
+.series-editor-count {
+  font-size: var(--text-sm);
+  vertical-align: middle;
+  background: var(--ember-bg);
+  color: var(--ember);
+  border-radius: var(--radius-lg);
+  padding: 1px 8px;
+}
+
+.se-row {
+  cursor: pointer;
+}
+
+.se-row:hover td {
+  background: var(--paper-tint);
+}
+
+.se-row.selected td {
+  background: var(--ember-tint);
+}
+
+.series-editor-selected-count,
+.series-editor-title,
+.series-editor-modal-count,
+.series-editor-modal-help {
+  font-size: var(--text-base);
+}
+
+.series-editor-filter-title {
+  width: 13.75rem;
+}
+
+.series-editor-filter-status {
+  width: 10.625rem;
+}
+
+.series-editor-filter-monitored {
+  width: 8.125rem;
+}
+
+.series-editor-col-check {
+  width: 2.25rem;
+}
+
+.series-editor-check {
+  margin: 0;
+}
+
+.series-editor-col-status {
+  width: 8.125rem;
+}
+
+.series-editor-col-monitored {
+  width: 5.625rem;
+}
+
+.series-editor-col-mode {
+  width: 6.25rem;
+}
+
+.series-editor-col-progress {
+  width: 7.1875rem;
+}
+
+.series-editor-col-quality {
+  width: 8.75rem;
+}
+
+.series-editor-progress {
+  display: block;
+  width: 100%;
+  height: 0.25rem;
+  border: 0;
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+  background: var(--paper-soft);
+  margin-bottom: 0.25rem;
+}
+
+.series-editor-progress::-webkit-progress-bar {
+  background: var(--paper-soft);
+}
+
+.series-editor-progress::-webkit-progress-value {
+  background: linear-gradient(90deg, var(--ember), var(--ember-hi));
+  border-radius: var(--radius-xs);
+}
+
+.series-editor-progress::-moz-progress-bar {
+  background: linear-gradient(90deg, var(--ember), var(--ember-hi));
+  border-radius: var(--radius-xs);
+}
+
+.series-editor-progress.is-complete::-webkit-progress-value {
+  background: linear-gradient(90deg, var(--jade), var(--jade-hi));
+}
+
+.series-editor-progress.is-complete::-moz-progress-bar {
+  background: linear-gradient(90deg, var(--jade), var(--jade-hi));
+}
+
 /* ═══════════════════════════════════════════════════════════════
    STATUS BADGES
 ════════════════════════════════════════════════════════════════ */
