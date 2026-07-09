@@ -358,7 +358,7 @@
     </div>
 
     <!-- Suwayomi Extensions -->
-    <div id="panel-extensions" style="display:none" x-data="{ exts: [], loading: false, filter: 'all' }">
+    <div id="panel-extensions" class="is-hidden" x-data="{ exts: [], loading: false, filter: 'all' }">
       <div class="panel">
         <div class="panel-header">
           <i class="bi bi-puzzle"></i>Suwayomi Extensions
@@ -480,19 +480,19 @@
         document.addEventListener('DOMContentLoaded', () => {
           const observer = new MutationObserver(() => {
             const panel = document.getElementById('panel-extensions');
-            if(panel && panel.style.display !== 'none') {
+            if(panel && !panel.classList.contains('is-hidden')) {
               const data = panel._x_dataStack && panel._x_dataStack[0];
               if(data && data.exts.length === 0) loadExts();
             }
           });
           const panel = document.getElementById('panel-extensions');
-          if(panel) observer.observe(panel, {attributes: true, attributeFilter: ['style']});
+          if(panel) observer.observe(panel, {attributes: true, attributeFilter: ['class']});
         });
       </script>
     </div>
 
     <!-- General -->
-    <div id="panel-general" style="display:none">
+    <div id="panel-general" class="is-hidden">
       <form method="POST" action="/settings" hx-post="/settings" hx-swap="none" data-track-changes>
 
       <!-- Scheduling -->
@@ -584,7 +584,7 @@
     </div>
 
     <!-- Metadata -->
-    <div id="panel-metadata" style="display:none">
+    <div id="panel-metadata" class="is-hidden">
       <form method="POST" action="/settings" hx-post="/settings" hx-swap="none" data-track-changes>
 
       <!-- Metadata Sources -->
@@ -686,10 +686,20 @@
 <script>
 // ── Sidebar tab switching ─────────────────────────────────────────────────────
 const tabItems = document.querySelectorAll('[data-tab]');
-const panels   = {media: document.getElementById('panel-media'), general: document.getElementById('panel-general'), metadata: document.getElementById('panel-metadata')};
+const panels   = {
+  media: document.getElementById('panel-media'),
+  general: document.getElementById('panel-general'),
+  metadata: document.getElementById('panel-metadata'),
+  extensions: document.getElementById('panel-extensions')
+};
 
 function showTab(name) {
-  Object.entries(panels).forEach(([k, el]) => el.style.display = k === name ? '' : 'none');
+  Object.entries(panels).forEach(([k, el]) => {
+    if (el) el.classList.toggle('is-hidden', k !== name);
+  });
+  if (name === 'extensions' && typeof loadExts === 'function') {
+    loadExts();
+  }
   tabItems.forEach(el => el.classList.toggle('active', el.dataset.tab === name));
   history.replaceState(null, '', '#' + name);
 }
@@ -736,7 +746,6 @@ document.addEventListener('DOMContentLoaded', () => {
 // ── Komga test ────────────────────────────────────────────────────────────────
 async function testKomga() {
   const res = document.getElementById('komga-result');
-  res.style.display = 'inline-block';
   res.className = 'connection-status connection-wait';
   res.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Testing…';
   const fd = new FormData();
