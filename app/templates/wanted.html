@@ -55,7 +55,7 @@
      class="wanted-tab {% if active_tab == 'cutoff_unmet' %}active{% endif %}">
     <i class="bi bi-arrow-up-circle me-2"></i>Cutoff Unmet
     {% if cutoff_total %}
-    <span class="wanted-tab-count" style="background:rgba(240,184,40,0.15); color:var(--gold); border-color:var(--gold-soft)">{{ cutoff_total }}</span>
+    <span class="wanted-tab-count wanted-tab-count-cutoff">{{ cutoff_total }}</span>
     {% endif %}
   </a>
 </div>
@@ -74,7 +74,7 @@
     <span class="ms-auto d-flex align-items-center gap-2">
       {% set vcount = group.volumes|length %}
       {% set ccount = group.chapters|length %}
-      <span class="text-xs" style="color:var(--text-3)">
+      <span class="text-xs text-muted-3">
         {% if vcount %}{{ vcount }} vol{{ 's' if vcount != 1 }}{% endif %}
         {% if vcount and ccount %} · {% endif %}
         {% if ccount %}{{ ccount }} ch{{ 's' if ccount != 1 }}{% endif %}
@@ -90,15 +90,14 @@
       {% endif %}
     </span>
   </div>
-  <div class="panel-body" style="padding:12px 16px">
+  <div class="panel-body wanted-group-body">
     <div class="d-flex flex-wrap gap-2">
       {% for v in group.volumes %}
-      <div class="d-flex align-items-center gap-1 px-2 py-1 rounded"
-           style="background:var(--ink-4); border:1px solid var(--edge-2)">
+      <div class="d-flex align-items-center gap-1 px-2 py-1 rounded wanted-item-chip">
         <span class="fw-semibold text-ember text-xs">
           {% if v['volume_num'] %}Vol {{ v['volume_num']|vol_display }}{% else %}?{% endif %}
         </span>
-        <button class="btn p-0 ms-1 text-xs" style="color:var(--gold); border:none; background:transparent" title="Grab" aria-label="Grab volume"
+        <button class="btn-icon btn-icon-xs ms-1 text-gold" title="Grab" aria-label="Grab volume"
                 hx-post="/series/{{ group.series_id }}/volumes/{{ v['id'] }}/grab"
                 hx-swap="none"
                 hx-disabled-elt="this"
@@ -108,12 +107,11 @@
       </div>
       {% endfor %}
       {% for ch in group.chapters %}
-      <div class="d-flex align-items-center gap-1 px-2 py-1 rounded"
-           style="background:var(--ink-4); border:1px solid rgba(100,180,255,0.15)">
-        <span class="fw-semibold text-xs" style="color:var(--sky, #6ab4ff)">
+      <div class="d-flex align-items-center gap-1 px-2 py-1 rounded wanted-item-chip wanted-item-chip-chapter">
+        <span class="fw-semibold text-xs text-sky">
           Ch&nbsp;{{ ch | ch_label }}
         </span>
-        <button class="btn p-0 ms-1 text-xs" style="color:var(--gold); border:none; background:transparent" title="Grab" aria-label="Grab chapter"
+        <button class="btn-icon btn-icon-xs ms-1 text-gold" title="Grab" aria-label="Grab chapter"
                 hx-post="/series/{{ group.series_id }}/chapters/{{ ch['id'] }}/grab"
                 hx-swap="none"
                 hx-disabled-elt="this"
@@ -132,14 +130,14 @@
 <div class="empty-state">
   <div class="empty-icon"><i class="bi bi-check-circle-fill text-jade"></i></div>
   <p class="fw-semibold">Nothing wanted!</p>
-  <p class="text-sm" style="color:var(--text-3)">All tracked volumes and chapters are grabbed or downloaded.</p>
+  <p class="text-sm text-muted-3">All tracked volumes and chapters are grabbed or downloaded.</p>
   <a href="/" class="btn btn-secondary btn-sm mt-2"><i class="bi bi-collection me-1"></i>Back to Library</a>
 </div>
 {% endif %}
 
 {% if total_pages > 1 %}
 <div class="d-flex align-items-center justify-content-between mt-4">
-  <span class="text-xs" style="color:var(--text-3)">{{ total_count }} total · Page {{ page }} of {{ total_pages }}</span>
+  <span class="text-xs text-muted-3">{{ total_count }} total · Page {{ page }} of {{ total_pages }}</span>
   <div class="pill-group">
     {% if page > 1 %}
     <a href="?page={{ page - 1 }}" class="btn btn-sm btn-secondary"><i class="bi bi-chevron-left"></i> Prev</a>
@@ -164,11 +162,11 @@
     <thead>
       <tr>
         <th>Series</th>
-        <th style="width:90px">Volume</th>
-        <th style="width:110px">Current Quality</th>
-        <th style="width:110px">Cutoff</th>
-        <th style="width:130px">Last Grabbed</th>
-        <th style="width:50px"></th>
+        <th class="wanted-col-volume">Volume</th>
+        <th class="wanted-col-quality">Current Quality</th>
+        <th class="wanted-col-quality">Cutoff</th>
+        <th class="wanted-col-grabbed">Last Grabbed</th>
+        <th class="wanted-col-actions"></th>
       </tr>
     </thead>
     <tbody>
@@ -180,7 +178,7 @@
           </a>
         </td>
         <td>
-          <span class="text-sm" style="color:var(--gold)">
+          <span class="text-sm text-gold">
             {% if item.volume_num %}Vol {{ item.volume_num|vol_display }}{% else %}?{% endif %}
           </span>
         </td>
@@ -200,13 +198,12 @@
           {% else %}<span class="badge-status badge-unknown">{{ ec|upper }}</span>
           {% endif %}
         </td>
-        <td class="text-xs" style="color:var(--text-2); white-space:nowrap">
+        <td class="text-xs text-muted-2 whitespace-nowrap">
           {{ item.grabbed_at | format_date }}
         </td>
         <td class="text-end pe-2">
-          <button class="btn btn-sm btn-action p-0 px-1"
+          <button class="btn-icon btn-icon-xs text-ember"
                   title="Search for upgrade" aria-label="Search for upgrade"
-                  style="color:var(--ember); border:none; background:transparent; line-height:1"
                   hx-post="/series/{{ item.series_id }}/volumes/{{ item.id }}/trigger-upgrade"
                   hx-swap="none"
                   hx-disabled-elt="this"
@@ -224,7 +221,7 @@
 <div class="empty-state">
   <div class="empty-icon"><i class="bi bi-trophy text-jade"></i></div>
   <p class="fw-semibold">All volumes meet quality cutoff!</p>
-  <p class="text-sm" style="color:var(--text-3)">
+  <p class="text-sm text-muted-3">
     No downloaded volumes are below their series quality cutoff.<br>
     Set a quality cutoff on a series or quality profile to enable cutoff tracking.
   </p>
