@@ -1511,6 +1511,39 @@
         background: var(--ruby-bg);
         color: var(--ruby);
       }
+      .release-profile-copy { color: var(--text-2); }
+      .release-profile-empty-copy { color: var(--text-3); }
+      .release-profile-disabled { opacity: 0.5; }
+      .release-term-badge.release-term-required {
+        background: var(--jade-bg);
+        color: var(--jade);
+      }
+      .release-term-badge.release-term-ignored {
+        background: var(--ruby-bg);
+        color: var(--ruby);
+      }
+      .release-term-badge.release-term-preferred {
+        background: var(--gold-bg);
+        color: var(--gold);
+      }
+      .release-term-regex-marker {
+        color: var(--ember);
+        font-size: var(--text-2xs);
+        font-weight: 700;
+      }
+      .release-regex-toggle {
+        background: transparent;
+        border: 1px solid var(--edge);
+        color: var(--text-2);
+        font-size: var(--text-sm);
+        font-weight: 700;
+        min-width: 1.75rem;
+      }
+      .release-regex-toggle.is-active {
+        border-color: var(--ember);
+        color: var(--ember);
+      }
+      .release-term-remove { color: var(--ruby) !important; }
       .chmap-help-text,
       .chmap-empty-copy,
       .chmap-chapter-cell,
