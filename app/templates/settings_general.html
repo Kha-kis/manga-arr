@@ -73,7 +73,7 @@
          id="saved-toast">
       <i class="bi bi-check-circle-fill"></i>Settings saved successfully.
     </div>
-    <script>setTimeout(()=>{const el=document.getElementById('saved-toast');if(el)el.style.display='none';},4000);</script>
+    <script>setTimeout(()=>{const el=document.getElementById('saved-toast');if(el)el.classList.add('is-hidden');},4000);</script>
     {% endif %}
 
     {% if secret_health.has_warning %}
@@ -324,7 +324,6 @@ function toggleApiKey() {
 
 async function regenerateApiKey() {
   const res = document.getElementById('regen-result');
-  res.style.display = 'inline-block';
   res.className = 'connection-status connection-wait';
   res.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Regenerating…';
   try {

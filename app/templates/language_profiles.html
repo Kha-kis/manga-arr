@@ -12,8 +12,7 @@
 </div>
 
 {% if request.query_params.get('error') == 'in-use' %}
-<div class="d-flex align-items-center gap-2 mb-3 px-3 py-2"
-     class="text-sm rounded-lg" style="background:var(--ruby-bg);border:1px solid var(--ruby-soft);color:var(--ruby)">
+<div class="d-flex align-items-center gap-2 mb-3 px-3 py-2 text-sm rounded-lg notice-alert is-ruby text-ruby">
   <i class="bi bi-exclamation-triangle-fill"></i>Cannot delete this profile — one or more series are using it. Reassign the series first.
 </div>
 {% endif %}
@@ -137,7 +136,7 @@
   <div class="empty-state">
     <div class="empty-icon"><i class="bi bi-translate"></i></div>
     <p class="fw-semibold">No language profiles yet</p>
-    <p class="text-sm" style="color:var(--text-3)">Create a profile to filter releases by detected language.</p>
+    <p class="text-sm text-muted-3">Create a profile to filter releases by detected language.</p>
   </div>
 </div>
 {% endif %}
