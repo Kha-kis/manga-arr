@@ -1750,7 +1750,42 @@ a:hover {
   font-weight: 700;
   background: var(--ruby-bg);
   color: var(--ruby);
-  border: 1px solid rgba(240, 80, 80, 0.25);
+  border: 1px solid var(--ruby-soft);
+}
+
+.wanted-tab-count-cutoff {
+  background: var(--gold-bg);
+  color: var(--gold);
+  border-color: var(--gold-soft);
+}
+
+.wanted-group-body {
+  padding: 0.75rem 1rem;
+}
+
+.wanted-item-chip {
+  background: var(--ink-4);
+  border: 1px solid var(--edge-2);
+}
+
+.wanted-item-chip-chapter {
+  border-color: var(--sky-soft);
+}
+
+.wanted-col-volume {
+  width: 5.625rem;
+}
+
+.wanted-col-quality {
+  width: 6.875rem;
+}
+
+.wanted-col-grabbed {
+  width: 8.125rem;
+}
+
+.wanted-col-actions {
+  width: 3.125rem;
 }
 
 .dc-section-label {
