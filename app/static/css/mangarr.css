@@ -2162,6 +2162,42 @@ a:hover {
   padding: 2rem;
 }
 
+.system-tasks-col-interval {
+  width: 8.125rem;
+}
+
+.system-tasks-col-run {
+  width: 10rem;
+}
+
+.system-tasks-col-actions {
+  width: 6.875rem;
+}
+
+.system-tasks-name {
+  font-size: var(--text-lg);
+}
+
+.system-tasks-run-date,
+.system-tasks-toast-body {
+  font-size: var(--text-base);
+}
+
+.system-tasks-auto {
+  color: var(--text-3);
+  font-size: var(--text-sm);
+}
+
+.system-tasks-toast-wrap {
+  z-index: var(--z-toast);
+}
+
+.system-tasks-toast {
+  background: var(--ink-3);
+  border: 1px solid var(--edge-2) !important;
+  min-width: 16.25rem;
+}
+
 .search-form {
   max-width: 37.5rem;
 }
