@@ -1523,6 +1523,45 @@
         border: 1px solid var(--edge-2) !important;
         min-width: 17.5rem;
       }
+      .system-status-text { font-size: var(--text-base); }
+      .system-status-uptime { font-size: var(--text-lg); }
+      .system-status-disk-summary,
+      .system-status-disk-used { font-size: var(--text-sm); }
+      .system-status-root-folder:not(:last-child) {
+        border-bottom: 1px solid var(--edge);
+        padding-bottom: 0.75rem;
+      }
+      .system-status-root-folder + .system-status-root-folder {
+        margin-top: 1rem;
+        padding-top: 1rem;
+      }
+      .system-status-disk-meter {
+        display: block;
+        width: 100%;
+        height: 0.5rem;
+        overflow: hidden;
+        border: 0;
+        border-radius: var(--radius-xs);
+        background: var(--ink-5);
+        appearance: none;
+      }
+      .system-status-disk-meter::-webkit-progress-bar {
+        background: var(--ink-5);
+        border-radius: var(--radius-xs);
+      }
+      .system-status-disk-meter::-webkit-progress-value {
+        border-radius: var(--radius-xs);
+        transition: width 0.3s;
+      }
+      .system-status-disk-meter::-moz-progress-bar { border-radius: var(--radius-xs); }
+      .system-status-disk-meter.is-ok::-webkit-progress-value { background: var(--jade); }
+      .system-status-disk-meter.is-warning::-webkit-progress-value { background: var(--gold); }
+      .system-status-disk-meter.is-critical::-webkit-progress-value { background: var(--ruby); }
+      .system-status-disk-meter.is-ok::-moz-progress-bar { background: var(--jade); }
+      .system-status-disk-meter.is-warning::-moz-progress-bar { background: var(--gold); }
+      .system-status-disk-meter.is-critical::-moz-progress-bar { background: var(--ruby); }
+      .system-status-disk-used { margin-top: 0.125rem; }
+      .system-status-empty { padding: 2rem; }
       .search-form { max-width: 37.5rem; }
       .search-source-badge {
         text-transform: none;
