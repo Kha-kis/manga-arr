@@ -2285,6 +2285,39 @@ a:hover {
   color: var(--jade);
 }
 
+.logs-count,
+.logs-series-cell,
+.logs-message,
+.logs-empty-copy {
+  font-size: var(--text-base);
+}
+
+.logs-filter-btn,
+.logs-time {
+  font-size: var(--text-sm);
+}
+
+.logs-col-time {
+  width: 8.75rem;
+}
+
+.logs-col-event {
+  width: 7.1875rem;
+}
+
+.logs-col-series {
+  width: 10.9375rem;
+}
+
+.logs-time {
+  white-space: nowrap;
+}
+
+.logs-placeholder,
+.logs-empty-copy {
+  color: var(--text-3);
+}
+
 .search-form {
   max-width: 37.5rem;
 }

@@ -6,14 +6,14 @@
 {% block content %}
 <div class="d-flex align-items-center justify-content-between mb-3">
   <div class="page-heading mb-0"><i class="bi bi-terminal-fill"></i>System Logs</div>
-  {% if total %}<span class="text-muted" style="font-size:var(--text-base)">{{ total }} event{{ 's' if total != 1 else '' }}</span>{% endif %}
+  {% if total %}<span class="text-muted logs-count">{{ total }} event{{ 's' if total != 1 else '' }}</span>{% endif %}
 </div>
 
 <div class="pill-group mb-4 flex-wrap">
   <a href="/logs" class="btn btn-sm {% if not event_type %}btn-ember{% else %}btn-secondary{% endif %}">All</a>
   {% for et in event_types %}
   <a href="/logs?event_type={{ et }}"
-     class="btn btn-sm {% if event_type == et %}btn-ember{% else %}btn-secondary{% endif %}" style="font-size:var(--text-sm)">
+     class="btn btn-sm logs-filter-btn {% if event_type == et %}btn-ember{% else %}btn-secondary{% endif %}">
     {% if et == 'error' %}<i class="bi bi-exclamation-triangle me-1 text-ruby"></i>
     {% elif et == 'grab' %}<i class="bi bi-cloud-download me-1"></i>
     {% elif et in ('imported','download_complete') %}<i class="bi bi-check-circle me-1"></i>
@@ -29,16 +29,16 @@
   <table class="table table-sm mb-0">
     <thead>
       <tr>
-        <th style="width:140px">Time</th>
-        <th style="width:115px">Event</th>
-        <th style="width:175px">Series</th>
+        <th class="logs-col-time">Time</th>
+        <th class="logs-col-event">Event</th>
+        <th class="logs-col-series">Series</th>
         <th>Message</th>
       </tr>
     </thead>
     <tbody>
       {% for e in events %}
       <tr>
-        <td class="text-muted" style="font-size:var(--text-sm); white-space:nowrap">
+        <td class="text-muted logs-time">
           {{ e['created_at'] | format_date if e['created_at'] else '—' }}
         </td>
         <td>
@@ -53,12 +53,12 @@
           {% else %}<span class="badge-status badge-unknown">{{ et }}</span>
           {% endif %}
         </td>
-        <td style="font-size:var(--text-base)">
+        <td class="logs-series-cell">
           {% if e['series_id'] and e['series_title'] %}
           <a href="/series/{{ e['series_id'] }}" class="text-ember">{{ e['series_title'] }}</a>
-          {% else %}<span style="color:var(--text-3)">—</span>{% endif %}
+          {% else %}<span class="logs-placeholder">—</span>{% endif %}
         </td>
-        <td class="text-muted" style="font-size:var(--text-base)">{{ e['message'] or '' }}</td>
+        <td class="text-muted logs-message">{{ e['message'] or '' }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -78,7 +78,7 @@
 <div class="empty-state">
   <div class="empty-icon"><i class="bi bi-terminal"></i></div>
   <p class="fw-semibold">No events logged yet.</p>
-  <p style="font-size:var(--text-base); color:var(--text-3)">Grab activity, RSS polls, and download completions appear here.</p>
+  <p class="logs-empty-copy">Grab activity, RSS polls, and download completions appear here.</p>
 </div>
 {% endif %}
 {% endblock %}
