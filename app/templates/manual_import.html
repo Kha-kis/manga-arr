@@ -15,12 +15,12 @@
 <div class="panel mb-4">
   <div class="panel-header"><i class="bi bi-search"></i>Scan Directory</div>
   <div class="panel-body">
-    <p class="text-muted mb-3" style="font-size:var(--text-base)">
+    <p class="text-muted mb-3 manual-import-intro">
       Scan a folder for manga files (.cbz, .cbr, .zip, .epub, .pdf, .mobi).
       Mangarr will attempt to match files to series in your library and detect volume numbers.
     </p>
     <div class="d-flex gap-2 flex-wrap align-items-end">
-      <div style="flex:1; min-width:260px">
+      <div class="manual-import-path-field">
         <label class="form-label">Directory Path</label>
         <input type="text" id="scan-path" class="form-control"
                placeholder="/downloads/manga or /data/imports" autocomplete="off">
@@ -29,12 +29,12 @@
         <i class="bi bi-search me-1"></i>Scan
       </button>
     </div>
-    <div id="scan-error" class="text-ruby mt-2" style="display:none; font-size:var(--text-base)"></div>
+    <div id="scan-error" class="text-ruby mt-2 manual-import-message is-hidden"></div>
   </div>
 </div>
 
 <!-- Results -->
-<div id="results-section" style="display:none">
+<div id="results-section" class="is-hidden">
   <div class="d-flex align-items-center justify-content-between mb-2">
     <div class="section-label mb-0">
       <i class="bi bi-list-ul text-ember me-1"></i>
@@ -57,14 +57,14 @@
     <table class="table table-sm mb-0" id="files-table">
       <thead>
         <tr>
-          <th style="width:36px">
+          <th class="manual-import-col-check">
             <input type="checkbox" id="chk-all" onchange="toggleAll(this)">
           </th>
           <th>Filename</th>
-          <th style="width:200px">Series</th>
-          <th style="width:95px">Volume #</th>
-          <th style="width:72px">Size</th>
-          <th style="width:80px">Status</th>
+          <th class="manual-import-col-series">Series</th>
+          <th class="manual-import-col-volume">Volume #</th>
+          <th class="manual-import-col-size">Size</th>
+          <th class="manual-import-col-status">Status</th>
         </tr>
       </thead>
       <tbody id="files-tbody"></tbody>
@@ -73,7 +73,7 @@
 </div>
 
 <!-- Import progress -->
-<div id="import-progress" style="display:none" class="mt-3">
+<div id="import-progress" class="mt-3 is-hidden">
   <div class="panel">
     <div class="panel-header"><i class="bi bi-arrow-repeat"></i>Import Progress</div>
     <div class="panel-body">
@@ -108,7 +108,7 @@ async function scanDir() {
   if (!path) return;
   const btn = document.getElementById('scan-btn');
   const errEl = document.getElementById('scan-error');
-  errEl.style.display = 'none';
+  errEl.classList.add('is-hidden');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Scanning…';
 
@@ -121,15 +121,15 @@ async function scanDir() {
     const data = await resp.json();
     if (data.error) {
       errEl.textContent = data.error;
-      errEl.style.display = 'block';
-      document.getElementById('results-section').style.display = 'none';
+      errEl.classList.remove('is-hidden');
+      document.getElementById('results-section').classList.add('is-hidden');
     } else {
       scanResults = data.files;
       renderResults(data.files);
     }
   } catch(e) {
     errEl.textContent = 'Scan failed: ' + e;
-    errEl.style.display = 'block';
+    errEl.classList.remove('is-hidden');
   }
   btn.disabled = false;
   btn.innerHTML = '<i class="bi bi-search me-1"></i>Scan';
@@ -139,10 +139,10 @@ function renderResults(files) {
   const section = document.getElementById('results-section');
   const tbody   = document.getElementById('files-tbody');
   const countEl = document.getElementById('results-count');
-  document.getElementById('import-progress').style.display = 'none';
+  document.getElementById('import-progress').classList.add('is-hidden');
 
   countEl.textContent = `${files.length} file${files.length !== 1 ? 's' : ''} found`;
-  section.style.display = files.length ? 'block' : 'none';
+  section.classList.toggle('is-hidden', !files.length);
   if (!files.length) return;
 
   tbody.innerHTML = '';
@@ -154,8 +154,8 @@ function renderResults(files) {
       <td><input type="checkbox" class="file-chk" data-idx="${idx}"
                  ${matchedId ? 'checked' : ''} onchange="updateImportBtn()"></td>
       <td>
-        <span style="font-size:var(--text-base); font-family:var(--font-mono); word-break:break-all">${escHtml(f.filename)}</span>
-        <div style="font-size:var(--text-xs); color:var(--text-3)">${escHtml(f.path)}</div>
+        <span class="manual-import-file-name">${escHtml(f.filename)}</span>
+        <div class="manual-import-file-path">${escHtml(f.path)}</div>
       </td>
       <td>
         <select class="form-select form-select-sm series-sel" data-idx="${idx}" onchange="updateImportBtn()">
@@ -165,9 +165,9 @@ function renderResults(files) {
       <td>
         <input type="number" class="form-control form-control-sm vol-input" data-idx="${idx}"
                value="${f.proposed_volume !== null && f.proposed_volume !== undefined ? f.proposed_volume : ''}"
-               placeholder="e.g. 3" min="0" step="0.5" style="width:80px">
+               placeholder="e.g. 3" min="0" step="0.5">
       </td>
-      <td style="font-size:var(--text-sm); color:var(--text-2)">${escHtml(f.size)}</td>
+      <td class="manual-import-file-size">${escHtml(f.size)}</td>
       <td id="status-${idx}">
         ${matchedId
           ? '<span class="badge-status badge-downloaded">Matched</span>'
@@ -223,8 +223,8 @@ async function doImport() {
 
   const progSection = document.getElementById('import-progress');
   const progEl      = document.getElementById('import-results');
-  progSection.style.display = 'block';
-  progEl.innerHTML = '<div class="text-muted" style="font-size:var(--text-base)">Importing…</div>';
+  progSection.classList.remove('is-hidden');
+  progEl.innerHTML = '<div class="text-muted manual-import-message">Importing…</div>';
 
   try {
     const resp = await fetch('/api/manual-import/import', {
@@ -234,7 +234,7 @@ async function doImport() {
     });
     const data = await resp.json();
 
-    let html = `<div class="mb-2 fw-semibold" style="font-size:var(--text-base)">
+    let html = `<div class="mb-2 fw-semibold manual-import-message">
       Imported ${data.imported} / ${data.total} file${data.total !== 1 ? 's' : ''}
     </div>`;
     for (const r of (data.results || [])) {
@@ -242,14 +242,14 @@ async function doImport() {
       if (r.ok) {
         html += `<div class="d-flex align-items-center gap-2 mb-1">
           <span class="badge-status badge-downloaded"><i class="bi bi-check"></i></span>
-          <span style="font-size:var(--text-sm)">${escHtml(fname)}</span>
-          <span style="font-size:var(--text-sm); color:var(--text-3)">→ ${escHtml(r.dst || '')}</span>
+          <span class="manual-import-result-name">${escHtml(fname)}</span>
+          <span class="manual-import-result-dest">→ ${escHtml(r.dst || '')}</span>
         </div>`;
       } else {
         html += `<div class="d-flex align-items-center gap-2 mb-1">
           <span class="badge-status badge-wanted"><i class="bi bi-x"></i></span>
-          <span style="font-size:var(--text-sm)">${escHtml(fname)}</span>
-          <span style="font-size:var(--text-sm); color:var(--ruby)">${escHtml(r.message || 'Failed')}</span>
+          <span class="manual-import-result-name">${escHtml(fname)}</span>
+          <span class="manual-import-result-error">${escHtml(r.message || 'Failed')}</span>
         </div>`;
       }
     }
