@@ -18,7 +18,7 @@
     </button>
   </div>
 </div>
-<p class="text-sm mb-4" style="color:var(--text-2)">
+<p class="text-sm mb-4 import-list-copy">
   Import lists automatically add series from external sources like AniList user lists,
   MAL reading lists, or custom RSS feeds.
 </p>
@@ -26,14 +26,14 @@
 <div class="row g-3">
 {% for lst in lists %}
 <div class="col-12">
-  <div class="panel mb-0" style="{% if not lst.enabled %}opacity:.5{% endif %}">
+  <div class="panel mb-0{% if not lst.enabled %} import-list-disabled{% endif %}">
     <div class="panel-header d-flex align-items-center gap-2">
       <i class="bi bi-{% if 'anilist' in lst.type %}person-lines-fill{% elif 'mal' in lst.type %}list-stars{% else %}rss-fill{% endif %}"></i>
       {{ lst.name }}
-      <span class="badge-status badge-unknown text-[0.65rem]">
+      <span class="badge-status badge-unknown text-2xs">
         {{ lst.type | replace('_', ' ') | title }}
       </span>
-      {% if not lst.enabled %}<span class="badge-status badge-wanted text-[0.65rem]">DISABLED</span>{% endif %}
+      {% if not lst.enabled %}<span class="badge-status badge-wanted text-2xs">DISABLED</span>{% endif %}
       <div class="ms-auto d-flex gap-2">
         <button class="btn btn-sm btn-secondary" title="Sync now" aria-label="Sync {{ lst.name }}"
                 hx-post="/import-lists/{{ lst.id }}/sync"
@@ -55,14 +55,14 @@
     <div class="panel-body text-sm">
       <div class="row g-3">
         <div class="col-auto">
-          <span style="color:var(--text-2)">Quality: </span><span>{{ lst.quality_profile_name }}</span>
+          <span class="import-list-meta-label">Quality: </span><span>{{ lst.quality_profile_name }}</span>
         </div>
         <div class="col-auto">
-          <span style="color:var(--text-2)">Monitor: </span><span>{{ lst.monitor_mode }}</span>
+          <span class="import-list-meta-label">Monitor: </span><span>{{ lst.monitor_mode }}</span>
         </div>
         {% if lst.last_sync %}
         <div class="col-auto">
-          <span style="color:var(--text-2)">Last sync: </span><span>{{ lst.last_sync | format_date }}</span>
+          <span class="import-list-meta-label">Last sync: </span><span>{{ lst.last_sync | format_date }}</span>
         </div>
         {% endif %}
       </div>
@@ -156,7 +156,7 @@
 <div class="empty-state">
   <div class="empty-icon"><i class="bi bi-list-ul"></i></div>
   <p class="fw-semibold">No import lists configured</p>
-  <p class="text-sm" style="color:var(--text-3)">Add an AniList user list, MAL list, or custom RSS feed to auto-import series.</p>
+  <p class="text-sm import-list-empty-copy">Add an AniList user list, MAL list, or custom RSS feed to auto-import series.</p>
 </div>
 {% endif %}
 </div>
