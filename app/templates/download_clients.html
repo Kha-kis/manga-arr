@@ -640,7 +640,6 @@ async function testClient(id, btn) {
   if (el) {
     el.className = `connection-status ${d.ok ? 'connection-ok' : 'connection-fail'}`;
     el.textContent = d.message;
-    el.style.display = 'inline-block';
   }
   btn.disabled = false;
   btn.innerHTML = '<i class="bi bi-plug"></i>';
@@ -656,11 +655,9 @@ async function testNewClient(btn) {
     const d = await r.json();
     result.className = `connection-status ${d.ok ? 'connection-ok' : 'connection-fail'}`;
     result.textContent = d.message;
-    result.style.display = 'inline-block';
   } catch (e) {
     result.className = 'connection-status connection-fail';
     result.textContent = 'Request failed';
-    result.style.display = 'inline-block';
   } finally {
     btn.disabled = false;
     btn.innerHTML = original;

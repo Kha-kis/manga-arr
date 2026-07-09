@@ -3387,24 +3387,24 @@ body {
 }
 
 .chapter-mini-bar {
+  display: block;
   height: 3px;
   width: 70px;
-  gap: 1px;
   overflow: hidden;
   border-radius: 2px;
   background: var(--ink-5);
 }
 
-.chapter-mini-bar-segment {
-  width: var(--segment-width, 0%);
+.chapter-mini-bar-track {
+  fill: var(--ink-5);
 }
 
 .chapter-mini-bar-segment.is-downloaded {
-  background: var(--jade);
+  fill: var(--jade);
 }
 
 .chapter-mini-bar-segment.is-grabbed {
-  background: var(--ember);
+  fill: var(--ember);
 }
 
 .chapter-rows-cell {

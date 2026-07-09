@@ -48,12 +48,13 @@
       {% set ch_grab  = vct.get('grabbed', 0) %}
       {% set ch_want  = vct.get('wanted', 0) %}
       <div class="mt-1 ps-3">
-        <div class="d-flex chapter-mini-bar">
-          {% if ch_total > 0 %}
-          <div class="chapter-mini-bar-segment is-downloaded" style="--segment-width:{{ (ch_done / ch_total * 100)|int }}%"></div>
-          <div class="chapter-mini-bar-segment is-grabbed" style="--segment-width:{{ (ch_grab / ch_total * 100)|int }}%"></div>
-          {% endif %}
-        </div>
+        {% set ch_done_pct = (ch_done / ch_total * 100)|int if ch_total > 0 else 0 %}
+        {% set ch_grab_pct = (ch_grab / ch_total * 100)|int if ch_total > 0 else 0 %}
+        <svg class="chapter-mini-bar" viewBox="0 0 100 3" preserveAspectRatio="none" aria-hidden="true">
+          <rect class="chapter-mini-bar-track" width="100" height="3" rx="1.5"></rect>
+          <rect class="chapter-mini-bar-segment is-downloaded" width="{{ ch_done_pct }}" height="3" rx="1.5"></rect>
+          <rect class="chapter-mini-bar-segment is-grabbed" x="{{ ch_done_pct }}" width="{{ ch_grab_pct }}" height="3" rx="1.5"></rect>
+        </svg>
         <div class="text-2xs mt-0 text-muted-3 whitespace-nowrap">
           {% if ch_done == ch_total and ch_total > 0 %}
           <span class="text-jade"><i class="bi bi-check-lg"></i> {{ ch_total }} ch</span>
@@ -217,7 +218,7 @@
 
   {# Chapter pill grid — hidden by default, toggled by toggleChapters() JS #}
   {% if vchs %}
-  <tr id="ch-rows-{{ v['id'] }}" style="display:none">
+  <tr id="ch-rows-{{ v['id'] }}" class="is-hidden">
     <td colspan="7" class="chapter-rows-cell">
       <div class="d-flex flex-wrap gap-1">
         {% for ch in vchs %}

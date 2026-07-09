@@ -2379,16 +2379,16 @@
         border-width: 2px;
       }
       .chapter-mini-bar {
+        display: block;
         height: 3px;
         width: 70px;
-        gap: 1px;
         overflow: hidden;
         border-radius: 2px;
         background: var(--ink-5);
       }
-      .chapter-mini-bar-segment { width: var(--segment-width, 0%); }
-      .chapter-mini-bar-segment.is-downloaded { background: var(--jade); }
-      .chapter-mini-bar-segment.is-grabbed { background: var(--ember); }
+      .chapter-mini-bar-track { fill: var(--ink-5); }
+      .chapter-mini-bar-segment.is-downloaded { fill: var(--jade); }
+      .chapter-mini-bar-segment.is-grabbed { fill: var(--ember); }
       .chapter-rows-cell {
         padding: 8px 14px 10px 42px;
         background: var(--void-tint);

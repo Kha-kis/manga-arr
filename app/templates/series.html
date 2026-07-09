@@ -133,6 +133,7 @@
 .ch-pill.gr  { background: rgba(240,132,40,0.15); color: var(--ember); border: 1px solid var(--ember-medium); cursor: pointer; }
 .ch-pill.wt  { position:relative; display:inline-flex; align-items:center; gap:2px; background: rgba(240,80,80,0.12); color: var(--ruby); border: 1px solid var(--ruby-medium); }
 .ch-pill-actions { display: none; gap: 2px; margin-left: 2px; }
+.ch-pill-wanted:hover .ch-pill-actions { display: inline-flex; }
 @media (max-width: 768px) {
   .series-hero { flex-direction: column; }
   .series-cover-col { width: 120px; }
@@ -836,22 +837,10 @@ function toggleChapters(volId) {
   const row  = document.getElementById('ch-rows-' + volId);
   const icon = document.getElementById('exp-icon-' + volId);
   if (!row) return;
-  const isOpen = row.style.display !== 'none';
-  row.style.display = isOpen ? 'none' : 'table-row';
+  const isOpen = !row.classList.contains('is-hidden');
+  row.classList.toggle('is-hidden', isOpen);
   if (icon) icon.className = isOpen ? 'bi bi-chevron-right text-xs text-muted-3' : 'bi bi-chevron-down text-xs text-muted-3';
 }
-
-document.addEventListener('mouseover', e => {
-  const pill = e.target.closest('.ch-pill-wanted');
-  if (pill) { const a = pill.querySelector('.ch-pill-actions'); if (a) a.style.display = 'inline-flex'; }
-});
-document.addEventListener('mouseout', e => {
-  const pill = e.target.closest('.ch-pill-wanted');
-  if (pill && !pill.contains(e.relatedTarget)) {
-    const a = pill.querySelector('.ch-pill-actions');
-    if (a) a.style.display = 'none';
-  }
-});
 
 // Use var so the declaration is idempotent — the full-page <script> can be
 // re-parsed if HTMX ever injects a partial that references it, and `let` would
