@@ -6,7 +6,7 @@
 {% block content %}
 <div class="d-flex align-items-center justify-content-between mb-4">
   <div class="page-heading mb-0"><i class="bi bi-tags-fill"></i>Tags</div>
-  <span class="text-muted" style="font-size:var(--text-base)">{{ tags | length }} tag{{ 's' if tags | length != 1 else '' }}</span>
+  <span class="text-muted tags-count">{{ tags | length }} tag{{ 's' if tags | length != 1 else '' }}</span>
 </div>
 
 <div class="panel">
@@ -20,22 +20,21 @@
         <thead>
           <tr>
             <th>Tag</th>
-            <th style="width:120px">Series</th>
-            <th style="width:180px">Actions</th>
+            <th class="tags-col-series">Series</th>
+            <th class="tags-col-actions">Actions</th>
           </tr>
         </thead>
         <tbody>
           {% for t in tags %}
           <tr id="tag-row-{{ loop.index }}">
             <td id="tag-display-{{ loop.index }}">
-              <span class="badge-status badge-releasing" style="font-size:var(--text-sm)">{{ t.tag }}</span>
+              <span class="badge-status badge-releasing tags-badge">{{ t.tag }}</span>
             </td>
-            <td id="tag-rename-{{ loop.index }}" style="display:none" colspan="1">
-              <form method="POST" action="/api/tags/rename" class="d-flex gap-2 align-items-center"
-                    style="max-width:320px">
+            <td id="tag-rename-{{ loop.index }}" class="is-hidden" colspan="1">
+              <form method="POST" action="/api/tags/rename" class="d-flex gap-2 align-items-center tags-rename-form">
                 <input type="hidden" name="old_name" value="{{ t.tag }}">
                 <input type="text" name="new_name" class="form-control form-control-sm"
-                       value="{{ t.tag }}" required style="font-size:var(--text-base)">
+                       value="{{ t.tag }}" required>
                 <button type="submit" class="btn btn-sm btn-action btn-ember">
                   Save
                 </button>
@@ -46,7 +45,7 @@
               </form>
             </td>
             <td>
-              <span class="text-muted" style="font-size:var(--text-base)">{{ t.series_count }}</span>
+              <span class="text-muted tags-series-count">{{ t.series_count }}</span>
             </td>
             <td id="tag-actions-{{ loop.index }}">
               <div class="d-flex gap-2">
@@ -74,7 +73,7 @@
     <div class="empty-state">
       <div class="empty-icon"><i class="bi bi-tags"></i></div>
       <p class="fw-semibold">No tags yet</p>
-      <p style="font-size:var(--text-base);color:var(--text-3)">Tags are added to series from the series detail page.</p>
+      <p class="tags-empty-copy">Tags are added to series from the series detail page.</p>
     </div>
     {% endif %}
   </div>
@@ -84,17 +83,17 @@
 {% block scripts %}
 <script>
 function startRename(idx) {
-  document.getElementById('tag-display-' + idx).style.display = 'none';
-  document.getElementById('tag-rename-'  + idx).style.display = '';
-  document.getElementById('tag-actions-' + idx).style.display = 'none';
+  document.getElementById('tag-display-' + idx).classList.add('is-hidden');
+  document.getElementById('tag-rename-'  + idx).classList.remove('is-hidden');
+  document.getElementById('tag-actions-' + idx).classList.add('is-hidden');
   const input = document.querySelector('#tag-rename-' + idx + ' input[name="new_name"]');
   if (input) { input.focus(); input.select(); }
 }
 
 function cancelRename(idx) {
-  document.getElementById('tag-display-' + idx).style.display = '';
-  document.getElementById('tag-rename-'  + idx).style.display = 'none';
-  document.getElementById('tag-actions-' + idx).style.display = '';
+  document.getElementById('tag-display-' + idx).classList.remove('is-hidden');
+  document.getElementById('tag-rename-'  + idx).classList.add('is-hidden');
+  document.getElementById('tag-actions-' + idx).classList.remove('is-hidden');
 }
 </script>
 {% endblock %}
