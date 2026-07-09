@@ -2050,6 +2050,28 @@ a:hover {
   background-color: var(--ruby-tint) !important;
 }
 
+.custom-formats-copy {
+  color: var(--text-2);
+}
+
+.custom-formats-empty-copy {
+  color: var(--text-3);
+}
+
+.custom-format-spec-value {
+  color: var(--gold);
+}
+
+.custom-format-preview-result.is-match {
+  background: var(--jade-bg);
+  color: var(--jade);
+}
+
+.custom-format-preview-result.is-miss {
+  background: var(--ruby-bg);
+  color: var(--ruby);
+}
+
 .chmap-help-text,
 .chmap-empty-copy,
 .chmap-chapter-cell,
