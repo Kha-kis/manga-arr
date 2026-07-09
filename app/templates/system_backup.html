@@ -18,7 +18,7 @@
     <i class="bi bi-plus-circle"></i>Create Backup
   </div>
   <div class="panel-body d-flex align-items-center gap-3">
-    <p class="text-muted mb-0" style="font-size:var(--text-base)">
+    <p class="text-muted mb-0 backup-create-copy">
       Creates a ZIP archive of the Mangarr database and downloads it to your browser.
       A copy is also saved to <code>/config/backups/</code>.
     </p>
@@ -33,7 +33,7 @@
   <div class="panel-header d-flex align-items-center">
     <i class="bi bi-folder2-open"></i>
     Existing Backups
-    <span class="ms-auto text-muted fw-normal" style="font-size:var(--text-sm)">
+    <span class="ms-auto text-muted fw-normal backup-file-count">
       {{ backups | length }} file{{ 's' if backups | length != 1 else '' }}
     </span>
   </div>
@@ -44,9 +44,9 @@
         <thead>
           <tr>
             <th>Filename</th>
-            <th style="width:160px">Date</th>
-            <th style="width:90px">Size</th>
-            <th style="width:130px">Actions</th>
+            <th class="backup-col-date">Date</th>
+            <th class="backup-col-size">Size</th>
+            <th class="backup-col-actions">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -54,13 +54,13 @@
           <tr>
             <td>
               <i class="bi bi-file-zip text-gold me-1"></i>
-              <span style="font-size:var(--text-base)">{{ b.filename }}</span>
+              <span class="backup-file-name">{{ b.filename }}</span>
             </td>
             <td>
-              <span class="text-muted" style="font-size:var(--text-base)">{{ b.date }}</span>
+              <span class="text-muted backup-file-date">{{ b.date }}</span>
             </td>
             <td>
-              <span class="text-muted" style="font-size:var(--text-base)">{{ b.size }}</span>
+              <span class="text-muted backup-file-size">{{ b.size }}</span>
             </td>
             <td>
               <div class="d-flex gap-2">
@@ -72,7 +72,7 @@
                 <form method="POST" action="/api/system/backup/{{ b.filename }}/delete"
                       data-confirm="Delete backup {{ b.filename }}?"
                       data-confirm-heading="Delete backup" data-confirm-ok="Delete"
-                      style="display:inline">
+                      class="backup-delete-form">
                   <button type="submit" class="btn btn-sm btn-action btn-danger-soft"
                           title="Delete" aria-label="Delete">
                     <i class="bi bi-trash"></i>
@@ -89,18 +89,17 @@
     <div class="empty-state">
       <div class="empty-icon"><i class="bi bi-archive"></i></div>
       <p class="fw-semibold">No backups yet</p>
-      <p style="font-size:var(--text-base);color:var(--text-3)">Click "Create &amp; Download" above to create your first backup.</p>
+      <p class="backup-empty-copy">Click "Create &amp; Download" above to create your first backup.</p>
     </div>
     {% endif %}
   </div>
 </div>
 
 <!-- Toast -->
-<div class="position-fixed bottom-0 end-0 p-3" style="z-index:var(--z-toast)">
-  <div id="backupToast" class="toast align-items-center border-0" role="alert" aria-live="assertive" aria-atomic="true"
-       style="background:var(--ink-3);border:1px solid var(--edge-2) !important;min-width:280px">
+<div class="position-fixed bottom-0 end-0 p-3 backup-toast-wrap">
+  <div id="backupToast" class="toast align-items-center border-0 backup-toast" role="alert" aria-live="assertive" aria-atomic="true">
     <div class="d-flex">
-      <div class="toast-body d-flex align-items-center gap-2" id="backupToastBody" style="font-size:var(--text-base)"></div>
+      <div class="toast-body d-flex align-items-center gap-2 backup-toast-body" id="backupToastBody"></div>
       <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
     </div>
   </div>
