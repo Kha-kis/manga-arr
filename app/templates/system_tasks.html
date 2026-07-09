@@ -23,26 +23,26 @@
         <thead>
           <tr>
             <th>Task</th>
-            <th style="width:130px">Interval</th>
-            <th style="width:160px">Last Run</th>
-            <th style="width:160px">Next Run</th>
-            <th style="width:110px">Actions</th>
+            <th class="system-tasks-col-interval">Interval</th>
+            <th class="system-tasks-col-run">Last Run</th>
+            <th class="system-tasks-col-run">Next Run</th>
+            <th class="system-tasks-col-actions">Actions</th>
           </tr>
         </thead>
         <tbody>
           {% for task in tasks %}
           <tr id="task-row-{{ task.key }}">
             <td>
-              <span class="fw-semibold" style="font-size:var(--text-lg)">{{ task.name }}</span>
+              <span class="fw-semibold system-tasks-name">{{ task.name }}</span>
             </td>
             <td>
               <span class="badge-status badge-releasing">{{ task.interval }}</span>
             </td>
             <td>
-              <span class="text-muted" style="font-size:var(--text-base)" id="last-run-{{ task.key }}">{{ task.last_run_dt | format_date if task.last_run_dt else '—' }}</span>
+              <span class="text-muted system-tasks-run-date" id="last-run-{{ task.key }}">{{ task.last_run_dt | format_date if task.last_run_dt else '—' }}</span>
             </td>
             <td>
-              <span class="text-muted" style="font-size:var(--text-base)" id="next-run-{{ task.key }}">{{ task.next_run_dt | format_date if task.next_run_dt else '—' }}</span>
+              <span class="text-muted system-tasks-run-date" id="next-run-{{ task.key }}">{{ task.next_run_dt | format_date if task.next_run_dt else '—' }}</span>
             </td>
             <td>
               {% if task.manual %}
@@ -55,7 +55,7 @@
                 <i class="bi bi-play-fill me-1"></i>Run Now
               </button>
               {% else %}
-              <span style="font-size:var(--text-sm);color:var(--text-3)">auto</span>
+              <span class="system-tasks-auto">auto</span>
               {% endif %}
             </td>
           </tr>
@@ -73,11 +73,10 @@
 </div>
 
 <!-- Toast container -->
-<div class="position-fixed bottom-0 end-0 p-3" style="z-index:var(--z-toast)">
-  <div id="taskToast" class="toast align-items-center border-0" role="alert" aria-live="assertive" aria-atomic="true"
-       style="background:var(--ink-3);border:1px solid var(--edge-2) !important;min-width:260px">
+<div class="position-fixed bottom-0 end-0 p-3 system-tasks-toast-wrap">
+  <div id="taskToast" class="toast align-items-center border-0 system-tasks-toast" role="alert" aria-live="assertive" aria-atomic="true">
     <div class="d-flex">
-      <div class="toast-body d-flex align-items-center gap-2" id="taskToastBody" style="font-size:var(--text-base)">
+      <div class="toast-body d-flex align-items-center gap-2 system-tasks-toast-body" id="taskToastBody">
       </div>
       <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
     </div>
