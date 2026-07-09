@@ -2543,6 +2543,68 @@ body {
   background: var(--gold-bg);
 }
 
+.queue-subtle-action {
+  color: var(--text-2);
+  border: 1px solid var(--edge);
+  background: transparent;
+}
+
+.queue-retry-action {
+  color: var(--gold);
+  border: 1px solid var(--gold-medium);
+  background: var(--gold-bg);
+}
+
+.queue-review-action {
+  color: var(--iris);
+  border: 1px solid var(--iris-medium);
+  background: var(--iris-bg);
+}
+
+.queue-import-table-scroll {
+  overflow-x: auto;
+}
+
+.queue-import-col-check {
+  width: 2rem;
+}
+
+.queue-import-check {
+  margin: 0;
+}
+
+.queue-import-col-volume {
+  width: 6.875rem;
+}
+
+.queue-import-col-chapter {
+  width: 5.625rem;
+}
+
+.queue-import-col-skip {
+  width: 3.75rem;
+}
+
+.queue-import-row-unmapped {
+  background: var(--ruby-bg);
+}
+
+.queue-import-row-skipped {
+  opacity: 0.4;
+}
+
+.queue-import-footer {
+  border-top: 1px solid var(--edge);
+}
+
+.queue-import-recent-row {
+  border-bottom: 1px solid var(--edge);
+}
+
+.queue-import-recent-name {
+  max-width: 18.75rem;
+}
+
 .queue-review-row-unmapped {
   background: var(--ruby-tint);
 }
