@@ -23,7 +23,7 @@
     </button>
   </div>
 </div>
-<p class="text-sm mb-4" style="color:var(--text-2)">
+<p class="text-sm mb-4 custom-formats-copy">
   Custom formats score releases based on regex patterns. Assign scores per format in each quality profile.
   Positive scores boost priority; negative scores penalize releases.
 </p>
@@ -36,7 +36,7 @@
       <i class="bi bi-sliders"></i>
       {{ f.name }}
       {% if f.id in profile_scores %}
-      <span class="badge-status text-[0.65rem] {% if profile_scores[f.id] >= 0 %}badge-downloaded{% else %}badge-wanted{% endif %}">
+      <span class="badge-status text-2xs {% if profile_scores[f.id] >= 0 %}badge-downloaded{% else %}badge-wanted{% endif %}">
         Score: {% if profile_scores[f.id] >= 0 %}+{% endif %}{{ profile_scores[f.id] }}
       </span>
       {% endif %}
@@ -62,18 +62,18 @@
       <div class="text-sm">
         {% for spec in specs %}
         <div class="d-flex align-items-center gap-2 mb-1">
-          <span class="badge-status badge-indexer text-[0.65rem]">
+          <span class="badge-status badge-indexer text-2xs">
             {{ spec.type | replace('_', ' ') | title }}
           </span>
           {% if spec.negate %}
-          <span class="badge-status badge-wanted text-[0.6rem]">NEGATE</span>
+          <span class="badge-status badge-wanted text-2xs">NEGATE</span>
           {% endif %}
-          <code class="text-sm" style="color:var(--gold)">{{ spec.value }}</code>
+          <code class="text-sm custom-format-spec-value">{{ spec.value }}</code>
         </div>
         {% endfor %}
       </div>
       {% else %}
-      <span class="text-sm" style="color:var(--text-2)">No specifications</span>
+      <span class="text-sm custom-formats-copy">No specifications</span>
       {% endif %}
     </div>
   </div>
@@ -94,7 +94,7 @@
             <input type="text" name="name" class="form-control" value="{{ f.name }}" required>
           </div>
           <div class="mb-3">
-            <label class="form-label">Specifications <small class="text-[color:var(--text-2)]">(JSON array)</small></label>
+            <label class="form-label">Specifications <small class="text-muted-2">(JSON array)</small></label>
             <textarea name="specifications" class="form-control font-monospace text-sm"
                       rows="8">{{ f.specifications }}</textarea>
             <div class="form-text text-xs">
@@ -123,7 +123,7 @@
 <div class="empty-state">
   <div class="empty-icon"><i class="bi bi-sliders"></i></div>
   <p class="fw-semibold">No custom formats yet</p>
-  <p class="text-sm" style="color:var(--text-3)">Custom formats let you score releases based on regex patterns in the title.</p>
+  <p class="text-sm custom-formats-empty-copy">Custom formats let you score releases based on regex patterns in the title.</p>
 </div>
 {% endif %}
 </div>
@@ -179,7 +179,7 @@
           <input type="text" id="previewTitle" class="form-control"
                  placeholder="e.g. [LuCaZ] One Piece Vol.1 [Digital]">
         </div>
-        <div id="previewResult" style="display:none" class="p-2 rounded"></div>
+        <div id="previewResult" class="p-2 rounded custom-format-preview-result is-hidden"></div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline-ember btn-sm" onclick="runPreview()">Test</button>
@@ -195,7 +195,9 @@
 var previewFormatId = null;
 function previewFormat(id) {
   previewFormatId = id;
-  document.getElementById('previewResult').style.display = 'none';
+  const result = document.getElementById('previewResult');
+  result.classList.add('is-hidden');
+  result.classList.remove('is-match', 'is-miss');
   new bootstrap.Modal(document.getElementById('previewModal')).show();
 }
 async function runPreview() {
@@ -207,9 +209,9 @@ async function runPreview() {
   });
   const d = await r.json();
   const el = document.getElementById('previewResult');
-  el.style.display = 'block';
-  el.style.background = d.matched ? 'var(--jade-bg)' : 'var(--ruby-bg)';
-  el.style.color = d.matched ? 'var(--jade)' : 'var(--ruby)';
+  el.classList.remove('is-hidden');
+  el.classList.toggle('is-match', d.matched);
+  el.classList.toggle('is-miss', !d.matched);
   el.innerHTML = d.matched ? '<i class="bi bi-check-lg"></i> MATCHED' : '<i class="bi bi-x-lg"></i> No match';
 }
 </script>
