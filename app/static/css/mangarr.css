@@ -3940,6 +3940,10 @@ body {
   display: none;
 }
 
+.indexer-subhost.is-visible {
+  display: block;
+}
+
 .indexer-empty-copy {
   font-size: var(--text-base);
   color: var(--text-3);

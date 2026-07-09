@@ -9,7 +9,7 @@
      id="saved-toast">
   <i class="bi bi-check-circle-fill"></i>Settings saved.
 </div>
-<script>setTimeout(()=>{const el=document.getElementById('saved-toast');if(el)el.style.display='none';},4000);</script>
+<script>setTimeout(()=>{const el=document.getElementById('saved-toast');if(el)el.classList.add('is-hidden');},4000);</script>
 {% endif %}
 {% if request.query_params.get('prowlarr_sync') %}
 {% set _ps = request.query_params.get('prowlarr_sync') %}
@@ -33,7 +33,7 @@
     <i class="bi bi-exclamation-triangle-fill"></i>Prowlarr indexer is missing URL or API key — fix it first then re-sync.
   {% endif %}
 </div>
-<script>setTimeout(()=>{const el=document.getElementById('sync-toast');if(el)el.style.display='none';},6000);</script>
+<script>setTimeout(()=>{const el=document.getElementById('sync-toast');if(el)el.classList.add('is-hidden');},6000);</script>
 {% endif %}
 <div class="d-flex align-items-center justify-content-between mb-4">
   <div class="page-heading mb-0"><i class="bi bi-search"></i>Indexers</div>
@@ -165,7 +165,7 @@
                 hx-disabled-elt="this"
                 title="View Prowlarr sub-indexers (read-only diagnostic)"
                 aria-label="View Prowlarr sub-indexers"
-                onclick="document.getElementById('prowlarr-subs-{{ idx.id }}').style.display='block'">
+                onclick="document.getElementById('prowlarr-subs-{{ idx.id }}').classList.add('is-visible')">
           <i class="bi bi-binoculars"></i>
         </button>
         {% endif %}
@@ -572,7 +572,6 @@ async function testIndexer(id, btn) {
   if (el) {
     el.className = `connection-status ${d.ok ? 'connection-ok' : 'connection-fail'}`;
     el.textContent = d.message;
-    el.style.display = 'inline-block';
   }
   btn.disabled = false;
   btn.innerHTML = '<i class="bi bi-plug"></i>';
@@ -588,11 +587,9 @@ async function testNewIndexer(btn) {
     const d = await r.json();
     result.className = `connection-status ${d.ok ? 'connection-ok' : 'connection-fail'}`;
     result.textContent = d.message;
-    result.style.display = 'inline-block';
   } catch (e) {
     result.className = 'connection-status connection-fail';
     result.textContent = 'Request failed';
-    result.style.display = 'inline-block';
   } finally {
     btn.disabled = false;
     btn.innerHTML = original;
