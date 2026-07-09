@@ -7,7 +7,7 @@
 <div class="d-flex align-items-center justify-content-between mb-4">
   <div>
     <div class="page-heading mb-0"><i class="bi bi-cloud-upload"></i>Import Bundle</div>
-    <small style="color:var(--text-3); font-size:var(--text-xs)">
+    <small class="cf-import-subtitle">
       Paste a Mangarr JSON bundle to merge custom formats + quality profiles into this instance.
       Existing entries with matching names are updated in place; everything else is left alone.
     </small>
@@ -23,15 +23,13 @@
 </div>
 
 {% if error %}
-<div class="d-flex align-items-center gap-2 mb-3 px-3 py-2 rounded-lg"
-     style="background:var(--ruby-bg);border:1px solid var(--ruby-soft);color:var(--ruby)">
+<div class="d-flex align-items-center gap-2 mb-3 px-3 py-2 rounded-lg notice-alert is-ruby text-ruby">
   <i class="bi bi-exclamation-octagon-fill"></i>{{ error }}
 </div>
 {% endif %}
 
 {% if success %}
-<div class="d-flex align-items-center gap-2 mb-3 px-3 py-2 rounded-lg"
-     style="background:var(--jade-bg);border:1px solid var(--jade-soft);color:var(--jade)">
+<div class="d-flex align-items-center gap-2 mb-3 px-3 py-2 rounded-lg notice-alert is-jade">
   <i class="bi bi-check-circle-fill"></i>{{ success }}
 </div>
 {% endif %}
@@ -43,7 +41,7 @@
       <label class="form-label">JSON bundle</label>
       <textarea name="json_payload" class="form-control font-monospace text-sm"
                 rows="20" placeholder='{"version":1,"custom_formats":[...],"quality_profiles":[...]}'></textarea>
-      <div class="form-text text-xs mt-2" style="color:var(--text-2)">
+      <div class="form-text text-xs mt-2 text-muted-2">
         The bundle shape mirrors what <code>/custom-formats/export.json</code> produces.
         Profile <code>scores</code> reference CFs by name — score entries for CFs not
         present in the bundle (or in this DB) are silently skipped.

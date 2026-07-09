@@ -16,15 +16,15 @@
   actually land, so state hasn't changed.
 #}
 <section id="reconcile-preview-panel" class="panel mb-4">
-  <div class="panel-body" style="padding:14px 16px">
-    <div class="alert alert-danger mb-0" style="font-size:var(--text-lg)">
+  <div class="panel-body reconcile-preview-body">
+    <div class="alert alert-danger mb-0 reconcile-refresh-alert">
       <i class="bi bi-exclamation-triangle-fill me-1"></i>
       <strong>Map refresh failed.</strong>
       Could not refresh <code>chapter_vol_map</code> from MangaDex for this series.
-      <div class="text-xs mt-2" style="color:var(--text-2)">
+      <div class="text-xs mt-2 text-muted-2">
         <code>{{ error }}</code>
       </div>
-      <div class="text-xs mt-2" style="color:var(--text-3)">
+      <div class="text-xs mt-2 text-muted-3">
         The reconcile preview was not run. The existing cached map
         and metadata are unchanged. You can retry the action, or use
         the plain
