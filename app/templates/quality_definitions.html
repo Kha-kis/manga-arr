@@ -9,12 +9,11 @@
 </div>
 
 {% if saved %}
-<div class="d-flex align-items-center gap-2 mb-4 px-3 py-2"
-     class="text-sm rounded-lg" style="background:var(--jade-bg);border:1px solid var(--jade-soft);color:var(--jade)"
+<div class="d-flex align-items-center gap-2 mb-4 px-3 py-2 text-sm rounded-lg quality-definitions-toast"
      id="saved-toast">
   <i class="bi bi-check-circle-fill"></i>Quality definitions saved.
 </div>
-<script>setTimeout(()=>{const el=document.getElementById('saved-toast');if(el)el.style.display='none';},4000);</script>
+<script>setTimeout(()=>{const el=document.getElementById('saved-toast');if(el)el.classList.add('is-hidden');},4000);</script>
 {% endif %}
 
 <div class="panel">
@@ -22,7 +21,7 @@
     <i class="bi bi-rulers"></i>File Size Limits by Format
   </div>
   <div class="panel-body">
-    <p class="text-sm mb-3" style="color:var(--text-2)">
+    <p class="text-sm mb-3 text-muted">
       Set minimum and maximum file sizes (in MB) per volume for each format.
       Releases that fall outside these bounds are skipped during grab.
       Set <strong>0</strong> to disable a limit entirely.
@@ -36,10 +35,10 @@
               <th class="w-[140px]">Format</th>
               <th>Title</th>
               <th class="w-[160px]">Min Size MB/vol
-                <span class="font-normal text-xs" style="color:var(--text-2)">(0 = no limit)</span>
+                <span class="font-normal text-xs text-muted">(0 = no limit)</span>
               </th>
               <th class="w-[160px]">Max Size MB/vol
-                <span class="font-normal text-xs" style="color:var(--text-2)">(0 = no limit)</span>
+                <span class="font-normal text-xs text-muted">(0 = no limit)</span>
               </th>
             </tr>
           </thead>
@@ -89,7 +88,7 @@
         <button type="submit" class="btn btn-ember btn-sm px-4">
           <i class="bi bi-floppy me-1"></i>Save Changes
         </button>
-        <span class="text-xs" style="color:var(--text-2)">
+        <span class="text-xs text-muted">
           <i class="bi bi-info-circle me-1"></i>
           Sizes apply per-volume. Packs are divided by estimated volume count before comparison.
         </span>
@@ -102,12 +101,12 @@
   <div class="panel-header">
     <i class="bi bi-question-circle"></i>How Size Limits Work
   </div>
-  <div class="panel-body text-sm leading-7" style="color:var(--text-2)">
+  <div class="panel-body text-sm leading-7 text-muted">
     <ul class="mb-0 ps-3">
       <li>Format is detected from the release title extension (<code>.cbz</code>, <code>.cbr</code>, <code>.epub</code>, <code>.pdf</code>, <code>.zip</code>).</li>
-      <li><strong style="color:var(--text)">Min size</strong> — releases smaller than this are rejected as likely corrupt or incomplete.</li>
-      <li><strong style="color:var(--text)">Max size</strong> — releases larger than this are rejected as oversized. Set to <code>0</code> to allow any size.</li>
-      <li>The <strong style="color:var(--text)">Unknown</strong> row applies when no extension is matched.</li>
+      <li><strong class="text-main">Min size</strong> — releases smaller than this are rejected as likely corrupt or incomplete.</li>
+      <li><strong class="text-main">Max size</strong> — releases larger than this are rejected as oversized. Set to <code>0</code> to allow any size.</li>
+      <li>The <strong class="text-main">Unknown</strong> row applies when no extension is matched.</li>
     </ul>
   </div>
 </div>
