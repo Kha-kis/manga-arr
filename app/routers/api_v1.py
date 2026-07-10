@@ -354,6 +354,32 @@ def _indexer(row, tags: list[str]) -> dict:
     }
 
 
+def _indexer_by_id(db, indexer_id: int) -> dict | None:
+    row = db.execute(
+        "SELECT * FROM indexers WHERE id=?",
+        (indexer_id,),
+    ).fetchone()
+    if not row:
+        return None
+    tags = [
+        tag["tag"]
+        for tag in db.execute(
+            "SELECT tag FROM indexer_tags WHERE indexer_id=? ORDER BY tag",
+            (indexer_id,),
+        ).fetchall()
+    ]
+    return _indexer(row, tags)
+
+
+def _replace_indexer_tags(db, indexer_id: int, tags: list[str]) -> None:
+    db.execute("DELETE FROM indexer_tags WHERE indexer_id=?", (indexer_id,))
+    for tag in tags:
+        db.execute(
+            "INSERT OR IGNORE INTO indexer_tags(indexer_id, tag) VALUES(?, ?)",
+            (indexer_id, tag),
+        )
+
+
 def _download_client(row, tags: list[str]) -> dict:
     return {
         "id": row["id"],
@@ -695,6 +721,27 @@ def _payload_non_negative_alias(
     return default if value is None else value
 
 
+def _payload_non_negative_float_alias(
+    payload: dict, keys: tuple[str, ...], default: float
+) -> float:
+    for key in keys:
+        if key not in payload:
+            continue
+        value = payload.get(key)
+        if value in (None, ""):
+            return default
+        if isinstance(value, bool):
+            raise ValueError(f"{key} must be zero or a positive number")
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be zero or a positive number") from exc
+        if parsed < 0:
+            raise ValueError(f"{key} must be zero or a positive number")
+        return parsed
+    return default
+
+
 def _payload_optional_fk_alias(payload: dict, keys: tuple[str, ...]) -> int | None:
     for key in keys:
         if key not in payload:
@@ -773,6 +820,37 @@ def _payload_json_list(payload: dict, key: str, default: list) -> str:
     if not isinstance(value, list):
         raise ValueError(f"{key} must be a list")
     return json.dumps(value)
+
+
+def _payload_category_list(payload: dict, key: str = "categories") -> str:
+    if key not in payload:
+        return json.dumps([7000, 7010, 7020])
+    value = payload.get(key)
+    if value in (None, ""):
+        return json.dumps([7000, 7010, 7020])
+    if isinstance(value, str):
+        parsed = from_json(value, None)
+        if isinstance(parsed, list):
+            value = parsed
+        else:
+            value = value.split(",")
+    if not isinstance(value, list):
+        raise ValueError(f"{key} must be a list of category ids")
+    categories: list[int] = []
+    seen: set[int] = set()
+    for item in value:
+        if isinstance(item, bool):
+            raise ValueError(f"{key} entries must be category ids")
+        try:
+            category = int(str(item).strip())
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} entries must be category ids") from exc
+        if category < 0:
+            raise ValueError(f"{key} entries must be category ids")
+        if category not in seen:
+            categories.append(category)
+            seen.add(category)
+    return json.dumps(categories)
 
 
 def _payload_score_list(payload: dict, key: str = "qualityProfileScores") -> list[dict]:
@@ -2244,6 +2322,263 @@ async def api_v1_indexers():
             tags_by_indexer.setdefault(tag["indexer_id"], []).append(tag["tag"])
         payload = [_indexer(row, tags_by_indexer.get(row["id"], [])) for row in rows]
     return JSONResponse(payload)
+
+
+@router.post("/api/v1/indexer")
+async def api_v1_create_indexer(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+
+    name = _payload_str(payload, "name")
+    if not name:
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    implementation = _payload_str(payload, "implementation", "type")
+    if not implementation:
+        return JSONResponse({"error": "implementation is required"}, status_code=400)
+    try:
+        priority = _payload_non_negative_alias(payload, ("priority",), 25)
+        categories = _payload_category_list(payload)
+        settings = _payload_json_object(payload, "settings", {})
+        client_id = _payload_optional_fk_alias(
+            payload,
+            ("downloadClientId", "client_id"),
+        )
+        min_seeders = _payload_non_negative_alias(
+            payload,
+            ("minimumSeeders", "min_seeders"),
+            0,
+        )
+        seed_ratio = _payload_non_negative_float_alias(
+            payload,
+            ("seedRatio", "seed_ratio"),
+            0.0,
+        )
+        min_size = _payload_non_negative_alias(
+            payload,
+            ("minimumSize", "min_size_mb"),
+            0,
+        )
+        max_size = _payload_non_negative_alias(
+            payload,
+            ("maximumSize", "max_size_mb"),
+            0,
+        )
+        parent_prowlarr_id = _payload_optional_fk_alias(
+            payload,
+            ("parentProwlarrId", "parent_prowlarr_id"),
+        )
+        prowlarr_indexer_id = _payload_optional_fk_alias(
+            payload,
+            ("prowlarrIndexerId", "prowlarr_indexer_id"),
+        )
+        tags = _payload_tag_list(payload)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    api_key = _payload_str(payload, "apiKey", "api_key")
+    stored_key = encrypt_if_cipher_available(api_key) if api_key else None
+
+    with get_db() as db:
+        try:
+            _validate_optional_fk(db, "download_clients", client_id, "downloadClientId")
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        cur = db.execute(
+            "INSERT INTO indexers"
+            "(name,type,url,api_key,priority,enabled,categories,settings,"
+            " client_id,min_seeders,seed_ratio,parent_prowlarr_id,"
+            " prowlarr_indexer_id,use_rss,use_auto_search,"
+            " use_interactive_search,min_size_mb,max_size_mb)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                name,
+                implementation,
+                _payload_str(payload, "baseUrl", "url") or None,
+                stored_key,
+                priority,
+                1 if _payload_bool_alias(payload, ("enable", "enabled"), True) else 0,
+                categories,
+                settings,
+                client_id,
+                min_seeders,
+                seed_ratio,
+                parent_prowlarr_id,
+                prowlarr_indexer_id,
+                1
+                if _payload_bool_alias(payload, ("enableRss", "use_rss"), True)
+                else 0,
+                1
+                if _payload_bool_alias(
+                    payload,
+                    ("enableAutomaticSearch", "use_auto_search"),
+                    True,
+                )
+                else 0,
+                1
+                if _payload_bool_alias(
+                    payload,
+                    ("enableInteractiveSearch", "use_interactive_search"),
+                    True,
+                )
+                else 0,
+                min_size,
+                max_size,
+            ),
+        )
+        indexer_id = cur.lastrowid
+        _replace_indexer_tags(db, indexer_id, tags)
+        indexer = _indexer_by_id(db, indexer_id)
+    return JSONResponse({"ok": True, "status": "created", "indexer": indexer})
+
+
+@router.put("/api/v1/indexer/{indexer_id}")
+@router.patch("/api/v1/indexer/{indexer_id}")
+async def api_v1_update_indexer(request: Request, indexer_id: int):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+
+    fields: list[str] = []
+    params: list = []
+    client_id = None
+    client_id_submitted = "downloadClientId" in payload or "client_id" in payload
+    try:
+        if "name" in payload:
+            name = _payload_str(payload, "name")
+            if not name:
+                return JSONResponse({"error": "name is required"}, status_code=400)
+            fields.append("name=?")
+            params.append(name)
+        if "implementation" in payload or "type" in payload:
+            implementation = _payload_str(payload, "implementation", "type")
+            if not implementation:
+                return JSONResponse(
+                    {"error": "implementation is required"},
+                    status_code=400,
+                )
+            fields.append("type=?")
+            params.append(implementation)
+        if "baseUrl" in payload or "url" in payload:
+            fields.append("url=?")
+            params.append(_payload_str(payload, "baseUrl", "url") or None)
+        if "apiKey" in payload or "api_key" in payload:
+            api_key = _payload_str(payload, "apiKey", "api_key")
+            if api_key:
+                fields.append("api_key=?")
+                params.append(encrypt_if_cipher_available(api_key))
+        if "priority" in payload:
+            fields.append("priority=?")
+            params.append(_payload_non_negative_alias(payload, ("priority",), 0))
+        if "categories" in payload:
+            fields.append("categories=?")
+            params.append(_payload_category_list(payload))
+        if "settings" in payload:
+            fields.append("settings=?")
+            params.append(_payload_json_object(payload, "settings", {}))
+        if client_id_submitted:
+            client_id = _payload_optional_fk_alias(
+                payload,
+                ("downloadClientId", "client_id"),
+            )
+            fields.append("client_id=?")
+            params.append(client_id)
+        int_fields = {
+            ("minimumSeeders", "min_seeders"): "min_seeders",
+            ("minimumSize", "min_size_mb"): "min_size_mb",
+            ("maximumSize", "max_size_mb"): "max_size_mb",
+        }
+        for keys, column in int_fields.items():
+            if any(key in payload for key in keys):
+                fields.append(f"{column}=?")
+                params.append(_payload_non_negative_alias(payload, keys, 0))
+        if "seedRatio" in payload or "seed_ratio" in payload:
+            fields.append("seed_ratio=?")
+            params.append(
+                _payload_non_negative_float_alias(
+                    payload,
+                    ("seedRatio", "seed_ratio"),
+                    0.0,
+                )
+            )
+        for keys, column in {
+            ("parentProwlarrId", "parent_prowlarr_id"): "parent_prowlarr_id",
+            ("prowlarrIndexerId", "prowlarr_indexer_id"): "prowlarr_indexer_id",
+        }.items():
+            if any(key in payload for key in keys):
+                fields.append(f"{column}=?")
+                params.append(_payload_optional_fk_alias(payload, keys))
+        bool_fields = {
+            ("enable", "enabled"): "enabled",
+            ("enableRss", "use_rss"): "use_rss",
+            ("enableAutomaticSearch", "use_auto_search"): "use_auto_search",
+            ("enableInteractiveSearch", "use_interactive_search"):
+                "use_interactive_search",
+        }
+        for keys, column in bool_fields.items():
+            if any(key in payload for key in keys):
+                fields.append(f"{column}=?")
+                params.append(1 if _payload_bool_alias(payload, keys, True) else 0)
+        tags = _payload_tag_list(payload) if "tags" in payload else None
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM indexers WHERE id=?",
+            (indexer_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "indexer not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        if client_id_submitted:
+            try:
+                _validate_optional_fk(
+                    db,
+                    "download_clients",
+                    client_id,
+                    "downloadClientId",
+                )
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+        if fields:
+            params.append(indexer_id)
+            db.execute(
+                f"UPDATE indexers SET {', '.join(fields)} WHERE id=?",
+                params,
+            )
+        if tags is not None:
+            _replace_indexer_tags(db, indexer_id, tags)
+        indexer = _indexer_by_id(db, indexer_id)
+    return JSONResponse({"ok": True, "indexer": indexer})
+
+
+@router.delete("/api/v1/indexer/{indexer_id}")
+async def api_v1_delete_indexer(indexer_id: int):
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM indexers WHERE id=?",
+            (indexer_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "indexer not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        db.execute("DELETE FROM indexer_tags WHERE indexer_id=?", (indexer_id,))
+        db.execute("DELETE FROM indexers WHERE id=?", (indexer_id,))
+    return JSONResponse({"ok": True, "id": indexer_id})
 
 
 @router.get("/api/v1/downloadclient")

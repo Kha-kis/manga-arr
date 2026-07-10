@@ -1936,6 +1936,276 @@ def test_api_v1_delete_import_list_rejects_unknown_id(env):
     assert resp.json()["error"] == "import list not found"
 
 
+def test_api_v1_create_indexer_adds_row_tags_and_secret(env):
+    from security import decrypt_secret
+
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO download_clients(id, name, type)"
+            " VALUES(1710, 'API Client', 'qbittorrent')"
+        )
+
+    resp = _client().post(
+        "/api/v1/indexer",
+        json={
+            "name": "API Nyaa",
+            "implementation": "torznab",
+            "baseUrl": "https://nyaa.example/torznab",
+            "apiKey": "INDEXER-SECRET",
+            "priority": 11,
+            "enable": False,
+            "categories": [7000, "7010", 7010, 7020],
+            "settings": {"animeStandardFormatSearch": True},
+            "downloadClientId": 1710,
+            "minimumSeeders": 4,
+            "seedRatio": 2.5,
+            "parentProwlarrId": 22,
+            "prowlarrIndexerId": 33,
+            "enableRss": False,
+            "enableAutomaticSearch": True,
+            "enableInteractiveSearch": False,
+            "minimumSize": 10,
+            "maximumSize": 500,
+            "tags": ["private", "private", "owned"],
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "INDEXER-SECRET" not in resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["status"] == "created"
+    indexer = body["indexer"]
+    assert indexer["name"] == "API Nyaa"
+    assert indexer["implementation"] == "torznab"
+    assert indexer["baseUrl"] == "https://nyaa.example/torznab"
+    assert indexer["hasApiKey"] is True
+    assert indexer["priority"] == 11
+    assert indexer["enable"] is False
+    assert indexer["categories"] == [7000, 7010, 7020]
+    assert indexer["settings"] == {"animeStandardFormatSearch": True}
+    assert indexer["downloadClientId"] == 1710
+    assert indexer["minimumSeeders"] == 4
+    assert indexer["seedRatio"] == 2.5
+    assert indexer["parentProwlarrId"] == 22
+    assert indexer["prowlarrIndexerId"] == 33
+    assert indexer["enableRss"] is False
+    assert indexer["enableAutomaticSearch"] is True
+    assert indexer["enableInteractiveSearch"] is False
+    assert indexer["minimumSize"] == 10
+    assert indexer["maximumSize"] == 500
+    assert indexer["tags"] == ["owned", "private"]
+    indexer_id = indexer["id"]
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT api_key, enabled, categories, use_rss,"
+            " use_interactive_search FROM indexers WHERE id=?",
+            (indexer_id,),
+        ).fetchone()
+        tags = [
+            tag[0]
+            for tag in c.execute(
+                "SELECT tag FROM indexer_tags WHERE indexer_id=? ORDER BY tag",
+                (indexer_id,),
+            )
+        ]
+    assert row["api_key"] != "INDEXER-SECRET"
+    assert decrypt_secret(row["api_key"]) == "INDEXER-SECRET"
+    assert row["enabled"] == 0
+    assert json.loads(row["categories"]) == [7000, 7010, 7020]
+    assert row["use_rss"] == 0
+    assert row["use_interactive_search"] == 0
+    assert tags == ["owned", "private"]
+
+
+def test_api_v1_create_indexer_requires_api_key(env):
+    resp = _client().post(
+        "/api/v1/indexer",
+        json={"name": "No Auth", "implementation": "torznab"},
+    )
+    assert resp.status_code == 401
+
+
+def test_api_v1_create_indexer_rejects_bad_categories(env):
+    resp = _client().post(
+        "/api/v1/indexer",
+        json={
+            "name": "Bad Categories",
+            "implementation": "torznab",
+            "categories": ["books"],
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "categories entries must be category ids"
+
+
+def test_api_v1_create_indexer_rejects_unknown_download_client(env):
+    resp = _client().post(
+        "/api/v1/indexer",
+        json={
+            "name": "Bad Client",
+            "implementation": "torznab",
+            "downloadClientId": 99999,
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "downloadClientId not found"
+
+
+def test_api_v1_update_indexer_updates_submitted_fields_tags_and_secret(env):
+    from security import decrypt_secret, encrypt_if_cipher_available
+
+    old_secret = encrypt_if_cipher_available("OLD-INDEXER-SECRET")
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO download_clients(id, name, type)"
+            " VALUES(1720, 'Updated Client', 'qbittorrent')"
+        )
+        c.execute(
+            "INSERT INTO indexers"
+            "(id, name, type, url, api_key, priority, enabled, categories,"
+            " settings, min_seeders, seed_ratio, use_rss,"
+            " use_auto_search, use_interactive_search, min_size_mb,"
+            " max_size_mb)"
+            " VALUES(1730, 'Old Indexer', 'prowlarr', 'https://old', ?,"
+            " 25, 1, '[7000]', '{}', 0, 0, 1, 1, 1, 0, 0)",
+            (old_secret,),
+        )
+        c.execute(
+            "INSERT INTO indexer_tags(indexer_id, tag)"
+            " VALUES(1730, 'old-tag')"
+        )
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/indexer/1730",
+        json={
+            "name": "Updated Indexer",
+            "implementation": "torznab",
+            "baseUrl": "https://new",
+            "apiKey": "NEW-INDEXER-SECRET",
+            "priority": 3,
+            "enable": False,
+            "categories": "7000,7010",
+            "settings": {"search": True},
+            "downloadClientId": 1720,
+            "minimumSeeders": 6,
+            "seedRatio": "1.5",
+            "enableRss": False,
+            "enableAutomaticSearch": False,
+            "enableInteractiveSearch": True,
+            "minimumSize": 20,
+            "maximumSize": 900,
+            "tags": "private,owned",
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "NEW-INDEXER-SECRET" not in resp.text
+    indexer = resp.json()["indexer"]
+    assert indexer["name"] == "Updated Indexer"
+    assert indexer["implementation"] == "torznab"
+    assert indexer["baseUrl"] == "https://new"
+    assert indexer["priority"] == 3
+    assert indexer["enable"] is False
+    assert indexer["categories"] == [7000, 7010]
+    assert indexer["settings"] == {"search": True}
+    assert indexer["downloadClientId"] == 1720
+    assert indexer["minimumSeeders"] == 6
+    assert indexer["seedRatio"] == 1.5
+    assert indexer["enableRss"] is False
+    assert indexer["enableAutomaticSearch"] is False
+    assert indexer["enableInteractiveSearch"] is True
+    assert indexer["minimumSize"] == 20
+    assert indexer["maximumSize"] == 900
+    assert indexer["tags"] == ["owned", "private"]
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT api_key, client_id, use_rss, use_auto_search"
+            " FROM indexers WHERE id=1730"
+        ).fetchone()
+        tags = [
+            tag[0]
+            for tag in c.execute(
+                "SELECT tag FROM indexer_tags WHERE indexer_id=1730 ORDER BY tag"
+            )
+        ]
+    assert decrypt_secret(row["api_key"]) == "NEW-INDEXER-SECRET"
+    assert row["client_id"] == 1720
+    assert row["use_rss"] == 0
+    assert row["use_auto_search"] == 0
+    assert tags == ["owned", "private"]
+
+
+def test_api_v1_update_indexer_preserves_api_key_when_blank(env):
+    from security import decrypt_secret, encrypt_if_cipher_available
+
+    old_secret = encrypt_if_cipher_available("OLD-INDEXER-SECRET")
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO indexers(id, name, type, api_key)"
+            " VALUES(1740, 'Keep Secret', 'torznab', ?)",
+            (old_secret,),
+        )
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/indexer/1740",
+        json={"name": "Keep Secret Renamed", "apiKey": ""},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    with sqlite3.connect(env) as c:
+        api_key = c.execute(
+            "SELECT api_key FROM indexers WHERE id=1740"
+        ).fetchone()[0]
+    assert decrypt_secret(api_key) == "OLD-INDEXER-SECRET"
+
+
+def test_api_v1_update_indexer_rejects_unknown_id(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/indexer/99999",
+        json={"name": "Missing"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "indexer not found"
+
+
+def test_api_v1_delete_indexer_removes_row_and_tags(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO indexers(id, name, type)"
+            " VALUES(1750, 'Delete Indexer', 'torznab')"
+        )
+        c.execute(
+            "INSERT INTO indexer_tags(indexer_id, tag)"
+            " VALUES(1750, 'private')"
+        )
+
+    resp = _client().delete(
+        "/api/v1/indexer/1750",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 1750}
+
+    with sqlite3.connect(env) as c:
+        indexer = c.execute("SELECT 1 FROM indexers WHERE id=1750").fetchone()
+        tag = c.execute(
+            "SELECT 1 FROM indexer_tags WHERE indexer_id=1750"
+        ).fetchone()
+    assert indexer is None
+    assert tag is None
+
+
 def test_api_v1_create_download_client_adds_row_tags_and_secret(env):
     from security import decrypt_secret
 
