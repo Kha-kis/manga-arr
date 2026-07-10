@@ -23,6 +23,7 @@ from metadata import search_series
 from parsing import normalize
 from rename_plan import build_series_rename_preview, execute_series_rename
 from routers.history_ import mark_history_failed
+from routers.queue_ import reset_grabbed_volume
 from routers.series_ import patch_series as _patch_series
 from routers.system import APP_VERSION, TASKS, TASK_STATE, run_command as _run_command
 from shared import (
@@ -684,6 +685,22 @@ async def api_v1_queue():
                 }
             )
     return JSONResponse(payload)
+
+
+@router.post("/api/v1/queue/grabbed/{volume_id}/reset")
+async def api_v1_queue_reset_grabbed_volume(volume_id: int):
+    result = reset_grabbed_volume(volume_id)
+    if result["status"] == "not_found":
+        return JSONResponse(
+            {"error": "queue volume not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    if result["status"] == "not_grabbed":
+        return JSONResponse(
+            {"error": "queue volume is not grabbed"},
+            status_code=HTTP_400_BAD_REQUEST,
+        )
+    return JSONResponse({"ok": True, "id": volume_id})
 
 
 @router.get("/api/v1/blocklist")

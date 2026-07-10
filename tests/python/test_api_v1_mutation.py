@@ -65,6 +65,12 @@ def env():
             " datetime('now'), 'fail-dl')"
         )
         c.execute(
+            "INSERT INTO seen(torrent_url, torrent_name, series_id, volume_num,"
+            " grabbed_at, download_id)"
+            " VALUES('reset-release-url', 'Reset Release', 5, 4.0,"
+            " datetime('now'), 'reset-dl')"
+        )
+        c.execute(
             "INSERT INTO volumes"
             "(id, series_id, volume_num, status, grabbed_at, source_url,"
             " torrent_name, indexer, protocol, client, download_id,"
@@ -72,6 +78,20 @@ def env():
             " VALUES(501, 5, 3.0, 'grabbed', datetime('now'),"
             " 'failed-release-url', 'Failed Release', 'Nyaa', 'torrent',"
             " 'qBittorrent', 'fail-dl', 'Group')"
+        )
+        c.execute(
+            "INSERT INTO volumes"
+            "(id, series_id, volume_num, status, grabbed_at, source_url,"
+            " torrent_name, indexer, protocol, client, download_id,"
+            " release_group)"
+            " VALUES(502, 5, 4.0, 'grabbed', datetime('now'),"
+            " 'reset-release-url', 'Reset Release', 'Nyaa', 'torrent',"
+            " 'qBittorrent', 'reset-dl', 'Group')"
+        )
+        c.execute(
+            "INSERT INTO volumes"
+            "(id, series_id, volume_num, status)"
+            " VALUES(503, 5, 5.0, 'wanted')"
         )
         c.execute(
             "INSERT INTO history"
@@ -215,7 +235,7 @@ def test_api_v1_command_cleanup_seen_mutates_stale_rows(env):
             row[0]
             for row in c.execute("SELECT torrent_url FROM seen ORDER BY torrent_url")
         ]
-    assert urls == ["failed-release-url", "recent"]
+    assert urls == ["failed-release-url", "recent", "reset-release-url"]
 
 
 def test_api_v1_command_rejects_unknown_command(env):
@@ -333,3 +353,64 @@ def test_api_v1_history_failed_rejects_non_grabbed_history(env):
             "SELECT event_type FROM history WHERE id=702"
         ).fetchone()[0]
     assert event_type == "import_failed"
+
+
+def test_api_v1_queue_reset_grabbed_volume_returns_wanted(env):
+    resp = _client().post(
+        "/api/v1/queue/grabbed/502/reset",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 502}
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        volume = c.execute(
+            "SELECT status, source_url, download_id, indexer, protocol,"
+            " client, release_group FROM volumes WHERE id=502"
+        ).fetchone()
+        seen_by_url = c.execute(
+            "SELECT 1 FROM seen WHERE torrent_url='reset-release-url'"
+        ).fetchone()
+        seen_by_download = c.execute(
+            "SELECT 1 FROM seen WHERE download_id='reset-dl'"
+        ).fetchone()
+
+    assert dict(volume) == {
+        "status": "wanted",
+        "source_url": None,
+        "download_id": None,
+        "indexer": None,
+        "protocol": None,
+        "client": None,
+        "release_group": None,
+    }
+    assert seen_by_url is None
+    assert seen_by_download is None
+
+
+def test_api_v1_queue_reset_grabbed_volume_requires_api_key(env):
+    resp = _client().post("/api/v1/queue/grabbed/502/reset")
+    assert resp.status_code == 401
+
+
+def test_api_v1_queue_reset_grabbed_volume_rejects_unknown_id(env):
+    resp = _client().post(
+        "/api/v1/queue/grabbed/99999/reset",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "queue volume not found"
+
+
+def test_api_v1_queue_reset_grabbed_volume_rejects_non_grabbed_volume(env):
+    resp = _client().post(
+        "/api/v1/queue/grabbed/503/reset",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "queue volume is not grabbed"
+
+    with sqlite3.connect(env) as c:
+        status = c.execute("SELECT status FROM volumes WHERE id=503").fetchone()[0]
+    assert status == "wanted"
