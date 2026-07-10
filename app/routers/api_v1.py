@@ -30,6 +30,7 @@ from routers.history_ import (
 from routers.import_ import (
     clear_inactive_import_queue_entries,
     dismiss_import_queue_entry,
+    retry_import_queue_entry,
     skip_import_queue_entry,
 )
 from routers.queue_ import dismiss_pending_release, reset_grabbed_volume
@@ -760,6 +761,22 @@ async def api_v1_queue_skip_import(queue_id: int):
             status_code=HTTP_400_BAD_REQUEST,
         )
     return JSONResponse({"ok": True, "id": queue_id})
+
+
+@router.post("/api/v1/queue/import/{queue_id}/retry")
+async def api_v1_queue_retry_import(queue_id: int):
+    result = retry_import_queue_entry(queue_id)
+    if result["status"] == "not_found":
+        return JSONResponse(
+            {"error": "import queue entry not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    if result["status"] == "not_retryable":
+        return JSONResponse(
+            {"error": "import queue entry is not failed or partial"},
+            status_code=HTTP_400_BAD_REQUEST,
+        )
+    return JSONResponse({"ok": True, "id": queue_id, "queued": result["queued"]})
 
 
 @router.get("/api/v1/blocklist")
