@@ -113,14 +113,14 @@
                 {% endif %}
               </td>
               <td>
-                <input type="number" name="vol_{{ f['id'] }}" class="form-control form-control-sm w-[90px] text-sm"
+                <input type="number" name="vol_{{ f['id'] }}" class="form-control form-control-sm queue-import-input-vol text-sm"
                        value="{{ f['proposed_volume']|int if f['proposed_volume'] else '' }}"
                        placeholder="?" step="1" min="1"
                        title="Volume number this file maps to">
               </td>
               <td>
                 {% if is_chapter %}
-                <input type="number" name="chap_{{ f['id'] }}" class="form-control form-control-sm w-[80px] text-sm"
+                <input type="number" name="chap_{{ f['id'] }}" class="form-control form-control-sm queue-import-input-chapter text-sm"
                        value="{{ f['proposed_chapter'] if f['proposed_chapter'] else '' }}"
                        placeholder="?" step="0.1" min="0"
                        title="Chapter number">

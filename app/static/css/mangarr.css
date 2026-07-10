@@ -2426,6 +2426,22 @@ a:hover {
   color: var(--jade);
 }
 
+.quality-def-col-format {
+  width: 8.75rem;
+}
+
+.quality-def-col-size {
+  width: 10rem;
+}
+
+.quality-def-title-input {
+  max-width: 17.5rem;
+}
+
+.quality-def-size-input {
+  max-width: 7.5rem;
+}
+
 .logs-count,
 .logs-series-cell,
 .logs-message,
@@ -3614,6 +3630,10 @@ body {
   opacity: 0.4;
 }
 
+.format-score-input {
+  width: 5.625rem;
+}
+
 .queue-note {
   margin-top: var(--line-strong);
 }
@@ -3780,6 +3800,14 @@ body {
   width: 3.75rem;
 }
 
+.queue-import-input-vol {
+  width: 5.625rem;
+}
+
+.queue-import-input-chapter {
+  width: 5rem;
+}
+
 .queue-import-row-unmapped {
   background: var(--ruby-bg);
 }
@@ -3811,17 +3839,17 @@ body {
 }
 
 .queue-review-input-vol {
-  width: 75px;
+  width: 4.6875rem;
   font-size: var(--text-base);
 }
 
 .queue-review-input-chapter {
-  width: 65px;
+  width: 4.0625rem;
   font-size: var(--text-base);
 }
 
 .queue-review-pack-select {
-  width: 105px;
+  width: 6.5625rem;
   font-size: var(--text-sm);
 }
 
@@ -3831,7 +3859,7 @@ body {
 }
 
 .queue-remove-dialog {
-  max-width: 480px;
+  max-width: 30rem;
 }
 
 .queue-remove-summary {
@@ -3840,7 +3868,7 @@ body {
 }
 
 .queue-remove-eyebrow {
-  margin-bottom: 5px;
+  margin-bottom: var(--space-xs);
   font-size: var(--text-2xs);
   font-weight: 700;
   letter-spacing: 0.1em;

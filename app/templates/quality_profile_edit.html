@@ -111,7 +111,7 @@
           {% set score = linked[0].score if linked else 0 %}
           <div class="d-flex align-items-center gap-2 mb-2 format-score-row">
             <span class="flex-grow-1 text-sm text-main">{{ cf.name }}</span>
-            <input type="number" class="form-control form-control-sm format-score-input w-[90px]"
+            <input type="number" class="form-control form-control-sm format-score-input"
                    data-format-id="{{ cf.id }}"
                    value="{{ score }}">
           </div>
