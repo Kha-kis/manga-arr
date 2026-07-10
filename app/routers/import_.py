@@ -150,6 +150,27 @@ def dismiss_import_queue_entry(queue_id: int) -> dict:
     return {"ok": True, "status": "dismissed"}
 
 
+def skip_import_queue_entry(queue_id: int) -> dict:
+    """Mark a pending or partial import queue entry as skipped."""
+    with get_db() as db:
+        q = db.execute(
+            "SELECT status FROM import_queue WHERE id=?", (queue_id,)
+        ).fetchone()
+        if not q:
+            return {"ok": False, "status": "not_found"}
+        if q["status"] not in ("pending", "partial"):
+            return {"ok": False, "status": "not_skippable"}
+        db.execute(
+            "UPDATE import_queue SET status='skipped' WHERE id=?",
+            (queue_id,),
+        )
+        db.execute(
+            "UPDATE import_queue_files SET status='skipped' WHERE queue_id=?",
+            (queue_id,),
+        )
+    return {"ok": True, "status": "skipped"}
+
+
 @router.post("/import/{queue_id}/process")
 async def process_import(queue_id: int, request: Request):
     """Process an import queue item after user review: parse form overrides then execute.
@@ -285,15 +306,7 @@ async def process_import(queue_id: int, request: Request):
 @router.post("/import/{queue_id}/skip")
 async def skip_import(request: Request, queue_id: int):
     """Skip an entire import queue item without moving files."""
-    with get_db() as db:
-        db.execute(
-            "UPDATE import_queue SET status='skipped' WHERE id=? AND status IN ('pending','partial')",
-            (queue_id,),
-        )
-        db.execute(
-            "UPDATE import_queue_files SET status='skipped' WHERE queue_id=?",
-            (queue_id,),
-        )
+    skip_import_queue_entry(queue_id)
     if request.headers.get("HX-Request") == "true":
         from fastapi.responses import Response as _Resp
 

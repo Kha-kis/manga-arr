@@ -146,6 +146,21 @@ def env():
             " '/library/S5/Import Release.cbz', 6.0, 'pending')"
         )
         c.execute(
+            "INSERT INTO import_queue"
+            "(id, series_id, download_id, torrent_name, torrent_url,"
+            " volume_num, src_dir, status)"
+            " VALUES(903, 5, 'failed-import-dl', 'Failed Import',"
+            " 'failed-import-url', 7.0, '/downloads/failed-import', 'failed')"
+        )
+        c.execute(
+            "INSERT INTO import_queue_files"
+            "(id, queue_id, filename, src_path, dst_path, proposed_volume,"
+            " status)"
+            " VALUES(904, 903, 'Failed Import.cbz',"
+            " '/downloads/failed-import/Failed Import.cbz',"
+            " '/library/S5/Failed Import.cbz', 7.0, 'failed')"
+        )
+        c.execute(
             "INSERT INTO blocklist"
             "(id, series_id, torrent_url, torrent_name, reason)"
             " VALUES(601, 5, 'https://example.invalid/bad.torrent',"
@@ -573,5 +588,62 @@ def test_api_v1_queue_dismiss_import_entry_rejects_unknown_id(env):
     assert resp.json()["error"] == "import queue entry not found"
 
     with sqlite3.connect(env) as c:
-        remaining = c.execute("SELECT COUNT(*) FROM import_queue").fetchone()[0]
-    assert remaining == 1
+        remaining = c.execute(
+            "SELECT COUNT(*) FROM import_queue WHERE id IN (901, 903)"
+        ).fetchone()[0]
+    assert remaining == 2
+
+
+def test_api_v1_queue_skip_import_entry_marks_queue_and_files_skipped(env):
+    resp = _client().post(
+        "/api/v1/queue/import/901/skip",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 901}
+
+    with sqlite3.connect(env) as c:
+        queue_status = c.execute(
+            "SELECT status FROM import_queue WHERE id=901"
+        ).fetchone()[0]
+        file_statuses = [
+            row[0]
+            for row in c.execute(
+                "SELECT status FROM import_queue_files WHERE queue_id=901"
+            )
+        ]
+    assert queue_status == "skipped"
+    assert file_statuses == ["skipped"]
+
+
+def test_api_v1_queue_skip_import_entry_requires_api_key(env):
+    resp = _client().post("/api/v1/queue/import/901/skip")
+    assert resp.status_code == 401
+
+
+def test_api_v1_queue_skip_import_entry_rejects_unknown_id(env):
+    resp = _client().post(
+        "/api/v1/queue/import/99999/skip",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "import queue entry not found"
+
+
+def test_api_v1_queue_skip_import_entry_rejects_non_pending_status(env):
+    resp = _client().post(
+        "/api/v1/queue/import/903/skip",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "import queue entry is not pending or partial"
+
+    with sqlite3.connect(env) as c:
+        queue_status = c.execute(
+            "SELECT status FROM import_queue WHERE id=903"
+        ).fetchone()[0]
+        file_status = c.execute(
+            "SELECT status FROM import_queue_files WHERE queue_id=903"
+        ).fetchone()[0]
+    assert queue_status == "failed"
+    assert file_status == "failed"

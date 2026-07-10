@@ -295,9 +295,13 @@ def test_import_skip_no_op_on_failed(env):
 
     with sqlite3.connect(env['db_path']) as c:
         q = c.execute("SELECT status FROM import_queue WHERE id=201").fetchone()
+        file_status = c.execute(
+            "SELECT status FROM import_queue_files WHERE queue_id=201"
+        ).fetchone()[0]
     assert q[0] == 'failed', (
         "skip must NOT touch a 'failed' status row — 201 should still be failed"
     )
+    assert file_status == 'failed'
 
 
 # ───────────────────── import queue: dismiss ─────────────────────
