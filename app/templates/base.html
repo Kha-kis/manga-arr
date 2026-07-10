@@ -1070,7 +1070,7 @@
       .form-control:focus,
       .form-select:focus {
         border-color: var(--ember) !important;
-        box-shadow: 0 0 0 3px rgba(240,132,40,0.15) !important;
+        box-shadow: 0 0 0 3px var(--ember-soft) !important;
         background: var(--ink-3) !important;
       }
 
@@ -1101,11 +1101,11 @@
 
       /* Toggle switch */
       .form-switch .form-check-input {
-        background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='rgba(255,255,255,0.35)'/%3e%3c/svg%3e");
+        background-image: radial-gradient(circle at 25% 50%, var(--paper-soft) 0 34%, transparent 36%);
       }
 
       .form-switch .form-check-input:checked {
-        background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='white'/%3e%3c/svg%3e");
+        background-image: radial-gradient(circle at 75% 50%, var(--paper) 0 34%, transparent 36%);
       }
 
       /* ═══════════════════════════════════════════════════════════════
@@ -1875,7 +1875,7 @@
         border: 1px solid var(--edge-2);
         border-radius: var(--radius-lg);
         padding: 6px;
-        box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+        box-shadow: 0 16px 48px var(--void-soft);
       }
 
       .dropdown-item {
@@ -1916,25 +1916,25 @@
 
       .alert-info {
         background: var(--sky-bg);
-        border-color: rgba(88,168,248,0.2);
+        border-color: var(--sky-soft);
         color: var(--sky);
       }
 
       .alert-warning {
         background: var(--gold-bg);
-        border-color: rgba(240,184,40,0.2);
+        border-color: var(--gold-soft);
         color: var(--gold);
       }
 
       .alert-danger {
         background: var(--ruby-bg);
-        border-color: rgba(240,80,80,0.2);
+        border-color: var(--ruby-soft);
         color: var(--ruby);
       }
 
       .alert-success {
         background: var(--jade-bg);
-        border-color: rgba(34,200,122,0.2);
+        border-color: var(--jade-soft);
         color: var(--jade);
       }
 
@@ -2372,7 +2372,7 @@
       .form-control.is-invalid,
       .form-select.is-invalid {
         border-color: var(--ruby) !important;
-        box-shadow: 0 0 0 3px rgba(240,80,80,0.15) !important;
+        box-shadow: 0 0 0 3px var(--ruby-soft) !important;
       }
       .invalid-feedback {
         color: var(--ruby);
