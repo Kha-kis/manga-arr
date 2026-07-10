@@ -12,7 +12,7 @@
 /* ── Editorial hero — blurred backdrop + large cover + Fraunces title ── */
 .series-backdrop {
   position: relative;
-  border-radius: var(--space-2xs);
+  border-radius: var(--radius-xs);
   overflow: hidden;
   margin-bottom: var(--space-5xl);
   padding: 2.5rem 2.25rem var(--space-4xl);
@@ -34,7 +34,7 @@
 }
 .series-cover-col img {
   width: 100%;
-  border-radius: var(--space-2xs);
+  border-radius: var(--radius-xs);
   border: var(--line-hairline) solid var(--paper-tint);
   display: block;
   box-shadow: 0 var(--space-xl) var(--space-5xl) var(--void-strong), 0 0 0 var(--line-hairline) var(--paper-tint);
@@ -43,7 +43,7 @@
   width: 100%;
   height: 16.25rem;
   background: var(--ink-3);
-  border-radius: var(--space-2xs);
+  border-radius: var(--radius-xs);
   border: var(--line-hairline) solid var(--edge-2);
   display: flex;
   align-items: center;
@@ -54,10 +54,10 @@
 .series-main { flex: 1; min-width: 0; }
 .series-title {
   font-family: var(--font-display);
-  font-size: clamp(1.75rem, 3.5vw, 2.5rem);
+  font-size: var(--text-display-xl);
   font-weight: 800;
   color: var(--paper);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   line-height: 1.08;
   margin-bottom: var(--space-md);
   text-shadow: 0 var(--line-accent) var(--space-xl) var(--void-soft);
@@ -86,7 +86,7 @@
   padding: 0.4375rem 0.8125rem;
   font-size: var(--text-sm);
   font-weight: 600;
-  border-radius: var(--space-sm);
+  border-radius: var(--radius-md);
   border: var(--line-hairline) solid var(--paper-tint);
   background: var(--paper-tint);
   color: var(--text-2);
@@ -117,7 +117,7 @@
 .meta-row { font-size: var(--text-base); color: var(--paper-dim); display: flex; align-items: center; gap: var(--space-sm); margin-bottom: 0.3125rem; }
 .meta-row i { color: var(--text-3); width: 0.875rem; text-align: center; }
 .ch-pill {
-  padding: var(--line-strong) var(--space-xs); border-radius: var(--space-2xs); font-size: var(--text-xs); font-weight: 600; white-space: nowrap;
+  padding: var(--line-strong) var(--space-xs); border-radius: var(--radius-xs); font-size: var(--text-xs); font-weight: 600; white-space: nowrap;
 }
 .ch-pill.dl  { background: var(--jade-bg); color: var(--jade); border: var(--line-hairline) solid var(--jade-medium); cursor: default; }
 .ch-pill.gr  { background: var(--ember-bg); color: var(--ember); border: var(--line-hairline) solid var(--ember-medium); cursor: pointer; }
