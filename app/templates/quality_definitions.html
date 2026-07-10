@@ -32,12 +32,12 @@
         <table class="table table-sm align-middle mb-0">
           <thead>
             <tr>
-              <th class="w-[140px]">Format</th>
+              <th class="quality-def-col-format">Format</th>
               <th>Title</th>
-              <th class="w-[160px]">Min Size MB/vol
+              <th class="quality-def-col-size">Min Size MB/vol
                 <span class="font-normal text-xs text-muted">(0 = no limit)</span>
               </th>
-              <th class="w-[160px]">Max Size MB/vol
+              <th class="quality-def-col-size">Max Size MB/vol
                 <span class="font-normal text-xs text-muted">(0 = no limit)</span>
               </th>
             </tr>
@@ -63,18 +63,18 @@
               </td>
               <td>
                 <input type="text" name="q_{{ q }}_title"
-                       class="form-control form-control-sm max-w-[280px]"
+                       class="form-control form-control-sm quality-def-title-input"
                        value="{{ d.title }}">
               </td>
               <td>
                 <input type="number" name="q_{{ q }}_min"
-                       class="form-control form-control-sm max-w-[120px]"
+                       class="form-control form-control-sm quality-def-size-input"
                        value="{{ d.min_size | int if d.min_size == d.min_size | int else d.min_size }}"
                        min="0" step="0.1">
               </td>
               <td>
                 <input type="number" name="q_{{ q }}_max"
-                       class="form-control form-control-sm max-w-[120px]"
+                       class="form-control form-control-sm quality-def-size-input"
                        value="{{ d.max_size | int if d.max_size == d.max_size | int else d.max_size }}"
                        min="0" step="0.1">
               </td>

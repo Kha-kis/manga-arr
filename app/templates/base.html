@@ -1705,6 +1705,10 @@
         border: var(--line-hairline) solid var(--jade-soft);
         color: var(--jade);
       }
+      .quality-def-col-format { width: 8.75rem; }
+      .quality-def-col-size { width: 10rem; }
+      .quality-def-title-input { max-width: 17.5rem; }
+      .quality-def-size-input { max-width: 7.5rem; }
       .logs-count,
       .logs-series-cell,
       .logs-message,
@@ -2511,6 +2515,7 @@
       .queue-disk-meter.is-critical::-moz-progress-bar { background: var(--ruby); }
       .queue-review-row-dimmed { opacity: 0.35; }
       .quality-profile-quality-dragging { opacity: 0.4; }
+      .format-score-input { width: 5.625rem; }
       .queue-note { margin-top: var(--line-strong); }
       .queue-progress-track {
         height: var(--line-accent);
@@ -2594,6 +2599,8 @@
       .queue-import-col-volume { width: 6.875rem; }
       .queue-import-col-chapter { width: 5.625rem; }
       .queue-import-col-skip { width: 3.75rem; }
+      .queue-import-input-vol { width: 5.625rem; }
+      .queue-import-input-chapter { width: 5rem; }
       .queue-import-row-unmapped { background: var(--ruby-bg); }
       .queue-import-row-skipped { opacity: 0.4; }
       .queue-import-footer { border-top: var(--line-hairline) solid var(--edge); }
@@ -2605,20 +2612,20 @@
         font-family: var(--font-mono);
         word-break: break-all;
       }
-      .queue-review-input-vol { width: 75px; font-size: var(--text-base); }
-      .queue-review-input-chapter { width: 65px; font-size: var(--text-base); }
-      .queue-review-pack-select { width: 105px; font-size: var(--text-sm); }
+      .queue-review-input-vol { width: 4.6875rem; font-size: var(--text-base); }
+      .queue-review-input-chapter { width: 4.0625rem; font-size: var(--text-base); }
+      .queue-review-pack-select { width: 6.5625rem; font-size: var(--text-sm); }
       .queue-review-source {
         margin-right: auto;
         color: var(--text-3);
       }
-      .queue-remove-dialog { max-width: 480px; }
+      .queue-remove-dialog { max-width: 30rem; }
       .queue-remove-summary {
         background: var(--ink-3);
         border: var(--line-hairline) solid var(--edge-2);
       }
       .queue-remove-eyebrow {
-        margin-bottom: 5px;
+        margin-bottom: var(--space-xs);
         font-size: var(--text-2xs);
         font-weight: 700;
         letter-spacing: 0.1em;
