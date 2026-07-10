@@ -1,4 +1,4 @@
-# Security scanning — runs on every push to master and every PR.
+# Security scanning — temporarily manual-only while GitHub Actions billing is blocked.
 #
 # Three independent jobs:
 #   - trivy-fs      filesystem scan (requirements.txt CVEs, Dockerfile
@@ -28,13 +28,7 @@
 name: Security
 
 on:
-  push:
-    branches: [master]
-  pull_request:
-  schedule:
-    # Re-scan weekly so newly disclosed CVEs against an unchanged image
-    # surface even if no PR has run since.
-    - cron: "0 6 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
