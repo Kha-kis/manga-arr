@@ -1366,6 +1366,17 @@ async def api_v1_create_system_backup():
     return JSONResponse({"ok": True, "status": "created", "backup": backup})
 
 
+@router.post("/api/v1/system/backup/{filename}/validate")
+async def api_v1_validate_system_backup(filename: str):
+    payload, status_code = system_router._validate_backup_zip(filename)
+    if not payload.get("ok"):
+        payload = {
+            **payload,
+            "error": payload.get("message") or "backup validation failed",
+        }
+    return JSONResponse(payload, status_code=status_code)
+
+
 @router.delete("/api/v1/system/backup/{filename}")
 async def api_v1_delete_system_backup(filename: str):
     if not _safe_backup_filename(filename):
