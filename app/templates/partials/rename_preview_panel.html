@@ -1,0 +1,138 @@
+{#
+  Rename preview panel — series-scoped file rename review and apply surface.
+
+  Context:
+    plan      — dict from rename_plan.build_series_rename_preview(series_id)
+    series_id — int
+    result    — optional dict from execute_series_rename()
+#}
+{% set renameable = plan['items'] | selectattr('canRename') | list %}
+{% set blocked = plan['items'] | rejectattr('canRename') | list %}
+
+<section id="rename-preview-panel" class="panel mb-4">
+  <div class="panel-header d-flex align-items-center justify-content-between">
+    <div class="d-flex align-items-center">
+      <i class="bi bi-input-cursor-text me-2 text-ember"></i>
+      <span class="fw-semibold">Rename files preview</span>
+      <span class="text-xs ms-3 text-muted-3">
+        {{ plan['changed'] }} changed · {{ plan['renameable'] }} ready · {{ plan['conflicts'] }} blocked
+      </span>
+    </div>
+    <div class="d-flex gap-2">
+      <button type="button" class="btn btn-secondary btn-sm"
+              hx-get="/series/{{ series_id }}/rename/preview"
+              hx-target="#rename-preview-panel"
+              hx-swap="outerHTML"
+              title="Refresh rename preview">
+        <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+      </button>
+      <button type="button" class="btn btn-secondary btn-sm"
+              onclick="(function(el){const d=document.createElement('div');d.id='rename-preview-panel';el.replaceWith(d);})(document.getElementById('rename-preview-panel'))"
+              title="Dismiss rename preview">
+        <i class="bi bi-x"></i>
+      </button>
+    </div>
+  </div>
+
+  <div class="panel-body rename-preview-body">
+    {% if result is defined and result %}
+    <div class="alert alert-info mb-3 rename-preview-alert">
+      <i class="bi bi-check-circle-fill me-1 text-jade"></i>
+      Renamed <strong>{{ result['renamed'] }}</strong> file(s);
+      skipped <strong>{{ result['skipped'] }}</strong>;
+      errors <strong>{{ result['errors'] }}</strong>.
+    </div>
+    {% endif %}
+
+    {% if plan['items'] %}
+    <form method="POST"
+          action="/series/{{ series_id }}/rename/apply"
+          hx-post="/series/{{ series_id }}/rename/apply"
+          hx-target="#rename-preview-panel"
+          hx-swap="outerHTML"
+          hx-disabled-elt="find button[type='submit']"
+          hx-confirm="Rename {{ renameable|length }} selected file(s)?">
+      <div class="table-wrap mb-3">
+        <table class="table table-sm mb-0">
+          <thead>
+            <tr>
+              <th class="rename-col-select"></th>
+              <th class="rename-col-label">Item</th>
+              <th>Current file</th>
+              <th>New file</th>
+              <th class="rename-col-state">State</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in plan['items'] %}
+            <tr class="{% if not item['canRename'] %}rename-row-blocked{% endif %}">
+              <td class="rename-col-select">
+                {% if item['canRename'] %}
+                <input class="form-check-input" type="checkbox"
+                       name="{{ 'volume_id' if item['type'] == 'volume' else 'chapter_id' }}"
+                       value="{{ item['id'] }}"
+                       checked
+                       aria-label="Select {{ item['label'] }} for rename">
+                {% else %}
+                <i class="bi bi-dash-circle text-muted-3" aria-hidden="true"></i>
+                {% endif %}
+              </td>
+              <td class="rename-col-label">
+                <div class="fw-semibold">{{ item['label'] }}</div>
+                <div class="text-2xs text-muted-3">{{ item['type'] }}</div>
+              </td>
+              <td>
+                <div class="rename-file-name" title="{{ item['oldPath'] }}">{{ item['oldName'] }}</div>
+              </td>
+              <td>
+                {% if item['newName'] %}
+                <div class="rename-file-name" title="{{ item['newPath'] }}">{{ item['newName'] }}</div>
+                {% else %}
+                <span class="text-muted-3">—</span>
+                {% endif %}
+              </td>
+              <td class="rename-col-state">
+                {% if item['canRename'] %}
+                <span class="badge-status badge-downloaded"><i class="bi bi-check2 me-1"></i>Ready</span>
+                {% elif item['conflict'] == 'target_exists' %}
+                <span class="badge-status badge-wanted"><i class="bi bi-exclamation-triangle me-1"></i>Target exists</span>
+                {% elif item['conflict'] == 'source_missing' %}
+                <span class="badge-status badge-missing"><i class="bi bi-x-circle me-1"></i>Missing</span>
+                {% elif item['conflict'] == 'duplicate_target' %}
+                <span class="badge-status badge-wanted"><i class="bi bi-copy me-1"></i>Duplicate</span>
+                {% else %}
+                <span class="badge-status badge-missing">{{ item['conflict'] or 'Blocked' }}</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="d-flex align-items-center gap-3 flex-wrap">
+        {% if renameable %}
+        <button type="submit" class="btn-grab btn btn-sm px-3">
+          <i class="bi bi-input-cursor-text me-1"></i>
+          Rename selected
+        </button>
+        {% else %}
+        <button type="button" class="btn btn-secondary btn-sm" disabled>
+          <i class="bi bi-check-circle me-1"></i>No safe renames
+        </button>
+        {% endif %}
+        {% if blocked %}
+        <span class="text-xs text-muted-3">
+          Blocked rows are left unchanged.
+        </span>
+        {% endif %}
+      </div>
+    </form>
+    {% else %}
+    <div class="text-sm text-muted-2">
+      <i class="bi bi-check-circle-fill me-1 text-jade"></i>
+      No downloaded files with import paths were found for this series.
+    </div>
+    {% endif %}
+  </div>
+</section>

@@ -136,6 +136,14 @@ def _api_key(db_path: str) -> str:
     return decrypt_secret(raw)
 
 
+def _csrf_kwargs(tag: str = "rename"):
+    token = f"csrf-{tag}-" + "x" * 30
+    return {
+        "cookies": {"csrftoken": token},
+        "headers": {"X-CSRFToken": token},
+    }
+
+
 def _volume_paths(db_path: str) -> dict[int, str]:
     with sqlite3.connect(db_path) as c:
         return {
@@ -300,3 +308,56 @@ def test_rename_execute_404_for_unknown_series(env):
         headers={"X-Api-Key": _api_key(env["db_path"])},
     )
     assert resp.status_code == 404
+
+
+def test_series_rename_preview_partial_renders_form(env):
+    resp = _client().get(
+        "/series/7/rename/preview",
+        headers={"HX-Request": "true"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert 'id="rename-preview-panel"' in resp.text
+    assert "Plan Manga v01.cbz" in resp.text
+    assert "Target exists" in resp.text
+    assert 'name="volume_id"' in resp.text
+    assert 'name="chapter_id"' in resp.text
+
+
+def test_series_rename_apply_htmx_moves_selected_files(env):
+    client = _client()
+    csrf = _csrf_kwargs("rename-apply")
+    headers = {**csrf["headers"], "HX-Request": "true"}
+    new_v1 = os.path.join(env["series_dir"], "Plan Manga v01.cbz")
+    new_ch5 = os.path.join(env["series_dir"], "Plan Manga c005.cbz")
+
+    resp = client.post(
+        "/series/7/rename/apply",
+        data={"volume_id": "101", "chapter_id": "201"},
+        cookies=csrf["cookies"],
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert 'id="rename-preview-panel"' in resp.text
+    assert "Renamed <strong>2</strong>" in resp.text
+    assert "HX-Trigger" in resp.headers
+
+    assert os.path.exists(new_v1)
+    assert os.path.exists(new_ch5)
+    assert not os.path.exists(env["old_v1"])
+    assert not os.path.exists(env["old_ch5"])
+    assert _volume_paths(env["db_path"])[101] == new_v1
+    assert _chapter_paths(env["db_path"])[201] == new_ch5
+
+
+def test_series_rename_apply_plain_form_redirects(env):
+    csrf = _csrf_kwargs("rename-plain")
+    resp = _client().post(
+        "/series/7/rename/apply",
+        data={"volume_id": "101"},
+        **csrf,
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"].startswith(
+        "/series/7?flash_msg=Renamed+1+file%28s%29"
+    )
