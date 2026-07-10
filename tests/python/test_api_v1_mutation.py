@@ -1051,6 +1051,184 @@ def test_api_v1_delete_language_profile_rejects_unknown_id(env):
     assert resp.json()["error"] == "language profile not found"
 
 
+def test_api_v1_create_release_profile_adds_row_and_tags(env):
+    resp = _client().post(
+        "/api/v1/releaseprofile",
+        json={
+            "name": "API Release",
+            "enabled": False,
+            "required": "group",
+            "ignored": "raw",
+            "preferred": [{"term": "deluxe", "score": 25}],
+            "includePreferredWhenRenaming": True,
+            "tags": ["favorite", "favorite", "owned"],
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["status"] == "created"
+    assert body["releaseProfile"]["name"] == "API Release"
+    assert body["releaseProfile"]["enabled"] is False
+    assert body["releaseProfile"]["required"] == "group"
+    assert body["releaseProfile"]["ignored"] == "raw"
+    assert body["releaseProfile"]["preferred"] == [
+        {"term": "deluxe", "score": 25}
+    ]
+    assert body["releaseProfile"]["includePreferredWhenRenaming"] is True
+    assert body["releaseProfile"]["tags"] == ["favorite", "owned"]
+    profile_id = body["releaseProfile"]["id"]
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT enabled, required, ignored, preferred,"
+            " include_preferred_when_renaming FROM release_profiles WHERE id=?",
+            (profile_id,),
+        ).fetchone()
+        tags = [
+            tag[0]
+            for tag in c.execute(
+                "SELECT tag FROM release_profile_tags"
+                " WHERE profile_id=? ORDER BY tag",
+                (profile_id,),
+            )
+        ]
+    assert row["enabled"] == 0
+    assert row["required"] == "group"
+    assert row["ignored"] == "raw"
+    assert json.loads(row["preferred"]) == [{"term": "deluxe", "score": 25}]
+    assert row["include_preferred_when_renaming"] == 1
+    assert tags == ["favorite", "owned"]
+
+
+def test_api_v1_create_release_profile_requires_api_key(env):
+    resp = _client().post(
+        "/api/v1/releaseprofile",
+        json={"name": "No Auth"},
+    )
+    assert resp.status_code == 401
+
+
+def test_api_v1_create_release_profile_rejects_bad_preferred(env):
+    resp = _client().post(
+        "/api/v1/releaseprofile",
+        json={"name": "Bad Preferred", "preferred": {"term": "deluxe"}},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "preferred must be a list"
+
+
+def test_api_v1_update_release_profile_updates_submitted_fields_and_tags(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO release_profiles"
+            "(id, name, enabled, required, ignored, preferred,"
+            " include_preferred_when_renaming)"
+            " VALUES(1201, 'Old API Release', 1, 'old', 'raw',"
+            " '[{\"term\":\"old\",\"score\":1}]', 0)"
+        )
+        c.execute(
+            "INSERT INTO release_profile_tags(profile_id, tag)"
+            " VALUES(1201, 'old-tag')"
+        )
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/releaseprofile/1201",
+        json={
+            "name": "Updated API Release",
+            "enabled": False,
+            "preferred": [{"term": "new", "score": 10}],
+            "includePreferredWhenRenaming": True,
+            "tags": "favorite,owned",
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["releaseProfile"]["name"] == "Updated API Release"
+    assert body["releaseProfile"]["enabled"] is False
+    assert body["releaseProfile"]["required"] == "old"
+    assert body["releaseProfile"]["ignored"] == "raw"
+    assert body["releaseProfile"]["preferred"] == [{"term": "new", "score": 10}]
+    assert body["releaseProfile"]["includePreferredWhenRenaming"] is True
+    assert body["releaseProfile"]["tags"] == ["favorite", "owned"]
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT name, enabled, required, ignored, preferred,"
+            " include_preferred_when_renaming FROM release_profiles WHERE id=1201"
+        ).fetchone()
+        tags = [
+            tag[0]
+            for tag in c.execute(
+                "SELECT tag FROM release_profile_tags"
+                " WHERE profile_id=1201 ORDER BY tag"
+            )
+        ]
+    assert row["name"] == "Updated API Release"
+    assert row["enabled"] == 0
+    assert row["required"] == "old"
+    assert row["ignored"] == "raw"
+    assert json.loads(row["preferred"]) == [{"term": "new", "score": 10}]
+    assert row["include_preferred_when_renaming"] == 1
+    assert tags == ["favorite", "owned"]
+
+
+def test_api_v1_update_release_profile_rejects_unknown_id(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/releaseprofile/99999",
+        json={"name": "Missing"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "release profile not found"
+
+
+def test_api_v1_delete_release_profile_removes_row_and_tags(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO release_profiles(id, name)"
+            " VALUES(1210, 'Delete API Release')"
+        )
+        c.execute(
+            "INSERT INTO release_profile_tags(profile_id, tag)"
+            " VALUES(1210, 'favorite')"
+        )
+
+    resp = _client().delete(
+        "/api/v1/releaseprofile/1210",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 1210}
+
+    with sqlite3.connect(env) as c:
+        profile = c.execute(
+            "SELECT 1 FROM release_profiles WHERE id=1210"
+        ).fetchone()
+        tag = c.execute(
+            "SELECT 1 FROM release_profile_tags WHERE profile_id=1210"
+        ).fetchone()
+    assert profile is None
+    assert tag is None
+
+
+def test_api_v1_delete_release_profile_rejects_unknown_id(env):
+    resp = _client().delete(
+        "/api/v1/releaseprofile/99999",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "release profile not found"
+
+
 def test_api_v1_command_cleanup_seen_mutates_stale_rows(env):
     client = _client()
     headers = {"X-Api-Key": _api_key(env)}
