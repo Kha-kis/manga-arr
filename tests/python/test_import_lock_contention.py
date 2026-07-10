@@ -224,6 +224,13 @@ def test_queue_import_does_not_hold_write_lock_while_scanning(lock_env, monkeypa
     src_file = os.path.join(src_dir, "Test Series v01.cbz")
     with open(src_file, "wb") as f:
         f.write(b"PK\x03\x04" + b"x" * 200)
+    # This file is skipped during scan and records a scan observation.
+    # That event must be replayed after classification; if log_event(db=db)
+    # runs here, the caller's transaction holds a write lock while the
+    # subsequent ComicInfo scan is paused below.
+    foreign_file = os.path.join(src_dir, "Test Series French.cbz")
+    with open(foreign_file, "wb") as f:
+        f.write(b"PK\x03\x04" + b"x" * 200)
 
     with sqlite3.connect(lock_env["db_path"]) as c:
         c.execute(
@@ -284,4 +291,8 @@ def test_queue_import_does_not_hold_write_lock_while_scanning(lock_env, monkeypa
 
     with sqlite3.connect(lock_env["db_path"]) as c:
         title = c.execute("SELECT title FROM series WHERE id=?", (sid,)).fetchone()[0]
+        skipped_event = c.execute(
+            "SELECT 1 FROM events WHERE message LIKE 'Skipped foreign-language file:%'"
+        ).fetchone()
     assert title == "queue probe", "probe write did not commit"
+    assert skipped_event is not None
