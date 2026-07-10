@@ -23,7 +23,7 @@ from metadata import search_series
 from parsing import normalize
 from rename_plan import build_series_rename_preview, execute_series_rename
 from routers.history_ import mark_history_failed
-from routers.queue_ import reset_grabbed_volume
+from routers.queue_ import dismiss_pending_release, reset_grabbed_volume
 from routers.series_ import patch_series as _patch_series
 from routers.system import APP_VERSION, TASKS, TASK_STATE, run_command as _run_command
 from shared import (
@@ -701,6 +701,17 @@ async def api_v1_queue_reset_grabbed_volume(volume_id: int):
             status_code=HTTP_400_BAD_REQUEST,
         )
     return JSONResponse({"ok": True, "id": volume_id})
+
+
+@router.delete("/api/v1/queue/pending/{pending_id}")
+async def api_v1_queue_dismiss_pending(pending_id: int):
+    result = dismiss_pending_release(pending_id)
+    if result["status"] == "not_found":
+        return JSONResponse(
+            {"error": "pending release not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    return JSONResponse({"ok": True, "id": pending_id})
 
 
 @router.get("/api/v1/blocklist")

@@ -110,6 +110,12 @@ def env():
             " 'Already Failed')"
         )
         c.execute(
+            "INSERT INTO pending_releases"
+            "(id, series_id, url, title, indexer, protocol, size_bytes)"
+            " VALUES(801, 5, 'https://example.invalid/pending',"
+            " 'Pending Release', 'Nyaa', 'torrent', 456)"
+        )
+        c.execute(
             "INSERT INTO blocklist"
             "(id, series_id, torrent_url, torrent_name, reason)"
             " VALUES(601, 5, 'https://example.invalid/bad.torrent',"
@@ -414,3 +420,36 @@ def test_api_v1_queue_reset_grabbed_volume_rejects_non_grabbed_volume(env):
     with sqlite3.connect(env) as c:
         status = c.execute("SELECT status FROM volumes WHERE id=503").fetchone()[0]
     assert status == "wanted"
+
+
+def test_api_v1_queue_dismiss_pending_release_removes_row(env):
+    resp = _client().delete(
+        "/api/v1/queue/pending/801",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 801}
+
+    with sqlite3.connect(env) as c:
+        remaining = c.execute(
+            "SELECT COUNT(*) FROM pending_releases WHERE id=801"
+        ).fetchone()[0]
+    assert remaining == 0
+
+
+def test_api_v1_queue_dismiss_pending_release_requires_api_key(env):
+    resp = _client().delete("/api/v1/queue/pending/801")
+    assert resp.status_code == 401
+
+
+def test_api_v1_queue_dismiss_pending_release_rejects_unknown_id(env):
+    resp = _client().delete(
+        "/api/v1/queue/pending/99999",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "pending release not found"
+
+    with sqlite3.connect(env) as c:
+        remaining = c.execute("SELECT COUNT(*) FROM pending_releases").fetchone()[0]
+    assert remaining == 1
