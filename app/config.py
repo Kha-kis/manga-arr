@@ -78,6 +78,9 @@ ENV_DEFAULTS = {
     'blocklist_ttl_days':       (None,    '90'),
     # Import concurrency
     'max_concurrent_imports':   (None,    '2'),  # Max concurrent imports (2 for spinning disks, 5+ for SSD)
+    # Import free-space guard. 0 disables the guard; otherwise imports
+    # require this many MiB to remain free after planned staging bytes.
+    'minimum_free_space_mb':    (None,    '0'),
 }
 
 

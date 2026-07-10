@@ -10,6 +10,7 @@ Verifies that when staging.commit_all() fails, the import:
 
 import asyncio
 import os
+import shutil
 import sqlite3
 import tempfile
 
@@ -165,6 +166,87 @@ def test_commit_all_failure_marks_import_failed(test_env, monkeypatch):
         assert chap_downloaded == 0, (
             "No chapters should be marked as downloaded after commit failure"
         )
+
+
+def test_minimum_free_space_guard_blocks_before_staging(test_env, monkeypatch):
+    """Configured free-space reserve should fail import before file staging."""
+    import import_execute
+    import import_staging
+    import main
+    import shared
+
+    with sqlite3.connect(test_env["db_path"]) as c:
+        c.execute(
+            "INSERT INTO series(title, search_pattern, monitored, root_folder_id) VALUES(?,?,1,1)",
+            ("Space Series", "space-series"),
+        )
+        sid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+        src_file = os.path.join(test_env["src_root"], "Space v01.cbz")
+        with open(src_file, "wb") as f:
+            f.write(b"PK\x03\x04" + b"x" * 2048)
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, download_id)"
+            " VALUES(?,1.0,'grabbed','dl-space')",
+            (sid,),
+        )
+        c.execute(
+            "INSERT INTO import_queue(series_id, download_id, torrent_name,"
+            " torrent_url, volume_num, src_dir, status)"
+            " VALUES(?,?,?,?,?,?,'pending')",
+            (sid, "dl-space", "Space v01", "magnet:space", 1.0, test_env["src_root"]),
+        )
+        qid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+        c.execute(
+            "INSERT INTO import_queue_files(queue_id, filename, src_path, dst_path,"
+            " proposed_volume, file_type, status)"
+            " VALUES(?,?,?,?,?,'volume','pending')",
+            (qid, "Space v01.cbz", src_file, src_file, 1.0),
+        )
+
+    monkeypatch.setitem(main.CONFIG, "minimum_free_space_mb", "100")
+    monkeypatch.setitem(shared.CONFIG, "minimum_free_space_mb", "100")
+
+    usage = shutil._ntuple_diskusage(
+        total=200 * 1024 * 1024,
+        used=175 * 1024 * 1024,
+        free=25 * 1024 * 1024,
+    )
+    monkeypatch.setattr(import_execute.shutil, "disk_usage", lambda _path: usage)
+
+    def fail_stage(self, src, final_path):
+        raise AssertionError("staging should not run when free-space guard blocks")
+
+    monkeypatch.setattr(import_staging._ImportStaging, "stage", fail_stage)
+
+    result = _run(import_execute._execute_import_impl(qid))
+    assert result is False
+
+    dst_file = os.path.join(test_env["library_root"], "Space Series", "Space v01.cbz")
+    assert not os.path.exists(dst_file)
+    with sqlite3.connect(test_env["db_path"]) as c:
+        c.row_factory = sqlite3.Row
+        queue_row = c.execute(
+            "SELECT status FROM import_queue WHERE id=?", (qid,)
+        ).fetchone()
+        assert queue_row["status"] == "failed"
+        file_row = c.execute(
+            "SELECT status FROM import_queue_files WHERE queue_id=?", (qid,)
+        ).fetchone()
+        assert file_row["status"] == "failed"
+        volume_row = c.execute(
+            "SELECT status, download_id, import_path FROM volumes WHERE series_id=?",
+            (sid,),
+        ).fetchone()
+        assert volume_row["status"] == "wanted"
+        assert volume_row["download_id"] is None
+        assert volume_row["import_path"] is None
+        event_messages = [
+            row["message"]
+            for row in c.execute(
+                "SELECT message FROM events WHERE event_type='error' ORDER BY id"
+            ).fetchall()
+        ]
+        assert any("insufficient free space" in msg for msg in event_messages)
 
 
 def test_commit_all_failure_preserves_volumes_to_retry(test_env, monkeypatch):
