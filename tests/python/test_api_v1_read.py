@@ -419,6 +419,75 @@ def test_api_v1_queue_history_and_wanted_contract(env):
     ]
 
 
+def test_api_v1_calendar_contract(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO series"
+            "(id, title, search_pattern, status, total_volumes, enabled,"
+            " monitored, root_folder_id, quality_profile_id, language_profile_id,"
+            " monitor_mode, pub_year)"
+            " VALUES(7, 'Witch Hat Atelier', 'Witch Hat Atelier',"
+            " 'not_yet_released', 12, 1, 1, 1, 10, 20, 'future', 2027)"
+        )
+        c.execute(
+            "INSERT INTO series"
+            "(id, title, search_pattern, status, total_volumes, enabled,"
+            " monitored, root_folder_id, quality_profile_id, language_profile_id,"
+            " monitor_mode)"
+            " VALUES(8, 'Nana', 'Nana', 'hiatus', 2, 1, 1, 1, 10, 20, 'all')"
+        )
+        c.execute(
+            "INSERT INTO volumes(id, series_id, volume_num, status, monitored)"
+            " VALUES(801, 8, 1.0, 'downloaded', 1)"
+        )
+        c.execute(
+            "INSERT INTO volumes(id, series_id, volume_num, status, monitored)"
+            " VALUES(802, 8, 2.0, 'wanted', 1)"
+        )
+
+    resp = _client().get(
+        "/api/v1/calendar",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert body["releasing"] == [
+        {
+            "seriesId": 5,
+            "seriesTitle": "Vinland Saga",
+            "status": "releasing",
+            "coverUrl": None,
+            "totalVolumes": 3,
+            "have": 2,
+            "missing": 2,
+            "wantedVolumes": [2.0],
+            "grabbedVolumes": [3.0],
+        }
+    ]
+    assert body["upcoming"] == [
+        {
+            "seriesId": 7,
+            "seriesTitle": "Witch Hat Atelier",
+            "status": "not_yet_released",
+            "coverUrl": None,
+            "totalVolumes": 12,
+            "year": 2027,
+        }
+    ]
+    assert body["hiatus"] == [
+        {
+            "seriesId": 8,
+            "seriesTitle": "Nana",
+            "status": "hiatus",
+            "coverUrl": None,
+            "totalVolumes": 2,
+            "have": 1,
+            "volumeCount": 2,
+        }
+    ]
+
+
 def test_api_v1_series_detail_blocklist_commands_and_cutoff(env):
     client = _client()
     headers = {"X-Api-Key": _api_key(env)}

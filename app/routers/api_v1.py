@@ -215,6 +215,16 @@ def _series_payload(db, row) -> dict:
     return _series(row, _series_tags(db, row["id"], row["tags"]))
 
 
+def _calendar_series(row) -> dict:
+    return {
+        "seriesId": row["id"],
+        "seriesTitle": row["title"],
+        "status": row["status"],
+        "coverUrl": row["cover_url"],
+        "totalVolumes": row["total_volumes"],
+    }
+
+
 def _volume(row) -> dict:
     vol_range = (
         (row["vol_range_start"], row["vol_range_end"])
@@ -1110,6 +1120,105 @@ async def api_v1_wanted_cutoff():
                 }
             )
     return JSONResponse(payload)
+
+
+@router.get("/api/v1/calendar")
+async def api_v1_calendar():
+    with get_db() as db:
+        releasing_rows = db.execute(
+            """
+            SELECT s.id, s.title, s.cover_url, s.status, s.total_volumes,
+                   COUNT(v.id) AS volume_count,
+                   SUM(CASE WHEN v.status='downloaded' THEN 1 ELSE 0 END) AS have,
+                   SUM(CASE WHEN v.status IN ('wanted','grabbed') THEN 1 ELSE 0 END) AS missing
+            FROM series s
+            JOIN volumes v ON v.series_id=s.id AND v.volume_num IS NOT NULL
+            WHERE UPPER(s.status)='RELEASING'
+              AND COALESCE(s.monitored, 1)=1
+              AND COALESCE(s.enabled, 1)=1
+              AND s.deleted_at IS NULL
+            GROUP BY s.id
+            HAVING missing > 0
+            ORDER BY volume_count DESC, s.title COLLATE NOCASE
+            """
+        ).fetchall()
+
+        releasing = []
+        for row in releasing_rows:
+            vols = db.execute(
+                """
+                SELECT volume_num, status
+                FROM volumes
+                WHERE series_id=? AND volume_num IS NOT NULL
+                ORDER BY volume_num
+                """,
+                (row["id"],),
+            ).fetchall()
+            item = _calendar_series(row)
+            item.update(
+                {
+                    "have": row["have"] or 0,
+                    "missing": row["missing"] or 0,
+                    "wantedVolumes": [
+                        v["volume_num"] for v in vols if v["status"] == "wanted"
+                    ],
+                    "grabbedVolumes": [
+                        v["volume_num"] for v in vols if v["status"] == "grabbed"
+                    ],
+                }
+            )
+            releasing.append(item)
+
+        upcoming_rows = db.execute(
+            """
+            SELECT s.id, s.title, s.cover_url, s.status, s.total_volumes, s.pub_year
+            FROM series s
+            WHERE UPPER(s.status)='NOT_YET_RELEASED'
+              AND COALESCE(s.monitored, 1)=1
+              AND COALESCE(s.enabled, 1)=1
+              AND s.deleted_at IS NULL
+            ORDER BY COALESCE(s.pub_year, 9999), s.title COLLATE NOCASE
+            """
+        ).fetchall()
+        upcoming = []
+        for row in upcoming_rows:
+            item = _calendar_series(row)
+            item["year"] = row["pub_year"]
+            upcoming.append(item)
+
+        hiatus_rows = db.execute(
+            """
+            SELECT s.id, s.title, s.cover_url, s.status, s.total_volumes,
+                   SUM(CASE WHEN v.status='downloaded' THEN 1 ELSE 0 END) AS have,
+                   COUNT(v.id) AS volume_count
+            FROM series s
+            JOIN volumes v ON v.series_id=s.id AND v.volume_num IS NOT NULL
+            WHERE UPPER(s.status) IN ('HIATUS','ON_HIATUS')
+              AND COALESCE(s.monitored, 1)=1
+              AND COALESCE(s.enabled, 1)=1
+              AND s.deleted_at IS NULL
+            GROUP BY s.id
+            ORDER BY s.title COLLATE NOCASE
+            """
+        ).fetchall()
+        hiatus = []
+        for row in hiatus_rows:
+            item = _calendar_series(row)
+            item.update(
+                {
+                    "have": row["have"] or 0,
+                    "volumeCount": row["volume_count"] or 0,
+                }
+            )
+            hiatus.append(item)
+
+    return JSONResponse(
+        {
+            "releasing": releasing,
+            "upcoming": upcoming,
+            "hiatus": hiatus,
+        }
+    )
 
 
 @router.get("/api/v1/rename/series/{series_id}/preview")
