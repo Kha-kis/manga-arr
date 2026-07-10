@@ -1654,6 +1654,204 @@ def test_api_v1_delete_delay_profile_rejects_unknown_id(env):
     assert resp.json()["error"] == "delay profile not found"
 
 
+def test_api_v1_create_import_list_exclusion_adds_row(env):
+    resp = _client().post(
+        "/api/v1/importlistexclusion",
+        json={
+            "source": "anilist_user",
+            "externalId": "42",
+            "title": "Blocked Manga",
+            "reason": "already owned elsewhere",
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["status"] == "created"
+    assert body["importListExclusion"]["source"] == "anilist_user"
+    assert body["importListExclusion"]["externalId"] == "42"
+    assert body["importListExclusion"]["title"] == "Blocked Manga"
+    assert body["importListExclusion"]["titleNormalized"] == "blocked manga"
+    assert body["importListExclusion"]["reason"] == "already owned elsewhere"
+    assert body["importListExclusion"]["addedAt"] is not None
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT source, external_id, title, title_normalized, reason"
+            " FROM import_list_exclusions WHERE source='anilist_user'"
+        ).fetchone()
+    assert dict(row) == {
+        "source": "anilist_user",
+        "external_id": "42",
+        "title": "Blocked Manga",
+        "title_normalized": "blocked manga",
+        "reason": "already owned elsewhere",
+    }
+
+
+def test_api_v1_create_import_list_exclusion_is_idempotent(env):
+    payload = {
+        "source": "anilist_user",
+        "externalId": "42",
+        "title": "Blocked Manga",
+    }
+    first = _client().post(
+        "/api/v1/importlistexclusion",
+        json=payload,
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert first.status_code == 200, first.text
+    second = _client().post(
+        "/api/v1/importlistexclusion",
+        json=payload,
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["status"] == "exists"
+    assert (
+        second.json()["importListExclusion"]["id"]
+        == first.json()["importListExclusion"]["id"]
+    )
+
+    with sqlite3.connect(env) as c:
+        count = c.execute(
+            "SELECT COUNT(*) FROM import_list_exclusions"
+            " WHERE source='anilist_user' AND external_id='42'"
+        ).fetchone()[0]
+    assert count == 1
+
+
+def test_api_v1_create_import_list_exclusion_requires_api_key(env):
+    resp = _client().post(
+        "/api/v1/importlistexclusion",
+        json={"source": "anilist_user", "externalId": "42"},
+    )
+    assert resp.status_code == 401
+
+
+def test_api_v1_create_import_list_exclusion_rejects_missing_key(env):
+    resp = _client().post(
+        "/api/v1/importlistexclusion",
+        json={"source": "anilist_user"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == (
+        "source plus either externalId or title is required"
+    )
+
+
+def test_api_v1_update_import_list_exclusion_updates_normalized_title(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO import_list_exclusions"
+            "(id, source, external_id, title, title_normalized, reason)"
+            " VALUES(1501, 'anilist_user', '42', 'Old Title',"
+            " 'old title', 'old')"
+        )
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/importlistexclusion/1501",
+        json={
+            "source": "mal_user",
+            "externalId": "",
+            "title": "  New   Blocked   Manga  ",
+            "reason": "not wanted",
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["importListExclusion"]["source"] == "mal_user"
+    assert body["importListExclusion"]["externalId"] is None
+    assert body["importListExclusion"]["title"] == "New   Blocked   Manga"
+    assert body["importListExclusion"]["titleNormalized"] == "new blocked manga"
+    assert body["importListExclusion"]["reason"] == "not wanted"
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT source, external_id, title, title_normalized, reason"
+            " FROM import_list_exclusions WHERE id=1501"
+        ).fetchone()
+    assert dict(row) == {
+        "source": "mal_user",
+        "external_id": None,
+        "title": "New   Blocked   Manga",
+        "title_normalized": "new blocked manga",
+        "reason": "not wanted",
+    }
+
+
+def test_api_v1_update_import_list_exclusion_rejects_duplicate(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO import_list_exclusions"
+            "(id, source, external_id, title, title_normalized)"
+            " VALUES(1510, 'anilist_user', '42', 'A', 'a')"
+        )
+        c.execute(
+            "INSERT INTO import_list_exclusions"
+            "(id, source, external_id, title, title_normalized)"
+            " VALUES(1511, 'anilist_user', '43', 'B', 'b')"
+        )
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/importlistexclusion/1511",
+        json={"externalId": "42"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "import list exclusion already exists"
+
+
+def test_api_v1_update_import_list_exclusion_rejects_unknown_id(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/importlistexclusion/99999",
+        json={"title": "Missing"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "import list exclusion not found"
+
+
+def test_api_v1_delete_import_list_exclusion_removes_row(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO import_list_exclusions"
+            "(id, source, external_id, title, title_normalized)"
+            " VALUES(1520, 'anilist_user', '42', 'Blocked', 'blocked')"
+        )
+
+    resp = _client().delete(
+        "/api/v1/importlistexclusion/1520",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 1520}
+
+    with sqlite3.connect(env) as c:
+        row = c.execute(
+            "SELECT 1 FROM import_list_exclusions WHERE id=1520"
+        ).fetchone()
+    assert row is None
+
+
+def test_api_v1_delete_import_list_exclusion_rejects_unknown_id(env):
+    resp = _client().delete(
+        "/api/v1/importlistexclusion/99999",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "import list exclusion not found"
+
+
 def test_api_v1_command_cleanup_seen_mutates_stale_rows(env):
     client = _client()
     headers = {"X-Api-Key": _api_key(env)}
