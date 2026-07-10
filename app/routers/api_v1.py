@@ -13,7 +13,9 @@ import platform
 import re
 import shutil
 import sqlite3
+import zipfile
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -53,6 +55,7 @@ from routers.settings_ import (
     set_default_root_folder_entry,
 )
 from routers.series_ import patch_series as _patch_series
+import routers.system as system_router
 from routers.system import APP_VERSION, TASKS, TASK_STATE, run_command as _run_command
 from shared import (
     build_volume_label,
@@ -528,6 +531,66 @@ def _root_folder(row) -> dict:
         "isDefault": _bool(row["is_default"]),
         **disk,
     }
+
+
+def _safe_backup_filename(filename: str) -> bool:
+    safe_name = os.path.basename(filename or "")
+    return bool(safe_name and safe_name == filename and safe_name.endswith(".zip"))
+
+
+def _backup_entry(filename: str) -> dict | None:
+    if not _safe_backup_filename(filename):
+        return None
+    fpath = os.path.join(system_router.BACKUP_DIR, filename)
+    try:
+        stat = os.stat(fpath)
+    except OSError:
+        return None
+    mtime = datetime.fromtimestamp(stat.st_mtime, timezone.utc)
+    return {
+        "id": filename,
+        "name": filename,
+        "filename": filename,
+        "path": fpath,
+        "type": "manual",
+        "size": stat.st_size,
+        "sizeHuman": system_router._fmt_bytes(stat.st_size),
+        "time": mtime.isoformat(),
+    }
+
+
+def _list_backup_entries() -> list[dict]:
+    os.makedirs(system_router.BACKUP_DIR, exist_ok=True)
+    try:
+        filenames = sorted(os.listdir(system_router.BACKUP_DIR), reverse=True)
+    except OSError:
+        return []
+    backups = []
+    for filename in filenames:
+        entry = _backup_entry(filename)
+        if entry:
+            backups.append(entry)
+    return backups
+
+
+def _create_backup_file() -> dict:
+    os.makedirs(system_router.BACKUP_DIR, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"mangarr_backup_{ts}.zip"
+    saved_path = os.path.join(system_router.BACKUP_DIR, filename)
+
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        if os.path.exists(system_router.DB_PATH):
+            zf.write(system_router.DB_PATH, arcname="manga_arr.db")
+    buf.seek(0)
+    zip_bytes = buf.read()
+    with open(saved_path, "wb") as f:
+        f.write(zip_bytes)
+    entry = _backup_entry(filename)
+    if entry is None:
+        raise OSError("backup was not written")
+    return entry
 
 
 def _series(row, tags: list[str]) -> dict:
@@ -1057,6 +1120,43 @@ async def api_v1_system_status():
             "timestamp": _dt_utc(),
         }
     )
+
+
+@router.get("/api/v1/system/backup")
+async def api_v1_system_backups():
+    return JSONResponse(_list_backup_entries())
+
+
+@router.post("/api/v1/system/backup")
+async def api_v1_create_system_backup():
+    try:
+        backup = _create_backup_file()
+    except OSError as exc:
+        return JSONResponse(
+            {"error": f"backup failed: {type(exc).__name__}"},
+            status_code=500,
+        )
+    return JSONResponse({"ok": True, "status": "created", "backup": backup})
+
+
+@router.delete("/api/v1/system/backup/{filename}")
+async def api_v1_delete_system_backup(filename: str):
+    if not _safe_backup_filename(filename):
+        return JSONResponse({"error": "invalid filename"}, status_code=400)
+    fpath = os.path.join(system_router.BACKUP_DIR, filename)
+    if not os.path.exists(fpath):
+        return JSONResponse(
+            {"error": "backup not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    try:
+        os.remove(fpath)
+    except OSError as exc:
+        return JSONResponse(
+            {"error": f"backup delete failed: {type(exc).__name__}"},
+            status_code=500,
+        )
+    return JSONResponse({"ok": True, "id": filename})
 
 
 @router.get("/api/v1/rootfolder")

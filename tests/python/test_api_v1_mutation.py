@@ -1,8 +1,10 @@
+import io
 import json
 import os
 import sqlite3
 import sys
 import tempfile
+import zipfile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -574,6 +576,117 @@ def test_api_v1_restore_series_rejects_unknown_id(env):
     )
     assert resp.status_code == 404
     assert resp.json()["error"] == "series not found"
+
+
+def _use_temp_backup_dir(monkeypatch, tmp_path, db_path):
+    import routers.system as system_router
+
+    backup_dir = tmp_path / "api-v1-backups"
+    backup_dir.mkdir()
+    monkeypatch.setattr(system_router, "BACKUP_DIR", str(backup_dir))
+    monkeypatch.setattr(system_router, "DB_PATH", db_path)
+    return backup_dir
+
+
+def test_api_v1_list_system_backups_returns_zip_metadata(env, tmp_path, monkeypatch):
+    backup_dir = _use_temp_backup_dir(monkeypatch, tmp_path, env)
+    first = backup_dir / "mangarr_backup_20260101_000000.zip"
+    second = backup_dir / "mangarr_backup_20260102_000000.zip"
+    ignored = backup_dir / "notes.txt"
+    first.write_bytes(b"PK\x03\x04first")
+    second.write_bytes(b"PK\x03\x04second")
+    ignored.write_text("not a backup")
+
+    resp = _client().get(
+        "/api/v1/system/backup",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    backups = resp.json()
+    assert [backup["filename"] for backup in backups] == [
+        "mangarr_backup_20260102_000000.zip",
+        "mangarr_backup_20260101_000000.zip",
+    ]
+    assert backups[0]["id"] == "mangarr_backup_20260102_000000.zip"
+    assert backups[0]["type"] == "manual"
+    assert backups[0]["size"] == len(b"PK\x03\x04second")
+    assert backups[0]["sizeHuman"]
+    assert backups[0]["time"]
+
+
+def test_api_v1_create_system_backup_writes_valid_zip(env, tmp_path, monkeypatch):
+    backup_dir = _use_temp_backup_dir(monkeypatch, tmp_path, env)
+
+    resp = _client().post(
+        "/api/v1/system/backup",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["status"] == "created"
+    backup = body["backup"]
+    assert backup["filename"].startswith("mangarr_backup_")
+    assert backup["filename"].endswith(".zip")
+    backup_path = backup_dir / backup["filename"]
+    assert backup_path.exists()
+
+    with zipfile.ZipFile(io.BytesIO(backup_path.read_bytes()), "r") as zf:
+        assert "manga_arr.db" in zf.namelist()
+        db_bytes = zf.read("manga_arr.db")
+
+    extracted = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    extracted.write(db_bytes)
+    extracted.close()
+    try:
+        with sqlite3.connect(extracted.name) as c:
+            title = c.execute("SELECT title FROM series WHERE id=5").fetchone()[0]
+        assert title == "S5"
+    finally:
+        os.unlink(extracted.name)
+
+
+def test_api_v1_create_system_backup_requires_api_key(env, tmp_path, monkeypatch):
+    _use_temp_backup_dir(monkeypatch, tmp_path, env)
+    resp = _client().post("/api/v1/system/backup")
+    assert resp.status_code == 401
+
+
+def test_api_v1_delete_system_backup_removes_file(env, tmp_path, monkeypatch):
+    backup_dir = _use_temp_backup_dir(monkeypatch, tmp_path, env)
+    backup = backup_dir / "mangarr_backup_20260103_000000.zip"
+    backup.write_bytes(b"PK\x03\x04backup")
+
+    resp = _client().delete(
+        "/api/v1/system/backup/mangarr_backup_20260103_000000.zip",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "ok": True,
+        "id": "mangarr_backup_20260103_000000.zip",
+    }
+    assert not backup.exists()
+
+
+def test_api_v1_delete_system_backup_rejects_bad_filename(env, tmp_path, monkeypatch):
+    _use_temp_backup_dir(monkeypatch, tmp_path, env)
+    resp = _client().delete(
+        "/api/v1/system/backup/passwords.txt",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "invalid filename"
+
+
+def test_api_v1_delete_system_backup_rejects_unknown_file(env, tmp_path, monkeypatch):
+    _use_temp_backup_dir(monkeypatch, tmp_path, env)
+    resp = _client().delete(
+        "/api/v1/system/backup/mangarr_backup_20990101_000000.zip",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "backup not found"
 
 
 def test_api_v1_create_root_folder_adds_row_and_can_default(env):
