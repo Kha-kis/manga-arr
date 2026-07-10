@@ -55,6 +55,11 @@ def env():
             (library_root,),
         )
         c.execute(
+            "INSERT INTO root_folders(id, path, label, is_default)"
+            " VALUES(2, ?, 'Archive', 0)",
+            (os.path.join(library_root, "archive"),),
+        )
+        c.execute(
             "INSERT INTO quality_profiles"
             "(id, name, qualities, cutoff, upgrades_allowed,"
             " minimum_custom_format_score, cutoff_format_score,"
@@ -96,14 +101,26 @@ def env():
             "INSERT INTO series"
             "(id, title, search_pattern, anilist_id, mangadex_id, status,"
             " description, total_volumes, total_chapters, enabled,"
-            " monitored, root_folder_id, quality_profile_id, monitor_mode,"
-            " tags, pub_year)"
+            " monitored, root_folder_id, quality_profile_id, language_profile_id,"
+            " monitor_mode, tags, pub_year)"
             " VALUES(5, 'Vinland Saga', 'Vinland Saga', 123, 'mdx-123',"
             " 'releasing', 'Viking manga', 3, 30, 1, 1, 1, 10,"
-            " 'missing', '[\"owned\"]', 2005)"
+            " 20, 'missing', '[\"owned\"]', 2005)"
+        )
+        c.execute(
+            "INSERT INTO series"
+            "(id, title, search_pattern, status, description, total_volumes,"
+            " enabled, monitored, root_folder_id, quality_profile_id,"
+            " language_profile_id, monitor_mode, tags, pub_year)"
+            " VALUES(6, 'Berserk', 'Berserk Deluxe', 'ended',"
+            " 'Dark fantasy manga', 1, 1, 0, 2, 10, 20, 'none',"
+            " '[\"archived\"]', 1989)"
         )
         c.execute(
             "INSERT INTO series_tags(series_id, tag) VALUES(5, 'favorite')"
+        )
+        c.execute(
+            "INSERT INTO series_tags(series_id, tag) VALUES(6, 'dark')"
         )
         c.execute(
             "INSERT INTO volumes"
@@ -300,8 +317,8 @@ def test_api_v1_profiles_roots_and_series_contract(env):
     ]
 
     series = client.get("/api/v1/series", headers=headers).json()
-    assert len(series) == 1
-    item = series[0]
+    assert [row["id"] for row in series] == [6, 5]
+    item = next(row for row in series if row["id"] == 5)
     assert item["id"] == 5
     assert item["title"] == "Vinland Saga"
     assert item["titleSlug"] == "vinland-saga"
@@ -313,6 +330,60 @@ def test_api_v1_profiles_roots_and_series_contract(env):
     assert item["statistics"]["volumeFileCount"] == 2
     assert item["statistics"]["wantedCount"] == 1
     assert item["statistics"]["grabbedCount"] == 1
+
+
+def test_api_v1_series_filters_sort_and_paging(env):
+    client = _client()
+    headers = {"X-Api-Key": _api_key(env)}
+
+    by_term = client.get(
+        "/api/v1/series",
+        params={"term": "deluxe"},
+        headers=headers,
+    )
+    assert by_term.status_code == 200, by_term.text
+    assert [row["id"] for row in by_term.json()] == [6]
+    assert by_term.headers["X-Total-Count"] == "1"
+
+    monitored = client.get(
+        "/api/v1/series",
+        params={"monitored": "true"},
+        headers=headers,
+    )
+    assert [row["id"] for row in monitored.json()] == [5]
+
+    by_tag = client.get(
+        "/api/v1/series",
+        params={"tag": "dark"},
+        headers=headers,
+    )
+    assert [row["id"] for row in by_tag.json()] == [6]
+
+    by_root = client.get(
+        "/api/v1/series",
+        params={"rootFolderId": 1},
+        headers=headers,
+    )
+    assert [row["id"] for row in by_root.json()] == [5]
+
+    paged = client.get(
+        "/api/v1/series",
+        params={"sortKey": "year", "sortDirection": "desc", "page": 1, "pageSize": 1},
+        headers=headers,
+    )
+    assert paged.status_code == 200, paged.text
+    assert [row["id"] for row in paged.json()] == [5]
+    assert paged.headers["X-Total-Count"] == "2"
+    assert paged.headers["X-Page"] == "1"
+    assert paged.headers["X-Page-Size"] == "1"
+
+    bad_bool = client.get(
+        "/api/v1/series",
+        params={"monitored": "sometimes"},
+        headers=headers,
+    )
+    assert bad_bool.status_code == 400
+    assert bad_bool.json()["error"] == "monitored must be a boolean"
 
 
 def test_api_v1_queue_history_and_wanted_contract(env):
