@@ -50,7 +50,7 @@ not exact TV terminology, exact Sonarr UI, or identical plugin breadth.
 | Root-folder free-space display | `/system/status` disk-space panel, `/stats` disk usage summary | Covered |
 | Health and maintenance | `/health`, recycle bin, metadata health/reconcile tools, API key regeneration | Covered |
 | API authentication | `/api/*` API-key middleware, CSRF bypass for API-key clients, fail-closed tests | Covered |
-| API v1 seed | `/api/v1/system/status`, `/api/v1/series`, `/api/v1/series/{id}`, `/api/v1/queue`, `/api/v1/history`, `/api/v1/wanted`, `/api/v1/wanted/cutoff`, `/api/v1/blocklist`, `/api/v1/command`, `/api/v1/rootfolder`, `/api/v1/qualityprofile`, `/api/v1/languageprofile`, `/api/v1/customformat`, `/api/v1/releaseprofile`, plus `PATCH /api/v1/series/{id}`, `POST /api/v1/command`, `POST /api/v1/rootfolder`, `POST /api/v1/rootfolder/{id}/default`, `DELETE /api/v1/rootfolder/{id}`, `DELETE /api/v1/blocklist`, `DELETE /api/v1/blocklist/{id}`, `POST /api/v1/history/{id}/failed`, `DELETE /api/v1/history/failed`, `DELETE /api/v1/history/{id}`, `POST /api/v1/queue/grabbed/{volume_id}/reset`, `DELETE /api/v1/queue/pending/{pending_id}`, `DELETE /api/v1/queue/import/failed`, `DELETE /api/v1/queue/import/{queue_id}`, `POST /api/v1/queue/import/{queue_id}/skip`, and `POST /api/v1/queue/import/{queue_id}/retry` with response-contract tests | Initial slice covered |
+| API v1 seed | `/api/v1/system/status`, `/api/v1/series`, `/api/v1/series/{id}`, `/api/v1/calendar`, `/api/v1/queue`, `/api/v1/history`, `/api/v1/wanted`, `/api/v1/wanted/cutoff`, `/api/v1/blocklist`, `/api/v1/command`, `/api/v1/rootfolder`, `/api/v1/qualityprofile`, `/api/v1/languageprofile`, `/api/v1/customformat`, `/api/v1/releaseprofile`, plus `PATCH /api/v1/series/{id}`, `POST /api/v1/command`, `POST /api/v1/rootfolder`, `POST /api/v1/rootfolder/{id}/default`, `DELETE /api/v1/rootfolder/{id}`, `DELETE /api/v1/blocklist`, `DELETE /api/v1/blocklist/{id}`, `POST /api/v1/history/{id}/failed`, `DELETE /api/v1/history/failed`, `DELETE /api/v1/history/{id}`, `POST /api/v1/queue/grabbed/{volume_id}/reset`, `DELETE /api/v1/queue/pending/{pending_id}`, `DELETE /api/v1/queue/import/failed`, `DELETE /api/v1/queue/import/{queue_id}`, `POST /api/v1/queue/import/{queue_id}/skip`, and `POST /api/v1/queue/import/{queue_id}/retry` with response-contract tests | Initial slice covered |
 | Rename/organize files | `/api/v1/rename/series/{id}/preview`, `POST /api/v1/rename/series/{id}`, and the series-page HTMX rename panel preview selected renames, report conflicts, rename safe files, and update import paths | Mostly covered |
 | Existing-library adoption | `/api/v1/rootfolder/{id}/unmappedfolders` reports root-folder child directories not mapped to known series; `/api/v1/rootfolder/{id}/unmappedfolders/matches` proposes metadata matches; `POST /api/v1/rootfolder/{id}/unmappedfolders/adopt` creates a series for a selected folder, selected metadata, and existing files; Settings → Root Folders exposes scan/match/adopt controls | Mostly covered |
 | Import-list exclusions | `import_list_exclusions` table, `/import-lists` management UI, and sync-time skip logic by source/external ID or normalized title | Covered |
@@ -61,18 +61,18 @@ not exact TV terminology, exact Sonarr UI, or identical plugin breadth.
 ### 1. Sonarr-Compatible REST API Coverage
 
 Mangarr now has an initial `/api/v1/*` surface for external automation
-clients, including series list/detail, profiles, root folders, queue, history,
-wanted, cutoff-unmet, blocklist, commands, system status, series patching, and
-command execution. Profile/configuration read coverage includes quality,
-language, custom-format, and release-profile endpoints. Series reads support
-common filters, sorting, and header-based paging. Remaining API gaps are
-deeper compatibility, richer filtering on other resources, and broader
-mutation coverage.
+clients, including series list/detail, manga-native calendar buckets, profiles,
+root folders, queue, history, wanted, cutoff-unmet, blocklist, commands, system
+status, series patching, and command execution. Profile/configuration read
+coverage includes quality, language, custom-format, and release-profile
+endpoints. Series reads support common filters, sorting, and header-based
+paging. Remaining API gaps are deeper compatibility, richer filtering on
+non-series resources, and broader mutation coverage.
 
 Recommended scope:
 
-1. Extend the read API with richer filters/paging and any integration-needed
-   detail fields.
+1. Extend remaining read resources with richer filters/paging and any
+   integration-needed detail fields.
 2. Add broader mutation endpoints behind response-contract tests.
 3. Keep the existing `X-Api-Key` behavior and `/api` CSRF bypass.
 4. Treat exact Sonarr field names as compatibility affordances, not a reason
@@ -195,8 +195,8 @@ Recommended scope:
 
 ## Prioritized Execution Plan
 
-1. API parity read endpoints. This unlocks external automation and is easy to
-   test without file I/O risk.
+1. Continue API parity coverage. This unlocks external automation and is easy
+   to test without file I/O risk.
 2. Rename planner dry-run. This is the largest remaining user-facing Sonarr
    workflow gap and should start read-only.
 3. Existing-library advanced matching/path handling. Build on the current
