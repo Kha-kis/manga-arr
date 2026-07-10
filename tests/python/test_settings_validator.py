@@ -95,6 +95,28 @@ def test_invalid_enum_falls_back_to_default(env):
     assert main.CONFIG['import_mode'] == 'hardlink'
 
 
+def test_log_level_env_default_is_validated(monkeypatch, env):
+    import main
+    monkeypatch.setenv('MANGARR_LOG_LEVEL', 'DEBUG')
+    main.load_config()
+    assert main.CONFIG['log_level'] == 'DEBUG'
+
+
+def test_invalid_log_level_env_falls_back(monkeypatch, env):
+    import main
+    monkeypatch.setenv('MANGARR_LOG_LEVEL', 'TRACE')
+    main.load_config()
+    assert main.CONFIG['log_level'] == 'INFO'
+
+
+def test_invalid_log_level_falls_back_to_env_default(monkeypatch, env):
+    import main
+    monkeypatch.setenv('MANGARR_LOG_LEVEL', 'WARNING')
+    _set(env, 'log_level', 'TRACE')
+    main.load_config()
+    assert main.CONFIG['log_level'] == 'WARNING'
+
+
 def test_quality_cutoff_empty_string_is_valid(env):
     import main
     _set(env, 'quality_cutoff', '')
@@ -131,6 +153,29 @@ def test_garbage_bool_falls_back(env):
     _set(env, 'remove_completed', 'yes')
     main.load_config()
     assert main.CONFIG['remove_completed'] == 'false'
+
+
+# ── URL base validation ──────────────────────────────────────────────────────
+
+def test_url_base_normalizes_missing_leading_slash(env):
+    import main
+    _set(env, 'url_base', 'mangarr/')
+    main.load_config()
+    assert main.CONFIG['url_base'] == '/mangarr'
+
+
+def test_url_base_rejects_absolute_url(env):
+    import main
+    _set(env, 'url_base', 'https://example.invalid/mangarr')
+    main.load_config()
+    assert main.CONFIG['url_base'] == ''
+
+
+def test_url_base_env_default_is_normalized(monkeypatch, env):
+    import main
+    monkeypatch.setenv('MANGARR_URL_BASE', 'mangarr/')
+    main.load_config()
+    assert main.CONFIG['url_base'] == '/mangarr'
 
 
 # ── unvalidated keys pass through unchanged ─────────────────────────────────

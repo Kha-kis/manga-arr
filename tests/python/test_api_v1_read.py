@@ -174,6 +174,14 @@ def test_api_v1_requires_api_key(env):
 
 
 def test_api_v1_system_status(env):
+    import main
+
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT OR REPLACE INTO settings(key,value) VALUES('url_base','/mangarr')"
+        )
+    main.load_config()
+
     resp = _client().get(
         "/api/v1/system/status",
         headers={"X-Api-Key": _api_key(env)},
@@ -183,6 +191,7 @@ def test_api_v1_system_status(env):
     assert body["appName"] == "Mangarr"
     assert body["authentication"] == "apikey"
     assert body["databaseType"] == "sqlite"
+    assert body["urlBase"] == "/mangarr"
 
 
 def test_api_v1_profiles_roots_and_series_contract(env):

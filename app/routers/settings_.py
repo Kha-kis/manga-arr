@@ -16,6 +16,7 @@ from security import (
     UnsafeURLError,
     encrypt_if_cipher_available,
 )
+from config import normalize_url_base
 
 
 def _encrypt_settings_secrets_in_place(fields: dict) -> dict:
@@ -237,7 +238,13 @@ async def save_general_settings(request: Request):
     # backup_retention need numeric clamping to match prior behaviour.
     coercers = {
         "instance_name": lambda v: str(v or ""),
-        "log_level": lambda v: str(v or "INFO").strip() or "INFO",
+        "log_level": lambda v: (
+            str(v or "INFO").strip().upper()
+            if str(v or "INFO").strip().upper()
+            in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+            else "INFO"
+        ),
+        "url_base": normalize_url_base,
         "backup_folder": lambda v: str(v or "/config/backups/"),
         "backup_interval_days": lambda v: str(v or "7"),
         "backup_retention": lambda v: str(v or "10"),
@@ -293,7 +300,7 @@ async def save_general_settings(request: Request):
     _reload_config()
     # Only reset the active log level if log_level was actually submitted
     if "log_level" in form:
-        log_level = str(form["log_level"] or "INFO").strip() or "INFO"
+        log_level = str(form["log_level"] or "INFO").strip().upper() or "INFO"
         logging.getLogger().setLevel(getattr(logging, log_level.upper(), logging.INFO))
     if is_htmx(request):
         return Response(

@@ -46,7 +46,7 @@ not exact TV terminology, exact Sonarr UI, or identical plugin breadth.
 | Remote path mappings | `remote_path_mappings` schema/table, download-client UI, create/delete tests | Covered |
 | Import lists | `/import-lists`, sync routes, scheduled import-list task | Covered |
 | Notifications/connect | `/notifications`, Discord, Ntfy, Gotify, Apprise, Pushover, Pushbullet, Slack, email, webhooks, Komga scan | Covered |
-| System tasks/status/logs/backups | `/system/status`, `/system/tasks`, `/logs`, `/system/backup`, scheduled backups | Mostly covered |
+| System tasks/status/logs/backups | `/system/status`, `/system/tasks`, `/logs`, `/system/backup`, scheduled backups, General settings for log level and URL base | Mostly covered |
 | Root-folder free-space display | `/system/status` disk-space panel, `/stats` disk usage summary | Covered |
 | Health and maintenance | `/health`, recycle bin, metadata health/reconcile tools, API key regeneration | Covered |
 | API authentication | `/api/*` API-key middleware, CSRF bypass for API-key clients, fail-closed tests | Covered |
@@ -141,15 +141,16 @@ Recommended scope:
 
 ### 6. General/System Settings Breadth
 
-Mangarr covers API keys, backups, logging views, root folders, and deployment
+Mangarr covers API keys, backups, logging views, root folders, log-level
+controls, URL-base storage, selected environment defaults, and deployment
 documentation. Sonarr also exposes broader settings for proxy, analytics,
-updates, detailed logging/syslog, UI date/style preferences, URL base/server
-options, and predictable environment-variable overrides.
+updates, detailed syslog, UI date/style preferences, and server options.
 
 Recommended scope:
 
-1. Add only deployment-relevant settings first: URL base/proxy support,
-   log-level controls, and documented environment overrides.
+1. Add only deployment-relevant settings first: proxy guidance, additional
+   documented environment overrides, and any server options that map cleanly
+   to Docker Compose.
 2. Keep analytics out unless explicitly desired.
 3. Treat UI date/style preferences as low priority because Mangarr's current
    UI has one maintained theme.
@@ -199,8 +200,8 @@ Recommended scope:
    scan, match proposal, and adoption workflow.
 4. API mutation endpoints. Add after read endpoints and route contracts are
    stable.
-5. General settings polish: URL base/proxy docs, log-level controls, selected
-   env overrides.
+5. General settings polish: additional proxy guidance, server options, and
+   selected env overrides.
 6. Optional backup restore UI, extra download clients, update indicator, and
    PostgreSQL evaluation. These should wait for explicit deployment/user demand.
 
