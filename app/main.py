@@ -62,6 +62,7 @@ from routers import (
     # DDL / Suwayomi
     mangadex_                 as _mdx_router,
     suwayomi_                 as _swy_router,
+    api_v1                    as _api_v1_router,
 )
 
 # ── Database path ─────────────────────────────────────────────────────────────
@@ -675,6 +676,7 @@ app.include_router(_health_router.router, tags=["Health"])
 app.include_router(_series_router.router, tags=["Series"])
 app.include_router(_mdx_router.router,    tags=["MangaDex"])
 app.include_router(_swy_router.router,    tags=["Suwayomi"])
+app.include_router(_api_v1_router.router, tags=["API v1"])
 
 # ── Server-Sent Events for real-time queue updates ────────────────────────────
 # _sse_subscribers + broadcast_queue_event moved to events.py (re-exported

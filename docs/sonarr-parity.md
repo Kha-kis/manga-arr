@@ -50,25 +50,22 @@ not exact TV terminology, exact Sonarr UI, or identical plugin breadth.
 | Root-folder free-space display | `/system/status` disk-space panel, `/stats` disk usage summary | Covered |
 | Health and maintenance | `/health`, recycle bin, metadata health/reconcile tools, API key regeneration | Covered |
 | API authentication | `/api/*` API-key middleware, CSRF bypass for API-key clients, fail-closed tests | Covered |
+| Read-only API v1 seed | `/api/v1/system/status`, `/api/v1/series`, `/api/v1/queue`, `/api/v1/history`, `/api/v1/wanted`, `/api/v1/rootfolder`, `/api/v1/qualityprofile` with response-contract tests | Initial slice covered |
 
 ## True Parity Gaps
 
 ### 1. Sonarr-Compatible REST API Coverage
 
-Mangarr has operational API endpoints, but not a broad Sonarr-compatible API
-contract for external automation clients. Current endpoints are mostly
-workflow-specific actions such as manual import, queue refresh, reconcile,
-series patching, health commands, and integration tests. Missing or incomplete
-areas include stable JSON list/detail endpoints for series, profiles, root
-folders, queue, history, wanted/cutoff, blocklist, commands, and system status
-using predictable Sonarr-like response shapes.
+Mangarr now has an initial read-only `/api/v1/*` surface for external
+automation clients. Remaining API gaps are breadth and deeper compatibility:
+detail endpoints, blocklist, commands, cutoff-unmet, richer paging/filtering,
+and mutation endpoints are still incomplete compared with Sonarr's API.
 
 Recommended scope:
 
-1. Add a read-only API layer first: `/api/v1/series`, `/api/v1/queue`,
-   `/api/v1/history`, `/api/v1/wanted`, `/api/v1/rootfolder`,
-   `/api/v1/qualityprofile`, `/api/v1/system/status`.
-2. Add response-contract tests before adding mutations.
+1. Extend the read-only API layer with detail endpoints, cutoff-unmet,
+   blocklist, commands, and richer filters/paging.
+2. Keep response-contract tests ahead of mutations.
 3. Keep the existing `X-Api-Key` behavior and `/api` CSRF bypass.
 4. Treat exact Sonarr field names as compatibility affordances, not a reason
    to leak TV-specific concepts into the manga domain.
