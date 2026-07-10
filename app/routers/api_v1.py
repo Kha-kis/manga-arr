@@ -22,7 +22,11 @@ from library_scan import adopt_unmapped_folder, scan_unmapped_root_folder
 from metadata import search_series
 from parsing import normalize
 from rename_plan import build_series_rename_preview, execute_series_rename
-from routers.history_ import delete_history_entry, mark_history_failed
+from routers.history_ import (
+    clear_failed_history_entries,
+    delete_history_entry,
+    mark_history_failed,
+)
 from routers.import_ import dismiss_import_queue_entry, skip_import_queue_entry
 from routers.queue_ import dismiss_pending_release, reset_grabbed_volume
 from routers.series_ import patch_series as _patch_series
@@ -892,6 +896,12 @@ async def api_v1_history_mark_failed(history_id: int):
             status_code=HTTP_400_BAD_REQUEST,
         )
     return JSONResponse({"ok": True, "id": history_id})
+
+
+@router.delete("/api/v1/history/failed")
+async def api_v1_history_clear_failed():
+    result = clear_failed_history_entries()
+    return JSONResponse({"ok": True, "deleted": result["deleted"]})
 
 
 @router.delete("/api/v1/history/{history_id}")

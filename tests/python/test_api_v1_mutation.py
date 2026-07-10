@@ -125,6 +125,13 @@ def env():
             " 'Already Failed')"
         )
         c.execute(
+            "INSERT INTO history"
+            "(id, event_type, series_id, series_title, volume_label,"
+            " source_title)"
+            " VALUES(703, 'grab_failed', 5, 'S5', 'Vol 6',"
+            " 'Failed Grab')"
+        )
+        c.execute(
             "INSERT INTO pending_releases"
             "(id, series_id, url, title, indexer, protocol, size_bytes)"
             " VALUES(801, 5, 'https://example.invalid/pending',"
@@ -438,6 +445,26 @@ def test_api_v1_delete_history_entry_rejects_unknown_id(env):
     )
     assert resp.status_code == 404
     assert resp.json()["error"] == "history entry not found"
+
+
+def test_api_v1_clear_failed_history_removes_only_failures(env):
+    resp = _client().delete(
+        "/api/v1/history/failed",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "deleted": 2}
+
+    with sqlite3.connect(env) as c:
+        rows = c.execute(
+            "SELECT id, event_type FROM history ORDER BY id"
+        ).fetchall()
+    assert rows == [(701, "grabbed")]
+
+
+def test_api_v1_clear_failed_history_requires_api_key(env):
+    resp = _client().delete("/api/v1/history/failed")
+    assert resp.status_code == 401
 
 
 def test_api_v1_queue_reset_grabbed_volume_returns_wanted(env):

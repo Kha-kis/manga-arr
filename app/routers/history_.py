@@ -69,6 +69,16 @@ def delete_history_entry(hist_id: int) -> dict:
     return {"ok": True, "status": "deleted"}
 
 
+def clear_failed_history_entries() -> dict:
+    """Delete failed grab/import history entries."""
+    with get_db() as db:
+        cur = db.execute(
+            "DELETE FROM history WHERE event_type IN ('import_failed','grab_failed')"
+        )
+        deleted = cur.rowcount
+    return {"ok": True, "status": "deleted", "deleted": deleted}
+
+
 @router.get("/activity")
 async def activity_redirect():
     return RedirectResponse("/history", status_code=302)
@@ -174,8 +184,7 @@ async def history_delete(request: Request, hist_id: int):
 @router.post("/history/clear-failed")
 async def history_clear_failed(request: Request):
     """Delete all import_failed and grab_failed history entries."""
-    with get_db() as db:
-        db.execute("DELETE FROM history WHERE event_type IN ('import_failed','grab_failed')")
+    clear_failed_history_entries()
     if request.headers.get("HX-Request") == "true":
         import json
         from fastapi.responses import Response as _Resp
