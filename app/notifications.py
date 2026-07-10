@@ -36,7 +36,7 @@ async def notify_discord(message: str, embed: dict | None = None,
 def make_grab_embed(series_title: str, vol_label: str, indexer: str,
                     protocol: str, client_name: str, cover_url: str = '') -> dict:
     return {
-        'title': f'⬇ Grabbed — {series_title}',
+        'title': f'Grabbed — {series_title}',
         'description': f'**{vol_label}**  ·  {indexer} [{protocol}] → {client_name}',
         'color': 0xffd060,
         'thumbnail': {'url': cover_url} if cover_url else {},
@@ -45,7 +45,7 @@ def make_grab_embed(series_title: str, vol_label: str, indexer: str,
 
 def make_complete_embed(series_title: str, vol_label: str, cover_url: str = '') -> dict:
     return {
-        'title': f'✅ Downloaded — {series_title}',
+        'title': f'Downloaded — {series_title}',
         'description': f'**{vol_label}** download complete',
         'color': 0x5dde94,
         'thumbnail': {'url': cover_url} if cover_url else {},
