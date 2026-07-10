@@ -128,6 +128,22 @@ def _csrf(tag: str = "test"):
 # ───────────────────── backup create ─────────────────────
 
 
+def test_backup_page_renders_restore_readiness_and_validate_controls(env):
+    import routers.system as _sys
+
+    target = os.path.join(_sys.BACKUP_DIR, "mangarr_backup_20260101_000000.zip")
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manga_arr.db", b"not-sqlite")
+
+    r = _client().get("/system/backup")
+    assert r.status_code == 200, r.text
+    assert "Restore Readiness" in r.text
+    assert "/api/system/backup/${encodeURIComponent(filename)}/validate" in r.text
+    assert "Validate backup mangarr_backup_20260101_000000.zip" in r.text
+    assert "/config/.mangarr-secret-key" in r.text
+    assert "MANGARR_SECRET_KEY" in r.text
+
+
 def test_backup_create_returns_valid_zip_with_db(env):
     """POST /api/system/backup/create must:
       1. Return a streaming zip response with the right filename pattern
@@ -196,6 +212,80 @@ def test_backup_create_writes_copy_to_backup_dir(env):
     assert len(new) == 1, (
         f"create must save exactly one new backup .zip to disk, got new files: {new!r}"
     )
+
+
+# ───────────────────── backup validate ─────────────────────
+
+
+def test_backup_validate_accepts_created_backup(env):
+    import routers.system as _sys
+
+    client = _client()
+    csrf = _csrf("bkp-validate-created")
+    create = client.post("/api/system/backup/create", **csrf)
+    assert create.status_code == 200, create.text
+
+    backups = [f for f in os.listdir(_sys.BACKUP_DIR) if f.endswith(".zip")]
+    assert len(backups) == 1
+
+    r = client.post(f"/api/system/backup/{backups[0]}/validate", **csrf)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["filename"] == backups[0]
+    assert body["containsDatabase"] is True
+    assert body["databaseValid"] is True
+    assert "manga_arr.db" in body["entries"]
+
+
+def test_backup_validate_rejects_non_zip_filename(env):
+    r = _client().post(
+        "/api/system/backup/passwords.txt/validate",
+        **_csrf("bkp-validate-bad"),
+    )
+    assert r.status_code == 400
+    assert r.json()["message"] == "Invalid filename"
+
+
+def test_backup_validate_rejects_missing_backup(env):
+    r = _client().post(
+        "/api/system/backup/mangarr_backup_20990101_000000.zip/validate",
+        **_csrf("bkp-validate-missing"),
+    )
+    assert r.status_code == 404
+    assert r.json()["message"] == "Backup not found"
+
+
+def test_backup_validate_rejects_malformed_zip(env):
+    import routers.system as _sys
+
+    target = os.path.join(_sys.BACKUP_DIR, "mangarr_backup_20260101_000000.zip")
+    with open(target, "wb") as f:
+        f.write(b"not a zip")
+
+    r = _client().post(
+        "/api/system/backup/mangarr_backup_20260101_000000.zip/validate",
+        **_csrf("bkp-validate-malformed"),
+    )
+    assert r.status_code == 400
+    assert r.json()["message"] == "Invalid ZIP file"
+
+
+def test_backup_validate_rejects_zip_without_database(env):
+    import routers.system as _sys
+
+    target = os.path.join(_sys.BACKUP_DIR, "mangarr_backup_20260101_000000.zip")
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("notes.txt", "missing db")
+
+    r = _client().post(
+        "/api/system/backup/mangarr_backup_20260101_000000.zip/validate",
+        **_csrf("bkp-validate-no-db"),
+    )
+    assert r.status_code == 422
+    body = r.json()
+    assert body["containsDatabase"] is False
+    assert body["databaseValid"] is False
 
 
 # ───────────────────── backup delete ─────────────────────

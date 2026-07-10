@@ -121,14 +121,16 @@ Recommended scope:
 
 ### 4. Backup Restore Workflow
 
-Mangarr can create, download, retain, and delete backups. The restore guidance
-is documented, and the app warns about secret-key requirements, but there is
-not an in-app restore flow equivalent to Sonarr's backup/restore workflow.
+Mangarr can create, download, retain, delete, and validate backups. The Backup
+page includes restore readiness guidance and validates that a server-side backup
+ZIP contains a readable `manga_arr.db`. Actual restore remains an offline
+maintenance action because replacing the live SQLite database from the running
+app would be unsafe.
 
 Recommended scope:
 
-1. Keep restore as documented/manual unless real deployments need UI restore.
-2. If adding UI restore, require upload validation, explicit shutdown/restart
+1. Keep restore as documented/manual unless real deployments need live restore.
+2. If adding live restore, require upload validation, explicit shutdown/restart
    guidance, and secret-key compatibility checks.
 3. Do not restore over a live DB without a deliberately designed maintenance
    mode.

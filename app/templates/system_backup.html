@@ -66,15 +66,21 @@
               <div class="d-flex gap-2">
                 <a href="/config/backups/{{ b.filename }}" download
                    class="btn btn-sm btn-action btn-outline-ember"
-                   title="Download" aria-label="Download">
+                   title="Download" aria-label="Download backup {{ b.filename }}">
                   <i class="bi bi-download"></i>
                 </a>
+                <button type="button" class="btn btn-sm btn-action btn-secondary"
+                        title="Validate" aria-label="Validate backup {{ b.filename }}"
+                        data-backup-filename="{{ b.filename }}"
+                        onclick="validateBackup(this.dataset.backupFilename)">
+                  <i class="bi bi-shield-check"></i>
+                </button>
                 <form method="POST" action="/api/system/backup/{{ b.filename }}/delete"
                       data-confirm="Delete backup {{ b.filename }}?"
                       data-confirm-heading="Delete backup" data-confirm-ok="Delete"
                       class="backup-delete-form">
                   <button type="submit" class="btn btn-sm btn-action btn-danger-soft"
-                          title="Delete" aria-label="Delete">
+                          title="Delete" aria-label="Delete backup {{ b.filename }}">
                     <i class="bi bi-trash"></i>
                   </button>
                 </form>
@@ -92,6 +98,24 @@
       <p class="backup-empty-copy">Click "Create &amp; Download" above to create your first backup.</p>
     </div>
     {% endif %}
+  </div>
+</div>
+
+<!-- Restore Guidance -->
+<div class="panel">
+  <div class="panel-header">
+    <i class="bi bi-arrow-counterclockwise"></i>Restore Readiness
+  </div>
+  <div class="panel-body">
+    <p class="text-muted backup-create-copy">
+      Mangarr validates backup files here, but database restore is an offline maintenance action.
+      Stop the container before replacing the live database.
+    </p>
+    <ol class="mb-0 backup-restore-list">
+      <li>Validate the backup ZIP and confirm it contains a readable <code>manga_arr.db</code>.</li>
+      <li>Preserve the matching secret key source: <code>/config/.mangarr-secret-key</code> or <code>MANGARR_SECRET_KEY</code>.</li>
+      <li>Stop Mangarr, replace the live database with the backup database, then start Mangarr again.</li>
+    </ol>
   </div>
 </div>
 
@@ -155,6 +179,20 @@ async function createBackup() {
   } finally {
     btn.disabled = false;
     btn.innerHTML = origHTML;
+  }
+}
+
+async function validateBackup(filename) {
+  try {
+    const resp = await fetch(`/api/system/backup/${encodeURIComponent(filename)}/validate`, {method: 'POST'});
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.ok) {
+      showToast(data.message || 'Backup validation failed', false);
+      return;
+    }
+    showToast('Backup validated: ' + filename, true);
+  } catch (e) {
+    showToast('Network error — validation failed', false);
   }
 }
 </script>
