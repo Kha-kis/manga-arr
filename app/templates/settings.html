@@ -256,7 +256,62 @@
               </table>
             </div>
 
+            <div class="settings-unmapped-matches" x-show="selected" x-cloak>
+              <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                <div class="settings-unmapped-title">
+                  <i class="bi bi-database-check text-ember me-1"></i>
+                  Metadata Matches
+                </div>
+                <span class="settings-unmapped-status" x-show="matchLoading">Searching</span>
+                <span class="badge-status badge-downloaded" x-show="selectedMatch" x-text="selectedMatch ? selectedMatch.source : ''"></span>
+              </div>
+
+              <div class="settings-unmapped-empty" x-show="!matchLoading && selected && !matches.length">
+                <i class="bi bi-dash-circle text-muted-3 me-1"></i>
+                No metadata matches
+              </div>
+
+              <div class="table-wrap mb-3" x-show="matches.length">
+                <table class="table table-sm mb-0">
+                  <thead>
+                    <tr>
+                      <th>Match</th>
+                      <th class="settings-col-type">Source</th>
+                      <th class="settings-col-status">Score</th>
+                      <th class="settings-col-status">Volumes</th>
+                      <th class="settings-col-actions"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <template x-for="match in matches" :key="match.source + ':' + (match.anilistId || match.mangaUpdatesId || match.title)">
+                      <tr :class="selectedMatch === match ? 'settings-unmapped-selected' : ''">
+                        <td>
+                          <div class="settings-base-cell fw-semibold" x-text="match.title"></div>
+                          <div class="settings-mono-cell text-muted-3"
+                               x-text="[match.year, match.status].filter(Boolean).join(' · ') || '—'"></div>
+                        </td>
+                        <td><span class="badge-status badge-unknown" x-text="match.source || 'metadata'"></span></td>
+                        <td><span class="badge-status badge-grabbed" x-text="match.confidence"></span></td>
+                        <td x-text="match.volumes || '—'"></td>
+                        <td class="text-end">
+                          <button type="button" class="btn btn-outline-ember btn-sm"
+                                  @click="chooseMatch(match)"
+                                  :aria-label="'Use metadata match ' + match.title">
+                            <i class="bi bi-check2-circle me-1"></i>Use
+                          </button>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
             <div class="settings-unmapped-adopt" x-show="selected" x-cloak>
+              <div class="settings-unmapped-selected-copy mb-3" x-show="selectedMatch" x-cloak>
+                <i class="bi bi-database-check text-jade me-1"></i>
+                <span x-text="selectedMatch ? selectedMatch.title : ''"></span>
+              </div>
               <div class="row g-3 align-items-end">
                 <div class="col-12 col-md-4">
                   <label class="form-label" for="adopt-title">Title</label>
@@ -835,6 +890,17 @@
   border-radius: var(--radius-md);
   background: var(--ink-3);
 }
+.settings-unmapped-matches {
+  margin-bottom: var(--space-xl);
+}
+.settings-unmapped-selected {
+  background: var(--jade-bg);
+}
+.settings-unmapped-selected-copy {
+  color: var(--text-2);
+  font-size: var(--text-base);
+  font-weight: 600;
+}
 .settings-unmapped-link {
   color: var(--sky);
   font-size: var(--text-base);
@@ -856,6 +922,9 @@ function unmappedAdoption() {
     monitored: true,
     qualityProfileId: '',
     languageProfileId: '',
+    matchLoading: false,
+    matches: [],
+    selectedMatch: null,
     adopting: false,
     adopted: false,
     status: '',
@@ -903,9 +972,12 @@ function unmappedAdoption() {
       this.monitored = true;
       this.qualityProfileId = '';
       this.languageProfileId = '';
+      this.matches = [];
+      this.selectedMatch = null;
       this.adopted = false;
       this.lastSeriesUrl = '';
       this.status = `Selected ${folder.name}`;
+      this.loadMatches(folder);
     },
     clearSelection() {
       this.selected = null;
@@ -913,7 +985,33 @@ function unmappedAdoption() {
       this.monitored = true;
       this.qualityProfileId = '';
       this.languageProfileId = '';
+      this.matches = [];
+      this.selectedMatch = null;
+      this.matchLoading = false;
       this.adopted = false;
+    },
+    async loadMatches(folder) {
+      if (!folder || !this.activeRootId) return;
+      this.matchLoading = true;
+      try {
+        const resp = await fetch(
+          `/api/v1/rootfolder/${this.activeRootId}/unmappedfolders/matches?path=${encodeURIComponent(folder.path)}`
+        );
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.description || data.error || data.message || 'Match search failed');
+        this.matches = data.matches || [];
+        this.selectedMatch = null;
+      } catch (err) {
+        this.matches = [];
+        this.selectedMatch = null;
+        showToast(err.message || 'Match search failed', 'error');
+      } finally {
+        this.matchLoading = false;
+      }
+    },
+    chooseMatch(match) {
+      this.selectedMatch = match;
+      this.status = `Selected metadata: ${match.title}`;
     },
     async adopt() {
       if (!this.selected || !this.title.trim() || this.adopting || this.adopted) return;
@@ -926,6 +1024,19 @@ function unmappedAdoption() {
       };
       if (this.qualityProfileId) payload.qualityProfileId = Number(this.qualityProfileId);
       if (this.languageProfileId) payload.languageProfileId = Number(this.languageProfileId);
+      if (this.selectedMatch) {
+        payload.metadataTitle = this.selectedMatch.title;
+        payload.metadataSource = this.selectedMatch.source;
+        payload.anilistId = this.selectedMatch.anilistId;
+        payload.malId = this.selectedMatch.malId;
+        payload.mangaUpdatesId = this.selectedMatch.mangaUpdatesId;
+        payload.coverUrl = this.selectedMatch.coverUrl;
+        payload.status = this.selectedMatch.status;
+        payload.overview = this.selectedMatch.description;
+        payload.totalVolumes = this.selectedMatch.volumes;
+        payload.totalChapters = this.selectedMatch.chapters;
+        payload.year = this.selectedMatch.year;
+      }
       try {
         const resp = await fetch(`/api/v1/rootfolder/${this.activeRootId}/unmappedfolders/adopt`, {
           method: 'POST',

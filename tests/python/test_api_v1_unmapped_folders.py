@@ -176,10 +176,14 @@ def test_settings_page_renders_unmapped_folder_adoption_controls(env):
     assert 'x-data="unmappedAdoption()"' in html
     assert "Scan unmapped folders" in html
     assert "Existing Library" in html
+    assert "Metadata Matches" in html
     assert "adopt-quality-profile" in html
     assert "adopt-language-profile" in html
     assert "/api/v1/rootfolder/${rootId}/unmappedfolders" in html
+    assert "/unmappedfolders/matches?path=${encodeURIComponent(folder.path)}" in html
     assert "/api/v1/rootfolder/${this.activeRootId}/unmappedfolders/adopt" in html
+    assert "payload.metadataTitle = this.selectedMatch.title" in html
+    assert "payload.anilistId = this.selectedMatch.anilistId" in html
 
 
 def test_unmapped_folder_adoption_creates_series_and_rescans_files(env):
@@ -218,6 +222,56 @@ def test_unmapped_folder_adoption_creates_series_and_rescans_files(env):
     )
     names = [item["name"] for item in scan.json()["unmappedFolders"]]
     assert names == ["Unmapped B"]
+
+
+def test_unmapped_folder_adoption_can_seed_selected_metadata(env):
+    target = os.path.join(env["library_root"], "Unmapped A")
+    resp = _client().post(
+        "/api/v1/rootfolder/1/unmappedfolders/adopt",
+        json={
+            "path": target,
+            "metadataTitle": "Official Unmapped A",
+            "anilistId": 123,
+            "malId": 456,
+            "mangaUpdatesId": "789",
+            "coverUrl": "https://example.invalid/cover.jpg",
+            "status": "FINISHED",
+            "overview": "Matched metadata",
+            "totalVolumes": 3,
+            "totalChapters": 24,
+            "year": 2020,
+            "metadataSource": "anilist",
+        },
+        headers={"X-Api-Key": _api_key(env["db_path"])},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["series"]["title"] == "Unmapped A"
+    assert body["series"]["searchPattern"] == "Official Unmapped A"
+    assert body["series"]["anilistId"] == 123
+    assert body["series"]["malId"] == 456
+    assert body["series"]["mangaUpdatesId"] == "789"
+    assert body["series"]["totalVolumes"] == 3
+    assert body["series"]["totalChapters"] == 24
+    assert body["series"]["year"] == 2020
+    assert body["series"]["volumeCountSource"] == "anilist"
+
+    row = _series_row(env["db_path"], "Unmapped A")
+    assert row["search_pattern"] == "Official Unmapped A"
+    assert row["anilist_id"] == 123
+    assert row["mal_id"] == 456
+    assert row["mu_id"] == "789"
+    assert row["cover_url"] == "https://example.invalid/cover.jpg"
+    assert row["status"] == "FINISHED"
+    assert row["description"] == "Matched metadata"
+    assert row["total_volumes"] == 3
+    assert row["total_chapters"] == 24
+    assert row["pub_year"] == 2020
+    assert row["vol_count_source"] == "anilist"
+
+    volumes = _volume_rows(env["db_path"], row["id"])
+    assert [v["volume_num"] for v in volumes] == [1.0, 2.0, 3.0]
+    assert [v["status"] for v in volumes] == ["downloaded", "wanted", "wanted"]
 
 
 def test_unmapped_folder_match_proposals_search_metadata(env, monkeypatch):
