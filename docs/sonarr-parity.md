@@ -51,7 +51,7 @@ not exact TV terminology, exact Sonarr UI, or identical plugin breadth.
 | Health and maintenance | `/health`, recycle bin, metadata health/reconcile tools, API key regeneration | Covered |
 | API authentication | `/api/*` API-key middleware, CSRF bypass for API-key clients, fail-closed tests | Covered |
 | API v1 seed | `/api/v1/system/status`, `/api/v1/series`, `/api/v1/series/{id}`, `/api/v1/queue`, `/api/v1/history`, `/api/v1/wanted`, `/api/v1/wanted/cutoff`, `/api/v1/blocklist`, `/api/v1/command`, `/api/v1/rootfolder`, `/api/v1/qualityprofile`, plus `PATCH /api/v1/series/{id}` and `POST /api/v1/command` with response-contract tests | Initial slice covered |
-| Rename planner and execution seed | `/api/v1/rename/series/{id}/preview` reports old/new paths, conflicts, missing sources, and unchanged rows; `POST /api/v1/rename/series/{id}` renames selected/currently renameable files and updates import paths | Backend seed covered |
+| Rename/organize files | `/api/v1/rename/series/{id}/preview`, `POST /api/v1/rename/series/{id}`, and the series-page HTMX rename panel preview selected renames, report conflicts, rename safe files, and update import paths | Mostly covered |
 | Existing-library discovery seed | `/api/v1/rootfolder/{id}/unmappedfolders` reports root-folder child directories not mapped to known series | Backend seed covered |
 | Import-list exclusions | `import_list_exclusions` table, `/import-lists` management UI, and sync-time skip logic by source/external ID or normalized title | Covered |
 
@@ -77,15 +77,15 @@ Recommended scope:
 ### 2. Rename/Organize Existing Library Files
 
 Mangarr imports files, converts/stages archives, writes ComicInfo metadata,
-and now has backend rename preview and execution endpoints for imported files.
-It does not yet expose the full Sonarr-style UI workflow for preview rename /
-bulk rename / organize existing library files.
+and now has backend rename preview/execution endpoints plus a series-page HTMX
+workflow for selected file renames. Remaining gaps are broader library-level
+bulk organize views and any future advanced rename options.
 
 Recommended scope:
 
-1. Surface the per-series preview in the UI with old path, new path, conflict
-   status, and selectable rows.
-2. Add bulk-selection controls that call the backend execution endpoint.
+1. Add a library-level bulk organize view if operators need cross-series
+   rename batches.
+2. Keep per-series selected renames as the default safe workflow.
 3. Reuse the existing staging/import safety patterns rather than moving files
    while holding long SQLite write locks.
 

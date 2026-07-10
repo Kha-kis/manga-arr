@@ -284,6 +284,19 @@
   max-width: 16.25rem;
 }
 .series-link-badge { text-decoration: none; }
+.rename-col-select { width: var(--space-4xl); }
+.rename-col-label { width: 7.5rem; }
+.rename-col-state { width: 8.75rem; }
+.rename-row-blocked { opacity: 0.72; }
+.rename-file-name {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 22.5rem;
+}
 .series-search-message { color: var(--text-2); font-size: var(--text-base); }
 .series-ddl-banner {
   padding: var(--space-md) var(--space-xl) var(--space-sm);
@@ -490,6 +503,15 @@
           <li>
             <button class="dropdown-item d-flex align-items-center gap-2" onclick="reinjectMetadata({{ s['id'] }}, this)">
               <i class="bi bi-file-earmark-code series-menu-icon"></i>Re-inject Metadata
+            </button>
+          </li>
+          <li>
+            <button class="dropdown-item d-flex align-items-center gap-2"
+                    hx-get="/series/{{ s['id'] }}/rename/preview"
+                    hx-target="#rename-preview-panel"
+                    hx-swap="outerHTML"
+                    hx-disabled-elt="this">
+              <i class="bi bi-input-cursor-text series-menu-icon"></i>Preview Rename Files
             </button>
           </li>
           <li><hr class="dropdown-divider"></li>
@@ -739,6 +761,9 @@
 
     {# ── Reconcile preview (HTMX swaps into here on demand) ── #}
     <div id="reconcile-preview-panel"></div>
+
+    {# ── Rename preview (HTMX swaps into here on demand) ── #}
+    <div id="rename-preview-panel"></div>
 
     {# ── Volumes ── #}
     {% if volumes %}

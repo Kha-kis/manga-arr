@@ -1152,6 +1152,83 @@ async def api_series_reconcile_apply(request: Request, series_id: int):
     )
 
 
+# ── File rename UI ────────────────────────────────────────────────────────────
+
+
+@router.get("/series/{series_id}/rename/preview", response_class=HTMLResponse)
+async def series_rename_preview(request: Request, series_id: int):
+    from rename_plan import build_series_rename_preview
+
+    plan = build_series_rename_preview(series_id)
+    if plan is None:
+        return JSONResponse({"error": "series not found"}, status_code=404)
+    if request.headers.get("HX-Request") == "true":
+        return templates.TemplateResponse(
+            request,
+            "partials/rename_preview_panel.html",
+            {"plan": plan, "series_id": series_id},
+        )
+    return JSONResponse(plan)
+
+
+@router.post("/series/{series_id}/rename/apply", response_class=HTMLResponse)
+async def series_rename_apply(request: Request, series_id: int):
+    from rename_plan import build_series_rename_preview, execute_series_rename
+
+    def _ids(form, name: str) -> set[int]:
+        ids: set[int] = set()
+        for raw in form.getlist(name):
+            try:
+                ids.add(int(raw))
+            except (TypeError, ValueError):
+                raise ValueError(f"invalid {name}") from None
+        return ids
+
+    form = await request.form()
+    try:
+        volume_ids = _ids(form, "volume_id")
+        chapter_ids = _ids(form, "chapter_id")
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    result = execute_series_rename(
+        series_id,
+        volume_ids=volume_ids,
+        chapter_ids=chapter_ids,
+    )
+    if result is None:
+        return JSONResponse({"error": "series not found"}, status_code=404)
+
+    if result["errors"]:
+        toast_type = "error"
+    elif result["renamed"]:
+        toast_type = "success"
+    else:
+        toast_type = "info"
+    msg = (
+        f"Renamed {result['renamed']} file(s), "
+        f"skipped {result['skipped']}, errors {result['errors']}"
+    )
+
+    if request.headers.get("HX-Request") == "true":
+        follow_up = build_series_rename_preview(series_id)
+        if follow_up is None:
+            return JSONResponse({"error": "series not found"}, status_code=404)
+        resp = templates.TemplateResponse(
+            request,
+            "partials/rename_preview_panel.html",
+            {"plan": follow_up, "series_id": series_id, "result": result},
+        )
+        resp.headers["HX-Trigger"] = json.dumps(
+            {"showToast": {"msg": msg, "type": toast_type}}
+        )
+        return resp
+
+    return RedirectResponse(
+        with_flash(f"/series/{series_id}", msg, toast_type), status_code=303
+    )
+
+
 # ── Search & add ──────────────────────────────────────────────────────────────
 
 
