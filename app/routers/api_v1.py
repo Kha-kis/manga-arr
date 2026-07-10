@@ -32,6 +32,7 @@ from parsing import normalize
 from rename_plan import (
     build_library_rename_preview,
     build_series_rename_preview,
+    execute_library_rename,
     execute_series_rename,
 )
 from routers.history_ import (
@@ -4836,6 +4837,32 @@ async def api_v1_calendar():
 @router.get("/api/v1/rename/library/preview")
 async def api_v1_rename_library_preview():
     return JSONResponse(build_library_rename_preview())
+
+
+@router.post("/api/v1/rename/library")
+async def api_v1_rename_library_execute(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+    try:
+        series_ids = _optional_id_set(payload, "seriesIds")
+        volume_ids = _optional_id_set(payload, "volumeIds")
+        chapter_ids = _optional_id_set(payload, "chapterIds")
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    return JSONResponse(
+        execute_library_rename(
+            series_ids=series_ids,
+            volume_ids=volume_ids,
+            chapter_ids=chapter_ids,
+        )
+    )
 
 
 @router.get("/api/v1/rename/series/{series_id}/preview")

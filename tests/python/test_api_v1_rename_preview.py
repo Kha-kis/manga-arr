@@ -233,6 +233,69 @@ def test_rename_preview_is_read_only(env):
     assert not os.path.exists(os.path.join(env["series_dir"], "Plan Manga v01.cbz"))
 
 
+def test_library_rename_execute_moves_all_renameable_items(env):
+    client = _client()
+    headers = {"X-Api-Key": _api_key(env["db_path"])}
+    new_v1 = os.path.join(env["series_dir"], "Plan Manga v01.cbz")
+    new_ch5 = os.path.join(env["series_dir"], "Plan Manga c005.cbz")
+
+    resp = client.post("/api/v1/rename/library", json={}, headers=headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["requested"] == 4
+    assert body["renamed"] == 2
+    assert body["skipped"] == 2
+    assert body["errors"] == 0
+    assert body["seriesCount"] == 1
+    assert body["series"][0]["seriesId"] == 7
+
+    statuses = {
+        (row["type"], row["id"]): row["status"]
+        for row in body["series"][0]["results"]
+    }
+    assert statuses[("volume", 101)] == "renamed"
+    assert statuses[("chapter", 201)] == "renamed"
+    assert statuses[("volume", 102)] == "skipped"
+    assert statuses[("volume", 103)] == "skipped"
+    assert os.path.exists(new_v1)
+    assert os.path.exists(new_ch5)
+    assert _volume_paths(env["db_path"])[101] == new_v1
+    assert _chapter_paths(env["db_path"])[201] == new_ch5
+
+
+def test_library_rename_execute_can_limit_to_selected_ids(env):
+    new_v1 = os.path.join(env["series_dir"], "Plan Manga v01.cbz")
+    new_ch5 = os.path.join(env["series_dir"], "Plan Manga c005.cbz")
+    resp = _client().post(
+        "/api/v1/rename/library",
+        json={"seriesIds": [7], "volumeIds": [101]},
+        headers={"X-Api-Key": _api_key(env["db_path"])},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["requested"] == 1
+    assert body["renamed"] == 1
+    assert body["skipped"] == 0
+    assert body["errors"] == 0
+    assert body["seriesCount"] == 1
+    assert body["series"][0]["requested"] == 1
+
+    assert os.path.exists(new_v1)
+    assert not os.path.exists(env["old_v1"])
+    assert os.path.exists(env["old_ch5"])
+    assert not os.path.exists(new_ch5)
+
+
+def test_library_rename_execute_validates_body(env):
+    resp = _client().post(
+        "/api/v1/rename/library",
+        json={"seriesIds": "7"},
+        headers={"X-Api-Key": _api_key(env["db_path"])},
+    )
+    assert resp.status_code == 400
+    assert "seriesIds" in resp.json()["error"]
+
+
 def test_rename_preview_404_for_unknown_series(env):
     resp = _client().get(
         "/api/v1/rename/series/999/preview",
