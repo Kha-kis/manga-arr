@@ -9,6 +9,14 @@ from shared import get_db, get_cfg
 router = APIRouter()
 
 
+def clear_blocklist_entries() -> dict:
+    """Delete every blocklist entry."""
+    with get_db() as db:
+        cur = db.execute("DELETE FROM blocklist")
+        deleted = cur.rowcount
+    return {"ok": True, "status": "deleted", "deleted": deleted}
+
+
 @router.get("/blocklist", response_class=HTMLResponse)
 async def blocklist_page(request: Request):
     ttl_days = max(0, int(get_cfg('blocklist_ttl_days', '90') or '90'))
@@ -52,8 +60,7 @@ async def delete_blocklist_entry(request: Request, bl_id: int):
 
 @router.post("/blocklist/clear-all")
 async def clear_all_blocklist(request: Request):
-    with get_db() as db:
-        db.execute("DELETE FROM blocklist")
+    clear_blocklist_entries()
     if request.headers.get("HX-Request") == "true":
         import json
         from fastapi.responses import Response as _Resp

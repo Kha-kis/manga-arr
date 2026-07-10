@@ -326,6 +326,24 @@ def test_api_v1_command_rejects_unknown_command(env):
     assert resp.json()["ok"] is False
 
 
+def test_api_v1_clear_blocklist_removes_all_entries(env):
+    resp = _client().delete(
+        "/api/v1/blocklist",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "deleted": 1}
+
+    with sqlite3.connect(env) as c:
+        remaining = c.execute("SELECT COUNT(*) FROM blocklist").fetchone()[0]
+    assert remaining == 0
+
+
+def test_api_v1_clear_blocklist_requires_api_key(env):
+    resp = _client().delete("/api/v1/blocklist")
+    assert resp.status_code == 401
+
+
 def test_api_v1_delete_blocklist_entry_removes_row(env):
     resp = _client().delete(
         "/api/v1/blocklist/601",
