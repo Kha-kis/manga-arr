@@ -77,9 +77,7 @@ def _mark_downloaded(db, series_id, volume_num, torrent_url) -> bool:
                     series_id,
                 ),
             )
-        elif (
-            pt == "volume" and pack.get("vol_range_start") and pack.get("vol_range_end")
-        ):
+        elif pt == "volume" and pack["vol_range_start"] and pack["vol_range_end"]:
             cur = db.execute(
                 "UPDATE volumes SET status='downloaded', torrent_name=?, indexer=?, protocol=?,"
                 " client=?, release_group=?, size_bytes=?"

@@ -540,7 +540,55 @@ def test_legacy_queue_row_without_new_columns_still_imports(env):
     assert vols[0]["status"] == "downloaded"
 
 
-# ─────────────── 12. review UI exposes new fields ─────────────────
+# ─────────────── 12. pack completion Row access ─────────────────────
+
+def test_mark_downloaded_volume_pack_handles_sqlite_row(env, monkeypatch):
+    """_mark_downloaded must use sqlite3.Row bracket access for pack rows.
+
+    sqlite3.Row has no .get(); this pins the volume-pack path that reads
+    vol_range_start/end from the grabbed pack row.
+    """
+    _seed_series(env["db_path"])
+    import import_download
+
+    def _close_task(coro):
+        coro.close()
+        return None
+
+    monkeypatch.setattr(import_download.asyncio, "create_task", _close_task)
+
+    with sqlite3.connect(env["db_path"]) as c:
+        c.row_factory = sqlite3.Row
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, source_url,"
+            " download_id, pack_type, vol_range_start, vol_range_end)"
+            " VALUES(7, NULL, 'grabbed', 'http://example/pack',"
+            " 'dl-pack', 'volume', 1.0, 3.0)"
+        )
+        for vol in (1.0, 2.0, 3.0):
+            c.execute(
+                "INSERT INTO volumes(series_id, volume_num, status)"
+                " VALUES(7, ?, 'grabbed')",
+                (vol,),
+            )
+
+        assert import_download._mark_downloaded(
+            c, 7, None, "http://example/pack"
+        )
+
+        rows = list(
+            c.execute(
+                "SELECT volume_num, status FROM volumes"
+                " WHERE series_id=7 AND volume_num IS NOT NULL"
+                " ORDER BY volume_num"
+            )
+        )
+
+    assert [r["volume_num"] for r in rows] == [1.0, 2.0, 3.0]
+    assert {r["status"] for r in rows} == {"downloaded"}
+
+
+# ─────────────── 13. review UI exposes new fields ─────────────────
 
 def test_review_template_renders_range_and_pack_inputs(env):
     """Queue table partial should render the new range inputs + pack
