@@ -678,6 +678,18 @@ def _create_backup_file() -> dict:
     return entry
 
 
+def _system_task(task: dict) -> dict:
+    state = TASK_STATE.get(task["key"], {})
+    return {
+        "name": task["key"],
+        "displayName": task["name"],
+        "interval": task["interval"],
+        "manual": _bool(task["manual"]),
+        "lastRun": _iso_or_none(state.get("last_run")),
+        "nextRun": _iso_or_none(state.get("next_run")),
+    }
+
+
 def _series(row, tags: list[str]) -> dict:
     title = row["title"]
     downloaded = row["downloaded_count"] or 0
@@ -1242,6 +1254,11 @@ async def api_v1_delete_system_backup(filename: str):
             status_code=500,
         )
     return JSONResponse({"ok": True, "id": filename})
+
+
+@router.get("/api/v1/system/task")
+async def api_v1_system_tasks():
+    return JSONResponse([_system_task(task) for task in TASKS])
 
 
 @router.get("/api/v1/rootfolder")
@@ -4144,20 +4161,7 @@ async def api_v1_delete_blocklist_entry(blocklist_id: int):
 
 @router.get("/api/v1/command")
 async def api_v1_commands():
-    payload = []
-    for task in TASKS:
-        state = TASK_STATE.get(task["key"], {})
-        payload.append(
-            {
-                "name": task["key"],
-                "displayName": task["name"],
-                "interval": task["interval"],
-                "manual": _bool(task["manual"]),
-                "lastRun": _iso_or_none(state.get("last_run")),
-                "nextRun": _iso_or_none(state.get("next_run")),
-            }
-        )
-    return JSONResponse(payload)
+    return JSONResponse([_system_task(task) for task in TASKS])
 
 
 @router.post("/api/v1/command")
