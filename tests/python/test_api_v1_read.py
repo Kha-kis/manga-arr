@@ -38,12 +38,17 @@ def env():
         c.execute("DELETE FROM pending_releases")
         c.execute("DELETE FROM history")
         c.execute("DELETE FROM blocklist")
+        c.execute("DELETE FROM import_list_exclusions")
+        c.execute("DELETE FROM import_lists")
         c.execute("DELETE FROM chapters")
         c.execute("DELETE FROM volumes")
         c.execute("DELETE FROM series_tags")
         c.execute("DELETE FROM series")
+        c.execute("DELETE FROM delay_profile_tags")
+        c.execute("DELETE FROM delay_profiles")
         c.execute("DELETE FROM quality_profile_custom_formats")
         c.execute("DELETE FROM quality_profiles")
+        c.execute("DELETE FROM quality_definitions")
         c.execute("DELETE FROM custom_formats")
         c.execute("DELETE FROM release_profile_tags")
         c.execute("DELETE FROM release_profiles")
@@ -75,6 +80,11 @@ def env():
             " 'cbz', 1, 25, 10000, 10, 1)"
         )
         c.execute(
+            "INSERT INTO quality_definitions"
+            "(quality, title, min_size, max_size, order_num)"
+            " VALUES('cbz', 'Comic Book Zip', 1.0, 500.0, 1)"
+        )
+        c.execute(
             "INSERT INTO language_profiles(id, name, languages, allow_any)"
             " VALUES(20, 'English', '[\"en\"]', 0)"
         )
@@ -103,6 +113,17 @@ def env():
         c.execute(
             "INSERT INTO release_profile_tags(profile_id, tag)"
             " VALUES(40, 'favorite')"
+        )
+        c.execute(
+            "INSERT INTO delay_profiles"
+            "(id, name, order_num, enable_usenet, enable_torrent,"
+            " usenet_delay, torrent_delay, bypass_if_highest_quality,"
+            " is_default)"
+            " VALUES(45, 'Torrent Delay', 1, 0, 1, 0, 30, 1, 0)"
+        )
+        c.execute(
+            "INSERT INTO delay_profile_tags(profile_id, tag)"
+            " VALUES(45, 'favorite')"
         )
         c.execute(
             "INSERT INTO download_clients"
@@ -141,6 +162,20 @@ def env():
         c.execute(
             "INSERT INTO indexer_tags(indexer_id, tag)"
             " VALUES(70, 'favorite')"
+        )
+        c.execute(
+            "INSERT INTO import_lists"
+            "(id, name, type, enabled, quality_profile_id, root_folder_id,"
+            " monitor_mode, settings, last_sync)"
+            " VALUES(80, 'AniList Favorites', 'anilist_user', 1, 10, 1,"
+            " 'all', '{\"username\":\"vinland\"}',"
+            " '2026-01-04T00:00:00+00:00')"
+        )
+        c.execute(
+            "INSERT INTO import_list_exclusions"
+            "(id, source, external_id, title, title_normalized, reason, added_at)"
+            " VALUES(90, 'anilist', '12345', 'Excluded Manga',"
+            " 'excluded manga', 'Not wanted', '2026-01-05T00:00:00+00:00')"
         )
         c.execute(
             "INSERT INTO series"
@@ -460,6 +495,92 @@ def test_api_v1_indexers_download_clients_and_remote_paths_contract(env):
             "remotePath": "/remote/downloads",
             "localPath": "/downloads",
         }
+    ]
+
+
+def test_api_v1_remaining_config_read_contracts(env):
+    client = _client()
+    headers = {"X-Api-Key": _api_key(env)}
+
+    delay_profiles = client.get("/api/v1/delayprofile", headers=headers).json()
+    assert delay_profiles == [
+        {
+            "id": 45,
+            "name": "Torrent Delay",
+            "order": 1,
+            "enableUsenet": False,
+            "enableTorrent": True,
+            "usenetDelay": 0,
+            "torrentDelay": 30,
+            "bypassIfHighestQuality": True,
+            "isDefault": False,
+            "tags": ["favorite"],
+        }
+    ]
+
+    import_lists = client.get("/api/v1/importlist", headers=headers).json()
+    assert import_lists == [
+        {
+            "id": 80,
+            "name": "AniList Favorites",
+            "implementation": "anilist_user",
+            "implementationName": "anilist_user",
+            "configContract": "anilist_user",
+            "enable": True,
+            "qualityProfileId": 10,
+            "rootFolderId": 1,
+            "monitorMode": "all",
+            "settings": {"username": "vinland"},
+            "lastSync": "2026-01-04T00:00:00+00:00",
+        }
+    ]
+
+    exclusions = client.get(
+        "/api/v1/importlistexclusion", headers=headers
+    ).json()
+    assert exclusions == [
+        {
+            "id": 90,
+            "source": "anilist",
+            "externalId": "12345",
+            "title": "Excluded Manga",
+            "titleNormalized": "excluded manga",
+            "reason": "Not wanted",
+            "addedAt": "2026-01-05T00:00:00+00:00",
+        }
+    ]
+
+    quality_definitions = client.get(
+        "/api/v1/qualitydefinition", headers=headers
+    ).json()
+    assert quality_definitions == [
+        {
+            "quality": "cbz",
+            "title": "Comic Book Zip",
+            "minSize": 1.0,
+            "maxSize": 500.0,
+            "order": 1,
+        }
+    ]
+
+    tags = client.get("/api/v1/tag", headers=headers).json()
+    assert tags == [
+        {
+            "label": "dark",
+            "seriesCount": 1,
+            "indexerCount": 0,
+            "delayProfileCount": 0,
+            "releaseProfileCount": 0,
+            "downloadClientCount": 0,
+        },
+        {
+            "label": "favorite",
+            "seriesCount": 1,
+            "indexerCount": 1,
+            "delayProfileCount": 1,
+            "releaseProfileCount": 1,
+            "downloadClientCount": 1,
+        },
     ]
 
 
