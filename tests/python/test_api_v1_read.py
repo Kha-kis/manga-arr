@@ -642,14 +642,52 @@ def test_api_v1_queue_history_and_wanted_contract(env):
     client = _client()
     headers = {"X-Api-Key": _api_key(env)}
 
-    queue = client.get("/api/v1/queue", headers=headers).json()
+    queue_resp = client.get("/api/v1/queue", headers=headers)
+    assert queue_resp.status_code == 200, queue_resp.text
+    assert queue_resp.headers["X-Total-Count"] == "3"
+    queue = queue_resp.json()
     statuses = {row["id"]: row["status"] for row in queue}
     assert statuses["volume-103"] == "grabbed"
     assert statuses["import-201"] == "pending"
     assert statuses["pending-301"] == "pending"
     volume_row = next(row for row in queue if row["id"] == "volume-103")
+    assert volume_row["queueType"] == "grabbed"
     assert volume_row["volumeLabel"] == "Vol 3"
     assert volume_row["downloadId"] == "abc123"
+
+    import_only = client.get(
+        "/api/v1/queue",
+        params={"queueType": "import"},
+        headers=headers,
+    )
+    assert [row["id"] for row in import_only.json()] == ["import-201"]
+    assert import_only.headers["X-Total-Count"] == "1"
+
+    pending_delay = client.get(
+        "/api/v1/queue",
+        params={"trackedDownloadStatus": "delay"},
+        headers=headers,
+    )
+    assert [row["id"] for row in pending_delay.json()] == ["pending-301"]
+
+    series_queue = client.get(
+        "/api/v1/queue",
+        params={"seriesId": 5, "page": 2, "pageSize": 1},
+        headers=headers,
+    )
+    assert series_queue.status_code == 200, series_queue.text
+    assert series_queue.headers["X-Total-Count"] == "3"
+    assert series_queue.headers["X-Page"] == "2"
+    assert series_queue.headers["X-Page-Size"] == "1"
+    assert len(series_queue.json()) == 1
+
+    bad_type = client.get(
+        "/api/v1/queue",
+        params={"queueType": "torrent"},
+        headers=headers,
+    )
+    assert bad_type.status_code == 400
+    assert bad_type.json()["error"] == "queueType must be grabbed, import, or pending"
 
     history = client.get("/api/v1/history", headers=headers).json()
     assert history["totalRecords"] == 1
