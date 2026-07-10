@@ -3799,6 +3799,53 @@
         }
       });
 
+      // ── HTMX: shared busy state for controls ─────────────────────────────────
+      (function() {
+        function requestControls(elt) {
+          if (!elt || !elt.matches) return [];
+          const controls = [];
+          if (elt.matches('button, input[type="submit"]')) controls.push(elt);
+          if (elt.matches('form')) {
+            controls.push(...elt.querySelectorAll('button[type="submit"], input[type="submit"]'));
+          }
+          return controls;
+        }
+
+        function setBusy(elt) {
+          if (!elt || !elt.setAttribute) return;
+          elt.setAttribute('aria-busy', 'true');
+          requestControls(elt).forEach((control) => {
+            control.setAttribute('aria-disabled', 'true');
+            if (!control.disabled) {
+              control.dataset.htmxBusyDisabled = '1';
+              control.disabled = true;
+            }
+          });
+        }
+
+        function clearBusy(elt) {
+          if (!elt || !elt.removeAttribute) return;
+          elt.removeAttribute('aria-busy');
+          requestControls(elt).forEach((control) => {
+            control.removeAttribute('aria-disabled');
+            if (control.dataset.htmxBusyDisabled === '1') {
+              control.disabled = false;
+              delete control.dataset.htmxBusyDisabled;
+            }
+          });
+        }
+
+        document.body.addEventListener('htmx:beforeRequest', (e) => {
+          setBusy(e.detail && e.detail.elt);
+        });
+        document.body.addEventListener('htmx:afterRequest', (e) => {
+          clearBusy(e.detail && e.detail.elt);
+        });
+        document.body.addEventListener('htmx:sendError', (e) => {
+          clearBusy(e.detail && e.detail.elt);
+        });
+      })();
+
       // ── HTMX: top-of-page progress bar ───────────────────────────────────────
       (function() {
         const bar = document.getElementById('htmx-progress');
@@ -3826,6 +3873,13 @@
         if (flashMsg) {
           showToast(flashMsg, flashType || 'info');
         }
+
+        document.querySelectorAll('.btn-close:not([aria-label])').forEach((el) => {
+          el.setAttribute('aria-label', 'Close');
+        });
+        document.querySelectorAll('button[title]:not([aria-label]), a[title]:not([aria-label])').forEach((el) => {
+          if (!el.textContent.trim()) el.setAttribute('aria-label', el.getAttribute('title'));
+        });
       });
 
       // ── Plain form POST: auto-inject CSRF token ───────────────────────────────
