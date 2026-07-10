@@ -1229,6 +1229,211 @@ def test_api_v1_delete_release_profile_rejects_unknown_id(env):
     assert resp.json()["error"] == "release profile not found"
 
 
+def test_api_v1_create_delay_profile_adds_row_and_tags(env):
+    resp = _client().post(
+        "/api/v1/delayprofile",
+        json={
+            "name": "API Delay",
+            "enableUsenet": False,
+            "enableTorrent": True,
+            "usenetDelay": 0,
+            "torrentDelay": 45,
+            "bypassIfHighestQuality": True,
+            "isDefault": True,
+            "tags": ["favorite", "favorite", "owned"],
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["status"] == "created"
+    assert body["delayProfile"]["name"] == "API Delay"
+    assert body["delayProfile"]["enableUsenet"] is False
+    assert body["delayProfile"]["enableTorrent"] is True
+    assert body["delayProfile"]["usenetDelay"] == 0
+    assert body["delayProfile"]["torrentDelay"] == 45
+    assert body["delayProfile"]["bypassIfHighestQuality"] is True
+    assert body["delayProfile"]["isDefault"] is True
+    assert body["delayProfile"]["tags"] == ["favorite", "owned"]
+    profile_id = body["delayProfile"]["id"]
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT enable_usenet, enable_torrent, usenet_delay,"
+            " torrent_delay, bypass_if_highest_quality, is_default"
+            " FROM delay_profiles WHERE id=?",
+            (profile_id,),
+        ).fetchone()
+        tags = [
+            tag[0]
+            for tag in c.execute(
+                "SELECT tag FROM delay_profile_tags"
+                " WHERE profile_id=? ORDER BY tag",
+                (profile_id,),
+            )
+        ]
+    assert row["enable_usenet"] == 0
+    assert row["enable_torrent"] == 1
+    assert row["usenet_delay"] == 0
+    assert row["torrent_delay"] == 45
+    assert row["bypass_if_highest_quality"] == 1
+    assert row["is_default"] == 1
+    assert tags == ["favorite", "owned"]
+
+
+def test_api_v1_create_delay_profile_requires_api_key(env):
+    resp = _client().post(
+        "/api/v1/delayprofile",
+        json={"name": "No Auth"},
+    )
+    assert resp.status_code == 401
+
+
+def test_api_v1_create_delay_profile_rejects_negative_delay(env):
+    resp = _client().post(
+        "/api/v1/delayprofile",
+        json={"name": "Bad Delay", "torrentDelay": -1},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "torrentDelay must be zero or a positive integer"
+
+
+def test_api_v1_update_delay_profile_updates_submitted_fields_and_tags(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO delay_profiles"
+            "(id, name, order_num, enable_usenet, enable_torrent,"
+            " usenet_delay, torrent_delay, bypass_if_highest_quality,"
+            " is_default)"
+            " VALUES(1301, 'Old API Delay', 4, 1, 1, 5, 10, 0, 0)"
+        )
+        c.execute(
+            "INSERT INTO delay_profile_tags(profile_id, tag)"
+            " VALUES(1301, 'old-tag')"
+        )
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/delayprofile/1301",
+        json={
+            "name": "Updated API Delay",
+            "order": 2,
+            "enableUsenet": False,
+            "torrentDelay": 30,
+            "bypassIfHighestQuality": True,
+            "tags": "favorite,owned",
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["delayProfile"]["name"] == "Updated API Delay"
+    assert body["delayProfile"]["order"] == 2
+    assert body["delayProfile"]["enableUsenet"] is False
+    assert body["delayProfile"]["enableTorrent"] is True
+    assert body["delayProfile"]["usenetDelay"] == 5
+    assert body["delayProfile"]["torrentDelay"] == 30
+    assert body["delayProfile"]["bypassIfHighestQuality"] is True
+    assert body["delayProfile"]["tags"] == ["favorite", "owned"]
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT name, order_num, enable_usenet, enable_torrent,"
+            " usenet_delay, torrent_delay, bypass_if_highest_quality"
+            " FROM delay_profiles WHERE id=1301"
+        ).fetchone()
+        tags = [
+            tag[0]
+            for tag in c.execute(
+                "SELECT tag FROM delay_profile_tags"
+                " WHERE profile_id=1301 ORDER BY tag"
+            )
+        ]
+    assert row["name"] == "Updated API Delay"
+    assert row["order_num"] == 2
+    assert row["enable_usenet"] == 0
+    assert row["enable_torrent"] == 1
+    assert row["usenet_delay"] == 5
+    assert row["torrent_delay"] == 30
+    assert row["bypass_if_highest_quality"] == 1
+    assert tags == ["favorite", "owned"]
+
+
+def test_api_v1_update_delay_profile_rejects_unknown_id(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/delayprofile/99999",
+        json={"name": "Missing"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "delay profile not found"
+
+
+def test_api_v1_delete_delay_profile_removes_row_and_tags(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO delay_profiles(id, name, order_num, is_default)"
+            " VALUES(1310, 'Delete API Delay', 5, 0)"
+        )
+        c.execute(
+            "INSERT INTO delay_profile_tags(profile_id, tag)"
+            " VALUES(1310, 'favorite')"
+        )
+
+    resp = _client().delete(
+        "/api/v1/delayprofile/1310",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 1310}
+
+    with sqlite3.connect(env) as c:
+        profile = c.execute(
+            "SELECT 1 FROM delay_profiles WHERE id=1310"
+        ).fetchone()
+        tag = c.execute(
+            "SELECT 1 FROM delay_profile_tags WHERE profile_id=1310"
+        ).fetchone()
+    assert profile is None
+    assert tag is None
+
+
+def test_api_v1_delete_delay_profile_blocks_default(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO delay_profiles(id, name, order_num, is_default)"
+            " VALUES(1320, 'Default API Delay', 0, 1)"
+        )
+
+    resp = _client().delete(
+        "/api/v1/delayprofile/1320",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "Cannot delete the default delay profile"
+
+    with sqlite3.connect(env) as c:
+        profile = c.execute(
+            "SELECT 1 FROM delay_profiles WHERE id=1320"
+        ).fetchone()
+    assert profile is not None
+
+
+def test_api_v1_delete_delay_profile_rejects_unknown_id(env):
+    resp = _client().delete(
+        "/api/v1/delayprofile/99999",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "delay profile not found"
+
+
 def test_api_v1_command_cleanup_seen_mutates_stale_rows(env):
     client = _client()
     headers = {"X-Api-Key": _api_key(env)}

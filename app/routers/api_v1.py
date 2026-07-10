@@ -188,6 +188,24 @@ def _release_profile_by_id(db, profile_id: int) -> dict | None:
     return _release_profile(row, tags)
 
 
+def _delay_profile_by_id(db, profile_id: int) -> dict | None:
+    row = db.execute(
+        "SELECT * FROM delay_profiles WHERE id=?",
+        (profile_id,),
+    ).fetchone()
+    if not row:
+        return None
+    tags = [
+        tag["tag"]
+        for tag in db.execute(
+            "SELECT tag FROM delay_profile_tags"
+            " WHERE profile_id=? ORDER BY tag",
+            (profile_id,),
+        ).fetchall()
+    ]
+    return _delay_profile(row, tags)
+
+
 def _custom_format(row, scores: list[dict]) -> dict:
     return {
         "id": row["id"],
@@ -581,6 +599,20 @@ def _payload_int(payload: dict, key: str, default: int) -> int:
     if key not in payload:
         return default
     value = _optional_payload_int(payload, key)
+    return default if value is None else value
+
+
+def _payload_bool_alias(payload: dict, keys: tuple[str, ...], default: bool) -> bool:
+    for key in keys:
+        if key in payload:
+            return _json_bool(payload.get(key), default)
+    return default
+
+
+def _payload_non_negative_alias(
+    payload: dict, keys: tuple[str, ...], default: int
+) -> int:
+    value = _optional_non_negative_int(payload, *keys)
     return default if value is None else value
 
 
@@ -1359,6 +1391,190 @@ async def api_v1_delay_profiles():
             for row in rows
         ]
     return JSONResponse(payload)
+
+
+@router.post("/api/v1/delayprofile")
+async def api_v1_create_delay_profile(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+
+    try:
+        tags = _payload_tag_list(payload)
+        enable_usenet = _payload_bool_alias(
+            payload, ("enableUsenet", "enable_usenet"), True
+        )
+        enable_torrent = _payload_bool_alias(
+            payload, ("enableTorrent", "enable_torrent"), True
+        )
+        usenet_delay = _payload_non_negative_alias(
+            payload, ("usenetDelay", "usenet_delay"), 0
+        )
+        torrent_delay = _payload_non_negative_alias(
+            payload, ("torrentDelay", "torrent_delay"), 0
+        )
+        bypass = _payload_bool_alias(
+            payload,
+            ("bypassIfHighestQuality", "bypass_if_highest_quality"),
+            False,
+        )
+        is_default = _payload_bool_alias(payload, ("isDefault", "is_default"), False)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    name = _payload_str(payload, "name") or "Custom"
+
+    with get_db() as db:
+        max_order = db.execute(
+            "SELECT COALESCE(MAX(order_num), 0) FROM delay_profiles"
+        ).fetchone()[0]
+        try:
+            order_num = _payload_non_negative_alias(
+                payload, ("order", "order_num"), max_order + 1
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if is_default:
+            db.execute("UPDATE delay_profiles SET is_default=0")
+        cur = db.execute(
+            "INSERT INTO delay_profiles"
+            "(name, order_num, enable_usenet, enable_torrent, usenet_delay,"
+            " torrent_delay, bypass_if_highest_quality, is_default)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (
+                name,
+                order_num,
+                1 if enable_usenet else 0,
+                1 if enable_torrent else 0,
+                usenet_delay,
+                torrent_delay,
+                1 if bypass else 0,
+                1 if is_default else 0,
+            ),
+        )
+        profile_id = cur.lastrowid
+        for tag in tags:
+            db.execute(
+                "INSERT OR IGNORE INTO delay_profile_tags(profile_id, tag)"
+                " VALUES(?, ?)",
+                (profile_id, tag),
+            )
+        profile = _delay_profile_by_id(db, profile_id)
+    return JSONResponse({"ok": True, "status": "created", "delayProfile": profile})
+
+
+@router.put("/api/v1/delayprofile/{profile_id}")
+@router.patch("/api/v1/delayprofile/{profile_id}")
+async def api_v1_update_delay_profile(request: Request, profile_id: int):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+
+    fields: list[str] = []
+    params: list = []
+    try:
+        if "name" in payload:
+            fields.append("name=?")
+            params.append(_payload_str(payload, "name") or "Custom")
+        int_fields = {
+            ("order", "order_num"): "order_num",
+            ("usenetDelay", "usenet_delay"): "usenet_delay",
+            ("torrentDelay", "torrent_delay"): "torrent_delay",
+        }
+        for keys, column in int_fields.items():
+            if any(key in payload for key in keys):
+                fields.append(f"{column}=?")
+                params.append(_payload_non_negative_alias(payload, keys, 0))
+        bool_fields = {
+            ("enableUsenet", "enable_usenet"): "enable_usenet",
+            ("enableTorrent", "enable_torrent"): "enable_torrent",
+            (
+                "bypassIfHighestQuality",
+                "bypass_if_highest_quality",
+            ): "bypass_if_highest_quality",
+        }
+        for keys, column in bool_fields.items():
+            if any(key in payload for key in keys):
+                fields.append(f"{column}=?")
+                params.append(1 if _payload_bool_alias(payload, keys, False) else 0)
+        tags = _payload_tag_list(payload) if "tags" in payload else None
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    is_default = (
+        _payload_bool_alias(payload, ("isDefault", "is_default"), False)
+        if "isDefault" in payload or "is_default" in payload
+        else None
+    )
+
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM delay_profiles WHERE id=?",
+            (profile_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "delay profile not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        if is_default:
+            db.execute("UPDATE delay_profiles SET is_default=0")
+            fields.append("is_default=?")
+            params.append(1)
+        elif is_default is False:
+            fields.append("is_default=?")
+            params.append(0)
+        if fields:
+            params.append(profile_id)
+            db.execute(
+                f"UPDATE delay_profiles SET {', '.join(fields)} WHERE id=?",
+                params,
+            )
+        if tags is not None:
+            db.execute(
+                "DELETE FROM delay_profile_tags WHERE profile_id=?",
+                (profile_id,),
+            )
+            for tag in tags:
+                db.execute(
+                    "INSERT OR IGNORE INTO delay_profile_tags(profile_id, tag)"
+                    " VALUES(?, ?)",
+                    (profile_id, tag),
+                )
+        profile = _delay_profile_by_id(db, profile_id)
+    return JSONResponse({"ok": True, "delayProfile": profile})
+
+
+@router.delete("/api/v1/delayprofile/{profile_id}")
+async def api_v1_delete_delay_profile(profile_id: int):
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT is_default FROM delay_profiles WHERE id=?",
+            (profile_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "delay profile not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        if existing["is_default"]:
+            return JSONResponse(
+                {"error": "Cannot delete the default delay profile"},
+                status_code=HTTP_400_BAD_REQUEST,
+            )
+        db.execute(
+            "DELETE FROM delay_profile_tags WHERE profile_id=?",
+            (profile_id,),
+        )
+        db.execute("DELETE FROM delay_profiles WHERE id=?", (profile_id,))
+    return JSONResponse({"ok": True, "id": profile_id})
 
 
 @router.get("/api/v1/importlist")
