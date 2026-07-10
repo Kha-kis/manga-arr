@@ -504,6 +504,91 @@ def _remote_path_mapping_by_id(db, mapping_id: int) -> dict | None:
     return _remote_path_mapping(row) if row else None
 
 
+_TAG_TABLES: tuple[tuple[str, str, str], ...] = (
+    ("series_tags", "series_id", "seriesCount"),
+    ("indexer_tags", "indexer_id", "indexerCount"),
+    ("delay_profile_tags", "profile_id", "delayProfileCount"),
+    ("release_profile_tags", "profile_id", "releaseProfileCount"),
+    ("download_client_tags", "client_id", "downloadClientCount"),
+)
+
+
+def _empty_tag(label: str) -> dict:
+    return {
+        "label": label,
+        "seriesCount": 0,
+        "indexerCount": 0,
+        "delayProfileCount": 0,
+        "releaseProfileCount": 0,
+        "downloadClientCount": 0,
+    }
+
+
+def _tag_by_label(db, label: str) -> dict | None:
+    tag = _empty_tag(label)
+    found = False
+    for table, _owner_column, field in _TAG_TABLES:
+        row = db.execute(
+            f"SELECT COUNT(*) AS n FROM {table} WHERE tag=?",
+            (label,),
+        ).fetchone()
+        count = row["n"] if row else 0
+        if count:
+            found = True
+        tag[field] = count
+    return tag if found else None
+
+
+def _replace_legacy_series_json_tag(
+    db,
+    old_tag: str,
+    *,
+    new_tag: str | None,
+) -> None:
+    rows = db.execute(
+        "SELECT id, tags FROM series WHERE tags IS NOT NULL AND tags != ''"
+    ).fetchall()
+    for row in rows:
+        tags = from_json(row["tags"], []) or []
+        if not isinstance(tags, list):
+            continue
+        changed = False
+        updated: list[str] = []
+        seen: set[str] = set()
+        for item in tags:
+            tag = str(item).strip()
+            if not tag:
+                continue
+            if tag == old_tag:
+                changed = True
+                tag = new_tag or ""
+            if tag and tag not in seen:
+                updated.append(tag)
+                seen.add(tag)
+        if changed:
+            db.execute(
+                "UPDATE series SET tags=? WHERE id=?",
+                (json.dumps(updated), row["id"]),
+            )
+
+
+def _rename_tag_everywhere(db, old_tag: str, new_tag: str) -> None:
+    for table, owner_column, _field in _TAG_TABLES:
+        db.execute(
+            f"INSERT OR IGNORE INTO {table}({owner_column}, tag)"
+            f" SELECT {owner_column}, ? FROM {table} WHERE tag=?",
+            (new_tag, old_tag),
+        )
+        db.execute(f"DELETE FROM {table} WHERE tag=?", (old_tag,))
+    _replace_legacy_series_json_tag(db, old_tag, new_tag=new_tag)
+
+
+def _delete_tag_everywhere(db, tag: str) -> None:
+    for table, _owner_column, _field in _TAG_TABLES:
+        db.execute(f"DELETE FROM {table} WHERE tag=?", (tag,))
+    _replace_legacy_series_json_tag(db, tag, new_tag=None)
+
+
 def _root_folder(row) -> dict:
     path = row["path"]
     disk = {
@@ -3327,26 +3412,9 @@ async def api_v1_tags():
         tag_counts: dict[str, dict] = {}
 
         def _bucket(tag: str) -> dict:
-            return tag_counts.setdefault(
-                tag,
-                {
-                    "label": tag,
-                    "seriesCount": 0,
-                    "indexerCount": 0,
-                    "delayProfileCount": 0,
-                    "releaseProfileCount": 0,
-                    "downloadClientCount": 0,
-                },
-            )
+            return tag_counts.setdefault(tag, _empty_tag(tag))
 
-        sources = [
-            ("series_tags", "seriesCount"),
-            ("indexer_tags", "indexerCount"),
-            ("delay_profile_tags", "delayProfileCount"),
-            ("release_profile_tags", "releaseProfileCount"),
-            ("download_client_tags", "downloadClientCount"),
-        ]
-        for table, field in sources:
+        for table, _owner_column, field in _TAG_TABLES:
             rows = db.execute(
                 f"SELECT tag, COUNT(*) AS n FROM {table} GROUP BY tag"
             ).fetchall()
@@ -3359,6 +3427,60 @@ async def api_v1_tags():
             for tag in sorted(tag_counts.keys(), key=lambda value: value.lower())
         ]
     return JSONResponse(payload)
+
+
+@router.put("/api/v1/tag/{tag_label}")
+@router.patch("/api/v1/tag/{tag_label}")
+async def api_v1_update_tag(request: Request, tag_label: str):
+    old_tag = str(tag_label or "").strip()
+    if not old_tag:
+        return JSONResponse({"error": "tag is required"}, status_code=400)
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+
+    new_tag = _payload_str(payload, "label", "name", "tag")
+    if not new_tag:
+        return JSONResponse({"error": "label is required"}, status_code=400)
+    if new_tag == old_tag:
+        with get_db() as db:
+            tag = _tag_by_label(db, old_tag)
+        if not tag:
+            return JSONResponse(
+                {"error": "tag not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        return JSONResponse({"ok": True, "tag": tag})
+
+    with get_db() as db:
+        existing = _tag_by_label(db, old_tag)
+        if not existing:
+            return JSONResponse(
+                {"error": "tag not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        _rename_tag_everywhere(db, old_tag, new_tag)
+        tag = _tag_by_label(db, new_tag)
+    return JSONResponse({"ok": True, "tag": tag})
+
+
+@router.delete("/api/v1/tag/{tag_label}")
+async def api_v1_delete_tag(tag_label: str):
+    tag = str(tag_label or "").strip()
+    if not tag:
+        return JSONResponse({"error": "tag is required"}, status_code=400)
+    with get_db() as db:
+        existing = _tag_by_label(db, tag)
+        if not existing:
+            return JSONResponse(
+                {"error": "tag not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        _delete_tag_everywhere(db, tag)
+    return JSONResponse({"ok": True, "id": tag})
 
 
 @router.get("/api/v1/series")
