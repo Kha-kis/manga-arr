@@ -96,6 +96,60 @@ def _parse_vol_input(raw: str) -> float | None:
     return _m._parse_vol_suffix(raw.strip())
 
 
+def dismiss_import_queue_entry(queue_id: int) -> dict:
+    """Remove an import queue entry and reset its grabbed volumes to wanted."""
+    with get_db() as db:
+        q = db.execute(
+            "SELECT series_id, download_id FROM import_queue WHERE id=?", (queue_id,)
+        ).fetchone()
+        if not q:
+            return {"ok": False, "status": "not_found"}
+
+        series_id = q["series_id"]
+        dl_id = q["download_id"]
+        if dl_id:
+            others = db.execute(
+                "SELECT COUNT(*) FROM import_queue WHERE download_id=? AND id != ?",
+                (dl_id, queue_id),
+            ).fetchone()[0]
+            if others == 0:
+                db.execute("DELETE FROM seen WHERE download_id=?", (dl_id,))
+        grabbed = (
+            db.execute(
+                "SELECT id FROM volumes WHERE series_id=? AND download_id=? AND status='grabbed'",
+                (series_id, dl_id or ""),
+            ).fetchall()
+            if dl_id
+            else []
+        )
+        vol_ids = [r["id"] for r in grabbed]
+        if vol_ids:
+            db.execute(
+                "UPDATE volumes SET status='wanted', download_id=NULL, grabbed_at=NULL,"
+                " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
+                " client=NULL, release_group=NULL"
+                " WHERE series_id=? AND download_id=? AND status='grabbed'",
+                (series_id, dl_id),
+            )
+            cascade_chapters(
+                db,
+                series_id,
+                vol_ids,
+                "wanted",
+                grabbed_at=None,
+                torrent_name=None,
+                torrent_url=None,
+                indexer=None,
+                protocol=None,
+                client=None,
+                download_id=None,
+                release_group=None,
+            )
+        db.execute("DELETE FROM import_queue_files WHERE queue_id=?", (queue_id,))
+        db.execute("DELETE FROM import_queue WHERE id=?", (queue_id,))
+    return {"ok": True, "status": "dismissed"}
+
+
 @router.post("/import/{queue_id}/process")
 async def process_import(queue_id: int, request: Request):
     """Process an import queue item after user review: parse form overrides then execute.
@@ -252,53 +306,7 @@ async def skip_import(request: Request, queue_id: int):
 @router.post("/import/{queue_id}/dismiss")
 async def dismiss_import(request: Request, queue_id: int):
     """Remove an import queue entry from Mangarr's DB only — resets grabbed volumes to wanted."""
-    with get_db() as db:
-        q = db.execute(
-            "SELECT series_id, download_id FROM import_queue WHERE id=?", (queue_id,)
-        ).fetchone()
-        if q:
-            series_id = q["series_id"]
-            dl_id = q["download_id"]
-            if dl_id:
-                others = db.execute(
-                    "SELECT COUNT(*) FROM import_queue WHERE download_id=? AND id != ?",
-                    (dl_id, queue_id),
-                ).fetchone()[0]
-                if others == 0:
-                    db.execute("DELETE FROM seen WHERE download_id=?", (dl_id,))
-            grabbed = (
-                db.execute(
-                    "SELECT id FROM volumes WHERE series_id=? AND download_id=? AND status='grabbed'",
-                    (series_id, dl_id or ""),
-                ).fetchall()
-                if dl_id
-                else []
-            )
-            vol_ids = [r["id"] for r in grabbed]
-            if vol_ids:
-                db.execute(
-                    "UPDATE volumes SET status='wanted', download_id=NULL, grabbed_at=NULL,"
-                    " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
-                    " client=NULL, release_group=NULL"
-                    " WHERE series_id=? AND download_id=? AND status='grabbed'",
-                    (series_id, dl_id),
-                )
-                cascade_chapters(
-                    db,
-                    series_id,
-                    vol_ids,
-                    "wanted",
-                    grabbed_at=None,
-                    torrent_name=None,
-                    torrent_url=None,
-                    indexer=None,
-                    protocol=None,
-                    client=None,
-                    download_id=None,
-                    release_group=None,
-                )
-        db.execute("DELETE FROM import_queue_files WHERE queue_id=?", (queue_id,))
-        db.execute("DELETE FROM import_queue WHERE id=?", (queue_id,))
+    dismiss_import_queue_entry(queue_id)
     if request.headers.get("HX-Request") == "true":
         from fastapi.responses import Response as _Resp
 

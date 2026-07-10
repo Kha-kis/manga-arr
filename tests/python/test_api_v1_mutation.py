@@ -71,6 +71,12 @@ def env():
             " datetime('now'), 'reset-dl')"
         )
         c.execute(
+            "INSERT INTO seen(torrent_url, torrent_name, series_id, volume_num,"
+            " grabbed_at, download_id)"
+            " VALUES('import-release-url', 'Import Release', 5, 6.0,"
+            " datetime('now'), 'import-dl')"
+        )
+        c.execute(
             "INSERT INTO volumes"
             "(id, series_id, volume_num, status, grabbed_at, source_url,"
             " torrent_name, indexer, protocol, client, download_id,"
@@ -94,6 +100,15 @@ def env():
             " VALUES(503, 5, 5.0, 'wanted')"
         )
         c.execute(
+            "INSERT INTO volumes"
+            "(id, series_id, volume_num, status, grabbed_at, source_url,"
+            " torrent_name, indexer, protocol, client, download_id,"
+            " release_group)"
+            " VALUES(504, 5, 6.0, 'grabbed', datetime('now'),"
+            " 'import-release-url', 'Import Release', 'Nyaa', 'torrent',"
+            " 'qBittorrent', 'import-dl', 'Group')"
+        )
+        c.execute(
             "INSERT INTO history"
             "(id, event_type, series_id, series_title, volume_label,"
             " source_title, indexer, protocol, client, download_id,"
@@ -114,6 +129,21 @@ def env():
             "(id, series_id, url, title, indexer, protocol, size_bytes)"
             " VALUES(801, 5, 'https://example.invalid/pending',"
             " 'Pending Release', 'Nyaa', 'torrent', 456)"
+        )
+        c.execute(
+            "INSERT INTO import_queue"
+            "(id, series_id, download_id, torrent_name, torrent_url,"
+            " volume_num, src_dir, status)"
+            " VALUES(901, 5, 'import-dl', 'Import Release',"
+            " 'import-release-url', 6.0, '/downloads/import', 'pending')"
+        )
+        c.execute(
+            "INSERT INTO import_queue_files"
+            "(id, queue_id, filename, src_path, dst_path, proposed_volume,"
+            " status)"
+            " VALUES(902, 901, 'Import Release.cbz',"
+            " '/downloads/import/Import Release.cbz',"
+            " '/library/S5/Import Release.cbz', 6.0, 'pending')"
         )
         c.execute(
             "INSERT INTO blocklist"
@@ -241,7 +271,12 @@ def test_api_v1_command_cleanup_seen_mutates_stale_rows(env):
             row[0]
             for row in c.execute("SELECT torrent_url FROM seen ORDER BY torrent_url")
         ]
-    assert urls == ["failed-release-url", "recent", "reset-release-url"]
+    assert urls == [
+        "failed-release-url",
+        "import-release-url",
+        "recent",
+        "reset-release-url",
+    ]
 
 
 def test_api_v1_command_rejects_unknown_command(env):
@@ -481,4 +516,62 @@ def test_api_v1_queue_dismiss_pending_release_rejects_unknown_id(env):
 
     with sqlite3.connect(env) as c:
         remaining = c.execute("SELECT COUNT(*) FROM pending_releases").fetchone()[0]
+    assert remaining == 1
+
+
+def test_api_v1_queue_dismiss_import_entry_resets_grabbed_state(env):
+    resp = _client().delete(
+        "/api/v1/queue/import/901",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 901}
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        queue = c.execute("SELECT 1 FROM import_queue WHERE id=901").fetchone()
+        queue_files = c.execute(
+            "SELECT COUNT(*) FROM import_queue_files WHERE queue_id=901"
+        ).fetchone()[0]
+        volume = c.execute(
+            "SELECT status, source_url, download_id, indexer, protocol,"
+            " client, release_group FROM volumes WHERE id=504"
+        ).fetchone()
+        seen_by_url = c.execute(
+            "SELECT 1 FROM seen WHERE torrent_url='import-release-url'"
+        ).fetchone()
+        seen_by_download = c.execute(
+            "SELECT 1 FROM seen WHERE download_id='import-dl'"
+        ).fetchone()
+
+    assert queue is None
+    assert queue_files == 0
+    assert dict(volume) == {
+        "status": "wanted",
+        "source_url": None,
+        "download_id": None,
+        "indexer": None,
+        "protocol": None,
+        "client": None,
+        "release_group": None,
+    }
+    assert seen_by_url is None
+    assert seen_by_download is None
+
+
+def test_api_v1_queue_dismiss_import_entry_requires_api_key(env):
+    resp = _client().delete("/api/v1/queue/import/901")
+    assert resp.status_code == 401
+
+
+def test_api_v1_queue_dismiss_import_entry_rejects_unknown_id(env):
+    resp = _client().delete(
+        "/api/v1/queue/import/99999",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "import queue entry not found"
+
+    with sqlite3.connect(env) as c:
+        remaining = c.execute("SELECT COUNT(*) FROM import_queue").fetchone()[0]
     assert remaining == 1

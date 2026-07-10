@@ -23,6 +23,7 @@ from metadata import search_series
 from parsing import normalize
 from rename_plan import build_series_rename_preview, execute_series_rename
 from routers.history_ import delete_history_entry, mark_history_failed
+from routers.import_ import dismiss_import_queue_entry
 from routers.queue_ import dismiss_pending_release, reset_grabbed_volume
 from routers.series_ import patch_series as _patch_series
 from routers.system import APP_VERSION, TASKS, TASK_STATE, run_command as _run_command
@@ -712,6 +713,17 @@ async def api_v1_queue_dismiss_pending(pending_id: int):
             status_code=HTTP_404_NOT_FOUND,
         )
     return JSONResponse({"ok": True, "id": pending_id})
+
+
+@router.delete("/api/v1/queue/import/{queue_id}")
+async def api_v1_queue_dismiss_import(queue_id: int):
+    result = dismiss_import_queue_entry(queue_id)
+    if result["status"] == "not_found":
+        return JSONResponse(
+            {"error": "import queue entry not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    return JSONResponse({"ok": True, "id": queue_id})
 
 
 @router.get("/api/v1/blocklist")
