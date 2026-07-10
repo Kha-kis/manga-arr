@@ -26,7 +26,7 @@ def env():
     hidden_dir = os.path.join(library_root, ".hidden")
     for path in (known_dir, unmapped_a, unmapped_b, hidden_dir):
         os.makedirs(path)
-    with open(os.path.join(unmapped_a, "one.cbz"), "wb") as f:
+    with open(os.path.join(unmapped_a, "Unmapped A v01.cbz"), "wb") as f:
         f.write(b"1234")
     with open(os.path.join(unmapped_a, "notes.txt"), "wb") as f:
         f.write(b"note")
@@ -108,6 +108,23 @@ def _series_count(db_path: str) -> int:
         return c.execute("SELECT COUNT(*) FROM series").fetchone()[0]
 
 
+def _series_row(db_path: str, title: str):
+    with sqlite3.connect(db_path) as c:
+        c.row_factory = sqlite3.Row
+        return c.execute(
+            "SELECT * FROM series WHERE title=?", (title,)
+        ).fetchone()
+
+
+def _volume_rows(db_path: str, series_id: int) -> list[sqlite3.Row]:
+    with sqlite3.connect(db_path) as c:
+        c.row_factory = sqlite3.Row
+        return c.execute(
+            "SELECT * FROM volumes WHERE series_id=? ORDER BY volume_num",
+            (series_id,),
+        ).fetchall()
+
+
 def test_unmapped_folder_scan_excludes_known_and_hidden_dirs(env):
     resp = _client().get(
         "/api/v1/rootfolder/1/unmappedfolders",
@@ -150,3 +167,99 @@ def test_unmapped_folder_scan_404s_for_unknown_root(env):
         headers={"X-Api-Key": _api_key(env["db_path"])},
     )
     assert resp.status_code == 404
+
+
+def test_unmapped_folder_adoption_creates_series_and_rescans_files(env):
+    target = os.path.join(env["library_root"], "Unmapped A")
+    resp = _client().post(
+        "/api/v1/rootfolder/1/unmappedfolders/adopt",
+        json={"path": target},
+        headers={"X-Api-Key": _api_key(env["db_path"])},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["series"]["title"] == "Unmapped A"
+    assert body["series"]["path"] == target
+    assert body["series"]["monitorMode"] == "missing"
+    assert body["rescan"]["created"] == 1
+
+    row = _series_row(env["db_path"], "Unmapped A")
+    assert row is not None
+    assert row["root_folder_id"] == 1
+    assert row["search_pattern"] == "Unmapped A"
+    assert row["monitored"] == 1
+    assert row["monitor_mode"] == "missing"
+    assert row["quality_profile_id"] is not None
+    assert row["language_profile_id"] is not None
+
+    volumes = _volume_rows(env["db_path"], row["id"])
+    assert len(volumes) == 1
+    assert volumes[0]["volume_num"] == 1.0
+    assert volumes[0]["status"] == "downloaded"
+    assert volumes[0]["monitored"] == 1
+    assert volumes[0]["import_path"].endswith("Unmapped A v01.cbz")
+
+    scan = _client().get(
+        "/api/v1/rootfolder/1/unmappedfolders",
+        headers={"X-Api-Key": _api_key(env["db_path"])},
+    )
+    names = [item["name"] for item in scan.json()["unmappedFolders"]]
+    assert names == ["Unmapped B"]
+
+
+def test_unmapped_folder_adoption_rejects_already_mapped_path(env):
+    before = _series_count(env["db_path"])
+    resp = _client().post(
+        "/api/v1/rootfolder/1/unmappedfolders/adopt",
+        json={"path": os.path.join(env["library_root"], "Known Manga")},
+        headers={"X-Api-Key": _api_key(env["db_path"])},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "path is already mapped"
+    assert _series_count(env["db_path"]) == before
+
+
+def test_unmapped_folder_adoption_rejects_path_outside_root(env):
+    outside = tempfile.mkdtemp(prefix="mangarr-unmapped-outside-")
+    try:
+        before = _series_count(env["db_path"])
+        resp = _client().post(
+            "/api/v1/rootfolder/1/unmappedfolders/adopt",
+            json={"path": outside},
+            headers={"X-Api-Key": _api_key(env["db_path"])},
+        )
+        assert resp.status_code == 400
+        assert resp.json()["error"] == "path is not an unmapped folder"
+        assert _series_count(env["db_path"]) == before
+    finally:
+        shutil.rmtree(outside, ignore_errors=True)
+
+
+def test_unmapped_folder_adoption_rejects_title_that_maps_elsewhere(env):
+    before = _series_count(env["db_path"])
+    resp = _client().post(
+        "/api/v1/rootfolder/1/unmappedfolders/adopt",
+        json={
+            "path": os.path.join(env["library_root"], "Unmapped A"),
+            "title": "Other Title",
+        },
+        headers={"X-Api-Key": _api_key(env["db_path"])},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "path does not match title"
+    assert _series_count(env["db_path"]) == before
+
+
+def test_unmapped_folder_adoption_validates_profile_ids(env):
+    before = _series_count(env["db_path"])
+    resp = _client().post(
+        "/api/v1/rootfolder/1/unmappedfolders/adopt",
+        json={
+            "path": os.path.join(env["library_root"], "Unmapped A"),
+            "qualityProfileId": 999999,
+        },
+        headers={"X-Api-Key": _api_key(env["db_path"])},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "qualityProfileId not found"
+    assert _series_count(env["db_path"]) == before

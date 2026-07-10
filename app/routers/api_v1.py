@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from starlette.status import HTTP_404_NOT_FOUND
 
 from files import build_chapter_label
-from library_scan import scan_unmapped_root_folder
+from library_scan import adopt_unmapped_folder, scan_unmapped_root_folder
 from rename_plan import build_series_rename_preview, execute_series_rename
 from routers.series_ import patch_series as _patch_series
 from routers.system import APP_VERSION, TASKS, TASK_STATE, run_command as _run_command
@@ -715,3 +715,53 @@ async def api_v1_root_folder_unmapped(root_folder_id: int):
             status_code=HTTP_404_NOT_FOUND,
         )
     return JSONResponse(scan)
+
+
+@router.post("/api/v1/rootfolder/{root_folder_id}/unmappedfolders/adopt")
+async def api_v1_root_folder_adopt_unmapped(request: Request, root_folder_id: int):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+
+    path = str(payload.get("path") or "").strip()
+    title = payload.get("title")
+    if title is not None:
+        title = str(title).strip()
+    monitored = payload.get("monitored")
+    if monitored is not None and not isinstance(monitored, bool):
+        return JSONResponse({"error": "monitored must be a boolean"}, status_code=400)
+    monitored_bool = True if monitored is None else monitored
+    quality_profile_id = payload.get("qualityProfileId")
+    language_profile_id = payload.get("languageProfileId")
+    if quality_profile_id is not None and (
+        not isinstance(quality_profile_id, int) or isinstance(quality_profile_id, bool)
+    ):
+        return JSONResponse(
+            {"error": "qualityProfileId must be an integer"}, status_code=400
+        )
+    if language_profile_id is not None and (
+        not isinstance(language_profile_id, int) or isinstance(language_profile_id, bool)
+    ):
+        return JSONResponse(
+            {"error": "languageProfileId must be an integer"}, status_code=400
+        )
+
+    result = adopt_unmapped_folder(
+        root_folder_id,
+        path,
+        title=title,
+        monitored=monitored_bool,
+        quality_profile_id=quality_profile_id,
+        language_profile_id=language_profile_id,
+    )
+    if result.ok:
+        return JSONResponse(result.payload)
+    body = {"error": result.error or "adoption failed"}
+    if result.description:
+        body["description"] = result.description
+    return JSONResponse(body, status_code=result.status_code)

@@ -1,11 +1,21 @@
-"""Read-only library folder discovery."""
+"""Library folder discovery and adoption."""
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 
 from files import MANGA_EXTENSIONS
-from rescan import _series_library_dir
+from rescan import _series_library_dir, rescan_series_folder
 from shared import get_db
+
+
+@dataclass
+class AdoptUnmappedFolderResult:
+    ok: bool
+    status_code: int
+    error: str | None = None
+    description: str | None = None
+    payload: dict | None = None
 
 
 def _folder_stats(path: str) -> dict:
@@ -79,3 +89,171 @@ def scan_unmapped_root_folder(root_folder_id: int) -> dict | None:
         "unmappedFolderCount": len(unmapped),
         "unmappedFolders": unmapped,
     }
+
+
+def _norm_path(path: str) -> str:
+    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
+def _default_profile_id(db, table: str) -> int | None:
+    if table == "quality_profiles":
+        row = db.execute(
+            "SELECT id FROM quality_profiles ORDER BY is_default DESC, id LIMIT 1"
+        ).fetchone()
+    else:
+        row = db.execute(
+            "SELECT id FROM language_profiles ORDER BY id LIMIT 1"
+        ).fetchone()
+    return row["id"] if row else None
+
+
+def adopt_unmapped_folder(
+    root_folder_id: int,
+    folder_path: str,
+    *,
+    title: str | None = None,
+    monitored: bool = True,
+    quality_profile_id: int | None = None,
+    language_profile_id: int | None = None,
+) -> AdoptUnmappedFolderResult:
+    """Create a series for an unmapped direct child folder and rescan it."""
+    raw_path = (folder_path or "").strip()
+    if not raw_path:
+        return AdoptUnmappedFolderResult(False, 400, "path is required")
+    requested_path = os.path.abspath(raw_path)
+
+    with get_db() as db:
+        root = db.execute(
+            "SELECT id, path, label, is_default FROM root_folders WHERE id=?",
+            (root_folder_id,),
+        ).fetchone()
+        if not root:
+            return AdoptUnmappedFolderResult(
+                False,
+                404,
+                "Not Found",
+                "Root folder not found",
+            )
+
+        root_path = os.path.abspath(root["path"])
+        if not os.path.isdir(root_path):
+            return AdoptUnmappedFolderResult(
+                False,
+                400,
+                "root folder is not available",
+                "Root folder path does not exist on disk",
+            )
+        if not os.path.isdir(requested_path):
+            return AdoptUnmappedFolderResult(
+                False,
+                400,
+                "path is not an unmapped folder",
+                "Requested path is not a directory",
+            )
+
+        root_norm = _norm_path(root_path)
+        requested_norm = _norm_path(requested_path)
+        parent_norm = _norm_path(os.path.dirname(requested_path))
+        if parent_norm != root_norm or requested_norm == root_norm:
+            return AdoptUnmappedFolderResult(
+                False,
+                400,
+                "path is not an unmapped folder",
+                "Requested path must be a direct child of the root folder",
+            )
+
+        series_rows = db.execute(
+            "SELECT id FROM series WHERE root_folder_id=? AND deleted_at IS NULL",
+            (root_folder_id,),
+        ).fetchall()
+        known_paths = {
+            _norm_path(path)
+            for path in (_series_library_dir(db, row["id"]) for row in series_rows)
+            if path
+        }
+        if requested_norm in known_paths:
+            return AdoptUnmappedFolderResult(
+                False,
+                400,
+                "path is already mapped",
+                "Requested path is already assigned to a series",
+            )
+
+        series_title = (title or os.path.basename(requested_path)).strip()
+        if not series_title:
+            return AdoptUnmappedFolderResult(False, 400, "title is required")
+
+        if quality_profile_id is not None:
+            if not db.execute(
+                "SELECT 1 FROM quality_profiles WHERE id=?", (quality_profile_id,)
+            ).fetchone():
+                return AdoptUnmappedFolderResult(False, 400, "qualityProfileId not found")
+        else:
+            quality_profile_id = _default_profile_id(db, "quality_profiles")
+
+        if language_profile_id is not None:
+            if not db.execute(
+                "SELECT 1 FROM language_profiles WHERE id=?", (language_profile_id,)
+            ).fetchone():
+                return AdoptUnmappedFolderResult(False, 400, "languageProfileId not found")
+        else:
+            language_profile_id = _default_profile_id(db, "language_profiles")
+
+        monitor_mode = "missing" if monitored else "none"
+        cur = db.execute(
+            "INSERT INTO series(title, search_pattern, root_folder_id, enabled,"
+            " monitored, monitor_mode, quality_profile_id, language_profile_id,"
+            " vol_count_source)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                series_title,
+                series_title,
+                root_folder_id,
+                1,
+                1 if monitored else 0,
+                monitor_mode,
+                quality_profile_id,
+                language_profile_id,
+                "manual",
+            ),
+        )
+        series_id = cur.lastrowid
+        expected_path = _series_library_dir(db, series_id)
+        if _norm_path(expected_path or "") != requested_norm:
+            db.execute("DELETE FROM series WHERE id=?", (series_id,))
+            return AdoptUnmappedFolderResult(
+                False,
+                400,
+                "path does not match title",
+                "Requested path does not match the configured series folder path",
+            )
+
+        rescan = rescan_series_folder(db, series_id)
+        series_row = db.execute(
+            "SELECT id, title, search_pattern, root_folder_id, monitored,"
+            " monitor_mode, quality_profile_id, language_profile_id,"
+            " total_volumes FROM series WHERE id=?",
+            (series_id,),
+        ).fetchone()
+        if not series_row:
+            return AdoptUnmappedFolderResult(False, 500, "series adoption failed")
+
+        return AdoptUnmappedFolderResult(
+            True,
+            200,
+            payload={
+                "series": {
+                    "id": series_row["id"],
+                    "title": series_row["title"],
+                    "searchPattern": series_row["search_pattern"],
+                    "rootFolderId": series_row["root_folder_id"],
+                    "path": requested_path,
+                    "monitored": bool(series_row["monitored"]),
+                    "monitorMode": series_row["monitor_mode"] or "all",
+                    "qualityProfileId": series_row["quality_profile_id"],
+                    "languageProfileId": series_row["language_profile_id"],
+                    "totalVolumes": series_row["total_volumes"],
+                },
+                "rescan": rescan,
+            },
+        )
