@@ -326,6 +326,49 @@ def test_api_v1_system_status(env):
     assert body["urlBase"] == "/mangarr"
 
 
+def test_api_v1_health_summary_contract(env, monkeypatch):
+    import routers.health_ as health_router
+
+    class _Boom:
+        def __init__(self, *a, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **kw): raise ConnectionError("boom")
+        async def get(self, *a, **kw): raise ConnectionError("boom")
+
+    monkeypatch.setattr(health_router.httpx, "AsyncClient", _Boom)
+
+    resp = _client().get(
+        "/api/v1/health",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert body["ok"] is False
+    assert {check["name"] for check in body["checks"]} >= {
+        "Root Folders",
+        "Indexers",
+        "Download Clients",
+        "Quality Profiles",
+        "API Key",
+        "qBittorrent",
+    }
+    assert body["issues"] == [
+        check for check in body["checks"] if not check["ok"]
+    ]
+    assert body["stats"] == {
+        "series": 1,
+        "wanted": 1,
+        "grabbed": 1,
+        "downloaded": 2,
+    }
+    assert isinstance(body["staleSeriesCount"], int)
+    assert isinstance(body["staleGrabCount"], int)
+    assert isinstance(body["stuckImportCount"], int)
+    assert isinstance(body["recentErrorCount"], int)
+
+
 def test_api_v1_system_tasks_include_schedule_state(env, monkeypatch):
     import routers.system as system_router
 

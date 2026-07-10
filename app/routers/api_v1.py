@@ -42,6 +42,7 @@ from routers.import_ import (
     retry_import_queue_entry,
     skip_import_queue_entry,
 )
+from routers.health_ import build_health_payload
 from routers.language_profiles import SUPPORTED_LANGUAGES
 from routers.notification_connections import (
     CONNECTION_TYPES as NOTIFICATION_CONNECTION_TYPES,
@@ -1215,6 +1216,37 @@ async def api_v1_system_status():
             "startupPath": os.getcwd(),
             "urlBase": get_cfg("url_base", ""),
             "timestamp": _dt_utc(),
+        }
+    )
+
+
+@router.get("/api/v1/health")
+async def api_v1_health():
+    payload = await build_health_payload()
+    checks = payload["checks"]
+    stats = payload["stats"]
+    return JSONResponse(
+        {
+            "ok": all(check["ok"] for check in checks),
+            "checks": checks,
+            "issues": [check for check in checks if not check["ok"]],
+            "lastRss": payload["last_rss"],
+            "lastBacklog": payload["last_backlog"],
+            "stats": {
+                "series": stats["series"] or 0,
+                "wanted": stats["wanted"] or 0,
+                "grabbed": stats["grabbed"] or 0,
+                "downloaded": stats["downloaded"] or 0,
+            } if stats else {
+                "series": 0,
+                "wanted": 0,
+                "grabbed": 0,
+                "downloaded": 0,
+            },
+            "staleSeriesCount": len(payload["stale_series"]),
+            "staleGrabCount": len(payload["stale_grabs"]),
+            "stuckImportCount": len(payload["stuck_imports"]),
+            "recentErrorCount": len(payload["recent_errors"]),
         }
     )
 
