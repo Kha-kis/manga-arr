@@ -29,11 +29,13 @@
       <i class="bi bi-star-fill text-gold"></i>
       {{ p.name }}
       {% if p.is_default %}
-        <span class="badge-status badge-downloaded text-[0.65rem]">DEFAULT</span>
+        <span class="badge-status badge-downloaded text-2xs">DEFAULT</span>
       {% endif %}
       <div class="ms-auto d-flex gap-2">
         <form method="POST" action="/quality-profiles/{{ p.id }}/set-default" class="d-inline">
-          <button class="btn btn-sm btn-secondary" type="submit" title="Set as default"
+          <button class="btn btn-sm btn-secondary" type="submit"
+                  title="Set as default"
+                  aria-label="Set {{ p.name }} as default quality profile"
                   hx-disabled-elt="this">
             <i class="bi bi-check-circle"></i>
           </button>

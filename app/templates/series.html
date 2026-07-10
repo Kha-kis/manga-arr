@@ -889,6 +889,7 @@
                 <div class="ch-pill dl {% if not ch['monitored'] %}opacity-50{% endif %}" title="{{ _uch_tip }}">{{ ch_num }}</div>
                 {% elif ch['status'] == 'grabbed' %}
                 <button class="ch-pill gr" title="Ch {{ ch_num }} · grabbed{% if ch['grabbed_at'] %} {{ ch['grabbed_at'] | format_date }}{% endif %}{% if ch['indexer'] %} via {{ ch['indexer'] }}{% endif %}"
+                        aria-label="Mark chapter {{ ch_num }} downloaded"
                         hx-post="/series/{{ s['id'] }}/chapters/{{ ch['id'] }}/mark-downloaded"
                         hx-swap="none"
                         hx-disabled-elt="this"
