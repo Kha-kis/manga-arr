@@ -39,6 +39,7 @@ from routers.import_ import (
     retry_import_queue_entry,
     skip_import_queue_entry,
 )
+from routers.language_profiles import SUPPORTED_LANGUAGES
 from routers.queue_ import dismiss_pending_release, reset_grabbed_volume
 from routers.settings_ import (
     add_root_folder_entry,
@@ -158,6 +159,15 @@ def _language_profile(row, default_id: int | None) -> dict:
         "allowAny": _bool(row["allow_any"]),
         "isDefault": row["id"] == default_id,
     }
+
+
+def _language_profile_by_id(db, profile_id: int) -> dict | None:
+    default_id = _default_language_profile_id(db)
+    row = db.execute(
+        "SELECT * FROM language_profiles WHERE id=?",
+        (profile_id,),
+    ).fetchone()
+    return _language_profile(row, default_id) if row else None
 
 
 def _custom_format(row, scores: list[dict]) -> dict:
@@ -573,6 +583,34 @@ def _payload_quality_list(payload: dict, key: str, default: list[str]) -> str:
     return json.dumps(qualities)
 
 
+def _payload_language_list(payload: dict, key: str, default: list[str]) -> str:
+    if key not in payload:
+        return json.dumps(default)
+    value = payload.get(key)
+    if value in (None, ""):
+        return json.dumps(default)
+    if isinstance(value, str):
+        raw_codes = [item.strip().lower() for item in value.split(",")]
+    elif isinstance(value, list):
+        raw_codes = [str(item).strip().lower() for item in value]
+    else:
+        raise ValueError(f"{key} must be a list of language codes")
+    codes = [code for code in raw_codes if code in SUPPORTED_LANGUAGES]
+    return json.dumps(codes if codes else ["any"])
+
+
+def _default_language_profile_id(db) -> int | None:
+    row = db.execute(
+        "SELECT value FROM settings WHERE key='default_language_profile_id'"
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        return int(row["value"])
+    except (TypeError, ValueError):
+        return None
+
+
 def _default_profile_id(db, table: str) -> int | None:
     if table == "quality_profiles":
         row = db.execute(
@@ -883,20 +921,178 @@ async def api_v1_delete_quality_profile(profile_id: int):
 @router.get("/api/v1/languageprofile")
 async def api_v1_language_profiles():
     with get_db() as db:
-        default_id = None
-        row = db.execute(
-            "SELECT value FROM settings WHERE key='default_language_profile_id'"
-        ).fetchone()
-        if row:
-            try:
-                default_id = int(row["value"])
-            except (TypeError, ValueError):
-                default_id = None
+        default_id = _default_language_profile_id(db)
         rows = db.execute(
             "SELECT * FROM language_profiles ORDER BY id"
         ).fetchall()
         payload = [_language_profile(row, default_id) for row in rows]
     return JSONResponse(payload)
+
+
+@router.post("/api/v1/languageprofile")
+async def api_v1_create_language_profile(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+
+    name = _payload_str(payload, "name")
+    if not name:
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    try:
+        languages = _payload_language_list(payload, "languages", ["any"])
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    allow_any = _json_bool(payload.get("allowAny", payload.get("allow_any")), False)
+    is_default = _json_bool(payload.get("isDefault"), False)
+
+    try:
+        with get_db() as db:
+            cur = db.execute(
+                "INSERT INTO language_profiles(name, languages, allow_any)"
+                " VALUES(?,?,?)",
+                (name, languages, 1 if allow_any else 0),
+            )
+            profile_id = cur.lastrowid
+            if is_default:
+                db.execute(
+                    "INSERT OR REPLACE INTO settings(key, value)"
+                    " VALUES('default_language_profile_id', ?)",
+                    (str(profile_id),),
+                )
+            profile = _language_profile_by_id(db, profile_id)
+    except sqlite3.IntegrityError:
+        return JSONResponse(
+            {"error": "language profile name already exists"},
+            status_code=HTTP_400_BAD_REQUEST,
+        )
+    return JSONResponse({"ok": True, "status": "created", "languageProfile": profile})
+
+
+@router.put("/api/v1/languageprofile/{profile_id}")
+@router.patch("/api/v1/languageprofile/{profile_id}")
+async def api_v1_update_language_profile(request: Request, profile_id: int):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+
+    fields: list[str] = []
+    params: list = []
+    try:
+        if "name" in payload:
+            name = _payload_str(payload, "name")
+            if not name:
+                return JSONResponse({"error": "name is required"}, status_code=400)
+            fields.append("name=?")
+            params.append(name)
+        if "languages" in payload:
+            fields.append("languages=?")
+            params.append(_payload_language_list(payload, "languages", ["any"]))
+        if "allowAny" in payload or "allow_any" in payload:
+            fields.append("allow_any=?")
+            allow_any = payload.get("allowAny", payload.get("allow_any"))
+            params.append(1 if _json_bool(allow_any) else 0)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    is_default = payload.get("isDefault")
+    wants_default = _json_bool(is_default, False) if is_default is not None else None
+
+    try:
+        with get_db() as db:
+            existing = db.execute(
+                "SELECT 1 FROM language_profiles WHERE id=?",
+                (profile_id,),
+            ).fetchone()
+            if not existing:
+                return JSONResponse(
+                    {"error": "language profile not found"},
+                    status_code=HTTP_404_NOT_FOUND,
+                )
+            if fields:
+                params.append(profile_id)
+                db.execute(
+                    f"UPDATE language_profiles SET {', '.join(fields)} WHERE id=?",
+                    params,
+                )
+            if wants_default:
+                db.execute(
+                    "INSERT OR REPLACE INTO settings(key, value)"
+                    " VALUES('default_language_profile_id', ?)",
+                    (str(profile_id),),
+                )
+            elif wants_default is False:
+                default_id = _default_language_profile_id(db)
+                if default_id == profile_id:
+                    db.execute(
+                        "DELETE FROM settings"
+                        " WHERE key='default_language_profile_id'"
+                    )
+            profile = _language_profile_by_id(db, profile_id)
+    except sqlite3.IntegrityError:
+        return JSONResponse(
+            {"error": "language profile name already exists"},
+            status_code=HTTP_400_BAD_REQUEST,
+        )
+    return JSONResponse({"ok": True, "languageProfile": profile})
+
+
+@router.post("/api/v1/languageprofile/{profile_id}/default")
+async def api_v1_set_default_language_profile(profile_id: int):
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM language_profiles WHERE id=?",
+            (profile_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "language profile not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        db.execute(
+            "INSERT OR REPLACE INTO settings(key, value)"
+            " VALUES('default_language_profile_id', ?)",
+            (str(profile_id),),
+        )
+        profile = _language_profile_by_id(db, profile_id)
+    return JSONResponse({"ok": True, "languageProfile": profile})
+
+
+@router.delete("/api/v1/languageprofile/{profile_id}")
+async def api_v1_delete_language_profile(profile_id: int):
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM language_profiles WHERE id=?",
+            (profile_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "language profile not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        ref = db.execute(
+            "SELECT id FROM series WHERE language_profile_id=? LIMIT 1",
+            (profile_id,),
+        ).fetchone()
+        if ref:
+            return JSONResponse(
+                {"error": "language profile is in use"},
+                status_code=HTTP_400_BAD_REQUEST,
+            )
+        default_id = _default_language_profile_id(db)
+        if default_id == profile_id:
+            db.execute(
+                "DELETE FROM settings WHERE key='default_language_profile_id'"
+            )
+        db.execute("DELETE FROM language_profiles WHERE id=?", (profile_id,))
+    return JSONResponse({"ok": True, "id": profile_id})
 
 
 @router.get("/api/v1/customformat")

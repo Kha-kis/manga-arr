@@ -864,6 +864,193 @@ def test_api_v1_delete_quality_profile_rejects_unknown_id(env):
     assert resp.json()["error"] == "quality profile not found"
 
 
+def test_api_v1_create_language_profile_adds_row_and_can_default(env):
+    resp = _client().post(
+        "/api/v1/languageprofile",
+        json={
+            "name": "API Languages",
+            "languages": ["en", "ja", "bogus"],
+            "allowAny": False,
+            "isDefault": True,
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["status"] == "created"
+    assert body["languageProfile"]["name"] == "API Languages"
+    assert body["languageProfile"]["languages"] == ["en", "ja"]
+    assert body["languageProfile"]["allowAny"] is False
+    assert body["languageProfile"]["isDefault"] is True
+    profile_id = body["languageProfile"]["id"]
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT languages, allow_any FROM language_profiles WHERE id=?",
+            (profile_id,),
+        ).fetchone()
+        default_row = c.execute(
+            "SELECT value FROM settings WHERE key='default_language_profile_id'"
+        ).fetchone()
+    assert json.loads(row["languages"]) == ["en", "ja"]
+    assert row["allow_any"] == 0
+    assert default_row["value"] == str(profile_id)
+
+
+def test_api_v1_create_language_profile_requires_api_key(env):
+    resp = _client().post(
+        "/api/v1/languageprofile",
+        json={"name": "No Auth"},
+    )
+    assert resp.status_code == 401
+
+
+def test_api_v1_create_language_profile_rejects_bad_languages(env):
+    resp = _client().post(
+        "/api/v1/languageprofile",
+        json={"name": "Bad Languages", "languages": {"en": True}},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "languages must be a list of language codes"
+
+
+def test_api_v1_update_language_profile_updates_submitted_fields(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO language_profiles(id, name, languages, allow_any)"
+            " VALUES(1101, 'Old API Languages', '[\"en\"]', 0)"
+        )
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/languageprofile/1101",
+        json={
+            "name": "Updated API Languages",
+            "languages": "en,ja,invalid",
+            "allowAny": True,
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["languageProfile"]["name"] == "Updated API Languages"
+    assert body["languageProfile"]["languages"] == ["en", "ja"]
+    assert body["languageProfile"]["allowAny"] is True
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT name, languages, allow_any FROM language_profiles WHERE id=1101"
+        ).fetchone()
+    assert row["name"] == "Updated API Languages"
+    assert json.loads(row["languages"]) == ["en", "ja"]
+    assert row["allow_any"] == 1
+
+
+def test_api_v1_update_language_profile_rejects_unknown_id(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/languageprofile/99999",
+        json={"name": "Missing"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "language profile not found"
+
+
+def test_api_v1_set_default_language_profile_updates_setting(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO language_profiles(id, name, languages)"
+            " VALUES(1110, 'Language Default A', '[\"en\"]')"
+        )
+        c.execute(
+            "INSERT INTO language_profiles(id, name, languages)"
+            " VALUES(1111, 'Language Default B', '[\"ja\"]')"
+        )
+        c.execute(
+            "INSERT OR REPLACE INTO settings(key, value)"
+            " VALUES('default_language_profile_id', '1110')"
+        )
+
+    resp = _client().post(
+        "/api/v1/languageprofile/1111/default",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["languageProfile"]["isDefault"] is True
+
+    with sqlite3.connect(env) as c:
+        default_row = c.execute(
+            "SELECT value FROM settings WHERE key='default_language_profile_id'"
+        ).fetchone()
+    assert default_row[0] == "1111"
+
+
+def test_api_v1_delete_language_profile_removes_unused_and_clears_default(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO language_profiles(id, name, languages)"
+            " VALUES(1120, 'Delete API Languages', '[\"en\"]')"
+        )
+        c.execute(
+            "INSERT OR REPLACE INTO settings(key, value)"
+            " VALUES('default_language_profile_id', '1120')"
+        )
+
+    resp = _client().delete(
+        "/api/v1/languageprofile/1120",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 1120}
+
+    with sqlite3.connect(env) as c:
+        profile = c.execute(
+            "SELECT 1 FROM language_profiles WHERE id=1120"
+        ).fetchone()
+        default_row = c.execute(
+            "SELECT value FROM settings WHERE key='default_language_profile_id'"
+        ).fetchone()
+    assert profile is None
+    assert default_row is None
+
+
+def test_api_v1_delete_language_profile_blocks_in_use(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO language_profiles(id, name, languages)"
+            " VALUES(1121, 'Used API Languages', '[\"en\"]')"
+        )
+        c.execute("UPDATE series SET language_profile_id=1121 WHERE id=5")
+
+    resp = _client().delete(
+        "/api/v1/languageprofile/1121",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "language profile is in use"
+
+    with sqlite3.connect(env) as c:
+        profile = c.execute(
+            "SELECT 1 FROM language_profiles WHERE id=1121"
+        ).fetchone()
+    assert profile is not None
+
+
+def test_api_v1_delete_language_profile_rejects_unknown_id(env):
+    resp = _client().delete(
+        "/api/v1/languageprofile/99999",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "language profile not found"
+
+
 def test_api_v1_command_cleanup_seen_mutates_stale_rows(env):
     client = _client()
     headers = {"X-Api-Key": _api_key(env)}
