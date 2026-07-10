@@ -9,15 +9,64 @@ jobs:
   hermetic:
     name: Hermetic suite (python + static + route sweep)
     runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.changes.outputs.docs_only }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed files
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          docs_only=false
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+            if [[ "$base" =~ ^0+$ ]]; then
+              base="$(git rev-list --max-parents=0 "$head")"
+            fi
+          else
+            base=""
+            head=""
+          fi
+
+          if [[ -n "$base" && -n "$head" ]]; then
+            git diff --name-only "$base" "$head" > /tmp/changed-files.txt
+            if [[ -s /tmp/changed-files.txt ]]; then
+              docs_only=true
+              while IFS= read -r path; do
+                case "$path" in
+                  docs/*|*.md|*.MD) ;;
+                  *) docs_only=false ;;
+                esac
+              done < /tmp/changed-files.txt
+            fi
+          fi
+
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          echo "Changed files:"
+          cat /tmp/changed-files.txt 2>/dev/null || true
+          echo "docs_only=$docs_only"
+
+      - name: Skip heavy test suite for docs-only change
+        if: steps.changes.outputs.docs_only == 'true'
+        run: echo "Only docs/markdown files changed; skipping Python/static/route-sweep tests."
 
       - name: Set up Python 3.12
+        if: steps.changes.outputs.docs_only != 'true'
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Install runtime + test dependencies
+        if: steps.changes.outputs.docs_only != 'true'
         # Use the same pinned set as the Dockerfile so tests exercise the
         # exact production resolution. requirements-test.txt adds pytest.
         run: |
@@ -25,6 +74,7 @@ jobs:
           pip install -r requirements.txt -r requirements-test.txt
 
       - name: pip-audit — fail on known CVEs in pinned deps
+        if: steps.changes.outputs.docs_only != 'true'
         # Scans requirements.txt against PyPA's advisory database. Fails
         # the build if any pinned package has a known vulnerability,
         # surfacing the CVE on the PR before merge. Dependabot then opens
@@ -34,14 +84,17 @@ jobs:
           pip-audit -r requirements.txt --strict
 
       - name: Run python suite
+        if: steps.changes.outputs.docs_only != 'true'
         run: pytest tests/python/ -q
 
       - name: Static confirm-flow analysis
+        if: steps.changes.outputs.docs_only != 'true'
         # The script lives under app/ and reads templates/base.html relative
         # to itself, so cd into app/ first.
         run: cd app && python test_confirm_flow.py
 
       - name: Auto-derived route sweep
+        if: steps.changes.outputs.docs_only != 'true'
         run: pytest tests/python/test_route_sweep.py -v
 
   isolated-browser:
@@ -50,19 +103,27 @@ jobs:
     needs: hermetic
     steps:
       - uses: actions/checkout@v7
+        if: needs.hermetic.outputs.docs_only != 'true'
+
+      - name: Skip browser suite for docs-only change
+        if: needs.hermetic.outputs.docs_only == 'true'
+        run: echo "Only docs/markdown files changed; skipping isolated browser suite."
 
       - name: Set up Node 20
+        if: needs.hermetic.outputs.docs_only != 'true'
         uses: actions/setup-node@v6
         with:
           node-version: "20"
 
       - name: Install Playwright + Chromium
+        if: needs.hermetic.outputs.docs_only != 'true'
         working-directory: tests
         run: |
           npm ci || npm install
           npx playwright install --with-deps chromium
 
       - name: Run isolated browser suite (smoke + integration + e2e)
+        if: needs.hermetic.outputs.docs_only != 'true'
         # docker-compose.test.yml mounts a fresh ./.test-config dir and
         # spins up a mock-qbit sidecar so the qBit auth assertion in e2e
         # has a deterministic upstream. The runner tears everything down
@@ -70,7 +131,7 @@ jobs:
         run: make test-browser-isolated
 
       - name: Capture container logs on failure
-        if: failure()
+        if: failure() && needs.hermetic.outputs.docs_only != 'true'
         run: |
           docker logs mangarr-test --tail 200 || true
           ls -la .test-config/ || true
