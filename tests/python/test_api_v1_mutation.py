@@ -168,6 +168,21 @@ def env():
             " '/library/S5/Failed Import.cbz', 7.0, 'failed')"
         )
         c.execute(
+            "INSERT INTO import_queue"
+            "(id, series_id, download_id, torrent_name, torrent_url,"
+            " volume_num, src_dir, status)"
+            " VALUES(905, 5, 'skipped-import-dl', 'Skipped Import',"
+            " 'skipped-import-url', 8.0, '/downloads/skipped-import', 'skipped')"
+        )
+        c.execute(
+            "INSERT INTO import_queue_files"
+            "(id, queue_id, filename, src_path, dst_path, proposed_volume,"
+            " status)"
+            " VALUES(906, 905, 'Skipped Import.cbz',"
+            " '/downloads/skipped-import/Skipped Import.cbz',"
+            " '/library/S5/Skipped Import.cbz', 8.0, 'skipped')"
+        )
+        c.execute(
             "INSERT INTO blocklist"
             "(id, series_id, torrent_url, torrent_name, reason)"
             " VALUES(601, 5, 'https://example.invalid/bad.torrent',"
@@ -619,6 +634,30 @@ def test_api_v1_queue_dismiss_import_entry_rejects_unknown_id(env):
             "SELECT COUNT(*) FROM import_queue WHERE id IN (901, 903)"
         ).fetchone()[0]
     assert remaining == 2
+
+
+def test_api_v1_queue_clear_failed_imports_removes_inactive_entries(env):
+    resp = _client().delete(
+        "/api/v1/queue/import/failed",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "deleted": 2, "deletedFiles": 2}
+
+    with sqlite3.connect(env) as c:
+        queues = c.execute(
+            "SELECT id, status FROM import_queue ORDER BY id"
+        ).fetchall()
+        queue_files = c.execute(
+            "SELECT queue_id, status FROM import_queue_files ORDER BY queue_id"
+        ).fetchall()
+    assert queues == [(901, "pending")]
+    assert queue_files == [(901, "pending")]
+
+
+def test_api_v1_queue_clear_failed_imports_requires_api_key(env):
+    resp = _client().delete("/api/v1/queue/import/failed")
+    assert resp.status_code == 401
 
 
 def test_api_v1_queue_skip_import_entry_marks_queue_and_files_skipped(env):

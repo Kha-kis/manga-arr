@@ -171,6 +171,27 @@ def skip_import_queue_entry(queue_id: int) -> dict:
     return {"ok": True, "status": "skipped"}
 
 
+def clear_inactive_import_queue_entries() -> dict:
+    """Delete failed/skipped import queue entries and their files."""
+    with get_db() as db:
+        file_cur = db.execute(
+            "DELETE FROM import_queue_files WHERE queue_id IN ("
+            "  SELECT id FROM import_queue WHERE status IN ('failed','skipped')"
+            ")"
+        )
+        queue_cur = db.execute(
+            "DELETE FROM import_queue WHERE status IN ('failed','skipped')"
+        )
+        deleted_files = file_cur.rowcount
+        deleted = queue_cur.rowcount
+    return {
+        "ok": True,
+        "status": "deleted",
+        "deleted": deleted,
+        "deleted_files": deleted_files,
+    }
+
+
 @router.post("/import/{queue_id}/process")
 async def process_import(queue_id: int, request: Request):
     """Process an import queue item after user review: parse form overrides then execute.
@@ -383,13 +404,7 @@ async def retry_import(request: Request, queue_id: int):
 @router.post("/import/clear-old")
 async def import_clear_old(request: Request):
     """Delete all failed/skipped import queue entries."""
-    with get_db() as db:
-        db.execute(
-            "DELETE FROM import_queue_files WHERE queue_id IN ("
-            "  SELECT id FROM import_queue WHERE status IN ('failed','skipped')"
-            ")"
-        )
-        db.execute("DELETE FROM import_queue WHERE status IN ('failed','skipped')")
+    clear_inactive_import_queue_entries()
     if request.headers.get("HX-Request") == "true":
         import json
         from fastapi.responses import Response as _Resp
