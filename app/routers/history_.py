@@ -60,6 +60,15 @@ def mark_history_failed(hist_id: int) -> dict:
     return {"ok": True, "status": "marked_failed"}
 
 
+def delete_history_entry(hist_id: int) -> dict:
+    """Delete one history entry."""
+    with get_db() as db:
+        cur = db.execute("DELETE FROM history WHERE id=?", (hist_id,))
+        if cur.rowcount < 1:
+            return {"ok": False, "status": "not_found"}
+    return {"ok": True, "status": "deleted"}
+
+
 @router.get("/activity")
 async def activity_redirect():
     return RedirectResponse("/history", status_code=302)
@@ -155,8 +164,7 @@ async def history_mark_failed(request: Request, hist_id: int):
 @router.post("/history/{hist_id}/delete")
 async def history_delete(request: Request, hist_id: int):
     """Delete a single history entry."""
-    with get_db() as db:
-        db.execute("DELETE FROM history WHERE id=?", (hist_id,))
+    delete_history_entry(hist_id)
     if request.headers.get("HX-Request") == "true":
         from fastapi.responses import Response as _Resp
         return _Resp(headers={"HX-Refresh": "true"})

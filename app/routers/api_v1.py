@@ -22,7 +22,7 @@ from library_scan import adopt_unmapped_folder, scan_unmapped_root_folder
 from metadata import search_series
 from parsing import normalize
 from rename_plan import build_series_rename_preview, execute_series_rename
-from routers.history_ import mark_history_failed
+from routers.history_ import delete_history_entry, mark_history_failed
 from routers.queue_ import dismiss_pending_release, reset_grabbed_volume
 from routers.series_ import patch_series as _patch_series
 from routers.system import APP_VERSION, TASKS, TASK_STATE, run_command as _run_command
@@ -862,6 +862,17 @@ async def api_v1_history_mark_failed(history_id: int):
         return JSONResponse(
             {"error": "history entry is not grabbed"},
             status_code=HTTP_400_BAD_REQUEST,
+        )
+    return JSONResponse({"ok": True, "id": history_id})
+
+
+@router.delete("/api/v1/history/{history_id}")
+async def api_v1_history_delete(history_id: int):
+    result = delete_history_entry(history_id)
+    if result["status"] == "not_found":
+        return JSONResponse(
+            {"error": "history entry not found"},
+            status_code=HTTP_404_NOT_FOUND,
         )
     return JSONResponse({"ok": True, "id": history_id})
 
