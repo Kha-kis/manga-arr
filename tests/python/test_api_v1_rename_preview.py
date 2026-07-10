@@ -144,6 +144,14 @@ def _volume_paths(db_path: str) -> dict[int, str]:
         }
 
 
+def _chapter_paths(db_path: str) -> dict[int, str]:
+    with sqlite3.connect(db_path) as c:
+        return {
+            row[0]: row[1]
+            for row in c.execute("SELECT id, import_path FROM chapters ORDER BY id")
+        }
+
+
 def test_rename_preview_reports_dry_run_plan(env):
     resp = _client().get(
         "/api/v1/rename/series/7/preview",
@@ -188,6 +196,107 @@ def test_rename_preview_is_read_only(env):
 def test_rename_preview_404_for_unknown_series(env):
     resp = _client().get(
         "/api/v1/rename/series/999/preview",
+        headers={"X-Api-Key": _api_key(env["db_path"])},
+    )
+    assert resp.status_code == 404
+
+
+def test_rename_execute_moves_all_renameable_items(env):
+    client = _client()
+    headers = {"X-Api-Key": _api_key(env["db_path"])}
+    new_v1 = os.path.join(env["series_dir"], "Plan Manga v01.cbz")
+    new_ch5 = os.path.join(env["series_dir"], "Plan Manga c005.cbz")
+
+    resp = client.post("/api/v1/rename/series/7", json={}, headers=headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["seriesId"] == 7
+    assert body["requested"] == 4
+    assert body["renamed"] == 2
+    assert body["skipped"] == 2
+    assert body["errors"] == 0
+    statuses = {(row["type"], row["id"]): row["status"] for row in body["results"]}
+    assert statuses[("volume", 101)] == "renamed"
+    assert statuses[("chapter", 201)] == "renamed"
+    assert statuses[("volume", 102)] == "skipped"
+    assert statuses[("volume", 103)] == "skipped"
+
+    assert not os.path.exists(env["old_v1"])
+    assert os.path.exists(new_v1)
+    assert os.path.exists(env["old_v2"])
+    assert os.path.exists(env["target_v2"])
+    assert not os.path.exists(env["old_ch5"])
+    assert os.path.exists(new_ch5)
+
+    assert _volume_paths(env["db_path"])[101] == new_v1
+    assert _volume_paths(env["db_path"])[102] == env["old_v2"]
+    assert _chapter_paths(env["db_path"])[201] == new_ch5
+    with sqlite3.connect(env["db_path"]) as c:
+        history = c.execute(
+            "SELECT event_type, volume_label, source_title, data"
+            " FROM history WHERE event_type='file_renamed'"
+            " ORDER BY id"
+        ).fetchall()
+    assert len(history) == 2
+    assert history[0][0] == "file_renamed"
+    assert history[0][1] == "Vol 1"
+    assert history[0][2] == "bad-name.cbz"
+
+
+def test_rename_execute_can_limit_to_selected_ids(env):
+    new_v1 = os.path.join(env["series_dir"], "Plan Manga v01.cbz")
+    new_ch5 = os.path.join(env["series_dir"], "Plan Manga c005.cbz")
+    resp = _client().post(
+        "/api/v1/rename/series/7",
+        json={"volumeIds": [101]},
+        headers={"X-Api-Key": _api_key(env["db_path"])},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["requested"] == 1
+    assert body["renamed"] == 1
+    assert body["skipped"] == 0
+    assert body["errors"] == 0
+
+    assert os.path.exists(new_v1)
+    assert not os.path.exists(env["old_v1"])
+    assert os.path.exists(env["old_ch5"])
+    assert not os.path.exists(new_ch5)
+    assert _volume_paths(env["db_path"])[101] == new_v1
+    assert _chapter_paths(env["db_path"])[201] == env["old_ch5"]
+
+
+def test_rename_execute_reports_selected_conflicts_without_moving(env):
+    resp = _client().post(
+        "/api/v1/rename/series/7",
+        json={"volumeIds": [102, 103]},
+        headers={"X-Api-Key": _api_key(env["db_path"])},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["requested"] == 2
+    assert body["renamed"] == 0
+    assert body["skipped"] == 2
+    conflicts = {row["id"]: row["conflict"] for row in body["results"]}
+    assert conflicts == {102: "target_exists", 103: "source_missing"}
+    assert os.path.exists(env["old_v2"])
+    assert _volume_paths(env["db_path"])[102] == env["old_v2"]
+
+
+def test_rename_execute_validates_body(env):
+    resp = _client().post(
+        "/api/v1/rename/series/7",
+        json={"volumeIds": "101"},
+        headers={"X-Api-Key": _api_key(env["db_path"])},
+    )
+    assert resp.status_code == 400
+    assert "volumeIds" in resp.json()["error"]
+
+
+def test_rename_execute_404_for_unknown_series(env):
+    resp = _client().post(
+        "/api/v1/rename/series/999",
+        json={},
         headers={"X-Api-Key": _api_key(env["db_path"])},
     )
     assert resp.status_code == 404
