@@ -361,6 +361,35 @@ def test_api_v1_history_failed_rejects_non_grabbed_history(env):
     assert event_type == "import_failed"
 
 
+def test_api_v1_delete_history_entry_removes_row(env):
+    resp = _client().delete(
+        "/api/v1/history/702",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 702}
+
+    with sqlite3.connect(env) as c:
+        deleted = c.execute("SELECT 1 FROM history WHERE id=702").fetchone()
+        kept = c.execute("SELECT 1 FROM history WHERE id=701").fetchone()
+    assert deleted is None
+    assert kept is not None
+
+
+def test_api_v1_delete_history_entry_requires_api_key(env):
+    resp = _client().delete("/api/v1/history/702")
+    assert resp.status_code == 401
+
+
+def test_api_v1_delete_history_entry_rejects_unknown_id(env):
+    resp = _client().delete(
+        "/api/v1/history/99999",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "history entry not found"
+
+
 def test_api_v1_queue_reset_grabbed_volume_returns_wanted(env):
     resp = _client().post(
         "/api/v1/queue/grabbed/502/reset",
