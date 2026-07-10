@@ -387,3 +387,47 @@ def execute_series_rename(
         "errors": len(errors),
         "results": renamed + skipped + errors,
     }
+
+
+def execute_library_rename(
+    *,
+    series_ids: set[int] | None = None,
+    volume_ids: set[int] | None = None,
+    chapter_ids: set[int] | None = None,
+) -> dict:
+    """Rename selected downloaded files across the library.
+
+    This intentionally delegates each series to execute_series_rename() so
+    file-system checks and DB updates remain series-scoped and current.
+    """
+    preview = build_library_rename_preview()
+    target_series_ids = [
+        plan["seriesId"]
+        for plan in preview["series"]
+        if series_ids is None or plan["seriesId"] in series_ids
+    ]
+
+    series_results = []
+    for series_id in target_series_ids:
+        result = execute_series_rename(
+            series_id,
+            volume_ids=volume_ids,
+            chapter_ids=chapter_ids,
+        )
+        if result is None:
+            continue
+        if result["requested"] or (volume_ids is None and chapter_ids is None):
+            series_results.append(result)
+
+    requested = sum(result["requested"] for result in series_results)
+    renamed = sum(result["renamed"] for result in series_results)
+    skipped = sum(result["skipped"] for result in series_results)
+    errors = sum(result["errors"] for result in series_results)
+    return {
+        "requested": requested,
+        "renamed": renamed,
+        "skipped": skipped,
+        "errors": errors,
+        "seriesCount": len(series_results),
+        "series": series_results,
+    }
