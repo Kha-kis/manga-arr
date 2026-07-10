@@ -530,6 +530,15 @@ def reset_grabbed_volume(vol_id: int) -> dict:
     return {"ok": True, "status": "reset"}
 
 
+def dismiss_pending_release(pending_id: int) -> dict:
+    """Remove one pending delayed release from the queue."""
+    with get_db() as db:
+        cur = db.execute("DELETE FROM pending_releases WHERE id=?", (pending_id,))
+        if cur.rowcount < 1:
+            return {"ok": False, "status": "not_found"}
+    return {"ok": True, "status": "dismissed"}
+
+
 @router.post("/queue/grabbed/{dl_hash}/reset-all")
 async def reset_orphaned_by_hash(request: Request, dl_hash: str):
     """Reset all grabbed volumes sharing a download_id back to wanted (for 'missing' queue items)."""
@@ -884,6 +893,5 @@ async def force_grab_pending(request: Request, pending_id: int):
 @router.post("/queue/pending/{pending_id}/dismiss")
 async def dismiss_pending(request: Request, pending_id: int):
     """Remove a pending release from the delay queue without grabbing it."""
-    with get_db() as db:
-        db.execute("DELETE FROM pending_releases WHERE id=?", (pending_id,))
+    dismiss_pending_release(pending_id)
     return await _queue_partial_response(request)
