@@ -369,6 +369,28 @@ def test_api_v1_health_summary_contract(env, monkeypatch):
     assert isinstance(body["recentErrorCount"], int)
 
 
+def test_api_v1_diskspace_lists_root_folder_usage(env):
+    resp = _client().get(
+        "/api/v1/diskspace",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert [entry["name"] for entry in body] == ["Library", "Archive"]
+    library = body[0]
+    assert library["path"]
+    assert library["isAvailable"] is True
+    assert isinstance(library["totalSpace"], int)
+    assert isinstance(library["freeSpace"], int)
+    assert library["totalSpace"] >= library["freeSpace"] >= 0
+
+    archive = body[1]
+    assert archive["isAvailable"] is False
+    assert archive["totalSpace"] is None
+    assert archive["freeSpace"] is None
+
+
 def test_api_v1_system_tasks_include_schedule_state(env, monkeypatch):
     import routers.system as system_router
 

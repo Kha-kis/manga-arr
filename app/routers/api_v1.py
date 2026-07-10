@@ -592,15 +592,30 @@ def _delete_tag_everywhere(db, tag: str) -> None:
 
 def _root_folder(row) -> dict:
     path = row["path"]
-    disk = {
+    disk = _disk_space_entry(path)
+    return {
+        "id": row["id"],
+        "path": path,
+        "name": row["label"] or path,
+        "label": row["label"],
+        "isDefault": _bool(row["is_default"]),
+        "unmappedFolders": [],
+        "totalSpace": disk["totalSpace"],
+        "freeSpace": disk["freeSpace"],
+        "isAvailable": disk["isAvailable"],
+    }
+
+
+def _disk_space_entry(path: str) -> dict:
+    payload = {
+        "path": path,
         "totalSpace": None,
         "freeSpace": None,
-        "unmappedFolders": [],
         "isAvailable": False,
     }
     try:
         usage = shutil.disk_usage(path)
-        disk.update(
+        payload.update(
             {
                 "totalSpace": usage.total,
                 "freeSpace": usage.free,
@@ -609,14 +624,7 @@ def _root_folder(row) -> dict:
         )
     except OSError:
         pass
-    return {
-        "id": row["id"],
-        "path": path,
-        "name": row["label"] or path,
-        "label": row["label"],
-        "isDefault": _bool(row["is_default"]),
-        **disk,
-    }
+    return payload
 
 
 def _safe_backup_filename(filename: str) -> bool:
@@ -1249,6 +1257,26 @@ async def api_v1_health():
             "recentErrorCount": len(payload["recent_errors"]),
         }
     )
+
+
+@router.get("/api/v1/diskspace")
+async def api_v1_disk_space():
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT id, path, label FROM root_folders ORDER BY is_default DESC, label, path"
+        ).fetchall()
+    payload = []
+    for row in rows:
+        entry = _disk_space_entry(row["path"])
+        entry.update(
+            {
+                "id": row["id"],
+                "name": row["label"] or row["path"],
+                "label": row["label"],
+            }
+        )
+        payload.append(entry)
+    return JSONResponse(payload)
 
 
 @router.get("/api/v1/system/backup")
