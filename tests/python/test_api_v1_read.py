@@ -2,6 +2,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -323,6 +324,43 @@ def test_api_v1_system_status(env):
     assert body["authentication"] == "apikey"
     assert body["databaseType"] == "sqlite"
     assert body["urlBase"] == "/mangarr"
+
+
+def test_api_v1_system_tasks_include_schedule_state(env, monkeypatch):
+    import routers.system as system_router
+
+    last_run = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    next_run = datetime(2026, 1, 2, 3, 19, 5, tzinfo=timezone.utc)
+    state = dict(system_router.TASK_STATE["RssSyncAll"])
+    state.update({"last_run": last_run, "next_run": next_run})
+    monkeypatch.setitem(system_router.TASK_STATE, "RssSyncAll", state)
+
+    resp = _client().get(
+        "/api/v1/system/task",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    tasks = resp.json()
+    rss = [task for task in tasks if task["name"] == "RssSyncAll"][0]
+    assert rss == {
+        "name": "RssSyncAll",
+        "displayName": "RSS Sync",
+        "interval": "15 min",
+        "manual": False,
+        "lastRun": "2026-01-02T03:04:05+00:00",
+        "nextRun": "2026-01-02T03:19:05+00:00",
+    }
+    assert {task["name"] for task in tasks} >= {"CheckDownloads", "Backup"}
+
+
+def test_api_v1_system_tasks_match_command_list_contract(env):
+    client = _client()
+    headers = {"X-Api-Key": _api_key(env)}
+    tasks = client.get("/api/v1/system/task", headers=headers)
+    commands = client.get("/api/v1/command", headers=headers)
+    assert tasks.status_code == 200, tasks.text
+    assert commands.status_code == 200, commands.text
+    assert tasks.json() == commands.json()
 
 
 def test_api_v1_profiles_roots_and_series_contract(env):
