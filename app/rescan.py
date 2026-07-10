@@ -4,8 +4,8 @@ Thirteenth module extracted from main.py. Contains two closely-coupled
 helpers that keep the on-disk library and the DB volumes table in sync:
 
   - _series_library_dir     — compute the library directory path for
-                              a series (honours folder_format and the
-                              series' root_folder_id)
+                              a series (honours folder_name overrides,
+                              folder_format, and root_folder_id)
   - rescan_series_folder    — walk the library dir, reconcile every
                               volume / pack status to match what's
                               actually on disk, create stubs for
@@ -39,7 +39,8 @@ from volumes import _cascade_chapters
 def _series_library_dir(db, series_id: int) -> str | None:
     """Return the library directory path for a series, or None if not configured."""
     s = db.execute(
-        "SELECT title, root_folder_id, pub_year FROM series WHERE id=?", (series_id,)
+        "SELECT title, root_folder_id, pub_year, folder_name FROM series WHERE id=?",
+        (series_id,),
     ).fetchone()
     if not s:
         return None
@@ -47,13 +48,23 @@ def _series_library_dir(db, series_id: int) -> str | None:
         "SELECT path FROM root_folders WHERE id=?", (s['root_folder_id'],)
     ).fetchone() if s['root_folder_id'] else None
     dest_root = _resolve_series_dest_root(db, s['root_folder_id'], rf)
-    title = s['title'] or 'Unknown'
-    fmt = get_cfg('folder_format', '').strip()
-    if fmt:
-        safe_dir = _apply_format_tokens(fmt, title, pub_year=s['pub_year'])
-        safe_dir = sanitize_filename(safe_dir)
+    folder_name = (s["folder_name"] or "").strip()
+    if (
+        folder_name
+        and folder_name not in (".", "..")
+        and os.path.basename(folder_name) == folder_name
+        and "/" not in folder_name
+        and "\\" not in folder_name
+    ):
+        safe_dir = folder_name
     else:
-        safe_dir = sanitize_filename(title)
+        title = s['title'] or 'Unknown'
+        fmt = get_cfg('folder_format', '').strip()
+        if fmt:
+            safe_dir = _apply_format_tokens(fmt, title, pub_year=s['pub_year'])
+            safe_dir = sanitize_filename(safe_dir)
+        else:
+            safe_dir = sanitize_filename(title)
     return os.path.join(dest_root, safe_dir)
 
 

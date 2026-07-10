@@ -209,6 +209,7 @@ def init_db():
         add_col('seen',    'release_guid',   'TEXT')
         add_col('volumes', 'download_id',    'TEXT')
         add_col('series',  'root_folder_id', 'INTEGER')
+        add_col('series',  'folder_name',    'TEXT')  # optional per-series library folder leaf
         add_col('volumes', 'vol_range_start', 'REAL')
         add_col('volumes', 'vol_range_end',   'REAL')
         add_col('volumes', 'pack_type',       'TEXT')  # 'volume', 'chapter', 'complete'

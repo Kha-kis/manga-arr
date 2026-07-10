@@ -208,6 +208,7 @@ def test_unmapped_folder_adoption_creates_series_and_rescans_files(env):
     assert row["search_pattern"] == "Unmapped A"
     assert row["monitored"] == 1
     assert row["monitor_mode"] == "missing"
+    assert row["folder_name"] == "Unmapped A"
     assert row["quality_profile_id"] is not None
     assert row["language_profile_id"] is not None
 
@@ -250,6 +251,7 @@ def test_unmapped_folder_adoption_can_seed_selected_metadata(env):
     body = resp.json()
     assert body["series"]["title"] == "Unmapped A"
     assert body["series"]["searchPattern"] == "Official Unmapped A"
+    assert body["series"]["folderName"] == "Unmapped A"
     assert body["series"]["anilistId"] == 123
     assert body["series"]["malId"] == 456
     assert body["series"]["mangaUpdatesId"] == "789"
@@ -380,19 +382,34 @@ def test_unmapped_folder_adoption_rejects_path_outside_root(env):
         shutil.rmtree(outside, ignore_errors=True)
 
 
-def test_unmapped_folder_adoption_rejects_title_that_maps_elsewhere(env):
-    before = _series_count(env["db_path"])
+def test_unmapped_folder_adoption_pins_existing_folder_for_custom_title(env):
     resp = _client().post(
         "/api/v1/rootfolder/1/unmappedfolders/adopt",
         json={
             "path": os.path.join(env["library_root"], "Unmapped A"),
             "title": "Other Title",
+            "metadataTitle": "Official Other Title",
         },
         headers={"X-Api-Key": _api_key(env["db_path"])},
     )
-    assert resp.status_code == 400
-    assert resp.json()["error"] == "path does not match title"
-    assert _series_count(env["db_path"]) == before
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["series"]["title"] == "Other Title"
+    assert body["series"]["searchPattern"] == "Official Other Title"
+    assert body["series"]["folderName"] == "Unmapped A"
+    assert body["series"]["path"] == os.path.join(env["library_root"], "Unmapped A")
+
+    row = _series_row(env["db_path"], "Other Title")
+    assert row is not None
+    assert row["folder_name"] == "Unmapped A"
+
+    import rescan
+    import shared
+
+    with shared.get_db() as db:
+        assert rescan._series_library_dir(db, row["id"]) == os.path.join(
+            env["library_root"], "Unmapped A"
+        )
 
 
 def test_unmapped_folder_adoption_validates_profile_ids(env):

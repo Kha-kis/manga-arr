@@ -661,22 +661,21 @@ async def manual_import_auto(request: Request):
             continue
 
         with get_db() as db:
-            s_row = db.execute(
+            s_row_raw = db.execute(
                 "SELECT * FROM series WHERE id=?", (ms["id"],)
             ).fetchone()
-            rf = (
-                db.execute(
-                    "SELECT path FROM root_folders WHERE id=?",
-                    (s_row["root_folder_id"],),
-                ).fetchone()
-                if s_row and s_row["root_folder_id"]
-                else None
-            )
-            dest_root = _m._resolve_series_dest_root(
-                db, s_row["root_folder_id"] if s_row else None, rf
-            )
+            s_row = dict(s_row_raw) if s_row_raw else None
+            dst_dir = _m._series_library_dir(db, s_row["id"]) if s_row else None
 
-        dst_dir = os.path.join(dest_root, _m.sanitize_filename(s_row["title"]))
+        if not s_row or not dst_dir:
+            import_results.append(
+                {
+                    "path": f["path"],
+                    "ok": False,
+                    "message": "Series destination not found",
+                }
+            )
+            continue
         vol_num = f["vol_num"]
         dst_fname = _m.build_filename(s_row["title"], vol_num, f["filename"])
 
@@ -803,28 +802,25 @@ async def manual_import_process(request: Request):
             continue
 
         with get_db() as db:
-            s = db.execute("SELECT * FROM series WHERE id=?", (series_id,)).fetchone()
-            rf = (
-                db.execute(
-                    "SELECT path FROM root_folders WHERE id=?", (s["root_folder_id"],)
-                ).fetchone()
-                if s and s["root_folder_id"]
-                else None
-            )
-            dest_root = (
-                _m._resolve_series_dest_root(db, s["root_folder_id"] if s else None, rf)
-                if s
-                else None
-            )
+            s_raw = db.execute("SELECT * FROM series WHERE id=?", (series_id,)).fetchone()
+            s = dict(s_raw) if s_raw else None
+            dst_dir = _m._series_library_dir(db, s["id"]) if s else None
 
         if not s:
             results.append(
                 {"path": src_path, "ok": False, "message": "Series not found"}
             )
             continue
+        if not dst_dir:
+            results.append(
+                {
+                    "path": src_path,
+                    "ok": False,
+                    "message": "Series destination not found",
+                }
+            )
+            continue
 
-        assert dest_root is not None
-        dst_dir = os.path.join(dest_root, _m.sanitize_filename(s["title"]))
         fname = os.path.basename(src_path)
         if vol_num is not None:
             fname = _m.build_filename(s["title"], float(vol_num), fname)

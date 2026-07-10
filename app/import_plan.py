@@ -5,8 +5,8 @@ import os
 
 from events import log_event
 from parsing import extract_chapter_num
-from helpers import _resolve_series_dest_root
-from files import sanitize_filename, safe_join_under
+from files import safe_join_under
+from rescan import _series_library_dir
 
 log = logging.getLogger(__name__)
 
@@ -115,20 +115,23 @@ def _plan_import(
             "SELECT tag FROM series_tags WHERE series_id=?", (queue["series_id"],)
         ).fetchall()
     ]
-    rf = (
+    dst_dir = _series_library_dir(db, queue["series_id"]) if s else None
+    if not dst_dir:
+        log_event(
+            "error",
+            "Import: cannot resolve destination folder",
+            queue["series_id"],
+            db=db,
+        )
+        db.execute("UPDATE import_queue SET status='failed' WHERE id=?", (queue_id,))
         db.execute(
-            "SELECT path FROM root_folders WHERE id=?", (s["root_folder_id"],)
-        ).fetchone()
-        if s and s["root_folder_id"]
-        else None
-    )
-    dest_root = _resolve_series_dest_root(
-        db,
-        s["root_folder_id"] if s else None,
-        rf,
-    )
-    safe_dir = sanitize_filename(s["title"] or "Unknown") if s else "Unknown"
-    dst_dir = os.path.join(dest_root, safe_dir)
+            "UPDATE volumes SET status='wanted', grabbed_at=NULL, download_id=NULL,"
+            " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
+            " client=NULL, release_group=NULL, import_path=NULL"
+            " WHERE download_id=? AND status='grabbed'",
+            (queue["download_id"],),
+        )
+        return None
 
     try:
         os.makedirs(dst_dir, exist_ok=True)

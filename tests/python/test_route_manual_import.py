@@ -254,6 +254,50 @@ def test_import_files_volume_into_library_and_marks_downloaded(env):
         assert ev['source_title'] == "TestSeries v01.cbz"
 
 
+def test_import_uses_pinned_series_folder_name(env):
+    """Manual import must honor the per-series folder leaf used by adopted
+    existing-library folders whose metadata title differs from the directory."""
+    client = _client()
+    csrf = _csrf("mi-folder-name")
+
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute(
+            "UPDATE series SET title='Official Metadata Title',"
+            " search_pattern='Official Metadata Title', folder_name='Existing Folder'"
+            " WHERE id=7"
+        )
+
+    src = os.path.join(env['completed'], "Official Metadata Title v01.cbz")
+    _make_cbz(src)
+
+    r = client.post(
+        "/api/manual-import/import",
+        json={'entries': [{
+            'path': src,
+            'series_id': 7,
+            'volume_num': 1,
+        }]},
+        **csrf,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body['imported'] == 1, body
+    dst = body['results'][0]['dst']
+    assert os.path.isfile(dst)
+    assert dst.startswith(os.path.join(env['library_root'], "Existing Folder"))
+    assert not os.path.exists(
+        os.path.join(env['library_root'], "Official Metadata Title")
+    )
+
+    with sqlite3.connect(env['db_path']) as c:
+        c.row_factory = sqlite3.Row
+        v = c.execute(
+            "SELECT status, import_path FROM volumes WHERE id=701"
+        ).fetchone()
+    assert v['status'] == 'downloaded'
+    assert v['import_path'] == dst
+
+
 def test_import_rejects_blocked_source_path(env):
     """Importing a file from /etc/* (or other blocked prefix) must be
     rejected per-entry — not crash the whole batch."""
