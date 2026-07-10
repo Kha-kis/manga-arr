@@ -51,6 +51,7 @@ not exact TV terminology, exact Sonarr UI, or identical plugin breadth.
 | Health and maintenance | `/health`, recycle bin, metadata health/reconcile tools, API key regeneration | Covered |
 | API authentication | `/api/*` API-key middleware, CSRF bypass for API-key clients, fail-closed tests | Covered |
 | Read-only API v1 seed | `/api/v1/system/status`, `/api/v1/series`, `/api/v1/queue`, `/api/v1/history`, `/api/v1/wanted`, `/api/v1/rootfolder`, `/api/v1/qualityprofile` with response-contract tests | Initial slice covered |
+| Rename planner dry run | `/api/v1/rename/series/{id}/preview` reports old/new paths, conflicts, missing sources, and unchanged rows without filesystem mutation | Backend seed covered |
 
 ## True Parity Gaps
 
@@ -73,18 +74,17 @@ Recommended scope:
 ### 2. Rename/Organize Existing Library Files
 
 Mangarr imports files, converts/stages archives, writes ComicInfo metadata,
-and has naming preview helpers. It does not yet expose a full Sonarr-style
-preview rename / bulk rename / organize existing library workflow for files
-that are already imported.
+and now has a read-only rename planner endpoint for imported files. It does
+not yet expose the full Sonarr-style UI or execute workflow for preview rename
+/ bulk rename / organize existing library files.
 
 Recommended scope:
 
-1. Build a read-only rename planner for imported volumes and chapters.
-2. Surface a per-series preview with old path, new path, conflict status, and
-   selectable rows.
-3. Execute selected renames with short DB transactions, history rows, and
+1. Surface the per-series preview in the UI with old path, new path, conflict
+   status, and selectable rows.
+2. Execute selected renames with short DB transactions, history rows, and
    rollback-safe path updates.
-4. Reuse the existing staging/import safety patterns rather than moving files
+3. Reuse the existing staging/import safety patterns rather than moving files
    while holding long SQLite write locks.
 
 ### 3. Import-List Exclusions

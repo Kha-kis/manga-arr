@@ -14,7 +14,9 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
+from starlette.status import HTTP_404_NOT_FOUND
 
+from rename_plan import build_series_rename_preview
 from routers.system import APP_VERSION
 from shared import (
     build_volume_label,
@@ -417,3 +419,14 @@ async def api_v1_wanted():
                 }
             )
     return JSONResponse(payload)
+
+
+@router.get("/api/v1/rename/series/{series_id}/preview")
+async def api_v1_rename_series_preview(series_id: int):
+    preview = build_series_rename_preview(series_id)
+    if preview is None:
+        return JSONResponse(
+            {"message": "Not Found", "description": "Series not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    return JSONResponse(preview)
