@@ -652,6 +652,52 @@ def test_api_v1_create_system_backup_requires_api_key(env, tmp_path, monkeypatch
     assert resp.status_code == 401
 
 
+def test_api_v1_validate_system_backup_accepts_created_backup(
+    env, tmp_path, monkeypatch
+):
+    backup_dir = _use_temp_backup_dir(monkeypatch, tmp_path, env)
+    headers = {"X-Api-Key": _api_key(env)}
+
+    create_resp = _client().post("/api/v1/system/backup", headers=headers)
+    assert create_resp.status_code == 200, create_resp.text
+    filename = create_resp.json()["backup"]["filename"]
+    assert (backup_dir / filename).exists()
+
+    resp = _client().post(
+        f"/api/v1/system/backup/{filename}/validate",
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["filename"] == filename
+    assert body["containsDatabase"] is True
+    assert body["databaseValid"] is True
+    assert "manga_arr.db" in body["entries"]
+
+
+def test_api_v1_validate_system_backup_requires_api_key(env, tmp_path, monkeypatch):
+    _use_temp_backup_dir(monkeypatch, tmp_path, env)
+    resp = _client().post(
+        "/api/v1/system/backup/mangarr_backup_20260101_000000.zip/validate"
+    )
+    assert resp.status_code == 401
+
+
+def test_api_v1_validate_system_backup_rejects_bad_filename(
+    env, tmp_path, monkeypatch
+):
+    _use_temp_backup_dir(monkeypatch, tmp_path, env)
+    resp = _client().post(
+        "/api/v1/system/backup/passwords.txt/validate",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["error"] == "Invalid filename"
+
+
 def test_api_v1_delete_system_backup_removes_file(env, tmp_path, monkeypatch):
     backup_dir = _use_temp_backup_dir(monkeypatch, tmp_path, env)
     backup = backup_dir / "mangarr_backup_20260103_000000.zip"
