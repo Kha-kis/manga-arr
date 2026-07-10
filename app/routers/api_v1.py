@@ -886,6 +886,18 @@ async def api_v1_series(
     return _paged_list_response(payload, page, pageSize)
 
 
+@router.get("/api/v1/series/lookup")
+async def api_v1_series_lookup(term: str = ""):
+    query = term.strip()
+    if not query:
+        return JSONResponse({"error": "term is required"}, status_code=400)
+
+    results, _source = await search_series(query)
+    matches = [_metadata_match_payload(query, item) for item in results]
+    matches.sort(key=lambda item: item["confidence"], reverse=True)
+    return JSONResponse(matches)
+
+
 @router.get("/api/v1/series/{series_id}")
 async def api_v1_series_detail(series_id: int):
     with get_db() as db:
