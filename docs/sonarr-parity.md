@@ -52,6 +52,7 @@ not exact TV terminology, exact Sonarr UI, or identical plugin breadth.
 | API authentication | `/api/*` API-key middleware, CSRF bypass for API-key clients, fail-closed tests | Covered |
 | Read-only API v1 seed | `/api/v1/system/status`, `/api/v1/series`, `/api/v1/queue`, `/api/v1/history`, `/api/v1/wanted`, `/api/v1/rootfolder`, `/api/v1/qualityprofile` with response-contract tests | Initial slice covered |
 | Rename planner dry run | `/api/v1/rename/series/{id}/preview` reports old/new paths, conflicts, missing sources, and unchanged rows without filesystem mutation | Backend seed covered |
+| Existing-library discovery seed | `/api/v1/rootfolder/{id}/unmappedfolders` reports root-folder child directories not mapped to known series | Backend seed covered |
 
 ## True Parity Gaps
 
@@ -103,18 +104,17 @@ Recommended scope:
 
 ### 4. Existing Library Import / Unmapped Folder Adoption
 
-Mangarr supports root folders, root-folder disk usage, and manual import. It
-does not yet have a Sonarr-style existing-library import flow that scans a root
-folder, detects unmapped series folders, proposes metadata matches, and adopts
-selected folders into the library.
+Mangarr supports root folders, root-folder disk usage, manual import, and a
+read-only unmapped-folder scan per root folder. It does not yet have a full
+Sonarr-style existing-library import flow that proposes metadata matches and
+adopts selected folders into the library.
 
 Recommended scope:
 
-1. Add a read-only unmapped-folder scan per root folder.
-2. Match folder names against existing metadata providers and show confidence.
-3. Let users adopt selected folders with monitored/profile/root-folder
+1. Match folder names against existing metadata providers and show confidence.
+2. Let users adopt selected folders with monitored/profile/root-folder
    choices.
-4. Keep ad-hoc download-folder manual import separate from existing organized
+3. Keep ad-hoc download-folder manual import separate from existing organized
    library adoption.
 
 ### 5. Backup Restore Workflow
