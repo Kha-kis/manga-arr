@@ -34,6 +34,13 @@ from shared import get_db
 # ── ENV defaults ─────────────────────────────────────────────────────────────
 
 ENV_DEFAULTS = {
+    'instance_name':       ('MANGARR_INSTANCE_NAME', 'Mangarr'),
+    'log_level':           ('MANGARR_LOG_LEVEL',     'INFO'),
+    # External URL prefix advertised to API clients and shown in settings.
+    # Leave empty when Mangarr is served at the domain root. When set,
+    # operators must configure the reverse proxy to strip the prefix before
+    # forwarding requests to the container.
+    'url_base':            ('MANGARR_URL_BASE',      ''),
     'save_path':           ('MANGA_SAVE_PATH',  '/manga'),
     # torrent_save_path: where qBittorrent writes in-progress downloads.
     # When empty, falls back to save_path (keeps the single-directory
@@ -153,11 +160,34 @@ SETTINGS_VALIDATORS: dict = {
     'suwayomi_check_interval': ('int', 60, 86400 * 7),
     'blocklist_ttl_days':      ('int', 0, 365 * 5),
     'import_mode':             ('enum', frozenset({'hardlink', 'move', 'copy'})),
+    'log_level':               ('enum', frozenset({'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'})),
+    'url_base':                ('url_base',),
     'komga_scan_enabled':      ('bool',),
     'remove_completed':        ('bool',),
     'ddl_grab_mode':           ('enum', frozenset({'fallback', 'only'})),
     'quality_cutoff':          ('enum', frozenset({'', 'pdf', 'epub', 'cbr', 'cbz', 'rar', 'zip', 'mobi'})),
 }
+
+
+def normalize_url_base(value) -> str:
+    """Normalize a reverse-proxy URL prefix.
+
+    Empty means "served at /". Non-empty values must be a single path prefix
+    such as "/mangarr"; query strings, fragments, schemes, and traversal are
+    rejected by returning an empty string.
+    """
+    raw = str(value or "").strip()
+    if not raw or raw == "/":
+        return ""
+    if "://" in raw or "?" in raw or "#" in raw or "\\" in raw:
+        return ""
+    if not raw.startswith("/"):
+        raw = f"/{raw}"
+    raw = raw.rstrip("/")
+    parts = [part for part in raw.split("/") if part]
+    if not parts or any(part in (".", "..") for part in parts):
+        return ""
+    return "/" + "/".join(parts)
 
 
 def _validate_setting_value(key: str, value, default):
@@ -192,6 +222,13 @@ def _validate_setting_value(key: str, value, default):
         if str(value).lower() in ('true', 'false'):
             return str(value).lower()
         log.warning("settings[%s]: %r is not a bool-like string; using default %r",
+                    key, value, default)
+        return default
+    if kind == 'url_base':
+        normalized = normalize_url_base(value)
+        if normalized or value in ("", None, "/"):
+            return normalized
+        log.warning("settings[%s]: %r is not a valid URL base; using default %r",
                     key, value, default)
         return default
     return value

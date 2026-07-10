@@ -898,6 +898,18 @@ def test_edit_notification_partial_post_can_toggle_single_event(env):
 # ═════════════════════════════════════════════════════════════════════
 
 
+def test_settings_general_renders_url_base_control(env):
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute(
+            "INSERT OR REPLACE INTO settings(key,value) VALUES('url_base','/mangarr')"
+        )
+    r = _client().get("/settings/general")
+    assert r.status_code == 200, r.text
+    assert 'name="url_base"' in r.text
+    assert 'value="/mangarr"' in r.text
+    assert "URL Base" in r.text
+
+
 def test_save_general_settings_partial_post(env):
     """Each setting is its own row in the `settings` table. A partial
     POST must only INSERT-OR-REPLACE rows whose form key is in the
@@ -907,6 +919,7 @@ def test_save_general_settings_partial_post(env):
         for k, v in [
             ('instance_name',        'My Mangarr'),
             ('log_level',            'DEBUG'),
+            ('url_base',             '/mangarr'),
             ('backup_folder',        '/custom/backups'),
             ('backup_interval_days', '14'),
             ('backup_retention',     '5'),
@@ -930,7 +943,7 @@ def test_save_general_settings_partial_post(env):
         out = {
             r[0]: r[1] for r in c.execute(
                 "SELECT key, value FROM settings WHERE key IN ("
-                "'instance_name','log_level','backup_folder','backup_interval_days',"
+                "'instance_name','log_level','url_base','backup_folder','backup_interval_days',"
                 "'backup_retention','ui_date_format','blocklist_ttl_days')"
             ).fetchall()
         }
@@ -938,6 +951,7 @@ def test_save_general_settings_partial_post(env):
     # Everything else preserved — would have been clobbered to defaults
     # under the old wholesale-write pattern.
     assert out['log_level']             == 'DEBUG'
+    assert out['url_base']              == '/mangarr'
     assert out['backup_folder']         == '/custom/backups'
     assert out['backup_interval_days']  == '14'
     assert out['backup_retention']      == '5'

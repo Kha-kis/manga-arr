@@ -94,15 +94,19 @@ def load_config():
     cfg = {}
     for key, (env_var, default) in ENV_DEFAULTS.items():
         cfg[key] = os.getenv(env_var, default) if env_var else default
+    for key in list(cfg):
+        if key in SETTINGS_VALIDATORS:
+            default_for_key = ENV_DEFAULTS.get(key, (None, ''))[1]
+            cfg[key] = _validate_setting_value(key, cfg[key], default_for_key)
     try:
         with get_db() as db:
             for row in db.execute("SELECT key, value FROM settings").fetchall():
                 k = row['key']
                 v = row['value']
                 # For keys with semantic constraints, validate; fall back
-                # to the ENV_DEFAULTS default on failure.
+                # to the already-loaded env/default value on failure.
                 if k in SETTINGS_VALIDATORS:
-                    default_for_key = ENV_DEFAULTS.get(k, (None, ''))[1]
+                    default_for_key = cfg.get(k, ENV_DEFAULTS.get(k, (None, ''))[1])
                     v = _validate_setting_value(k, v, default_for_key)
                 cfg[k] = v  # load ALL settings keys, not just ENV_DEFAULTS
     except Exception as e:

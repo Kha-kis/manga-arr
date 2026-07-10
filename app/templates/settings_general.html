@@ -121,10 +121,16 @@
       <div class="panel-body">
         <div class="row g-3">
           <div class="col-12 col-md-6">
-            <label class="form-label">Instance Name</label>
-            <input type="text" name="instance_name" class="form-control"
+            <label class="form-label" for="instance_name">Instance Name</label>
+            <input type="text" id="instance_name" name="instance_name" class="form-control"
                    value="{{ cfg.instance_name or 'Mangarr' }}" placeholder="Mangarr">
             <div class="form-text">Displayed in the browser tab and nav bar.</div>
+          </div>
+          <div class="col-12 col-md-6">
+            <label class="form-label" for="url_base">URL Base</label>
+            <input type="text" id="url_base" name="url_base" class="form-control"
+                   value="{{ cfg.url_base or '' }}" placeholder="/mangarr">
+            <div class="form-text">External reverse-proxy prefix. Leave empty when served at the domain root.</div>
           </div>
           <div class="col-12">
             <div class="form-text">

@@ -111,6 +111,18 @@ Caddy terminates TLS and forwards requests to Mangarr via the Docker
 network. Mangarr sees `X-Forwarded-Proto: https` and `Secure`-flags
 the CSRF cookie automatically (see PR #10 / M1).
 
+If the public URL is mounted below a path prefix, set the same prefix
+as `MANGARR_URL_BASE` or in `Settings → General → URL Base`:
+
+```env
+MANGARR_URL_BASE=/mangarr
+```
+
+The reverse proxy must strip that prefix before forwarding traffic to
+the container. Mangarr stores the prefix for status/API clients and
+operator visibility; the simplest and best-tested deployment remains a
+dedicated host or subdomain with Mangarr served at `/`.
+
 ### Not recommended: `ports: - "6789:8000"`
 
 Without the `127.0.0.1:` prefix, Docker publishes on `0.0.0.0`. Every
@@ -154,6 +166,28 @@ Before pointing anything at Mangarr beyond your local machine, verify:
       blocked because it means "the Mangarr container itself."
 - [ ] **A reverse proxy is fronting any internet-facing deployment.**
       See pattern 3 above.
+
+## Environment overrides
+
+Environment variables seed startup defaults. Once a value is saved in
+the settings table, the database value takes precedence on later boots.
+Use the UI for normal changes; use env vars for first-boot defaults and
+container-managed deployment values.
+
+Common deployment-facing overrides:
+
+| Setting | Environment variable | Default |
+| --- | --- | --- |
+| Instance name | `MANGARR_INSTANCE_NAME` | `Mangarr` |
+| Log level | `MANGARR_LOG_LEVEL` | `INFO` |
+| URL base | `MANGARR_URL_BASE` | empty |
+| Library path | `MANGA_SAVE_PATH` | `/manga` |
+| Download category | `MANGA_CATEGORY` | `manga` |
+| RSS interval | `RSS_INTERVAL` | `900` |
+
+`MANGARR_LOG_LEVEL` accepts `DEBUG`, `INFO`, `WARNING`, `ERROR`, or
+`CRITICAL`. `MANGARR_URL_BASE` should be empty or a path prefix such as
+`/mangarr`; absolute URLs are rejected.
 
 ## Container user and file ownership
 
