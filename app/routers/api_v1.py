@@ -137,6 +137,76 @@ def _release_profile(row, tags: list[str]) -> dict:
     }
 
 
+def _indexer(row, tags: list[str]) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "implementation": row["type"],
+        "implementationName": row["type"],
+        "configContract": row["type"],
+        "enable": _bool(row["enabled"]),
+        "priority": row["priority"],
+        "baseUrl": row["url"] or "",
+        "categories": from_json(row["categories"], []) or [],
+        "settings": from_json(row["settings"], {}) or {},
+        "downloadClientId": row["client_id"],
+        "minimumSeeders": row["min_seeders"] or 0,
+        "seedRatio": row["seed_ratio"] or 0,
+        "minimumSize": row["min_size_mb"] or 0,
+        "maximumSize": row["max_size_mb"] or 0,
+        "enableRss": _bool_default_true(row["use_rss"]),
+        "enableAutomaticSearch": _bool_default_true(row["use_auto_search"]),
+        "enableInteractiveSearch": _bool_default_true(
+            row["use_interactive_search"]
+        ),
+        "parentProwlarrId": row["parent_prowlarr_id"],
+        "prowlarrIndexerId": row["prowlarr_indexer_id"],
+        "hasApiKey": bool(row["api_key"]),
+        "tags": tags,
+    }
+
+
+def _download_client(row, tags: list[str]) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "implementation": row["type"],
+        "implementationName": row["type"],
+        "configContract": row["type"],
+        "enable": _bool(row["enabled"]),
+        "priority": row["priority"],
+        "host": row["host"] or "",
+        "port": row["port"],
+        "useSsl": _bool(row["use_ssl"]),
+        "urlBase": row["url_base"] or "",
+        "username": row["username"] or "",
+        "hasPassword": bool(row["password"]),
+        "category": row["category"] or "",
+        "postImportCategory": row["post_import_category"] or "",
+        "removeCompletedDownloads": _bool(row["remove_completed"]),
+        "removeFailedDownloads": _bool(row["remove_failed"]),
+        "recentPriority": row["recent_priority"] or "last",
+        "olderPriority": row["older_priority"] or "last",
+        "initialState": row["initial_state"] or "normal",
+        "sequentialOrder": _bool(row["sequential_order"]),
+        "firstLastFirst": _bool(row["first_last_first"]),
+        "contentLayout": row["content_layout"] or "original",
+        "sourceId": row["source_id"],
+        "downloadPath": row["download_path"],
+        "mergeChapters": _bool_default_true(row["merge_chapters"]),
+        "tags": tags,
+    }
+
+
+def _remote_path_mapping(row) -> dict:
+    return {
+        "id": row["id"],
+        "host": row["host"] or "",
+        "remotePath": row["remote_path"],
+        "localPath": row["local_path"],
+    }
+
+
 def _root_folder(row) -> dict:
     path = row["path"]
     disk = {
@@ -531,6 +601,49 @@ async def api_v1_release_profiles():
             _release_profile(row, tags_by_profile.get(row["id"], []))
             for row in rows
         ]
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/indexer")
+async def api_v1_indexers():
+    with get_db() as db:
+        rows = db.execute("SELECT * FROM indexers ORDER BY priority, id").fetchall()
+        tag_rows = db.execute(
+            "SELECT indexer_id, tag FROM indexer_tags ORDER BY tag"
+        ).fetchall()
+        tags_by_indexer: dict[int, list[str]] = {}
+        for tag in tag_rows:
+            tags_by_indexer.setdefault(tag["indexer_id"], []).append(tag["tag"])
+        payload = [_indexer(row, tags_by_indexer.get(row["id"], [])) for row in rows]
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/downloadclient")
+async def api_v1_download_clients():
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT * FROM download_clients ORDER BY priority, id"
+        ).fetchall()
+        tag_rows = db.execute(
+            "SELECT client_id, tag FROM download_client_tags ORDER BY tag"
+        ).fetchall()
+        tags_by_client: dict[int, list[str]] = {}
+        for tag in tag_rows:
+            tags_by_client.setdefault(tag["client_id"], []).append(tag["tag"])
+        payload = [
+            _download_client(row, tags_by_client.get(row["id"], []))
+            for row in rows
+        ]
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/downloadclient/remotepathmapping")
+async def api_v1_remote_path_mappings():
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT * FROM remote_path_mappings ORDER BY id"
+        ).fetchall()
+        payload = [_remote_path_mapping(row) for row in rows]
     return JSONResponse(payload)
 
 

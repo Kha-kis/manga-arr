@@ -48,6 +48,13 @@ def env():
         c.execute("DELETE FROM release_profile_tags")
         c.execute("DELETE FROM release_profiles")
         c.execute("DELETE FROM language_profiles")
+        c.execute("DELETE FROM indexer_tags")
+        c.execute("DELETE FROM indexer_backoff")
+        c.execute("DELETE FROM indexers")
+        c.execute("DELETE FROM download_client_tags")
+        c.execute("DELETE FROM client_breaker_state")
+        c.execute("DELETE FROM download_clients")
+        c.execute("DELETE FROM remote_path_mappings")
         c.execute("DELETE FROM root_folders")
         c.execute(
             "INSERT INTO root_folders(id, path, label, is_default)"
@@ -96,6 +103,44 @@ def env():
         c.execute(
             "INSERT INTO release_profile_tags(profile_id, tag)"
             " VALUES(40, 'favorite')"
+        )
+        c.execute(
+            "INSERT INTO download_clients"
+            "(id, name, type, host, port, use_ssl, url_base, username,"
+            " password, category, priority, enabled, remove_completed,"
+            " post_import_category, recent_priority, older_priority,"
+            " initial_state, sequential_order, first_last_first,"
+            " content_layout, remove_failed, source_id, download_path,"
+            " merge_chapters)"
+            " VALUES(50, 'qBittorrent', 'qbittorrent',"
+            " 'http://qbittorrent', 8080, 0, '/qb', 'user',"
+            " 'CLIENT-SECRET', 'manga', 1, 1, 1, 'manga-imported',"
+            " 'first', 'last', 'paused', 1, 0, 'original', 1,"
+            " 'qbit-main', '/downloads/manga', 1)"
+        )
+        c.execute(
+            "INSERT INTO download_client_tags(client_id, tag)"
+            " VALUES(50, 'favorite')"
+        )
+        c.execute(
+            "INSERT INTO remote_path_mappings(id, host, remote_path, local_path)"
+            " VALUES(60, 'qbittorrent', '/remote/downloads', '/downloads')"
+        )
+        c.execute(
+            "INSERT INTO indexers"
+            "(id, name, type, url, api_key, priority, enabled, categories,"
+            " settings, client_id, min_seeders, seed_ratio,"
+            " parent_prowlarr_id, prowlarr_indexer_id, use_rss,"
+            " use_auto_search, use_interactive_search, min_size_mb,"
+            " max_size_mb)"
+            " VALUES(70, 'Nyaa', 'torznab', 'https://nyaa.example/torznab',"
+            " 'INDEXER-SECRET', 25, 1, '[7000,7010,7020]',"
+            " '{\"animeStandardFormatSearch\":true}', 50, 5, 2.5,"
+            " NULL, NULL, 1, 1, 0, 10, 500)"
+        )
+        c.execute(
+            "INSERT INTO indexer_tags(indexer_id, tag)"
+            " VALUES(70, 'favorite')"
         )
         c.execute(
             "INSERT INTO series"
@@ -330,6 +375,92 @@ def test_api_v1_profiles_roots_and_series_contract(env):
     assert item["statistics"]["volumeFileCount"] == 2
     assert item["statistics"]["wantedCount"] == 1
     assert item["statistics"]["grabbedCount"] == 1
+
+
+def test_api_v1_indexers_download_clients_and_remote_paths_contract(env):
+    client = _client()
+    headers = {"X-Api-Key": _api_key(env)}
+
+    indexers_resp = client.get("/api/v1/indexer", headers=headers)
+    assert indexers_resp.status_code == 200, indexers_resp.text
+    indexers = indexers_resp.json()
+    assert indexers == [
+        {
+            "id": 70,
+            "name": "Nyaa",
+            "implementation": "torznab",
+            "implementationName": "torznab",
+            "configContract": "torznab",
+            "enable": True,
+            "priority": 25,
+            "baseUrl": "https://nyaa.example/torznab",
+            "categories": [7000, 7010, 7020],
+            "settings": {"animeStandardFormatSearch": True},
+            "downloadClientId": 50,
+            "minimumSeeders": 5,
+            "seedRatio": 2.5,
+            "minimumSize": 10,
+            "maximumSize": 500,
+            "enableRss": True,
+            "enableAutomaticSearch": True,
+            "enableInteractiveSearch": False,
+            "parentProwlarrId": None,
+            "prowlarrIndexerId": None,
+            "hasApiKey": True,
+            "tags": ["favorite"],
+        }
+    ]
+    assert "apiKey" not in indexers[0]
+    assert "INDEXER-SECRET" not in indexers_resp.text
+
+    clients_resp = client.get("/api/v1/downloadclient", headers=headers)
+    assert clients_resp.status_code == 200, clients_resp.text
+    clients = clients_resp.json()
+    assert clients == [
+        {
+            "id": 50,
+            "name": "qBittorrent",
+            "implementation": "qbittorrent",
+            "implementationName": "qbittorrent",
+            "configContract": "qbittorrent",
+            "enable": True,
+            "priority": 1,
+            "host": "http://qbittorrent",
+            "port": 8080,
+            "useSsl": False,
+            "urlBase": "/qb",
+            "username": "user",
+            "hasPassword": True,
+            "category": "manga",
+            "postImportCategory": "manga-imported",
+            "removeCompletedDownloads": True,
+            "removeFailedDownloads": True,
+            "recentPriority": "first",
+            "olderPriority": "last",
+            "initialState": "paused",
+            "sequentialOrder": True,
+            "firstLastFirst": False,
+            "contentLayout": "original",
+            "sourceId": "qbit-main",
+            "downloadPath": "/downloads/manga",
+            "mergeChapters": True,
+            "tags": ["favorite"],
+        }
+    ]
+    assert "password" not in clients[0]
+    assert "CLIENT-SECRET" not in clients_resp.text
+
+    mappings = client.get(
+        "/api/v1/downloadclient/remotepathmapping", headers=headers
+    ).json()
+    assert mappings == [
+        {
+            "id": 60,
+            "host": "qbittorrent",
+            "remotePath": "/remote/downloads",
+            "localPath": "/downloads",
+        }
+    ]
 
 
 def test_api_v1_series_filters_sort_and_paging(env):
