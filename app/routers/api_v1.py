@@ -373,6 +373,14 @@ def _quality_definition(row) -> dict:
     }
 
 
+def _quality_definition_by_quality(db, quality: str) -> dict | None:
+    row = db.execute(
+        "SELECT * FROM quality_definitions WHERE quality=?",
+        (quality,),
+    ).fetchone()
+    return _quality_definition(row) if row else None
+
+
 def _indexer(row, tags: list[str]) -> dict:
     return {
         "id": row["id"],
@@ -1388,6 +1396,22 @@ async def api_v1_root_folders():
     return JSONResponse(payload)
 
 
+@router.get("/api/v1/rootfolder/{root_folder_id}")
+async def api_v1_root_folder(root_folder_id: int):
+    with get_db() as db:
+        row = db.execute(
+            "SELECT * FROM root_folders WHERE id=?",
+            (root_folder_id,),
+        ).fetchone()
+        if not row:
+            return JSONResponse(
+                {"error": "root folder not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        payload = _root_folder(row)
+    return JSONResponse(payload)
+
+
 @router.post("/api/v1/rootfolder")
 async def api_v1_create_root_folder(request: Request):
     data = await request.json()
@@ -1442,6 +1466,18 @@ async def api_v1_notifications():
             "SELECT * FROM notification_connections ORDER BY name, id"
         ).fetchall()
         payload = [_notification_connection(row) for row in rows]
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/notification/{connection_id}")
+async def api_v1_notification(connection_id: int):
+    with get_db() as db:
+        payload = _notification_connection_by_id(db, connection_id)
+    if not payload:
+        return JSONResponse(
+            {"error": "notification connection not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
     return JSONResponse(payload)
 
 
@@ -1645,6 +1681,18 @@ async def api_v1_quality_profiles():
     return JSONResponse(payload)
 
 
+@router.get("/api/v1/qualityprofile/{profile_id}")
+async def api_v1_quality_profile(profile_id: int):
+    with get_db() as db:
+        payload = _quality_profile_by_id(db, profile_id)
+    if not payload:
+        return JSONResponse(
+            {"error": "quality profile not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    return JSONResponse(payload)
+
+
 @router.post("/api/v1/qualityprofile")
 async def api_v1_create_quality_profile(request: Request):
     try:
@@ -1827,6 +1875,18 @@ async def api_v1_language_profiles():
             "SELECT * FROM language_profiles ORDER BY id"
         ).fetchall()
         payload = [_language_profile(row, default_id) for row in rows]
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/languageprofile/{profile_id}")
+async def api_v1_language_profile(profile_id: int):
+    with get_db() as db:
+        payload = _language_profile_by_id(db, profile_id)
+    if not payload:
+        return JSONResponse(
+            {"error": "language profile not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
     return JSONResponse(payload)
 
 
@@ -2024,6 +2084,18 @@ async def api_v1_custom_formats():
     return JSONResponse(payload)
 
 
+@router.get("/api/v1/customformat/{format_id}")
+async def api_v1_custom_format(format_id: int):
+    with get_db() as db:
+        payload = _custom_format_by_id(db, format_id)
+    if not payload:
+        return JSONResponse(
+            {"error": "custom format not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    return JSONResponse(payload)
+
+
 def _replace_custom_format_scores(db, format_id: int, scores: list[dict]) -> None:
     db.execute(
         "DELETE FROM quality_profile_custom_formats WHERE format_id=?",
@@ -2200,6 +2272,18 @@ async def api_v1_release_profiles():
     return JSONResponse(payload)
 
 
+@router.get("/api/v1/releaseprofile/{profile_id}")
+async def api_v1_release_profile(profile_id: int):
+    with get_db() as db:
+        payload = _release_profile_by_id(db, profile_id)
+    if not payload:
+        return JSONResponse(
+            {"error": "release profile not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    return JSONResponse(payload)
+
+
 @router.post("/api/v1/releaseprofile")
 async def api_v1_create_release_profile(request: Request):
     try:
@@ -2365,6 +2449,18 @@ async def api_v1_delay_profiles():
             _delay_profile(row, tags_by_profile.get(row["id"], []))
             for row in rows
         ]
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/delayprofile/{profile_id}")
+async def api_v1_delay_profile(profile_id: int):
+    with get_db() as db:
+        payload = _delay_profile_by_id(db, profile_id)
+    if not payload:
+        return JSONResponse(
+            {"error": "delay profile not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
     return JSONResponse(payload)
 
 
@@ -2557,6 +2653,18 @@ async def api_v1_import_lists():
     with get_db() as db:
         rows = db.execute("SELECT * FROM import_lists ORDER BY name").fetchall()
         payload = [_import_list(row) for row in rows]
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/importlist/{list_id}")
+async def api_v1_import_list(list_id: int):
+    with get_db() as db:
+        payload = _import_list_by_id(db, list_id)
+    if not payload:
+        return JSONResponse(
+            {"error": "import list not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
     return JSONResponse(payload)
 
 
@@ -2758,6 +2866,18 @@ async def api_v1_import_list_exclusions():
     return JSONResponse(payload)
 
 
+@router.get("/api/v1/importlistexclusion/{exclusion_id}")
+async def api_v1_import_list_exclusion(exclusion_id: int):
+    with get_db() as db:
+        payload = _import_list_exclusion_by_id(db, exclusion_id)
+    if not payload:
+        return JSONResponse(
+            {"error": "import list exclusion not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    return JSONResponse(payload)
+
+
 @router.post("/api/v1/importlistexclusion")
 async def api_v1_create_import_list_exclusion(request: Request):
     try:
@@ -2906,6 +3026,18 @@ async def api_v1_quality_definitions():
     return JSONResponse(payload)
 
 
+@router.get("/api/v1/qualitydefinition/{quality}")
+async def api_v1_quality_definition(quality: str):
+    with get_db() as db:
+        payload = _quality_definition_by_quality(db, quality)
+    if not payload:
+        return JSONResponse(
+            {"error": "quality definition not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    return JSONResponse(payload)
+
+
 @router.get("/api/v1/indexer")
 async def api_v1_indexers():
     with get_db() as db:
@@ -2917,6 +3049,18 @@ async def api_v1_indexers():
         for tag in tag_rows:
             tags_by_indexer.setdefault(tag["indexer_id"], []).append(tag["tag"])
         payload = [_indexer(row, tags_by_indexer.get(row["id"], [])) for row in rows]
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/indexer/{indexer_id}")
+async def api_v1_indexer(indexer_id: int):
+    with get_db() as db:
+        payload = _indexer_by_id(db, indexer_id)
+    if not payload:
+        return JSONResponse(
+            {"error": "indexer not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
     return JSONResponse(payload)
 
 
@@ -3302,6 +3446,18 @@ async def api_v1_remote_path_mappings():
     return JSONResponse(payload)
 
 
+@router.get("/api/v1/downloadclient/remotepathmapping/{mapping_id}")
+async def api_v1_remote_path_mapping(mapping_id: int):
+    with get_db() as db:
+        payload = _remote_path_mapping_by_id(db, mapping_id)
+    if not payload:
+        return JSONResponse(
+            {"error": "remote path mapping not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    return JSONResponse(payload)
+
+
 @router.post("/api/v1/downloadclient/remotepathmapping")
 async def api_v1_create_remote_path_mapping(request: Request):
     try:
@@ -3396,6 +3552,18 @@ async def api_v1_delete_remote_path_mapping(mapping_id: int):
             )
         db.execute("DELETE FROM remote_path_mappings WHERE id=?", (mapping_id,))
     return JSONResponse({"ok": True, "id": mapping_id})
+
+
+@router.get("/api/v1/downloadclient/{client_id}")
+async def api_v1_download_client(client_id: int):
+    with get_db() as db:
+        payload = _download_client_by_id(db, client_id)
+    if not payload:
+        return JSONResponse(
+            {"error": "download client not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    return JSONResponse(payload)
 
 
 @router.put("/api/v1/downloadclient/{client_id}")
@@ -3560,6 +3728,21 @@ async def api_v1_tags():
             tag_counts[tag]
             for tag in sorted(tag_counts.keys(), key=lambda value: value.lower())
         ]
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/tag/{tag_label}")
+async def api_v1_tag(tag_label: str):
+    tag = str(tag_label or "").strip()
+    if not tag:
+        return JSONResponse({"error": "tag is required"}, status_code=400)
+    with get_db() as db:
+        payload = _tag_by_label(db, tag)
+    if not payload:
+        return JSONResponse(
+            {"error": "tag not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
     return JSONResponse(payload)
 
 
