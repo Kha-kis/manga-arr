@@ -17,6 +17,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.status import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND
 
+from events import add_history
 from routers.blocklist_ import clear_blocklist_entries
 from files import build_chapter_label
 from library_scan import adopt_unmapped_folder, scan_unmapped_root_folder
@@ -926,6 +927,53 @@ async def api_v1_series_detail(series_id: int):
 @router.patch("/api/v1/series/{series_id}")
 async def api_v1_patch_series(request: Request, series_id: int):
     return await _patch_series(request, series_id)
+
+
+@router.delete("/api/v1/series/{series_id}")
+async def api_v1_delete_series(series_id: int):
+    with get_db() as db:
+        row = db.execute(
+            "SELECT title, deleted_at FROM series WHERE id=?",
+            (series_id,),
+        ).fetchone()
+        if not row:
+            return JSONResponse(
+                {"error": "series not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        if row["deleted_at"] is None:
+            title = row["title"] or ""
+            db.execute(
+                "UPDATE series SET deleted_at=CURRENT_TIMESTAMP,"
+                " deletion_reason=? WHERE id=?",
+                ("user_action", series_id),
+            )
+            add_history(
+                db, "series_soft_deleted", None, title, "", source_title=title
+            )
+    return JSONResponse({"ok": True, "id": series_id})
+
+
+@router.post("/api/v1/series/{series_id}/restore")
+async def api_v1_restore_series(series_id: int):
+    with get_db() as db:
+        row = db.execute(
+            "SELECT title, deleted_at FROM series WHERE id=?",
+            (series_id,),
+        ).fetchone()
+        if not row:
+            return JSONResponse(
+                {"error": "series not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        if row["deleted_at"] is not None:
+            title = row["title"] or ""
+            db.execute(
+                "UPDATE series SET deleted_at=NULL, deletion_reason=NULL WHERE id=?",
+                (series_id,),
+            )
+            add_history(db, "series_restored", None, title, "", source_title=title)
+    return JSONResponse({"ok": True, "id": series_id})
 
 
 @router.get("/api/v1/queue")

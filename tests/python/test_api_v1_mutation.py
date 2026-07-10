@@ -302,6 +302,97 @@ def test_api_v1_patch_series_requires_api_key(env):
     assert resp.status_code == 401
 
 
+def test_api_v1_delete_series_soft_deletes_and_logs_history(env):
+    client = _client()
+    headers = {"X-Api-Key": _api_key(env)}
+
+    resp = client.delete("/api/v1/series/5", headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 5}
+
+    detail = client.get("/api/v1/series/5", headers=headers)
+    assert detail.status_code == 404
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT deleted_at, deletion_reason FROM series WHERE id=5"
+        ).fetchone()
+        history = c.execute(
+            "SELECT event_type, series_title, source_title FROM history"
+            " WHERE event_type='series_soft_deleted'"
+        ).fetchone()
+
+    assert row["deleted_at"] is not None
+    assert row["deletion_reason"] == "user_action"
+    assert dict(history) == {
+        "event_type": "series_soft_deleted",
+        "series_title": "S5",
+        "source_title": "S5",
+    }
+
+
+def test_api_v1_delete_series_requires_api_key(env):
+    resp = _client().delete("/api/v1/series/5")
+    assert resp.status_code == 401
+
+
+def test_api_v1_delete_series_rejects_unknown_id(env):
+    resp = _client().delete(
+        "/api/v1/series/99999",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "series not found"
+
+
+def test_api_v1_restore_series_clears_soft_delete_and_logs_history(env):
+    client = _client()
+    headers = {"X-Api-Key": _api_key(env)}
+
+    delete_resp = client.delete("/api/v1/series/5", headers=headers)
+    assert delete_resp.status_code == 200, delete_resp.text
+
+    restore_resp = client.post("/api/v1/series/5/restore", headers=headers)
+    assert restore_resp.status_code == 200, restore_resp.text
+    assert restore_resp.json() == {"ok": True, "id": 5}
+
+    detail = client.get("/api/v1/series/5", headers=headers)
+    assert detail.status_code == 200, detail.text
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT deleted_at, deletion_reason FROM series WHERE id=5"
+        ).fetchone()
+        history = c.execute(
+            "SELECT event_type, series_title, source_title FROM history"
+            " WHERE event_type='series_restored'"
+        ).fetchone()
+
+    assert row["deleted_at"] is None
+    assert row["deletion_reason"] is None
+    assert dict(history) == {
+        "event_type": "series_restored",
+        "series_title": "S5",
+        "source_title": "S5",
+    }
+
+
+def test_api_v1_restore_series_requires_api_key(env):
+    resp = _client().post("/api/v1/series/5/restore")
+    assert resp.status_code == 401
+
+
+def test_api_v1_restore_series_rejects_unknown_id(env):
+    resp = _client().post(
+        "/api/v1/series/99999/restore",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "series not found"
+
+
 def test_api_v1_create_root_folder_adds_row_and_can_default(env):
     resp = _client().post(
         "/api/v1/rootfolder",
