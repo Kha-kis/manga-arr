@@ -236,6 +236,14 @@ def _series_row(db_path: str) -> dict:
         return dict(c.execute("SELECT * FROM series WHERE id=5").fetchone())
 
 
+def _series_row_by_title(db_path: str, title: str) -> dict:
+    with sqlite3.connect(db_path) as c:
+        c.row_factory = sqlite3.Row
+        return dict(
+            c.execute("SELECT * FROM series WHERE title=?", (title,)).fetchone()
+        )
+
+
 def test_api_v1_patch_series_preserves_unsubmitted_fields(env):
     resp = _client().request(
         "PATCH",
@@ -300,6 +308,181 @@ def test_api_v1_patch_series_requires_api_key(env):
         json={"title": "no-auth"},
     )
     assert resp.status_code == 401
+
+
+def test_api_v1_create_series_adds_row_stubs_and_history(env):
+    resp = _client().post(
+        "/api/v1/series",
+        json={
+            "title": "New Manga",
+            "searchPattern": "New Manga Deluxe",
+            "anilistId": 1234,
+            "malId": 5678,
+            "mangaUpdatesId": "mu-1234",
+            "coverUrl": "https://example.invalid/cover.jpg",
+            "status": "releasing",
+            "overview": "Created through API",
+            "totalVolumes": 3,
+            "totalChapters": 30,
+            "rootFolderId": 302,
+            "year": 2026,
+            "monitored": True,
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["status"] == "created"
+    assert body["series"]["title"] == "New Manga"
+    assert body["series"]["searchPattern"] == "New Manga Deluxe"
+    assert body["series"]["rootFolderId"] == 302
+    assert body["series"]["monitorMode"] == "missing"
+    assert body["series"]["statistics"]["volumeCount"] == 3
+    series_id = body["series"]["id"]
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT search_pattern, anilist_id, mal_id, mu_id, root_folder_id,"
+            " total_volumes, total_chapters, pub_year, monitored, enabled,"
+            " monitor_mode, vol_count_source FROM series WHERE id=?",
+            (series_id,),
+        ).fetchone()
+        volumes = c.execute(
+            "SELECT volume_num, status, monitored FROM volumes"
+            " WHERE series_id=? ORDER BY volume_num",
+            (series_id,),
+        ).fetchall()
+        history = c.execute(
+            "SELECT event_type, series_id, series_title, source_title, data"
+            " FROM history WHERE event_type='series_added'"
+            " AND series_id=?",
+            (series_id,),
+        ).fetchone()
+
+    assert dict(row) == {
+        "search_pattern": "New Manga Deluxe",
+        "anilist_id": 1234,
+        "mal_id": 5678,
+        "mu_id": "mu-1234",
+        "root_folder_id": 302,
+        "total_volumes": 3,
+        "total_chapters": 30,
+        "pub_year": 2026,
+        "monitored": 1,
+        "enabled": 1,
+        "monitor_mode": "missing",
+        "vol_count_source": "anilist",
+    }
+    assert [tuple(row) for row in volumes] == [
+        (1.0, "wanted", 1),
+        (2.0, "wanted", 1),
+        (3.0, "wanted", 1),
+    ]
+    assert dict(history) == {
+        "event_type": "series_added",
+        "series_id": series_id,
+        "series_title": "New Manga",
+        "source_title": "New Manga",
+        "data": '{"total_volumes": 3, "status": "releasing"}',
+    }
+
+
+def test_api_v1_create_series_returns_existing_active_match(env):
+    resp = _client().post(
+        "/api/v1/series",
+        json={"title": "S5", "editionType": "official_color"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "exists"
+    assert resp.json()["series"]["id"] == 5
+
+    with sqlite3.connect(env) as c:
+        count = c.execute("SELECT COUNT(*) FROM series WHERE title='S5'").fetchone()[0]
+    assert count == 1
+
+
+def test_api_v1_create_series_requires_api_key(env):
+    resp = _client().post("/api/v1/series", json={"title": "No Auth"})
+    assert resp.status_code == 401
+
+
+def test_api_v1_create_series_rejects_blank_title(env):
+    resp = _client().post(
+        "/api/v1/series",
+        json={"title": "   "},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "title is required"
+
+
+def test_api_v1_create_series_rejects_negative_counts(env):
+    resp = _client().post(
+        "/api/v1/series",
+        json={"title": "Bad Count", "totalVolumes": -1},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "totalVolumes must be zero or a positive integer"
+
+
+def test_api_v1_create_series_rejects_unknown_profile_id(env):
+    resp = _client().post(
+        "/api/v1/series",
+        json={"title": "Bad Profile", "qualityProfileId": 99999},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "qualityProfileId not found"
+
+    with sqlite3.connect(env) as c:
+        count = c.execute(
+            "SELECT COUNT(*) FROM series WHERE title='Bad Profile'"
+        ).fetchone()[0]
+    assert count == 0
+
+
+def test_api_v1_create_series_requires_a_root_folder(env):
+    with sqlite3.connect(env) as c:
+        c.execute("DELETE FROM root_folders")
+
+    resp = _client().post(
+        "/api/v1/series",
+        json={"title": "No Root"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert "No root folder configured" in resp.json()["error"]
+
+
+def test_api_v1_create_series_suppresses_stubs_for_nonstandard_editions(env):
+    resp = _client().post(
+        "/api/v1/series",
+        json={
+            "title": "Omnibus Manga",
+            "totalVolumes": 4,
+            "editionType": "omnibus",
+            "monitored": False,
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "created"
+    assert body["series"]["monitorMode"] == "none"
+
+    row = _series_row_by_title(env, "Omnibus Manga")
+    with sqlite3.connect(env) as c:
+        volume_count = c.execute(
+            "SELECT COUNT(*) FROM volumes WHERE series_id=?",
+            (row["id"],),
+        ).fetchone()[0]
+    assert row["edition_type"] == "omnibus"
+    assert row["monitored"] == 0
+    assert volume_count == 0
 
 
 def test_api_v1_delete_series_soft_deletes_and_logs_history(env):

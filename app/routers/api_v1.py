@@ -18,10 +18,12 @@ from fastapi.responses import JSONResponse
 from starlette.status import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND
 
 from events import add_history
+from helpers import resolve_root_folder_id
 from routers.blocklist_ import clear_blocklist_entries
 from files import build_chapter_label
 from library_scan import adopt_unmapped_folder, scan_unmapped_root_folder
 from metadata import search_series
+from metadata_enrichment import _NON_STANDARD_STUB_EDITIONS
 from parsing import normalize
 from rename_plan import build_series_rename_preview, execute_series_rename
 from routers.history_ import (
@@ -50,8 +52,23 @@ from shared import (
     get_db,
     quality_rank,
 )
+from volumes import create_volume_stubs
 
 router = APIRouter()
+
+_VALID_EDITION_TYPES = {
+    "standard",
+    "official_color",
+    "colored",
+    "omnibus",
+    "deluxe",
+    "digital",
+    "raw",
+    "special",
+    "collector",
+    "remaster",
+    "unlocalized",
+}
 
 
 def _bool(value) -> bool:
@@ -504,6 +521,47 @@ def _optional_payload_int(payload: dict, key: str) -> int | None:
     return value
 
 
+def _payload_str(payload: dict, *keys: str, default: str = "") -> str:
+    for key in keys:
+        value = payload.get(key)
+        if value is not None:
+            return str(value).strip()
+    return default
+
+
+def _optional_non_negative_int(payload: dict, *keys: str) -> int | None:
+    for key in keys:
+        if key in payload:
+            value = _optional_payload_int(payload, key)
+            if value is not None and value < 0:
+                raise ValueError(f"{key} must be zero or a positive integer")
+            return value
+    return None
+
+
+def _default_profile_id(db, table: str) -> int | None:
+    if table == "quality_profiles":
+        row = db.execute(
+            "SELECT id FROM quality_profiles ORDER BY is_default DESC, id LIMIT 1"
+        ).fetchone()
+    else:
+        row = db.execute(
+            "SELECT id FROM language_profiles ORDER BY id LIMIT 1"
+        ).fetchone()
+    return row["id"] if row else None
+
+
+def _require_profile_id(
+    db, table: str, profile_id: int | None, name: str
+) -> int | None:
+    if profile_id is None:
+        return _default_profile_id(db, table)
+    row = db.execute(f"SELECT 1 FROM {table} WHERE id=?", (profile_id,)).fetchone()
+    if not row:
+        raise ValueError(f"{name} not found")
+    return profile_id
+
+
 def _optional_bool_query(value: str | None, name: str) -> bool | None:
     if value in (None, ""):
         return None
@@ -884,6 +942,181 @@ async def api_v1_series(
     if tag:
         payload = [row for row in payload if tag in row["tags"]]
     return _paged_list_response(payload, page, pageSize)
+
+
+@router.post("/api/v1/series")
+async def api_v1_create_series(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+
+    title = _payload_str(payload, "title")
+    if not title:
+        return JSONResponse({"error": "title is required"}, status_code=400)
+    search_pattern = (
+        _payload_str(payload, "searchPattern", "search_pattern") or title
+    )
+    edition_type = _payload_str(
+        payload, "editionType", "edition_type", default="standard"
+    )
+    if edition_type not in _VALID_EDITION_TYPES:
+        edition_type = "standard"
+
+    try:
+        anilist_id = _optional_non_negative_int(payload, "anilistId", "anilist_id")
+        mal_id = _optional_non_negative_int(payload, "malId", "mal_id")
+        total_volumes = _optional_non_negative_int(
+            payload, "totalVolumes", "total_volumes"
+        )
+        total_chapters = _optional_non_negative_int(
+            payload, "totalChapters", "total_chapters"
+        )
+        root_folder_id = _optional_non_negative_int(
+            payload, "rootFolderId", "root_folder_id"
+        )
+        pub_year = _optional_non_negative_int(payload, "year", "pubYear", "pub_year")
+        quality_profile_id = _optional_non_negative_int(
+            payload, "qualityProfileId", "quality_profile_id"
+        )
+        language_profile_id = _optional_non_negative_int(
+            payload, "languageProfileId", "language_profile_id"
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    mu_id = _payload_str(payload, "mangaUpdatesId", "muId", "mu_id")
+    cover_url = _payload_str(payload, "coverUrl", "cover_url")
+    status = _payload_str(payload, "status")
+    description = _payload_str(payload, "overview", "description")
+    monitored = _json_bool(payload.get("monitored"), True)
+    enabled = _json_bool(payload.get("enabled"), True)
+    monitor_mode = _payload_str(payload, "monitorMode", "monitor_mode")
+    if monitor_mode not in {"all", "future", "missing", "existing", "none"}:
+        monitor_mode = "missing" if monitored else "none"
+    vol_count_source = (
+        "anilist" if anilist_id else ("mangaupdates" if mu_id else "manual")
+    )
+
+    with get_db() as db:
+        if anilist_id:
+            existing = db.execute(
+                "SELECT id FROM series WHERE anilist_id=? AND edition_type=?"
+                " AND deleted_at IS NULL",
+                (anilist_id, edition_type),
+            ).fetchone()
+        else:
+            existing = db.execute(
+                "SELECT id FROM series WHERE anilist_id IS NULL AND title=?"
+                " AND edition_type=? AND deleted_at IS NULL",
+                (title, edition_type),
+            ).fetchone()
+        if not existing and mu_id:
+            existing = db.execute(
+                "SELECT id FROM series WHERE mu_id=? AND edition_type=?"
+                " AND deleted_at IS NULL",
+                (mu_id, edition_type),
+            ).fetchone()
+        if existing:
+            row = db.execute(
+                _series_base_query()
+                + """
+                WHERE s.id=? AND s.deleted_at IS NULL
+                GROUP BY s.id
+                """,
+                (existing["id"],),
+            ).fetchone()
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "status": "exists",
+                    "series": _series_payload(db, row),
+                }
+            )
+
+        resolved_root_folder_id = resolve_root_folder_id(
+            db, preferred_id=root_folder_id
+        )
+        if resolved_root_folder_id is None:
+            return JSONResponse(
+                {
+                    "error": "No root folder configured. Add one in Settings "
+                    "before adding series."
+                },
+                status_code=HTTP_400_BAD_REQUEST,
+            )
+        try:
+            quality_profile_id = _require_profile_id(
+                db, "quality_profiles", quality_profile_id, "qualityProfileId"
+            )
+            language_profile_id = _require_profile_id(
+                db, "language_profiles", language_profile_id, "languageProfileId"
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+
+        cur = db.execute(
+            "INSERT INTO series(title, search_pattern, anilist_id, mal_id, mu_id,"
+            " cover_url, status, description, total_volumes, total_chapters,"
+            " root_folder_id, pub_year, edition_type, vol_count_source, enabled,"
+            " monitored, monitor_mode, quality_profile_id, language_profile_id)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                title,
+                search_pattern,
+                anilist_id or None,
+                mal_id or None,
+                mu_id or None,
+                cover_url,
+                status,
+                description,
+                total_volumes or None,
+                total_chapters or None,
+                resolved_root_folder_id,
+                pub_year or None,
+                edition_type,
+                vol_count_source,
+                1 if enabled else 0,
+                1 if monitored else 0,
+                monitor_mode,
+                quality_profile_id,
+                language_profile_id,
+            ),
+        )
+        series_id = cur.lastrowid
+        if (
+            total_volumes
+            and total_volumes > 0
+            and edition_type not in _NON_STANDARD_STUB_EDITIONS
+        ):
+            create_volume_stubs(db, series_id, total_volumes)
+        add_history(
+            db,
+            "series_added",
+            series_id,
+            title,
+            "",
+            source_title=title,
+            data={"total_volumes": total_volumes or 0, "status": status},
+        )
+        row = db.execute(
+            _series_base_query()
+            + """
+            WHERE s.id=? AND s.deleted_at IS NULL
+            GROUP BY s.id
+            """,
+            (series_id,),
+        ).fetchone()
+
+        return JSONResponse(
+            {
+                "ok": True,
+                "status": "created",
+                "series": _series_payload(db, row),
+            }
+        )
 
 
 @router.get("/api/v1/series/lookup")
