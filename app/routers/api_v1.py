@@ -27,7 +27,11 @@ from routers.history_ import (
     delete_history_entry,
     mark_history_failed,
 )
-from routers.import_ import dismiss_import_queue_entry, skip_import_queue_entry
+from routers.import_ import (
+    clear_inactive_import_queue_entries,
+    dismiss_import_queue_entry,
+    skip_import_queue_entry,
+)
 from routers.queue_ import dismiss_pending_release, reset_grabbed_volume
 from routers.series_ import patch_series as _patch_series
 from routers.system import APP_VERSION, TASKS, TASK_STATE, run_command as _run_command
@@ -717,6 +721,18 @@ async def api_v1_queue_dismiss_pending(pending_id: int):
             status_code=HTTP_404_NOT_FOUND,
         )
     return JSONResponse({"ok": True, "id": pending_id})
+
+
+@router.delete("/api/v1/queue/import/failed")
+async def api_v1_queue_clear_failed_imports():
+    result = clear_inactive_import_queue_entries()
+    return JSONResponse(
+        {
+            "ok": True,
+            "deleted": result["deleted"],
+            "deletedFiles": result["deleted_files"],
+        }
+    )
 
 
 @router.delete("/api/v1/queue/import/{queue_id}")
