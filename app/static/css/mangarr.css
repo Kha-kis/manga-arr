@@ -44,13 +44,19 @@
   /* Paper (for rare light-on-dark flourishes) */
   --paper: #f5f0e8;
   --paper-dim: #e8e0d0;
+  --paper-hairline: rgba(245, 240, 232, 0.04);
   --paper-tint: rgba(245, 240, 232, 0.07);
   --paper-soft: rgba(245, 240, 232, 0.12);
   --void-tint: rgba(0, 0, 0, 0.3);
   --void-soft: rgba(0, 0, 0, 0.5);
   --void-strong: rgba(0, 0, 0, 0.7);
+  --void-max: rgba(0, 0, 0, 0.95);
+  --cover-overlay-strong: rgba(8, 8, 16, 0.97);
+  --cover-overlay-medium: rgba(8, 8, 16, 0.78);
+  --cover-overlay-soft: rgba(8, 8, 16, 0.22);
 
   /* color alpha scale (3 intensity levels per named color) */
+  --ember-wash: rgba(240, 132, 40, 0.04);
   --ember-soft: rgba(240, 132, 40, 0.2);
   --ember-medium: rgba(240, 132, 40, 0.3);
   --ember-strong: rgba(240, 132, 40, 0.4);
@@ -169,7 +175,7 @@ body {
   background: var(--void);
   background-image: radial-gradient(
     ellipse 80% 40% at 50% 0%,
-    rgba(240, 132, 40, 0.04) 0%,
+    var(--ember-wash) 0%,
     transparent 65%
   );
   color: var(--text);
@@ -213,7 +219,7 @@ a:hover {
   z-index: var(--z-sidebar);
   transition: width 0.22s cubic-bezier(0.25, 0.46, 0.45, 0.94);
   overflow: hidden;
-  box-shadow: 2px 0 24px rgba(0, 0, 0, 0.25);
+  box-shadow: 2px 0 24px var(--void-tint);
 }
 
 [data-sidebar="collapsed"] .sidebar {
@@ -316,7 +322,7 @@ a:hover {
   color: var(--ember);
   background: var(--ember-bg);
   border-left-color: var(--ember);
-  box-shadow: inset 0 0 24px rgba(240, 132, 40, 0.05);
+  box-shadow: inset 0 0 24px var(--ember-wash);
 }
 
 .nav-item i {
@@ -501,7 +507,7 @@ a:hover {
   background: var(--ink-2);
   background-image: linear-gradient(
     135deg,
-    rgba(240, 132, 40, 0.04) 0%,
+    var(--ember-wash) 0%,
     transparent 60%
   );
   border: 1px solid var(--edge);
@@ -580,10 +586,10 @@ a:hover {
 
 .manga-card:hover {
   transform: translateY(-2px);
-  border-color: rgba(240, 132, 40, 0.45);
+  border-color: var(--ember-strong);
   box-shadow:
-    0 14px 38px rgba(0, 0, 0, 0.65),
-    0 0 0 1px rgba(240, 132, 40, 0.2);
+    0 14px 38px var(--void-strong),
+    0 0 0 1px var(--ember-soft);
 }
 
 .manga-card:hover::after {
@@ -618,9 +624,9 @@ a:hover {
   inset: 0;
   background: linear-gradient(
     to top,
-    rgba(8, 8, 16, 0.97) 0%,
-    rgba(8, 8, 16, 0.78) 28%,
-    rgba(8, 8, 16, 0.22) 55%,
+    var(--cover-overlay-strong) 0%,
+    var(--cover-overlay-medium) 28%,
+    var(--cover-overlay-soft) 55%,
     transparent 75%
   );
   pointer-events: none;
@@ -658,7 +664,7 @@ a:hover {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
-  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.95);
+  text-shadow: 0 2px 10px var(--void-max);
   font-optical-sizing: auto;
 }
 
@@ -677,7 +683,7 @@ a:hover {
 .vol-bar {
   height: 2px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--paper-soft);
   overflow: hidden;
   margin: 5px 0 4px;
 }
@@ -690,12 +696,12 @@ a:hover {
 }
 
 .vol-bar .fill.complete {
-  background: linear-gradient(90deg, var(--jade), #50e8a0);
+  background: linear-gradient(90deg, var(--jade), var(--jade-hi));
 }
 
 .vol-count {
   font-size: var(--text-sm);
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--text-2);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1202,7 +1208,7 @@ a:hover {
 .badge-src-mangaupdates {
   background: rgba(240, 132, 40, 0.08);
   color: var(--ember);
-  border: 1px solid rgba(240, 132, 40, 0.2);
+  border: 1px solid var(--ember-soft);
 }
 .badge-src-google_books {
   background: var(--sky-bg);
@@ -1382,7 +1388,7 @@ a:hover {
 }
 
 .form-check-input:focus {
-  box-shadow: 0 0 0 3px rgba(240, 132, 40, 0.2);
+  box-shadow: 0 0 0 3px var(--ember-soft);
   border-color: var(--ember);
 }
 
@@ -2746,7 +2752,7 @@ a:hover {
 }
 
 .progress-bar.bg-success {
-  background: linear-gradient(90deg, var(--jade), #50e8a0) !important;
+  background: linear-gradient(90deg, var(--jade), var(--jade-hi)) !important;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -2890,8 +2896,8 @@ kbd {
   font-size: var(--text-base);
   color: var(--text);
   box-shadow:
-    0 16px 48px rgba(0, 0, 0, 0.65),
-    0 0 0 1px rgba(255, 255, 255, 0.04);
+    0 16px 48px var(--void-strong),
+    0 0 0 1px var(--paper-hairline);
   min-width: 220px;
   max-width: 320px;
   display: flex;
