@@ -418,6 +418,37 @@ def test_series_rename_preview_partial_renders_form(env):
     assert 'name="chapter_id"' in resp.text
 
 
+def test_library_organize_page_renders_plan(env):
+    resp = _client().get("/organize")
+    assert resp.status_code == 200, resp.text
+    assert "Organize Library" in resp.text
+    assert "Plan Manga" in resp.text
+    assert "Plan Manga v01.cbz" in resp.text
+    assert 'name="volume_id"' in resp.text
+    assert 'name="chapter_id"' in resp.text
+    assert "Target exists" in resp.text
+    assert "Missing" in resp.text
+
+
+def test_library_organize_post_moves_selected_files(env):
+    csrf = _csrf_kwargs("organize")
+    new_v1 = os.path.join(env["series_dir"], "Plan Manga v01.cbz")
+    resp = _client().post(
+        "/organize",
+        data={
+            "csrf_token": csrf["headers"]["X-CSRFToken"],
+            "volume_id": "101",
+        },
+        **csrf,
+    )
+    assert resp.status_code == 200, resp.text
+    assert "Renamed <strong>1</strong>" in resp.text
+    assert os.path.exists(new_v1)
+    assert not os.path.exists(env["old_v1"])
+    assert _volume_paths(env["db_path"])[101] == new_v1
+    assert _chapter_paths(env["db_path"])[201] == env["old_ch5"]
+
+
 def test_series_rename_apply_htmx_moves_selected_files(env):
     client = _client()
     csrf = _csrf_kwargs("rename-apply")

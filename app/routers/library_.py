@@ -13,6 +13,52 @@ from shared import get_cfg, get_db, get_root_folders, is_htmx, quality_rank
 router = APIRouter()
 
 
+def _form_ids(form, name: str) -> set[int]:
+    ids: set[int] = set()
+    for raw in form.getlist(name):
+        try:
+            ids.add(int(raw))
+        except (TypeError, ValueError):
+            raise ValueError(f"invalid {name}") from None
+    return ids
+
+
+@router.get("/organize", response_class=HTMLResponse)
+async def organize_page(request: Request):
+    from rename_plan import build_library_rename_preview
+
+    plan = build_library_rename_preview()
+    return templates.TemplateResponse(
+        request,
+        "organize.html",
+        {"plan": plan, "result": None, "error": None},
+    )
+
+
+@router.post("/organize", response_class=HTMLResponse)
+async def organize_apply(request: Request):
+    from rename_plan import build_library_rename_preview, execute_library_rename
+
+    form = await request.form()
+    error = None
+    result = None
+    try:
+        volume_ids = _form_ids(form, "volume_id")
+        chapter_ids = _form_ids(form, "chapter_id")
+        result = execute_library_rename(
+            volume_ids=volume_ids,
+            chapter_ids=chapter_ids,
+        )
+    except ValueError as exc:
+        error = str(exc)
+    plan = build_library_rename_preview()
+    return templates.TemplateResponse(
+        request,
+        "organize.html",
+        {"plan": plan, "result": result, "error": error},
+    )
+
+
 @router.get("/wanted", response_class=HTMLResponse)
 async def wanted(request: Request, page: int = 1):
     per_page = 100
