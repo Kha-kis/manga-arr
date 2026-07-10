@@ -67,9 +67,10 @@ status, series patching, and command execution. Profile/configuration read
 coverage includes quality, quality-definition, language, custom-format,
 release-profile, delay-profile, indexer, download-client,
 remote-path-mapping, import-list, import-list-exclusion, and tag endpoints.
-Series reads support common filters, sorting, and header-based paging.
-Remaining API gaps are deeper compatibility, richer filtering on non-series
-resources, and broader mutation coverage.
+Series reads support common filters, sorting, and header-based paging. Queue
+reads support common filters and header-based paging. Remaining API gaps are
+deeper compatibility, richer filtering on other non-series resources, and
+broader mutation coverage.
 
 Recommended scope:
 
