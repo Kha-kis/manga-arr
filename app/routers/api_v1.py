@@ -297,6 +297,14 @@ def _import_list_exclusion(row) -> dict:
     }
 
 
+def _import_list_exclusion_by_id(db, exclusion_id: int) -> dict | None:
+    row = db.execute(
+        "SELECT * FROM import_list_exclusions WHERE id=?",
+        (exclusion_id,),
+    ).fetchone()
+    return _import_list_exclusion(row) if row else None
+
+
 def _quality_definition(row) -> dict:
     return {
         "quality": row["quality"],
@@ -604,6 +612,10 @@ def _payload_str(payload: dict, *keys: str, default: str = "") -> str:
         if value is not None:
             return str(value).strip()
     return default
+
+
+def _normalize_import_list_title(title: str | None) -> str:
+    return re.sub(r"\s+", " ", (title or "").strip().lower())
 
 
 def _optional_non_negative_int(payload: dict, *keys: str) -> int | None:
@@ -1803,6 +1815,144 @@ async def api_v1_import_list_exclusions():
         ).fetchall()
         payload = [_import_list_exclusion(row) for row in rows]
     return JSONResponse(payload)
+
+
+@router.post("/api/v1/importlistexclusion")
+async def api_v1_create_import_list_exclusion(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+
+    source = _payload_str(payload, "source")
+    external_id = _payload_str(payload, "externalId", "external_id") or None
+    title = _payload_str(payload, "title")
+    title_normalized = _normalize_import_list_title(title)
+    reason = _payload_str(payload, "reason") or None
+    if not source or (not external_id and not title_normalized):
+        return JSONResponse(
+            {"error": "source plus either externalId or title is required"},
+            status_code=400,
+        )
+
+    with get_db() as db:
+        cur = db.execute(
+            "INSERT OR IGNORE INTO import_list_exclusions"
+            "(source, external_id, title, title_normalized, reason)"
+            " VALUES(?,?,?,?,?)",
+            (source, external_id, title, title_normalized, reason),
+        )
+        status = "created" if cur.rowcount else "exists"
+        row = None
+        if external_id:
+            row = db.execute(
+                "SELECT * FROM import_list_exclusions"
+                " WHERE source=? AND external_id=?",
+                (source, external_id),
+            ).fetchone()
+        if not row and title_normalized:
+            row = db.execute(
+                "SELECT * FROM import_list_exclusions"
+                " WHERE source=? AND title_normalized=?",
+                (source, title_normalized),
+            ).fetchone()
+        exclusion = _import_list_exclusion(row)
+    return JSONResponse(
+        {"ok": True, "status": status, "importListExclusion": exclusion}
+    )
+
+
+@router.put("/api/v1/importlistexclusion/{exclusion_id}")
+@router.patch("/api/v1/importlistexclusion/{exclusion_id}")
+async def api_v1_update_import_list_exclusion(
+    request: Request,
+    exclusion_id: int,
+):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT * FROM import_list_exclusions WHERE id=?",
+            (exclusion_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "import list exclusion not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        source = (
+            _payload_str(payload, "source")
+            if "source" in payload
+            else existing["source"]
+        )
+        external_id = (
+            _payload_str(payload, "externalId", "external_id") or None
+            if "externalId" in payload or "external_id" in payload
+            else existing["external_id"]
+        )
+        title = (
+            _payload_str(payload, "title")
+            if "title" in payload
+            else existing["title"]
+        )
+        title_normalized = _normalize_import_list_title(title)
+        reason = (
+            _payload_str(payload, "reason") or None
+            if "reason" in payload
+            else existing["reason"]
+        )
+        if not source or (not external_id and not title_normalized):
+            return JSONResponse(
+                {"error": "source plus either externalId or title is required"},
+                status_code=400,
+            )
+        try:
+            db.execute(
+                "UPDATE import_list_exclusions"
+                " SET source=?, external_id=?, title=?, title_normalized=?,"
+                " reason=? WHERE id=?",
+                (
+                    source,
+                    external_id,
+                    title,
+                    title_normalized,
+                    reason,
+                    exclusion_id,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            return JSONResponse(
+                {"error": "import list exclusion already exists"},
+                status_code=HTTP_400_BAD_REQUEST,
+            )
+        exclusion = _import_list_exclusion_by_id(db, exclusion_id)
+    return JSONResponse({"ok": True, "importListExclusion": exclusion})
+
+
+@router.delete("/api/v1/importlistexclusion/{exclusion_id}")
+async def api_v1_delete_import_list_exclusion(exclusion_id: int):
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM import_list_exclusions WHERE id=?",
+            (exclusion_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "import list exclusion not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        db.execute("DELETE FROM import_list_exclusions WHERE id=?", (exclusion_id,))
+    return JSONResponse({"ok": True, "id": exclusion_id})
 
 
 @router.get("/api/v1/qualitydefinition")
