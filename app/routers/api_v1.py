@@ -137,6 +137,59 @@ def _release_profile(row, tags: list[str]) -> dict:
     }
 
 
+def _delay_profile(row, tags: list[str]) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "order": row["order_num"],
+        "enableUsenet": _bool(row["enable_usenet"]),
+        "enableTorrent": _bool(row["enable_torrent"]),
+        "usenetDelay": row["usenet_delay"] or 0,
+        "torrentDelay": row["torrent_delay"] or 0,
+        "bypassIfHighestQuality": _bool(row["bypass_if_highest_quality"]),
+        "isDefault": _bool(row["is_default"]),
+        "tags": tags,
+    }
+
+
+def _import_list(row) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "implementation": row["type"],
+        "implementationName": row["type"],
+        "configContract": row["type"],
+        "enable": _bool(row["enabled"]),
+        "qualityProfileId": row["quality_profile_id"],
+        "rootFolderId": row["root_folder_id"],
+        "monitorMode": row["monitor_mode"] or "all",
+        "settings": from_json(row["settings"], {}) or {},
+        "lastSync": row["last_sync"],
+    }
+
+
+def _import_list_exclusion(row) -> dict:
+    return {
+        "id": row["id"],
+        "source": row["source"],
+        "externalId": row["external_id"],
+        "title": row["title"],
+        "titleNormalized": row["title_normalized"],
+        "reason": row["reason"],
+        "addedAt": row["added_at"],
+    }
+
+
+def _quality_definition(row) -> dict:
+    return {
+        "quality": row["quality"],
+        "title": row["title"],
+        "minSize": row["min_size"],
+        "maxSize": row["max_size"],
+        "order": row["order_num"],
+    }
+
+
 def _indexer(row, tags: list[str]) -> dict:
     return {
         "id": row["id"],
@@ -604,6 +657,54 @@ async def api_v1_release_profiles():
     return JSONResponse(payload)
 
 
+@router.get("/api/v1/delayprofile")
+async def api_v1_delay_profiles():
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT * FROM delay_profiles ORDER BY order_num, id"
+        ).fetchall()
+        tag_rows = db.execute(
+            "SELECT profile_id, tag FROM delay_profile_tags ORDER BY tag"
+        ).fetchall()
+        tags_by_profile: dict[int, list[str]] = {}
+        for tag in tag_rows:
+            tags_by_profile.setdefault(tag["profile_id"], []).append(tag["tag"])
+        payload = [
+            _delay_profile(row, tags_by_profile.get(row["id"], []))
+            for row in rows
+        ]
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/importlist")
+async def api_v1_import_lists():
+    with get_db() as db:
+        rows = db.execute("SELECT * FROM import_lists ORDER BY name").fetchall()
+        payload = [_import_list(row) for row in rows]
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/importlistexclusion")
+async def api_v1_import_list_exclusions():
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT * FROM import_list_exclusions"
+            " ORDER BY source, title, external_id, id"
+        ).fetchall()
+        payload = [_import_list_exclusion(row) for row in rows]
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/qualitydefinition")
+async def api_v1_quality_definitions():
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT * FROM quality_definitions ORDER BY order_num, quality"
+        ).fetchall()
+        payload = [_quality_definition(row) for row in rows]
+    return JSONResponse(payload)
+
+
 @router.get("/api/v1/indexer")
 async def api_v1_indexers():
     with get_db() as db:
@@ -644,6 +745,46 @@ async def api_v1_remote_path_mappings():
             "SELECT * FROM remote_path_mappings ORDER BY id"
         ).fetchall()
         payload = [_remote_path_mapping(row) for row in rows]
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/tag")
+async def api_v1_tags():
+    with get_db() as db:
+        tag_counts: dict[str, dict] = {}
+
+        def _bucket(tag: str) -> dict:
+            return tag_counts.setdefault(
+                tag,
+                {
+                    "label": tag,
+                    "seriesCount": 0,
+                    "indexerCount": 0,
+                    "delayProfileCount": 0,
+                    "releaseProfileCount": 0,
+                    "downloadClientCount": 0,
+                },
+            )
+
+        sources = [
+            ("series_tags", "seriesCount"),
+            ("indexer_tags", "indexerCount"),
+            ("delay_profile_tags", "delayProfileCount"),
+            ("release_profile_tags", "releaseProfileCount"),
+            ("download_client_tags", "downloadClientCount"),
+        ]
+        for table, field in sources:
+            rows = db.execute(
+                f"SELECT tag, COUNT(*) AS n FROM {table} GROUP BY tag"
+            ).fetchall()
+            for row in rows:
+                if row["tag"]:
+                    _bucket(row["tag"])[field] = row["n"]
+
+        payload = [
+            tag_counts[tag]
+            for tag in sorted(tag_counts.keys(), key=lambda value: value.lower())
+        ]
     return JSONResponse(payload)
 
 
