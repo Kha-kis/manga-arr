@@ -170,6 +170,24 @@ def _language_profile_by_id(db, profile_id: int) -> dict | None:
     return _language_profile(row, default_id) if row else None
 
 
+def _release_profile_by_id(db, profile_id: int) -> dict | None:
+    row = db.execute(
+        "SELECT * FROM release_profiles WHERE id=?",
+        (profile_id,),
+    ).fetchone()
+    if not row:
+        return None
+    tags = [
+        tag["tag"]
+        for tag in db.execute(
+            "SELECT tag FROM release_profile_tags"
+            " WHERE profile_id=? ORDER BY tag",
+            (profile_id,),
+        ).fetchall()
+    ]
+    return _release_profile(row, tags)
+
+
 def _custom_format(row, scores: list[dict]) -> dict:
     return {
         "id": row["id"],
@@ -597,6 +615,39 @@ def _payload_language_list(payload: dict, key: str, default: list[str]) -> str:
         raise ValueError(f"{key} must be a list of language codes")
     codes = [code for code in raw_codes if code in SUPPORTED_LANGUAGES]
     return json.dumps(codes if codes else ["any"])
+
+
+def _payload_json_list(payload: dict, key: str, default: list) -> str:
+    if key not in payload:
+        return json.dumps(default)
+    value = payload.get(key)
+    if value in (None, ""):
+        return json.dumps(default)
+    if isinstance(value, str):
+        value = from_json(value, None)
+    if not isinstance(value, list):
+        raise ValueError(f"{key} must be a list")
+    return json.dumps(value)
+
+
+def _payload_tag_list(payload: dict, key: str = "tags") -> list[str]:
+    value = payload.get(key)
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        raw_tags = value.split(",")
+    elif isinstance(value, list):
+        raw_tags = value
+    else:
+        raise ValueError(f"{key} must be a list of tag names")
+    tags: list[str] = []
+    seen: set[str] = set()
+    for item in raw_tags:
+        tag = str(item).strip()
+        if tag and tag not in seen:
+            tags.append(tag)
+            seen.add(tag)
+    return tags
 
 
 def _default_language_profile_id(db) -> int | None:
@@ -1140,6 +1191,155 @@ async def api_v1_release_profiles():
             for row in rows
         ]
     return JSONResponse(payload)
+
+
+@router.post("/api/v1/releaseprofile")
+async def api_v1_create_release_profile(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+
+    name = _payload_str(payload, "name")
+    if not name:
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    try:
+        preferred = _payload_json_list(payload, "preferred", [])
+        tags = _payload_tag_list(payload)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    enabled = _json_bool(payload.get("enabled"), True)
+    include_preferred = _json_bool(
+        payload.get(
+            "includePreferredWhenRenaming",
+            payload.get("include_preferred_when_renaming"),
+        ),
+        False,
+    )
+
+    with get_db() as db:
+        cur = db.execute(
+            "INSERT INTO release_profiles"
+            "(name, enabled, required, ignored, preferred,"
+            " include_preferred_when_renaming)"
+            " VALUES(?,?,?,?,?,?)",
+            (
+                name,
+                1 if enabled else 0,
+                _payload_str(payload, "required"),
+                _payload_str(payload, "ignored"),
+                preferred,
+                1 if include_preferred else 0,
+            ),
+        )
+        profile_id = cur.lastrowid
+        for tag in tags:
+            db.execute(
+                "INSERT OR IGNORE INTO release_profile_tags(profile_id, tag)"
+                " VALUES(?, ?)",
+                (profile_id, tag),
+            )
+        profile = _release_profile_by_id(db, profile_id)
+    return JSONResponse({"ok": True, "status": "created", "releaseProfile": profile})
+
+
+@router.put("/api/v1/releaseprofile/{profile_id}")
+@router.patch("/api/v1/releaseprofile/{profile_id}")
+async def api_v1_update_release_profile(request: Request, profile_id: int):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+
+    fields: list[str] = []
+    params: list = []
+    try:
+        if "name" in payload:
+            name = _payload_str(payload, "name")
+            if not name:
+                return JSONResponse({"error": "name is required"}, status_code=400)
+            fields.append("name=?")
+            params.append(name)
+        if "enabled" in payload:
+            fields.append("enabled=?")
+            params.append(1 if _json_bool(payload.get("enabled"), True) else 0)
+        if "required" in payload:
+            fields.append("required=?")
+            params.append(_payload_str(payload, "required"))
+        if "ignored" in payload:
+            fields.append("ignored=?")
+            params.append(_payload_str(payload, "ignored"))
+        if "preferred" in payload:
+            fields.append("preferred=?")
+            params.append(_payload_json_list(payload, "preferred", []))
+        include_key = (
+            "includePreferredWhenRenaming"
+            if "includePreferredWhenRenaming" in payload
+            else "include_preferred_when_renaming"
+        )
+        if include_key in payload:
+            fields.append("include_preferred_when_renaming=?")
+            params.append(1 if _json_bool(payload.get(include_key)) else 0)
+        tags = _payload_tag_list(payload) if "tags" in payload else None
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM release_profiles WHERE id=?",
+            (profile_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "release profile not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        if fields:
+            params.append(profile_id)
+            db.execute(
+                f"UPDATE release_profiles SET {', '.join(fields)} WHERE id=?",
+                params,
+            )
+        if tags is not None:
+            db.execute(
+                "DELETE FROM release_profile_tags WHERE profile_id=?",
+                (profile_id,),
+            )
+            for tag in tags:
+                db.execute(
+                    "INSERT OR IGNORE INTO release_profile_tags(profile_id, tag)"
+                    " VALUES(?, ?)",
+                    (profile_id, tag),
+                )
+        profile = _release_profile_by_id(db, profile_id)
+    return JSONResponse({"ok": True, "releaseProfile": profile})
+
+
+@router.delete("/api/v1/releaseprofile/{profile_id}")
+async def api_v1_delete_release_profile(profile_id: int):
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM release_profiles WHERE id=?",
+            (profile_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "release profile not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        db.execute(
+            "DELETE FROM release_profile_tags WHERE profile_id=?",
+            (profile_id,),
+        )
+        db.execute("DELETE FROM release_profiles WHERE id=?", (profile_id,))
+    return JSONResponse({"ok": True, "id": profile_id})
 
 
 @router.get("/api/v1/delayprofile")
