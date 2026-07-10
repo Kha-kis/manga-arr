@@ -1,4 +1,9 @@
-# Dependabot — automated security and version-bump PRs.
+# Dependabot — disabled copy of the former automated security and version-bump PR config.
+#
+# GitHub Actions billing issue mitigation:
+# GitHub generates the "Dependabot Updates" workflow from .github/dependabot.yml.
+# Keeping this file under a non-recognized name preserves the configuration without
+# allowing the generated workflow to run.
 #
 # Three ecosystems:
 #   - pip            (requirements.txt + requirements-test.txt)
