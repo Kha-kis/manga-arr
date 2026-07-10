@@ -206,6 +206,27 @@ def _delay_profile_by_id(db, profile_id: int) -> dict | None:
     return _delay_profile(row, tags)
 
 
+def _custom_format_by_id(db, format_id: int) -> dict | None:
+    row = db.execute(
+        "SELECT * FROM custom_formats WHERE id=?",
+        (format_id,),
+    ).fetchone()
+    if not row:
+        return None
+    scores = [
+        {
+            "qualityProfileId": score["profile_id"],
+            "score": score["score"],
+        }
+        for score in db.execute(
+            "SELECT profile_id, score FROM quality_profile_custom_formats"
+            " WHERE format_id=? ORDER BY profile_id",
+            (format_id,),
+        ).fetchall()
+    ]
+    return _custom_format(row, scores)
+
+
 def _custom_format(row, scores: list[dict]) -> dict:
     return {
         "id": row["id"],
@@ -660,6 +681,37 @@ def _payload_json_list(payload: dict, key: str, default: list) -> str:
     if not isinstance(value, list):
         raise ValueError(f"{key} must be a list")
     return json.dumps(value)
+
+
+def _payload_score_list(payload: dict, key: str = "qualityProfileScores") -> list[dict]:
+    value = payload.get(key)
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        value = from_json(value, None)
+    if not isinstance(value, list):
+        raise ValueError(f"{key} must be a list")
+    scores: list[dict] = []
+    seen: set[int] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError(f"{key} entries must be objects")
+        profile_id = item.get("qualityProfileId", item.get("profileId"))
+        score = item.get("score", 0)
+        if (
+            not isinstance(profile_id, int)
+            or isinstance(profile_id, bool)
+            or not isinstance(score, int)
+            or isinstance(score, bool)
+        ):
+            raise ValueError(
+                f"{key} entries require integer qualityProfileId and score"
+            )
+        if profile_id in seen:
+            raise ValueError(f"{key} entries must not repeat a qualityProfileId")
+        seen.add(profile_id)
+        scores.append({"qualityProfileId": profile_id, "score": score})
+    return scores
 
 
 def _payload_tag_list(payload: dict, key: str = "tags") -> list[str]:
@@ -1204,6 +1256,163 @@ async def api_v1_custom_formats():
             for row in rows
         ]
     return JSONResponse(payload)
+
+
+def _replace_custom_format_scores(db, format_id: int, scores: list[dict]) -> None:
+    db.execute(
+        "DELETE FROM quality_profile_custom_formats WHERE format_id=?",
+        (format_id,),
+    )
+    for item in scores:
+        profile_id = item["qualityProfileId"]
+        profile = db.execute(
+            "SELECT 1 FROM quality_profiles WHERE id=?",
+            (profile_id,),
+        ).fetchone()
+        if not profile:
+            raise ValueError(f"qualityProfileId {profile_id} not found")
+        score = item["score"]
+        if score:
+            db.execute(
+                "INSERT INTO quality_profile_custom_formats"
+                "(profile_id, format_id, score) VALUES(?, ?, ?)",
+                (profile_id, format_id, score),
+            )
+
+
+@router.post("/api/v1/customformat")
+async def api_v1_create_custom_format(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+
+    name = _payload_str(payload, "name")
+    if not name:
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    try:
+        specifications = _payload_json_list(payload, "specifications", [])
+        include_when_renaming = _json_bool(
+            payload.get(
+                "includeCustomFormatWhenRenaming",
+                payload.get("include_custom_format_when_renaming"),
+            ),
+            False,
+        )
+        scores = _payload_score_list(payload)
+        with get_db() as db:
+            cur = db.execute(
+                "INSERT INTO custom_formats"
+                "(name, specifications, include_custom_format_when_renaming)"
+                " VALUES(?,?,?)",
+                (
+                    name,
+                    specifications,
+                    1 if include_when_renaming else 0,
+                ),
+            )
+            format_id = cur.lastrowid
+            _replace_custom_format_scores(db, format_id, scores)
+            custom_format = _custom_format_by_id(db, format_id)
+    except sqlite3.IntegrityError:
+        return JSONResponse(
+            {"error": "custom format name already exists"},
+            status_code=HTTP_400_BAD_REQUEST,
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse(
+        {"ok": True, "status": "created", "customFormat": custom_format}
+    )
+
+
+@router.put("/api/v1/customformat/{format_id}")
+@router.patch("/api/v1/customformat/{format_id}")
+async def api_v1_update_custom_format(request: Request, format_id: int):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+
+    fields: list[str] = []
+    params: list = []
+    try:
+        if "name" in payload:
+            name = _payload_str(payload, "name")
+            if not name:
+                return JSONResponse({"error": "name is required"}, status_code=400)
+            fields.append("name=?")
+            params.append(name)
+        if "specifications" in payload:
+            fields.append("specifications=?")
+            params.append(_payload_json_list(payload, "specifications", []))
+        include_key = (
+            "includeCustomFormatWhenRenaming"
+            if "includeCustomFormatWhenRenaming" in payload
+            else "include_custom_format_when_renaming"
+        )
+        if include_key in payload:
+            fields.append("include_custom_format_when_renaming=?")
+            params.append(1 if _json_bool(payload.get(include_key)) else 0)
+        scores = (
+            _payload_score_list(payload)
+            if "qualityProfileScores" in payload
+            else None
+        )
+        with get_db() as db:
+            existing = db.execute(
+                "SELECT 1 FROM custom_formats WHERE id=?",
+                (format_id,),
+            ).fetchone()
+            if not existing:
+                return JSONResponse(
+                    {"error": "custom format not found"},
+                    status_code=HTTP_404_NOT_FOUND,
+                )
+            if fields:
+                params.append(format_id)
+                db.execute(
+                    f"UPDATE custom_formats SET {', '.join(fields)} WHERE id=?",
+                    params,
+                )
+            if scores is not None:
+                _replace_custom_format_scores(db, format_id, scores)
+            custom_format = _custom_format_by_id(db, format_id)
+    except sqlite3.IntegrityError:
+        return JSONResponse(
+            {"error": "custom format name already exists"},
+            status_code=HTTP_400_BAD_REQUEST,
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "customFormat": custom_format})
+
+
+@router.delete("/api/v1/customformat/{format_id}")
+async def api_v1_delete_custom_format(format_id: int):
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM custom_formats WHERE id=?",
+            (format_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "custom format not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        db.execute(
+            "DELETE FROM quality_profile_custom_formats WHERE format_id=?",
+            (format_id,),
+        )
+        db.execute("DELETE FROM custom_formats WHERE id=?", (format_id,))
+    return JSONResponse({"ok": True, "id": format_id})
 
 
 @router.get("/api/v1/releaseprofile")
