@@ -1936,6 +1936,262 @@ def test_api_v1_delete_import_list_rejects_unknown_id(env):
     assert resp.json()["error"] == "import list not found"
 
 
+def test_api_v1_create_download_client_adds_row_tags_and_secret(env):
+    from security import decrypt_secret
+
+    resp = _client().post(
+        "/api/v1/downloadclient",
+        json={
+            "name": "API qBit",
+            "implementation": "qbittorrent",
+            "host": "http://qbittorrent",
+            "port": 8080,
+            "useSsl": False,
+            "urlBase": "/qb",
+            "username": "manga",
+            "password": "CLIENT-SECRET",
+            "category": "manga",
+            "postImportCategory": "imported",
+            "recentPriority": "first",
+            "olderPriority": "last",
+            "initialState": "paused",
+            "sequentialOrder": True,
+            "firstLastFirst": True,
+            "contentLayout": "series",
+            "priority": 7,
+            "enable": False,
+            "removeCompletedDownloads": True,
+            "removeFailedDownloads": True,
+            "sourceId": "source-1",
+            "downloadPath": "/downloads/manga",
+            "mergeChapters": False,
+            "tags": ["favorite", "favorite", "owned"],
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "CLIENT-SECRET" not in resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["status"] == "created"
+    client = body["downloadClient"]
+    assert client["name"] == "API qBit"
+    assert client["implementation"] == "qbittorrent"
+    assert client["host"] == "http://qbittorrent"
+    assert client["port"] == 8080
+    assert client["useSsl"] is False
+    assert client["urlBase"] == "/qb"
+    assert client["username"] == "manga"
+    assert client["hasPassword"] is True
+    assert client["postImportCategory"] == "imported"
+    assert client["recentPriority"] == "first"
+    assert client["initialState"] == "paused"
+    assert client["sequentialOrder"] is True
+    assert client["firstLastFirst"] is True
+    assert client["contentLayout"] == "series"
+    assert client["priority"] == 7
+    assert client["enable"] is False
+    assert client["removeCompletedDownloads"] is True
+    assert client["removeFailedDownloads"] is True
+    assert client["sourceId"] == "source-1"
+    assert client["downloadPath"] == "/downloads/manga"
+    assert client["mergeChapters"] is False
+    assert client["tags"] == ["favorite", "owned"]
+    client_id = client["id"]
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT password, enabled, remove_completed, merge_chapters"
+            " FROM download_clients WHERE id=?",
+            (client_id,),
+        ).fetchone()
+        tags = [
+            tag[0]
+            for tag in c.execute(
+                "SELECT tag FROM download_client_tags"
+                " WHERE client_id=? ORDER BY tag",
+                (client_id,),
+            )
+        ]
+    assert row["password"] != "CLIENT-SECRET"
+    assert decrypt_secret(row["password"]) == "CLIENT-SECRET"
+    assert row["enabled"] == 0
+    assert row["remove_completed"] == 1
+    assert row["merge_chapters"] == 0
+    assert tags == ["favorite", "owned"]
+
+
+def test_api_v1_create_download_client_requires_api_key(env):
+    resp = _client().post(
+        "/api/v1/downloadclient",
+        json={"name": "No Auth", "implementation": "qbittorrent"},
+    )
+    assert resp.status_code == 401
+
+
+def test_api_v1_create_download_client_rejects_bad_priority(env):
+    resp = _client().post(
+        "/api/v1/downloadclient",
+        json={
+            "name": "Bad Priority",
+            "implementation": "qbittorrent",
+            "priority": -1,
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "priority must be zero or a positive integer"
+
+
+def test_api_v1_update_download_client_updates_submitted_fields_tags_and_secret(env):
+    from security import decrypt_secret, encrypt_if_cipher_available
+
+    old_secret = encrypt_if_cipher_available("OLD-SECRET")
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO download_clients"
+            "(id, name, type, host, port, username, password, category,"
+            " priority, enabled, remove_completed, merge_chapters)"
+            " VALUES(1680, 'Old Client', 'qbittorrent', 'old-host', 8080,"
+            " 'old-user', ?, 'old-cat', 1, 1, 0, 1)",
+            (old_secret,),
+        )
+        c.execute(
+            "INSERT INTO download_client_tags(client_id, tag)"
+            " VALUES(1680, 'old-tag')"
+        )
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/downloadclient/1680",
+        json={
+            "name": "Updated Client",
+            "implementation": "sabnzbd",
+            "host": "new-host",
+            "port": 9090,
+            "username": "new-user",
+            "password": "NEW-SECRET",
+            "category": "",
+            "priority": 3,
+            "enable": False,
+            "removeCompletedDownloads": True,
+            "mergeChapters": False,
+            "tags": "favorite,owned",
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "NEW-SECRET" not in resp.text
+    client = resp.json()["downloadClient"]
+    assert client["name"] == "Updated Client"
+    assert client["implementation"] == "sabnzbd"
+    assert client["host"] == "new-host"
+    assert client["port"] == 9090
+    assert client["username"] == "new-user"
+    assert client["category"] == "manga"
+    assert client["priority"] == 3
+    assert client["enable"] is False
+    assert client["removeCompletedDownloads"] is True
+    assert client["mergeChapters"] is False
+    assert client["tags"] == ["favorite", "owned"]
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT type, password, category, enabled, remove_completed,"
+            " merge_chapters FROM download_clients WHERE id=1680"
+        ).fetchone()
+        tags = [
+            tag[0]
+            for tag in c.execute(
+                "SELECT tag FROM download_client_tags"
+                " WHERE client_id=1680 ORDER BY tag"
+            )
+        ]
+    assert row["type"] == "sabnzbd"
+    assert decrypt_secret(row["password"]) == "NEW-SECRET"
+    assert row["category"] == "manga"
+    assert row["enabled"] == 0
+    assert row["remove_completed"] == 1
+    assert row["merge_chapters"] == 0
+    assert tags == ["favorite", "owned"]
+
+
+def test_api_v1_update_download_client_preserves_password_when_blank(env):
+    from security import decrypt_secret, encrypt_if_cipher_available
+
+    old_secret = encrypt_if_cipher_available("OLD-SECRET")
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO download_clients(id, name, type, password)"
+            " VALUES(1681, 'Keep Secret', 'qbittorrent', ?)",
+            (old_secret,),
+        )
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/downloadclient/1681",
+        json={"name": "Keep Secret Renamed", "password": ""},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    with sqlite3.connect(env) as c:
+        password = c.execute(
+            "SELECT password FROM download_clients WHERE id=1681"
+        ).fetchone()[0]
+    assert decrypt_secret(password) == "OLD-SECRET"
+
+
+def test_api_v1_update_download_client_rejects_unknown_id(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/downloadclient/99999",
+        json={"name": "Missing"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "download client not found"
+
+
+def test_api_v1_delete_download_client_removes_row_and_tags(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO download_clients(id, name, type)"
+            " VALUES(1690, 'Delete Client', 'qbittorrent')"
+        )
+        c.execute(
+            "INSERT INTO download_client_tags(client_id, tag)"
+            " VALUES(1690, 'favorite')"
+        )
+
+    resp = _client().delete(
+        "/api/v1/downloadclient/1690",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 1690}
+
+    with sqlite3.connect(env) as c:
+        client = c.execute(
+            "SELECT 1 FROM download_clients WHERE id=1690"
+        ).fetchone()
+        tag = c.execute(
+            "SELECT 1 FROM download_client_tags WHERE client_id=1690"
+        ).fetchone()
+    assert client is None
+    assert tag is None
+
+
+def test_api_v1_delete_download_client_rejects_unknown_id(env):
+    resp = _client().delete(
+        "/api/v1/downloadclient/99999",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "download client not found"
+
+
 def test_api_v1_create_remote_path_mapping_adds_row(env):
     resp = _client().post(
         "/api/v1/downloadclient/remotepathmapping",
