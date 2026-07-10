@@ -192,6 +192,44 @@ def clear_inactive_import_queue_entries() -> dict:
     }
 
 
+def retry_import_queue_entry(queue_id: int) -> dict:
+    """Reset a failed/partial import queue entry and schedule processing."""
+    import main as _m
+
+    with get_db() as db:
+        q = db.execute(
+            "SELECT status FROM import_queue WHERE id=?",
+            (queue_id,),
+        ).fetchone()
+        if not q:
+            return {"ok": False, "status": "not_found"}
+        if q["status"] not in ("failed", "partial"):
+            return {"ok": False, "status": "not_retryable"}
+
+        db.execute(
+            "UPDATE import_queue SET status='pending' WHERE id=?",
+            (queue_id,),
+        )
+        db.execute(
+            "UPDATE import_queue_files SET status='pending'"
+            " WHERE queue_id=? AND status IN ('failed','needs_review')",
+            (queue_id,),
+        )
+        has_review = db.execute(
+            "SELECT 1 FROM import_queue_files WHERE queue_id=? AND status='needs_review'",
+            (queue_id,),
+        ).fetchone()
+
+    queued = False
+    if not has_review:
+        _m.create_background_task(
+            _m._process_auto_import(queue_id),
+            name=f"import:retry:{queue_id}",
+        )
+        queued = True
+    return {"ok": True, "status": "queued", "queued": queued}
+
+
 @router.post("/import/{queue_id}/process")
 async def process_import(queue_id: int, request: Request):
     """Process an import queue item after user review: parse form overrides then execute.
@@ -365,27 +403,7 @@ async def import_pending_count():
 @router.post("/import/{queue_id}/retry")
 async def retry_import(request: Request, queue_id: int):
     """Reset a failed import back to pending and trigger auto-processing."""
-    import main as _m
-
-    with get_db() as db:
-        db.execute(
-            "UPDATE import_queue SET status='pending' WHERE id=? AND status IN ('failed','partial')",
-            (queue_id,),
-        )
-        db.execute(
-            "UPDATE import_queue_files SET status='pending'"
-            " WHERE queue_id=? AND status IN ('failed','needs_review')",
-            (queue_id,),
-        )
-        has_review = db.execute(
-            "SELECT 1 FROM import_queue_files WHERE queue_id=? AND status='needs_review'",
-            (queue_id,),
-        ).fetchone()
-    if not has_review:
-        _m.create_background_task(
-            _m._process_auto_import(queue_id),
-            name=f"import:retry:{queue_id}",
-        )
+    retry_import_queue_entry(queue_id)
     if request.headers.get("HX-Request") == "true":
         import json
         from fastapi.responses import Response as _Resp

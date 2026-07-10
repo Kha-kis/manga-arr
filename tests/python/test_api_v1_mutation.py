@@ -713,3 +713,58 @@ def test_api_v1_queue_skip_import_entry_rejects_non_pending_status(env):
         ).fetchone()[0]
     assert queue_status == "failed"
     assert file_status == "failed"
+
+
+def test_api_v1_queue_retry_import_entry_resets_failed_to_pending(env):
+    from unittest.mock import patch
+    import main
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    with patch.object(main, "_process_auto_import", _noop):
+        resp = _client().post(
+            "/api/v1/queue/import/903/retry",
+            headers={"X-Api-Key": _api_key(env)},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 903, "queued": True}
+
+    with sqlite3.connect(env) as c:
+        queue_status = c.execute(
+            "SELECT status FROM import_queue WHERE id=903"
+        ).fetchone()[0]
+        file_status = c.execute(
+            "SELECT status FROM import_queue_files WHERE queue_id=903"
+        ).fetchone()[0]
+    assert queue_status == "pending"
+    assert file_status == "pending"
+
+
+def test_api_v1_queue_retry_import_entry_requires_api_key(env):
+    resp = _client().post("/api/v1/queue/import/903/retry")
+    assert resp.status_code == 401
+
+
+def test_api_v1_queue_retry_import_entry_rejects_unknown_id(env):
+    resp = _client().post(
+        "/api/v1/queue/import/99999/retry",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "import queue entry not found"
+
+
+def test_api_v1_queue_retry_import_entry_rejects_non_retryable_status(env):
+    resp = _client().post(
+        "/api/v1/queue/import/901/retry",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "import queue entry is not failed or partial"
+
+    with sqlite3.connect(env) as c:
+        queue_status = c.execute(
+            "SELECT status FROM import_queue WHERE id=901"
+        ).fetchone()[0]
+    assert queue_status == "pending"
