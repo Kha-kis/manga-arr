@@ -121,6 +121,11 @@
   --icon-size-lg: 2.5rem;
   --icon-size-xl: 3rem;
   --text-relative-half: 0.5em;
+  /* control sizing */
+  --control-touch: 44px;
+  --control-compact: 32px;
+  --control-icon-xs: 18px;
+  --control-nav: 30px;
   /* ═══ TYPOGRAPHY — Fraunces (editorial) + system-ui (chrome) ═══ */
   --font-display: "Fraunces", Georgia, serif;
   --font-serif: "Fraunces", Georgia, serif;
@@ -238,8 +243,8 @@ a:hover {
 }
 
 .brand-icon {
-  width: 30px;
-  height: 30px;
+  width: var(--control-nav);
+  height: var(--control-nav);
   background: var(--ember);
   border-radius: var(--radius-md);
   display: flex;
@@ -390,8 +395,8 @@ a:hover {
   border: 1px solid var(--edge-2);
   border-radius: var(--radius-sm);
   color: var(--text-2);
-  width: 30px;
-  height: 30px;
+  width: var(--control-nav);
+  height: var(--control-nav);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1289,7 +1294,7 @@ a:hover {
   color: var(--jade);
   font-size: var(--text-sm);
   padding: 3px 10px;
-  min-height: 32px;
+  min-height: var(--control-compact);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1306,7 +1311,7 @@ a:hover {
   border: 1px solid var(--ruby-soft);
   color: var(--ruby);
   font-size: var(--text-sm);
-  min-height: 32px;
+  min-height: var(--control-compact);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1812,7 +1817,7 @@ a:hover {
   align-items: center;
   justify-content: center;
   min-width: 20px;
-  height: 18px;
+  height: var(--control-icon-xs);
   padding: 0 6px;
   border-radius: var(--radius-md);
   font-size: var(--text-xs);
@@ -3256,8 +3261,8 @@ body {
    BUTTON VARIANTS — icon-only, action
 ════════════════════════════════════════════════════════════════ */
 .btn-icon {
-  width: 32px;
-  height: 32px;
+  width: var(--control-compact);
+  height: var(--control-compact);
   padding: 0;
   display: inline-flex;
   align-items: center;
@@ -3281,18 +3286,27 @@ body {
   transition-duration: 0.06s;
 }
 .btn-icon.btn-icon-xs {
-  width: 18px;
-  height: 18px;
+  width: var(--control-icon-xs);
+  height: var(--control-icon-xs);
   font-size: var(--text-xs);
 }
 
 .btn-action {
-  min-height: 32px;
-  min-width: 32px;
+  min-height: var(--control-compact);
+  min-width: var(--control-compact);
   padding: 4px 10px;
   font-size: var(--text-sm);
   font-family: var(--font-ui);
   font-weight: 600;
+}
+
+@media (pointer: coarse) {
+  .btn,
+  .btn-action,
+  .btn-icon {
+    min-height: var(--control-touch);
+    min-width: var(--control-touch);
+  }
 }
 
 .btn-soft-iris {
@@ -4537,7 +4551,7 @@ body {
 }
 
 .history-page-link {
-  min-width: 32px;
+  min-width: var(--control-compact);
 }
 
 .recycle-count {
