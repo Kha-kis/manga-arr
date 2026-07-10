@@ -37,6 +37,7 @@ def env():
     with sqlite3.connect(db.name) as c:
         c.execute("DELETE FROM import_queue")
         c.execute("DELETE FROM pending_releases")
+        c.execute("DELETE FROM events")
         c.execute("DELETE FROM history")
         c.execute("DELETE FROM blocklist")
         c.execute("DELETE FROM import_list_exclusions")
@@ -258,6 +259,21 @@ def env():
             " VALUES(401, 'grabbed', 5, 'Vinland Saga', 'Vol 3',"
             " 'Vinland Saga v03', 'Nyaa', 'torrent', 'qBittorrent',"
             " 'abc123', 3000, 'Group', '{\"score\": 10}')"
+        )
+        c.execute(
+            "INSERT INTO events(id, event_type, series_id, message, created_at)"
+            " VALUES(701, 'rss_poll', NULL, 'RSS poll complete',"
+            " '2026-01-01T00:00:00+00:00')"
+        )
+        c.execute(
+            "INSERT INTO events(id, event_type, series_id, message, created_at)"
+            " VALUES(702, 'error', 5, 'Indexer failed',"
+            " '2026-01-02T00:00:00+00:00')"
+        )
+        c.execute(
+            "INSERT INTO events(id, event_type, series_id, message, created_at)"
+            " VALUES(703, 'grab', 5, 'Grab queued',"
+            " '2026-01-03T00:00:00+00:00')"
         )
         c.execute(
             "INSERT INTO blocklist"
@@ -879,6 +895,58 @@ def test_api_v1_queue_history_and_wanted_contract(env):
     assert history["totalRecords"] == 1
     assert history["records"][0]["eventType"] == "grabbed"
     assert history["records"][0]["data"] == {"score": 10}
+
+    logs = client.get("/api/v1/log", headers=headers).json()
+    assert logs == {
+        "page": 1,
+        "pageSize": 100,
+        "totalRecords": 3,
+        "records": [
+            {
+                "id": 703,
+                "eventType": "grab",
+                "seriesId": 5,
+                "seriesTitle": "Vinland Saga",
+                "message": "Grab queued",
+                "date": "2026-01-03T00:00:00+00:00",
+            },
+            {
+                "id": 702,
+                "eventType": "error",
+                "seriesId": 5,
+                "seriesTitle": "Vinland Saga",
+                "message": "Indexer failed",
+                "date": "2026-01-02T00:00:00+00:00",
+            },
+            {
+                "id": 701,
+                "eventType": "rss_poll",
+                "seriesId": None,
+                "seriesTitle": None,
+                "message": "RSS poll complete",
+                "date": "2026-01-01T00:00:00+00:00",
+            },
+        ],
+    }
+
+    error_logs = client.get(
+        "/api/v1/log",
+        params={"eventType": "error"},
+        headers=headers,
+    ).json()
+    assert error_logs["totalRecords"] == 1
+    assert [row["id"] for row in error_logs["records"]] == [702]
+
+    series_logs = client.get(
+        "/api/v1/log",
+        params={"seriesId": 5, "page": 2, "pageSize": 1},
+        headers=headers,
+    )
+    assert series_logs.status_code == 200, series_logs.text
+    assert series_logs.json()["totalRecords"] == 2
+    assert series_logs.json()["page"] == 2
+    assert series_logs.json()["pageSize"] == 1
+    assert [row["id"] for row in series_logs.json()["records"]] == [702]
 
     wanted = client.get("/api/v1/wanted", headers=headers).json()
     assert wanted == [
