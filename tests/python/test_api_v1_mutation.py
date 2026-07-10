@@ -1026,6 +1026,207 @@ def test_api_v1_delete_notification_rejects_unknown_id(env):
     assert resp.json()["error"] == "notification connection not found"
 
 
+def test_api_v1_update_tag_renames_across_all_tag_tables_and_series_json(env):
+    with sqlite3.connect(env) as c:
+        c.execute("UPDATE series SET tags=? WHERE id=5", (json.dumps(["old-tag"]),))
+        c.execute(
+            "INSERT INTO series_tags(series_id, tag) VALUES(5, 'old-tag')"
+        )
+        c.execute(
+            "INSERT INTO series_tags(series_id, tag) VALUES(5, 'new-tag')"
+        )
+        c.execute(
+            "INSERT INTO indexers(id, name, type) VALUES(1820, 'Tag Indexer', 'torznab')"
+        )
+        c.execute(
+            "INSERT INTO indexer_tags(indexer_id, tag) VALUES(1820, 'old-tag')"
+        )
+        c.execute(
+            "INSERT INTO delay_profiles(id, name) VALUES(1821, 'Tag Delay')"
+        )
+        c.execute(
+            "INSERT INTO delay_profile_tags(profile_id, tag)"
+            " VALUES(1821, 'old-tag')"
+        )
+        c.execute(
+            "INSERT INTO release_profiles(id, name) VALUES(1822, 'Tag Release')"
+        )
+        c.execute(
+            "INSERT INTO release_profile_tags(profile_id, tag)"
+            " VALUES(1822, 'old-tag')"
+        )
+        c.execute(
+            "INSERT INTO download_clients(id, name, type)"
+            " VALUES(1823, 'Tag Client', 'qbittorrent')"
+        )
+        c.execute(
+            "INSERT INTO download_client_tags(client_id, tag)"
+            " VALUES(1823, 'old-tag')"
+        )
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/tag/old-tag",
+        json={"label": "new-tag"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["tag"] == {
+        "label": "new-tag",
+        "seriesCount": 1,
+        "indexerCount": 1,
+        "delayProfileCount": 1,
+        "releaseProfileCount": 1,
+        "downloadClientCount": 1,
+    }
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        old_counts = {
+            table: c.execute(
+                f"SELECT COUNT(*) AS n FROM {table} WHERE tag='old-tag'"
+            ).fetchone()["n"]
+            for table in (
+                "series_tags",
+                "indexer_tags",
+                "delay_profile_tags",
+                "release_profile_tags",
+                "download_client_tags",
+            )
+        }
+        new_counts = {
+            table: c.execute(
+                f"SELECT COUNT(*) AS n FROM {table} WHERE tag='new-tag'"
+            ).fetchone()["n"]
+            for table in (
+                "series_tags",
+                "indexer_tags",
+                "delay_profile_tags",
+                "release_profile_tags",
+                "download_client_tags",
+            )
+        }
+        json_tags = json.loads(
+            c.execute("SELECT tags FROM series WHERE id=5").fetchone()["tags"]
+        )
+    assert old_counts == {
+        "series_tags": 0,
+        "indexer_tags": 0,
+        "delay_profile_tags": 0,
+        "release_profile_tags": 0,
+        "download_client_tags": 0,
+    }
+    assert new_counts == {
+        "series_tags": 1,
+        "indexer_tags": 1,
+        "delay_profile_tags": 1,
+        "release_profile_tags": 1,
+        "download_client_tags": 1,
+    }
+    assert json_tags == ["new-tag"]
+
+
+def test_api_v1_update_tag_rejects_unknown_tag(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/tag/missing-tag",
+        json={"label": "renamed"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "tag not found"
+
+
+def test_api_v1_update_tag_requires_api_key(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/tag/private",
+        json={"label": "owned"},
+    )
+    assert resp.status_code == 401
+
+
+def test_api_v1_delete_tag_removes_from_all_tag_tables_and_series_json(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "UPDATE series SET tags=? WHERE id=5",
+            (json.dumps(["delete-tag", "keep-tag"]),),
+        )
+        c.execute(
+            "INSERT INTO series_tags(series_id, tag) VALUES(5, 'delete-tag')"
+        )
+        c.execute(
+            "INSERT INTO indexers(id, name, type) VALUES(1830, 'Delete Tag Indexer', 'torznab')"
+        )
+        c.execute(
+            "INSERT INTO indexer_tags(indexer_id, tag) VALUES(1830, 'delete-tag')"
+        )
+        c.execute(
+            "INSERT INTO delay_profiles(id, name) VALUES(1831, 'Delete Tag Delay')"
+        )
+        c.execute(
+            "INSERT INTO delay_profile_tags(profile_id, tag)"
+            " VALUES(1831, 'delete-tag')"
+        )
+        c.execute(
+            "INSERT INTO release_profiles(id, name) VALUES(1832, 'Delete Tag Release')"
+        )
+        c.execute(
+            "INSERT INTO release_profile_tags(profile_id, tag)"
+            " VALUES(1832, 'delete-tag')"
+        )
+        c.execute(
+            "INSERT INTO download_clients(id, name, type)"
+            " VALUES(1833, 'Delete Tag Client', 'qbittorrent')"
+        )
+        c.execute(
+            "INSERT INTO download_client_tags(client_id, tag)"
+            " VALUES(1833, 'delete-tag')"
+        )
+
+    resp = _client().delete(
+        "/api/v1/tag/delete-tag",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": "delete-tag"}
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        counts = {
+            table: c.execute(
+                f"SELECT COUNT(*) AS n FROM {table} WHERE tag='delete-tag'"
+            ).fetchone()["n"]
+            for table in (
+                "series_tags",
+                "indexer_tags",
+                "delay_profile_tags",
+                "release_profile_tags",
+                "download_client_tags",
+            )
+        }
+        json_tags = json.loads(
+            c.execute("SELECT tags FROM series WHERE id=5").fetchone()["tags"]
+        )
+    assert counts == {
+        "series_tags": 0,
+        "indexer_tags": 0,
+        "delay_profile_tags": 0,
+        "release_profile_tags": 0,
+        "download_client_tags": 0,
+    }
+    assert json_tags == ["keep-tag"]
+
+
+def test_api_v1_delete_tag_rejects_unknown_tag(env):
+    resp = _client().delete(
+        "/api/v1/tag/missing-tag",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "tag not found"
+
+
 def test_api_v1_create_quality_profile_adds_row(env):
     resp = _client().post(
         "/api/v1/qualityprofile",
