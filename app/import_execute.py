@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import shutil
 
 from shared import get_cfg, get_db
 from events import log_event, broadcast_queue_event
@@ -30,6 +31,69 @@ def _get_import_sem() -> asyncio.Semaphore:
 def initialize_import_semaphore() -> None:
     """Called from lifespan() to warm-start the semaphore."""
     _get_import_sem()
+
+
+_MIB = 1024 * 1024
+
+
+def _fmt_bytes(num: int) -> str:
+    if num >= 1024 * 1024 * 1024:
+        return f"{num / (1024 * 1024 * 1024):.1f} GiB"
+    return f"{num / _MIB:.1f} MiB"
+
+
+def _minimum_free_space_bytes() -> int:
+    raw = str(get_cfg("minimum_free_space_mb", "0") or "0").strip()
+    try:
+        mb = int(float(raw))
+    except (TypeError, ValueError):
+        mb = 0
+    return max(0, mb) * _MIB
+
+
+def _planned_import_bytes(plan: _ImportPlan, import_mode: str) -> int:
+    if import_mode == "hardlink":
+        return 0
+    total = 0
+    for fp in plan.files:
+        if fp.plan_status != "ready":
+            continue
+        try:
+            total += max(0, os.path.getsize(fp.src_path))
+        except OSError:
+            pass
+    return total
+
+
+def _check_minimum_free_space(plan: _ImportPlan, import_mode: str) -> tuple[bool, str]:
+    reserve_bytes = _minimum_free_space_bytes()
+    if reserve_bytes <= 0:
+        return True, ""
+    if not any(fp.plan_status == "ready" for fp in plan.files):
+        return True, ""
+
+    planned_bytes = _planned_import_bytes(plan, import_mode)
+    required = reserve_bytes + planned_bytes
+    try:
+        free = shutil.disk_usage(plan.dst_dir).free
+    except OSError as exc:
+        return False, f"Import blocked: cannot check free space for {plan.dst_dir}: {exc}"
+    if free >= required:
+        return True, ""
+    return (
+        False,
+        "Import blocked: insufficient free space in "
+        f"{plan.dst_dir} ({_fmt_bytes(free)} free, "
+        f"{_fmt_bytes(required)} required: {_fmt_bytes(reserve_bytes)} reserve"
+        f" + {_fmt_bytes(planned_bytes)} planned import)",
+    )
+
+
+def _mark_plan_failed(plan: _ImportPlan, reason: str) -> None:
+    for fp in plan.files:
+        if fp.plan_status == "ready":
+            fp.plan_status = "pre_failed"
+            fp.plan_failure_reason = reason
 
 
 def claim_import_queue_row(
@@ -142,6 +206,19 @@ async def _execute_import_impl(
         return False
 
     queue = plan.queue
+
+    space_ok, space_reason = _check_minimum_free_space(plan, import_mode)
+    if not space_ok:
+        _mark_plan_failed(plan, space_reason)
+        with get_db() as _db_space:
+            _split_commit_import(
+                _db_space,
+                plan,
+                [],
+                fs_committed=False,
+                commit_failure_reason=space_reason,
+            )
+        return False
 
     # ── Phase 2 — filesystem (no DB held) ───────────────────────────────
     staging = _ImportStaging(plan.dst_dir, queue["id"], import_mode)

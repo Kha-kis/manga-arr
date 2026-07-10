@@ -238,6 +238,12 @@
                 <option value="true"  {% if cfg.remove_completed == 'true' %}selected{% endif %}>Yes — remove after import</option>
               </select>
             </div>
+            <div class="col-12 col-sm-4">
+              <label class="form-label">Minimum Free Space</label>
+              <input type="number" name="minimum_free_space_mb" class="form-control"
+                     value="{{ cfg.minimum_free_space_mb or '0' }}" min="0" step="1" placeholder="0">
+              <div class="form-text">MiB to keep free after import staging (0 = disabled)</div>
+            </div>
           </div>
           <div class="row g-3 mb-3">
             <div class="col-12 col-sm-6">

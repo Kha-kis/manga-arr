@@ -88,6 +88,7 @@ def test_settings_form_persists_torrent_save_path(env):
         'torrent_save_path':   '/data/torrents/manga',
         'category':            'manga',
         'import_mode':         'hardlink',
+        'minimum_free_space_mb': '2048',
         'komga_scan_enabled':  'false',
     }
     r = client.post(
@@ -103,7 +104,11 @@ def test_settings_form_persists_torrent_save_path(env):
         row = c.execute(
             "SELECT value FROM settings WHERE key='torrent_save_path'"
         ).fetchone()
+        free_row = c.execute(
+            "SELECT value FROM settings WHERE key='minimum_free_space_mb'"
+        ).fetchone()
     assert row is not None and row[0] == '/data/torrents/manga'
+    assert free_row is not None and free_row[0] == '2048'
 
 
 def test_settings_form_accepts_blank_torrent_save_path(env):

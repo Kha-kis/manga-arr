@@ -54,6 +54,7 @@ not exact TV terminology, exact Sonarr UI, or identical plugin breadth.
 | Rename/organize files | `/api/v1/rename/series/{id}/preview`, `POST /api/v1/rename/series/{id}`, and the series-page HTMX rename panel preview selected renames, report conflicts, rename safe files, and update import paths | Mostly covered |
 | Existing-library discovery seed | `/api/v1/rootfolder/{id}/unmappedfolders` reports root-folder child directories not mapped to known series | Backend seed covered |
 | Import-list exclusions | `import_list_exclusions` table, `/import-lists` management UI, and sync-time skip logic by source/external ID or normalized title | Covered |
+| Minimum free-space guard | Media Management `minimum_free_space_mb` setting blocks imports before staging when the destination would fall below the configured reserve | Covered |
 
 ## True Parity Gaps
 
@@ -120,19 +121,18 @@ Recommended scope:
 
 ### 5. Media-Management Permissions And Import Options
 
-Sonarr exposes advanced import/rename options such as chmod/chown, minimum
-free-space thresholds, hardlink/copy preferences, extra-file import, and custom
-import scripts. Mangarr currently relies mostly on container/user/filesystem
-setup plus its archive staging pipeline.
+Sonarr exposes advanced import/rename options such as chmod/chown, hardlink/copy
+preferences, extra-file import, and custom import scripts. Mangarr now includes
+hardlink/move/copy import modes and a configurable minimum-free-space guard, and
+otherwise relies mostly on container/user/filesystem setup plus its archive
+staging pipeline.
 
 Recommended scope:
 
-1. Add minimum-free-space guards before permission mutation; this has clearer
-   operational value and lower risk.
-2. Document container UID/GID behavior before adding chmod/chown settings.
-3. Treat custom import scripts as low priority until there is a concrete user
+1. Document container UID/GID behavior before adding chmod/chown settings.
+2. Treat custom import scripts as low priority until there is a concrete user
    need.
-4. Keep hardlink/copy behavior scoped to manga archive workflows; do not copy
+3. Keep hardlink/copy behavior scoped to manga archive workflows; do not copy
    Sonarr options that do not map cleanly.
 
 ### 6. General/System Settings Breadth
@@ -195,11 +195,9 @@ Recommended scope:
    adoption.
 4. API mutation endpoints. Add after read endpoints and route contracts are
    stable.
-5. Minimum-free-space guard. Useful operational safety without chmod/chown
-   risk.
-6. General settings polish: URL base/proxy docs, log-level controls, selected
+5. General settings polish: URL base/proxy docs, log-level controls, selected
    env overrides.
-7. Optional backup restore UI, extra download clients, update indicator, and
+6. Optional backup restore UI, extra download clients, update indicator, and
    PostgreSQL evaluation. These should wait for explicit deployment/user demand.
 
 ## Non-Goals

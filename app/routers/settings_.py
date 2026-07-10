@@ -100,6 +100,7 @@ async def save_settings(
     blocked_groups: str = Form(""),
     import_mode: str = Form("hardlink"),
     remove_completed: str = Form("false"),
+    minimum_free_space_mb: str = Form("0"),
     grab_delay_minutes: str = Form("0"),
     file_format: str = Form(""),
     chapter_format: str = Form(""),
@@ -120,6 +121,17 @@ async def save_settings(
         if import_mode in ("hardlink", "move", "copy")
         else "hardlink",
         "remove_completed": "true" if remove_completed == "true" else "false",
+        "minimum_free_space_mb": str(
+            max(
+                0,
+                min(
+                    10000000,
+                    int(minimum_free_space_mb)
+                    if minimum_free_space_mb.isdigit()
+                    else 0,
+                ),
+            )
+        ),
         "grab_delay_minutes": str(max(0, min(10080, int(grab_delay_minutes))))
         if grab_delay_minutes.isdigit()
         else "0",
