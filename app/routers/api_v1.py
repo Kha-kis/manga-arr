@@ -56,6 +56,7 @@ from shared import (
     get_db,
     quality_rank,
 )
+from security import encrypt_if_cipher_available
 from volumes import create_volume_stubs
 
 router = APIRouter()
@@ -383,6 +384,34 @@ def _download_client(row, tags: list[str]) -> dict:
         "mergeChapters": _bool_default_true(row["merge_chapters"]),
         "tags": tags,
     }
+
+
+def _download_client_by_id(db, client_id: int) -> dict | None:
+    row = db.execute(
+        "SELECT * FROM download_clients WHERE id=?",
+        (client_id,),
+    ).fetchone()
+    if not row:
+        return None
+    tags = [
+        tag["tag"]
+        for tag in db.execute(
+            "SELECT tag FROM download_client_tags"
+            " WHERE client_id=? ORDER BY tag",
+            (client_id,),
+        ).fetchall()
+    ]
+    return _download_client(row, tags)
+
+
+def _replace_download_client_tags(db, client_id: int, tags: list[str]) -> None:
+    db.execute("DELETE FROM download_client_tags WHERE client_id=?", (client_id,))
+    for tag in tags:
+        db.execute(
+            "INSERT OR IGNORE INTO download_client_tags(client_id, tag)"
+            " VALUES(?, ?)",
+            (client_id, tag),
+        )
 
 
 def _remote_path_mapping(row) -> dict:
@@ -2236,6 +2265,102 @@ async def api_v1_download_clients():
     return JSONResponse(payload)
 
 
+@router.post("/api/v1/downloadclient")
+async def api_v1_create_download_client(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+
+    name = _payload_str(payload, "name")
+    if not name:
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    implementation = _payload_str(payload, "implementation", "type")
+    if not implementation:
+        return JSONResponse({"error": "implementation is required"}, status_code=400)
+    try:
+        port = _payload_optional_fk_alias(payload, ("port",))
+        priority = _payload_non_negative_alias(payload, ("priority",), 1)
+        tags = _payload_tag_list(payload)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    password = _payload_str(payload, "password")
+    stored_password = encrypt_if_cipher_available(password) if password else None
+
+    with get_db() as db:
+        cur = db.execute(
+            "INSERT INTO download_clients"
+            "(name, type, host, port, use_ssl, url_base, username, password,"
+            " category, post_import_category, recent_priority, older_priority,"
+            " initial_state, sequential_order, first_last_first, content_layout,"
+            " priority, enabled, remove_completed, remove_failed, source_id,"
+            " download_path, merge_chapters)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                name,
+                implementation,
+                _payload_str(payload, "host"),
+                port,
+                1 if _payload_bool_alias(payload, ("useSsl", "use_ssl"), False) else 0,
+                _payload_str(payload, "urlBase", "url_base") or None,
+                _payload_str(payload, "username") or None,
+                stored_password,
+                _payload_str(payload, "category") or "manga",
+                _payload_str(payload, "postImportCategory", "post_import_category")
+                or None,
+                _payload_str(payload, "recentPriority", "recent_priority")
+                or "last",
+                _payload_str(payload, "olderPriority", "older_priority")
+                or "last",
+                _payload_str(payload, "initialState", "initial_state")
+                or "normal",
+                1
+                if _payload_bool_alias(
+                    payload, ("sequentialOrder", "sequential_order"), False
+                )
+                else 0,
+                1
+                if _payload_bool_alias(
+                    payload, ("firstLastFirst", "first_last_first"), False
+                )
+                else 0,
+                _payload_str(payload, "contentLayout", "content_layout")
+                or "original",
+                priority,
+                1 if _payload_bool_alias(payload, ("enable", "enabled"), True) else 0,
+                1
+                if _payload_bool_alias(
+                    payload,
+                    ("removeCompletedDownloads", "remove_completed"),
+                    False,
+                )
+                else 0,
+                1
+                if _payload_bool_alias(
+                    payload,
+                    ("removeFailedDownloads", "remove_failed"),
+                    False,
+                )
+                else 0,
+                _payload_str(payload, "sourceId", "source_id") or None,
+                _payload_str(payload, "downloadPath", "download_path") or None,
+                1
+                if _payload_bool_alias(
+                    payload,
+                    ("mergeChapters", "merge_chapters"),
+                    True,
+                )
+                else 0,
+            ),
+        )
+        client_id = cur.lastrowid
+        _replace_download_client_tags(db, client_id, tags)
+        client = _download_client_by_id(db, client_id)
+    return JSONResponse({"ok": True, "status": "created", "downloadClient": client})
+
+
 @router.get("/api/v1/downloadclient/remotepathmapping")
 async def api_v1_remote_path_mappings():
     with get_db() as db:
@@ -2340,6 +2465,148 @@ async def api_v1_delete_remote_path_mapping(mapping_id: int):
             )
         db.execute("DELETE FROM remote_path_mappings WHERE id=?", (mapping_id,))
     return JSONResponse({"ok": True, "id": mapping_id})
+
+
+@router.put("/api/v1/downloadclient/{client_id}")
+@router.patch("/api/v1/downloadclient/{client_id}")
+async def api_v1_update_download_client(request: Request, client_id: int):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+
+    fields: list[str] = []
+    params: list = []
+    try:
+        if "name" in payload:
+            name = _payload_str(payload, "name")
+            if not name:
+                return JSONResponse({"error": "name is required"}, status_code=400)
+            fields.append("name=?")
+            params.append(name)
+        if "implementation" in payload or "type" in payload:
+            implementation = _payload_str(payload, "implementation", "type")
+            if not implementation:
+                return JSONResponse(
+                    {"error": "implementation is required"},
+                    status_code=400,
+                )
+            fields.append("type=?")
+            params.append(implementation)
+        text_fields = {
+            ("host",): "host",
+            ("urlBase", "url_base"): "url_base",
+            ("username",): "username",
+            ("category",): "category",
+            ("postImportCategory", "post_import_category"): "post_import_category",
+            ("recentPriority", "recent_priority"): "recent_priority",
+            ("olderPriority", "older_priority"): "older_priority",
+            ("initialState", "initial_state"): "initial_state",
+            ("contentLayout", "content_layout"): "content_layout",
+            ("sourceId", "source_id"): "source_id",
+            ("downloadPath", "download_path"): "download_path",
+        }
+        nullable_text_columns = {
+            "url_base",
+            "username",
+            "post_import_category",
+            "source_id",
+            "download_path",
+        }
+        defaults = {
+            "category": "manga",
+            "recent_priority": "last",
+            "older_priority": "last",
+            "initial_state": "normal",
+            "content_layout": "original",
+        }
+        for keys, column in text_fields.items():
+            if any(key in payload for key in keys):
+                value = _payload_str(payload, *keys)
+                if value:
+                    stored_value = value
+                elif column in defaults:
+                    stored_value = defaults[column]
+                elif column in nullable_text_columns:
+                    stored_value = None
+                else:
+                    stored_value = ""
+                fields.append(f"{column}=?")
+                params.append(stored_value)
+        if "password" in payload:
+            password = _payload_str(payload, "password")
+            if password:
+                fields.append("password=?")
+                params.append(encrypt_if_cipher_available(password))
+        if "port" in payload:
+            fields.append("port=?")
+            params.append(_payload_optional_fk_alias(payload, ("port",)))
+        if "priority" in payload:
+            fields.append("priority=?")
+            params.append(_payload_non_negative_alias(payload, ("priority",), 0))
+        bool_fields = {
+            ("useSsl", "use_ssl"): "use_ssl",
+            ("enable", "enabled"): "enabled",
+            ("removeCompletedDownloads", "remove_completed"): "remove_completed",
+            ("removeFailedDownloads", "remove_failed"): "remove_failed",
+            ("sequentialOrder", "sequential_order"): "sequential_order",
+            ("firstLastFirst", "first_last_first"): "first_last_first",
+            ("mergeChapters", "merge_chapters"): "merge_chapters",
+        }
+        for keys, column in bool_fields.items():
+            if any(key in payload for key in keys):
+                default = column in {"enabled", "merge_chapters"}
+                fields.append(f"{column}=?")
+                params.append(1 if _payload_bool_alias(payload, keys, default) else 0)
+        tags = _payload_tag_list(payload) if "tags" in payload else None
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM download_clients WHERE id=?",
+            (client_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "download client not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        if fields:
+            params.append(client_id)
+            db.execute(
+                f"UPDATE download_clients SET {', '.join(fields)} WHERE id=?",
+                params,
+            )
+        if tags is not None:
+            _replace_download_client_tags(db, client_id, tags)
+        client = _download_client_by_id(db, client_id)
+    return JSONResponse({"ok": True, "downloadClient": client})
+
+
+@router.delete("/api/v1/downloadclient/{client_id}")
+async def api_v1_delete_download_client(client_id: int):
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM download_clients WHERE id=?",
+            (client_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "download client not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        db.execute(
+            "DELETE FROM download_client_tags WHERE client_id=?",
+            (client_id,),
+        )
+        db.execute("DELETE FROM download_clients WHERE id=?", (client_id,))
+    return JSONResponse({"ok": True, "id": client_id})
 
 
 @router.get("/api/v1/tag")
