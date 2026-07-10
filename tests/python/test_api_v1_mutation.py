@@ -1051,6 +1051,226 @@ def test_api_v1_delete_language_profile_rejects_unknown_id(env):
     assert resp.json()["error"] == "language profile not found"
 
 
+def test_api_v1_create_custom_format_adds_row_and_scores(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO quality_profiles(id, name, qualities)"
+            " VALUES(1400, 'API CF Quality', '[\"cbz\"]')"
+        )
+
+    resp = _client().post(
+        "/api/v1/customformat",
+        json={
+            "name": "API Custom Format",
+            "specifications": [
+                {
+                    "name": "official",
+                    "implementation": "source_is",
+                    "value": "official_digital",
+                }
+            ],
+            "includeCustomFormatWhenRenaming": True,
+            "qualityProfileScores": [
+                {"qualityProfileId": 1400, "score": 50},
+            ],
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["status"] == "created"
+    assert body["customFormat"]["name"] == "API Custom Format"
+    assert body["customFormat"]["specifications"] == [
+        {
+            "name": "official",
+            "implementation": "source_is",
+            "value": "official_digital",
+        }
+    ]
+    assert body["customFormat"]["includeCustomFormatWhenRenaming"] is True
+    assert body["customFormat"]["qualityProfileScores"] == [
+        {"qualityProfileId": 1400, "score": 50}
+    ]
+    format_id = body["customFormat"]["id"]
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT specifications, include_custom_format_when_renaming"
+            " FROM custom_formats WHERE id=?",
+            (format_id,),
+        ).fetchone()
+        score = c.execute(
+            "SELECT score FROM quality_profile_custom_formats"
+            " WHERE profile_id=1400 AND format_id=?",
+            (format_id,),
+        ).fetchone()
+    assert json.loads(row["specifications"]) == [
+        {
+            "name": "official",
+            "implementation": "source_is",
+            "value": "official_digital",
+        }
+    ]
+    assert row["include_custom_format_when_renaming"] == 1
+    assert score["score"] == 50
+
+
+def test_api_v1_create_custom_format_requires_api_key(env):
+    resp = _client().post(
+        "/api/v1/customformat",
+        json={"name": "No Auth"},
+    )
+    assert resp.status_code == 401
+
+
+def test_api_v1_create_custom_format_rejects_bad_specifications(env):
+    resp = _client().post(
+        "/api/v1/customformat",
+        json={"name": "Bad Specs", "specifications": {"type": "source_is"}},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "specifications must be a list"
+
+
+def test_api_v1_create_custom_format_rejects_unknown_quality_profile(env):
+    resp = _client().post(
+        "/api/v1/customformat",
+        json={
+            "name": "Bad Score Profile",
+            "qualityProfileScores": [{"qualityProfileId": 99999, "score": 10}],
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "qualityProfileId 99999 not found"
+
+    with sqlite3.connect(env) as c:
+        count = c.execute(
+            "SELECT COUNT(*) FROM custom_formats WHERE name='Bad Score Profile'"
+        ).fetchone()[0]
+    assert count == 0
+
+
+def test_api_v1_update_custom_format_updates_submitted_fields_and_scores(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO quality_profiles(id, name, qualities)"
+            " VALUES(1410, 'API CF Quality A', '[\"cbz\"]')"
+        )
+        c.execute(
+            "INSERT INTO quality_profiles(id, name, qualities)"
+            " VALUES(1411, 'API CF Quality B', '[\"epub\"]')"
+        )
+        c.execute(
+            "INSERT INTO custom_formats"
+            "(id, name, specifications, include_custom_format_when_renaming)"
+            " VALUES(1420, 'Old API Custom Format', '[]', 0)"
+        )
+        c.execute(
+            "INSERT INTO quality_profile_custom_formats"
+            "(profile_id, format_id, score) VALUES(1410, 1420, 5)"
+        )
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/customformat/1420",
+        json={
+            "name": "Updated API Custom Format",
+            "specifications": [{"type": "release_title_contains", "value": "Deluxe"}],
+            "includeCustomFormatWhenRenaming": True,
+            "qualityProfileScores": [
+                {"qualityProfileId": 1410, "score": 0},
+                {"qualityProfileId": 1411, "score": 20},
+            ],
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["customFormat"]["name"] == "Updated API Custom Format"
+    assert body["customFormat"]["specifications"] == [
+        {"type": "release_title_contains", "value": "Deluxe"}
+    ]
+    assert body["customFormat"]["includeCustomFormatWhenRenaming"] is True
+    assert body["customFormat"]["qualityProfileScores"] == [
+        {"qualityProfileId": 1411, "score": 20}
+    ]
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT name, specifications, include_custom_format_when_renaming"
+            " FROM custom_formats WHERE id=1420"
+        ).fetchone()
+        scores = c.execute(
+            "SELECT profile_id, score FROM quality_profile_custom_formats"
+            " WHERE format_id=1420 ORDER BY profile_id"
+        ).fetchall()
+    assert row["name"] == "Updated API Custom Format"
+    assert json.loads(row["specifications"]) == [
+        {"type": "release_title_contains", "value": "Deluxe"}
+    ]
+    assert row["include_custom_format_when_renaming"] == 1
+    assert [tuple(score) for score in scores] == [(1411, 20)]
+
+
+def test_api_v1_update_custom_format_rejects_unknown_id(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/customformat/99999",
+        json={"name": "Missing"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "custom format not found"
+
+
+def test_api_v1_delete_custom_format_removes_row_and_scores(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO quality_profiles(id, name, qualities)"
+            " VALUES(1430, 'API CF Delete Quality', '[\"cbz\"]')"
+        )
+        c.execute(
+            "INSERT INTO custom_formats(id, name, specifications)"
+            " VALUES(1431, 'Delete API Custom Format', '[]')"
+        )
+        c.execute(
+            "INSERT INTO quality_profile_custom_formats"
+            "(profile_id, format_id, score) VALUES(1430, 1431, 15)"
+        )
+
+    resp = _client().delete(
+        "/api/v1/customformat/1431",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 1431}
+
+    with sqlite3.connect(env) as c:
+        custom_format = c.execute(
+            "SELECT 1 FROM custom_formats WHERE id=1431"
+        ).fetchone()
+        score = c.execute(
+            "SELECT 1 FROM quality_profile_custom_formats WHERE format_id=1431"
+        ).fetchone()
+    assert custom_format is None
+    assert score is None
+
+
+def test_api_v1_delete_custom_format_rejects_unknown_id(env):
+    resp = _client().delete(
+        "/api/v1/customformat/99999",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "custom format not found"
+
+
 def test_api_v1_create_release_profile_adds_row_and_tags(env):
     resp = _client().post(
         "/api/v1/releaseprofile",
