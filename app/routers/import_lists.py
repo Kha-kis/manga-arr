@@ -2,6 +2,7 @@
 import json
 import asyncio
 import httpx
+import re
 from datetime import datetime
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -40,6 +41,55 @@ def _all_lists(db):
     return result
 
 
+def _normalize_title(title: str | None) -> str:
+    return re.sub(r"\s+", " ", (title or "").strip().lower())
+
+
+def _entry_external_id(entry: dict) -> str:
+    for key in ("external_id", "anilist_id", "mal_id", "mu_id", "mangadex_id"):
+        value = entry.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _all_exclusions(db):
+    return db.execute(
+        "SELECT * FROM import_list_exclusions ORDER BY source, title, external_id, id"
+    ).fetchall()
+
+
+def _exclusion_keys(db, source: str) -> tuple[set[str], set[str]]:
+    rows = db.execute(
+        "SELECT external_id, title_normalized FROM import_list_exclusions"
+        " WHERE source=?",
+        (source,),
+    ).fetchall()
+    external_ids = {
+        str(row["external_id"]).strip()
+        for row in rows
+        if row["external_id"] and str(row["external_id"]).strip()
+    }
+    titles = {
+        row["title_normalized"]
+        for row in rows
+        if row["title_normalized"]
+    }
+    return external_ids, titles
+
+
+def _entry_is_excluded(
+    entry: dict,
+    external_ids: set[str],
+    title_keys: set[str],
+) -> bool:
+    external_id = _entry_external_id(entry)
+    if external_id and external_id in external_ids:
+        return True
+    title_key = _normalize_title(entry.get("title"))
+    return bool(title_key and title_key in title_keys)
+
+
 # ── List ──────────────────────────────────────────────────────────────────────
 @router.get("/import-lists", response_class=HTMLResponse)
 async def import_lists_page(request: Request):
@@ -47,8 +97,10 @@ async def import_lists_page(request: Request):
         lists       = _all_lists(db)
         profiles    = db.execute("SELECT id, name FROM quality_profiles ORDER BY name").fetchall()
         root_folders = db.execute("SELECT id, path FROM root_folders ORDER BY path").fetchall()
+        exclusions  = _all_exclusions(db)
     return templates.TemplateResponse(request, "import_lists.html", {
         "lists":        lists,
+        "exclusions":   exclusions,
         "list_types":   LIST_TYPES,
         "profiles":     profiles,
         "root_folders": root_folders,
@@ -104,6 +156,52 @@ def _settings_json_passthrough(v) -> str:
     except (TypeError, ValueError):
         parsed = {}
     return json.dumps(parsed)
+
+
+@router.post("/import-lists/exclusions")
+async def create_import_list_exclusion(
+    request: Request,
+    source: str = Form(...),
+    external_id: str = Form(""),
+    title: str = Form(""),
+    reason: str = Form(""),
+):
+    source = source.strip()
+    external_id = external_id.strip()
+    title = title.strip()
+    title_key = _normalize_title(title)
+    if not source or (not external_id and not title_key):
+        if request.headers.get("HX-Request") == "true":
+            from fastapi.responses import Response as _Resp
+            return _Resp(headers={"HX-Refresh": "true"}, status_code=400)
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": "Source plus either external ID or title is required",
+            },
+            status_code=400,
+        )
+    with get_db() as db:
+        db.execute(
+            "INSERT OR IGNORE INTO import_list_exclusions"
+            "(source, external_id, title, title_normalized, reason)"
+            " VALUES(?,?,?,?,?)",
+            (source, external_id or None, title, title_key, reason.strip() or None),
+        )
+    if request.headers.get("HX-Request") == "true":
+        from fastapi.responses import Response as _Resp
+        return _Resp(headers={"HX-Refresh": "true"})
+    return RedirectResponse("/import-lists", status_code=303)
+
+
+@router.post("/import-lists/exclusions/{exclusion_id}/delete")
+async def delete_import_list_exclusion(request: Request, exclusion_id: int):
+    with get_db() as db:
+        db.execute("DELETE FROM import_list_exclusions WHERE id=?", (exclusion_id,))
+    if request.headers.get("HX-Request") == "true":
+        from fastapi.responses import Response as _Resp
+        return _Resp(headers={"HX-Refresh": "true"})
+    return RedirectResponse("/import-lists", status_code=303)
 
 
 @router.post("/import-lists/{list_id}")
@@ -193,11 +291,13 @@ async def _sync_list(lst: dict):
         return
 
     added_entries: list[tuple[int, str, str, str, int | None]] = []  # (series_id, title, search_pattern, cover_url, anilist_id)
+    skipped_excluded = 0
 
     with get_db() as db:
         # Update last_sync
         db.execute("UPDATE import_lists SET last_sync=? WHERE id=?",
                    (datetime.utcnow().isoformat(), lst['id']))
+        excluded_external_ids, excluded_titles = _exclusion_keys(db, t)
 
         # Dedup by (anilist_id, edition_type) — same series can exist in multiple editions.
         # Soft-deleted series don't count: an import-list re-add should create a fresh
@@ -216,6 +316,9 @@ async def _sync_list(lst: dict):
             al_id = entry.get('anilist_id')
             title = entry.get('title', '') or ''
             if not title.strip():
+                continue
+            if _entry_is_excluded(entry, excluded_external_ids, excluded_titles):
+                skipped_excluded += 1
                 continue
             # Dedup: prefer anilist_id match; fall back to title match for MAL/RSS
             if al_id:
@@ -294,7 +397,8 @@ async def _sync_list(lst: dict):
     added_count = len(added_entries)
     log_event(
         "import_list_sync",
-        f"[ImportList:{lst['name']}] Synced {len(series_list)} items, added {added_count} new",
+        f"[ImportList:{lst['name']}] Synced {len(series_list)} items, "
+        f"added {added_count} new, skipped {skipped_excluded} excluded",
     )
 
 
