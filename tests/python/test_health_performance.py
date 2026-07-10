@@ -243,21 +243,21 @@ def test_health_page_returns_200_and_html(fresh_app):
 
 
 def test_each_check_function_uses_snapshot_not_get_db():
-    """Source-level guard: the per-check functions inside health_page
+    """Source-level guard: the per-check functions inside build_health_payload
     must not re-open get_db() individually. They should consume the
     pre-fetched snap[...] dict."""
     import inspect, routers.health_ as h
-    src = inspect.getsource(h.health_page)
+    src = inspect.getsource(h.build_health_payload)
     # Count actual `with get_db() as` blocks, not prose references. After
-    # the fix there should be at most 1 remaining (the aggregate block
-    # for the bottom of the page: stale series, stale grabs, recent errors).
-    # The up-front snapshot uses `_health_db_snapshot` so it doesn't count.
+    # the fix all route data comes from `_health_db_snapshot`, which
+    # already includes the aggregate rows for the bottom of the page.
     usages = src.count("with get_db() as")
-    assert usages <= 1, (
-        f"health_page reopens get_db {usages} times — should consolidate "
+    assert usages == 0, (
+        f"build_health_payload reopens get_db {usages} times — should consolidate "
         "into the snapshot. Each extra open exposes the page to the 5s "
         "busy_timeout during write-lock contention (issue #31)."
     )
+    assert "_health_db_snapshot()" in src
 
 
 def test_docker_healthcheck_still_uses_root_not_health():

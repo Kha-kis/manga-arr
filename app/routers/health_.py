@@ -167,8 +167,8 @@ def _health_db_snapshot() -> dict:
     return snap
 
 
-@router.get("/health", response_class=HTMLResponse)
-async def health_page(request: Request):
+async def build_health_payload() -> dict:
+    """Build the UI/API health payload from one DB snapshot."""
     checks = []
 
     # ── One-shot DB snapshot used by every check below. ──────────────────
@@ -363,7 +363,7 @@ async def health_page(request: Request):
     # follow-up B.
     last_rss_row = snap['last_rss_poll']
     last_backlog_row = snap['last_backlog']
-    return templates.TemplateResponse(request, "health.html", {
+    return {
         "checks":        checks,
         "stale_series":  snap['stale_series'],
         "stale_grabs":   snap['stale_grabs'],
@@ -372,7 +372,13 @@ async def health_page(request: Request):
         "last_rss":      last_rss_row['created_at'] if last_rss_row else None,
         "last_backlog":  last_backlog_row['created_at'] if last_backlog_row else None,
         "stats":         snap['stats'],
-    })
+    }
+
+
+@router.get("/health", response_class=HTMLResponse)
+async def health_page(request: Request):
+    payload = await build_health_payload()
+    return templates.TemplateResponse(request, "health.html", payload)
 
 
 @router.post("/api/backfill-packs")
