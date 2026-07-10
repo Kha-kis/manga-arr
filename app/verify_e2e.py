@@ -380,51 +380,63 @@ def _print_legacy(findings: list[Finding]) -> None:
     operator scripts that grep this don't break.
     """
     by_code = {f.code: f for f in findings}
-    print("=" * 60)
-    print("END-TO-END STATE MACHINE VERIFICATION")
-    print("=" * 60)
+
+    def _line(text: str = "") -> None:
+        sys.stdout.write(f"{text}\n")
+
+    _line("=" * 60)
+    _line("END-TO-END STATE MACHINE VERIFICATION")
+    _line("=" * 60)
+
+    if "grabbed_volumes_total" not in by_code:
+        _line("\nDiagnostic checks could not run:")
+        for f in findings:
+            _line(f"  [{f.severity.upper():>8}] {f.code}: {f.message}")
+        _line("\n" + "=" * 60)
+        _line("DONE")
+        return
 
     def _pick(code, default=0):
         f = by_code.get(code)
         return f.count if f else default
 
     g = by_code["grabbed_volumes_total"]
-    print(f"\n[1] GRABBED VOLUMES (n={g.count}):")
+    _line(f"\n[1] GRABBED VOLUMES (n={g.count}):")
     for k in ("grabbed_at", "torrent_name", "indexer", "protocol", "source_url"):
-        print(f"    no {k}: {g.detail.get(k, 0)}")
+        _line(f"    no {k}: {g.detail.get(k, 0)}")
 
     d = by_code["downloaded_volumes_total"]
-    print(f"\n[2] DOWNLOADED VOLUMES (n={d.count}):")
+    _line(f"\n[2] DOWNLOADED VOLUMES (n={d.count}):")
     for k in ("import_path", "quality", "imported_at"):
-        print(f"    no {k}: {d.detail.get(k, 0)}")
+        _line(f"    no {k}: {d.detail.get(k, 0)}")
 
     gc = by_code["grabbed_chapters_total"]
-    print(f"\n[3] GRABBED CHAPTERS (n={gc.count}):")
+    _line(f"\n[3] GRABBED CHAPTERS (n={gc.count}):")
     for k in ("grabbed_at", "indexer"):
-        print(f"    no {k}: {gc.detail.get(k, 0)}")
+        _line(f"    no {k}: {gc.detail.get(k, 0)}")
 
     dc = by_code["downloaded_chapters_total"]
     ghost = _pick("ghost_downloaded_chapters")
-    print(f"\n[4] DOWNLOADED CHAPTERS (n={dc.count}):")
-    print(f"    no quality:     {_pick('downloaded_chapter_missing_quality') + ghost}")
-    print(
+    _line(f"\n[4] DOWNLOADED CHAPTERS (n={dc.count}):")
+    _line(f"    no quality:     {_pick('downloaded_chapter_missing_quality') + ghost}")
+    _line(
         f"    no import_path: {_pick('downloaded_chapter_missing_import_path') + ghost}"
     )
-    print(f"    no imported_at: {_pick('downloaded_chapter_missing_imported_at')}")
-    print(f"    ghost (no file, no quality): {ghost}")
+    _line(f"    no imported_at: {_pick('downloaded_chapter_missing_imported_at')}")
+    _line(f"    ghost (no file, no quality): {ghost}")
 
     iq = by_code["import_queue_states"]
-    print("\n[5] IMPORT QUEUE STATES:")
+    _line("\n[5] IMPORT QUEUE STATES:")
     by_status = iq.detail.get("by_status", {})
     if not by_status:
-        print("    (empty)")
+        _line("    (empty)")
     for status, n in by_status.items():
-        print(f"    {status}: {n}")
+        _line(f"    {status}: {n}")
 
-    print(f"\n[6] STUCK GRABBED (>2 days): {_pick('stuck_grabbed_total')}")
-    print(f"\n[7] BLOCKLIST ENTRIES: {_pick('blocklist_size')}")
+    _line(f"\n[6] STUCK GRABBED (>2 days): {_pick('stuck_grabbed_total')}")
+    _line(f"\n[7] BLOCKLIST ENTRIES: {_pick('blocklist_size')}")
 
-    print("\n[8] Settings:")
+    _line("\n[8] Settings:")
     for f in findings:
         if f.code.startswith("setting_") or f.code in (
             "api_key_present",
@@ -435,26 +447,26 @@ def _print_legacy(findings: list[Finding]) -> None:
             if msg.startswith("api_key"):
                 # 'api_key: set' or the critical EMPTY message
                 if f.severity == "critical":
-                    print("    api_key: EMPTY - security risk")
+                    _line("    api_key: EMPTY - security risk")
                 else:
-                    print("    api_key: set")
+                    _line("    api_key: set")
             else:
-                print(f"    {msg}")
+                _line(f"    {msg}")
 
     n_ch = _pick("orphan_chapters")
     n_vol = _pick("orphan_volumes")
-    print(f"\n[9] ORPHANED CHAPTERS (volume_id points to missing volume): {n_ch}")
-    print(f"    ORPHANED VOLUMES (series_id points to missing series): {n_vol}")
+    _line(f"\n[9] ORPHANED CHAPTERS (volume_id points to missing volume): {n_ch}")
+    _line(f"    ORPHANED VOLUMES (series_id points to missing series): {n_vol}")
 
-    print("\n" + "=" * 60)
-    print("DONE")
+    _line("\n" + "=" * 60)
+    _line("DONE")
 
     crits = [f for f in findings if f.severity == "critical"]
     warns = [f for f in findings if f.severity == "warning"]
     if crits or warns:
-        print(f"\nSummary: {len(crits)} critical, {len(warns)} warning")
+        _line(f"\nSummary: {len(crits)} critical, {len(warns)} warning")
         for f in crits + warns:
-            print(f"  [{f.severity.upper():>8}] {f.code}: {f.message}")
+            _line(f"  [{f.severity.upper():>8}] {f.code}: {f.message}")
 
 
 def main(argv: list[str]) -> int:

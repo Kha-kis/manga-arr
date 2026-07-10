@@ -228,3 +228,17 @@ def test_main_exits_nonzero_on_critical(fresh_db):
         c.execute("UPDATE settings SET value='' WHERE key='api_key'")
     rc = verify_e2e.main(["verify_e2e.py", fresh_db])
     assert rc != 0
+
+
+def test_main_reports_missing_db(tmp_path, capsys):
+    """CLI must emit a readable critical finding when the DB path is absent."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "app"))
+    import verify_e2e
+
+    missing_db = tmp_path / "missing.db"
+    rc = verify_e2e.main(["verify_e2e.py", str(missing_db)])
+
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "db_missing" in captured.out
+    assert str(missing_db) in captured.out
