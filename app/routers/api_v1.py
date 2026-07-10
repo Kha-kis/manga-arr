@@ -16,6 +16,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from starlette.status import HTTP_404_NOT_FOUND
 
+from library_scan import scan_unmapped_root_folder
 from rename_plan import build_series_rename_preview
 from routers.system import APP_VERSION
 from shared import (
@@ -430,3 +431,14 @@ async def api_v1_rename_series_preview(series_id: int):
             status_code=HTTP_404_NOT_FOUND,
         )
     return JSONResponse(preview)
+
+
+@router.get("/api/v1/rootfolder/{root_folder_id}/unmappedfolders")
+async def api_v1_root_folder_unmapped(root_folder_id: int):
+    scan = scan_unmapped_root_folder(root_folder_id)
+    if scan is None:
+        return JSONResponse(
+            {"message": "Not Found", "description": "Root folder not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    return JSONResponse(scan)
