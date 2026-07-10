@@ -15,13 +15,14 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from starlette.status import HTTP_404_NOT_FOUND
+from starlette.status import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND
 
 from files import build_chapter_label
 from library_scan import adopt_unmapped_folder, scan_unmapped_root_folder
 from metadata import search_series
 from parsing import normalize
 from rename_plan import build_series_rename_preview, execute_series_rename
+from routers.history_ import mark_history_failed
 from routers.series_ import patch_series as _patch_series
 from routers.system import APP_VERSION, TASKS, TASK_STATE, run_command as _run_command
 from shared import (
@@ -819,6 +820,22 @@ async def api_v1_history(
             "records": records,
         }
     )
+
+
+@router.post("/api/v1/history/{history_id}/failed")
+async def api_v1_history_mark_failed(history_id: int):
+    result = mark_history_failed(history_id)
+    if result["status"] == "not_found":
+        return JSONResponse(
+            {"error": "history entry not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    if result["status"] == "not_grabbed":
+        return JSONResponse(
+            {"error": "history entry is not grabbed"},
+            status_code=HTTP_400_BAD_REQUEST,
+        )
+    return JSONResponse({"ok": True, "id": history_id})
 
 
 @router.get("/api/v1/wanted")

@@ -59,6 +59,37 @@ def env():
             " datetime('now', '-1 day'), 'keep')"
         )
         c.execute(
+            "INSERT INTO seen(torrent_url, torrent_name, series_id, volume_num,"
+            " grabbed_at, download_id)"
+            " VALUES('failed-release-url', 'Failed Release', 5, 3.0,"
+            " datetime('now'), 'fail-dl')"
+        )
+        c.execute(
+            "INSERT INTO volumes"
+            "(id, series_id, volume_num, status, grabbed_at, source_url,"
+            " torrent_name, indexer, protocol, client, download_id,"
+            " release_group)"
+            " VALUES(501, 5, 3.0, 'grabbed', datetime('now'),"
+            " 'failed-release-url', 'Failed Release', 'Nyaa', 'torrent',"
+            " 'qBittorrent', 'fail-dl', 'Group')"
+        )
+        c.execute(
+            "INSERT INTO history"
+            "(id, event_type, series_id, series_title, volume_label,"
+            " source_title, indexer, protocol, client, download_id,"
+            " size_bytes, release_group)"
+            " VALUES(701, 'grabbed', 5, 'S5', 'Vol 3',"
+            " 'Failed Release', 'Nyaa', 'torrent', 'qBittorrent',"
+            " 'fail-dl', 12345, 'Group')"
+        )
+        c.execute(
+            "INSERT INTO history"
+            "(id, event_type, series_id, series_title, volume_label,"
+            " source_title)"
+            " VALUES(702, 'import_failed', 5, 'S5', 'Vol 4',"
+            " 'Already Failed')"
+        )
+        c.execute(
             "INSERT INTO blocklist"
             "(id, series_id, torrent_url, torrent_name, reason)"
             " VALUES(601, 5, 'https://example.invalid/bad.torrent',"
@@ -184,7 +215,7 @@ def test_api_v1_command_cleanup_seen_mutates_stale_rows(env):
             row[0]
             for row in c.execute("SELECT torrent_url FROM seen ORDER BY torrent_url")
         ]
-    assert urls == ["recent"]
+    assert urls == ["failed-release-url", "recent"]
 
 
 def test_api_v1_command_rejects_unknown_command(env):
@@ -228,3 +259,77 @@ def test_api_v1_delete_blocklist_entry_returns_404_for_unknown_id(env):
     with sqlite3.connect(env) as c:
         remaining = c.execute("SELECT COUNT(*) FROM blocklist").fetchone()[0]
     assert remaining == 1
+
+
+def test_api_v1_history_failed_marks_grabbed_release_failed(env):
+    resp = _client().post(
+        "/api/v1/history/701/failed",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 701}
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        history = c.execute("SELECT event_type FROM history WHERE id=701").fetchone()
+        volume = c.execute(
+            "SELECT status, source_url, download_id, indexer, protocol,"
+            " client, release_group FROM volumes WHERE id=501"
+        ).fetchone()
+        seen_count = c.execute(
+            "SELECT COUNT(*) FROM seen WHERE download_id='fail-dl'"
+        ).fetchone()[0]
+        blocklist = c.execute(
+            "SELECT series_id, torrent_url, torrent_name, reason, indexer,"
+            " protocol, size_bytes FROM blocklist WHERE torrent_url='fail-dl'"
+        ).fetchone()
+
+    assert history["event_type"] == "grab_failed"
+    assert dict(volume) == {
+        "status": "wanted",
+        "source_url": None,
+        "download_id": None,
+        "indexer": None,
+        "protocol": None,
+        "client": None,
+        "release_group": None,
+    }
+    assert seen_count == 0
+    assert dict(blocklist) == {
+        "series_id": 5,
+        "torrent_url": "fail-dl",
+        "torrent_name": "Failed Release",
+        "reason": "Marked failed via history",
+        "indexer": "Nyaa",
+        "protocol": "torrent",
+        "size_bytes": 12345,
+    }
+
+
+def test_api_v1_history_failed_requires_api_key(env):
+    resp = _client().post("/api/v1/history/701/failed")
+    assert resp.status_code == 401
+
+
+def test_api_v1_history_failed_rejects_unknown_history_id(env):
+    resp = _client().post(
+        "/api/v1/history/99999/failed",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "history entry not found"
+
+
+def test_api_v1_history_failed_rejects_non_grabbed_history(env):
+    resp = _client().post(
+        "/api/v1/history/702/failed",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "history entry is not grabbed"
+
+    with sqlite3.connect(env) as c:
+        event_type = c.execute(
+            "SELECT event_type FROM history WHERE id=702"
+        ).fetchone()[0]
+    assert event_type == "import_failed"
