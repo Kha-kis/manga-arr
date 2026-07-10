@@ -35,6 +35,11 @@ from routers.import_ import (
     skip_import_queue_entry,
 )
 from routers.queue_ import dismiss_pending_release, reset_grabbed_volume
+from routers.settings_ import (
+    add_root_folder_entry,
+    delete_root_folder_entry,
+    set_default_root_folder_entry,
+)
 from routers.series_ import patch_series as _patch_series
 from routers.system import APP_VERSION, TASKS, TASK_STATE, run_command as _run_command
 from shared import (
@@ -354,6 +359,20 @@ def _optional_bool_query(value: str | None, name: str) -> bool | None:
     raise ValueError(f"{name} must be a boolean")
 
 
+def _json_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("1", "true", "yes", "on"):
+            return True
+        if normalized in ("0", "false", "no", "off"):
+            return False
+    return bool(value)
+
+
 @router.get("/api/v1/system/status")
 async def api_v1_system_status():
     return JSONResponse(
@@ -380,6 +399,53 @@ async def api_v1_root_folders():
         ).fetchall()
         payload = [_root_folder(row) for row in rows]
     return JSONResponse(payload)
+
+
+@router.post("/api/v1/rootfolder")
+async def api_v1_create_root_folder(request: Request):
+    data = await request.json()
+    path = str(data.get("path") or "").strip()
+    result = add_root_folder_entry(
+        path,
+        str(data.get("label") or data.get("name") or ""),
+        _json_bool(data.get("isDefault", data.get("is_default")), False),
+    )
+    if result["status"] == "invalid_path":
+        return JSONResponse(
+            {"error": "path is required"},
+            status_code=HTTP_400_BAD_REQUEST,
+        )
+    return JSONResponse(
+        {
+            "ok": True,
+            "status": result["status"],
+            "rootFolder": _root_folder(result["root_folder"]),
+        }
+    )
+
+
+@router.post("/api/v1/rootfolder/{root_folder_id}/default")
+async def api_v1_set_default_root_folder(root_folder_id: int):
+    result = set_default_root_folder_entry(root_folder_id)
+    if result["status"] == "not_found":
+        return JSONResponse(
+            {"error": "root folder not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    return JSONResponse(
+        {"ok": True, "rootFolder": _root_folder(result["root_folder"])}
+    )
+
+
+@router.delete("/api/v1/rootfolder/{root_folder_id}")
+async def api_v1_delete_root_folder(root_folder_id: int):
+    result = delete_root_folder_entry(root_folder_id)
+    if result["status"] == "not_found":
+        return JSONResponse(
+            {"error": "root folder not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    return JSONResponse({"ok": True, "id": root_folder_id})
 
 
 @router.get("/api/v1/qualityprofile")

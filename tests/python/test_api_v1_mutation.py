@@ -39,6 +39,15 @@ def env():
         c.execute("DELETE FROM seen")
         c.execute("DELETE FROM volumes")
         c.execute("DELETE FROM series")
+        c.execute("DELETE FROM root_folders")
+        c.execute(
+            "INSERT INTO root_folders(id, path, label, is_default)"
+            " VALUES(301, '/library/a', 'Library A', 1)"
+        )
+        c.execute(
+            "INSERT INTO root_folders(id, path, label, is_default)"
+            " VALUES(302, '/library/b', 'Library B', 0)"
+        )
         c.execute(
             "INSERT INTO series(id, title, search_pattern, edition_type,"
             " omnibus_preference, update_strategy, source_type,"
@@ -290,6 +299,117 @@ def test_api_v1_patch_series_requires_api_key(env):
         "/api/v1/series/5",
         json={"title": "no-auth"},
     )
+    assert resp.status_code == 401
+
+
+def test_api_v1_create_root_folder_adds_row_and_can_default(env):
+    resp = _client().post(
+        "/api/v1/rootfolder",
+        json={
+            "path": "/library/new-root/",
+            "label": "New Root",
+            "isDefault": True,
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["status"] == "created"
+    assert body["rootFolder"]["path"] == "/library/new-root"
+    assert body["rootFolder"]["label"] == "New Root"
+    assert body["rootFolder"]["isDefault"] is True
+
+    with sqlite3.connect(env) as c:
+        rows = c.execute(
+            "SELECT path, is_default FROM root_folders ORDER BY id"
+        ).fetchall()
+    assert rows == [
+        ("/library/a", 0),
+        ("/library/b", 0),
+        ("/library/new-root", 1),
+    ]
+
+
+def test_api_v1_create_root_folder_rejects_blank_path(env):
+    resp = _client().post(
+        "/api/v1/rootfolder",
+        json={"path": "   "},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "path is required"
+
+
+def test_api_v1_create_root_folder_requires_api_key(env):
+    resp = _client().post("/api/v1/rootfolder", json={"path": "/library/new"})
+    assert resp.status_code == 401
+
+
+def test_api_v1_set_default_root_folder_switches_default(env):
+    resp = _client().post(
+        "/api/v1/rootfolder/302/default",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["rootFolder"]["id"] == 302
+    assert body["rootFolder"]["isDefault"] is True
+
+    with sqlite3.connect(env) as c:
+        rows = c.execute(
+            "SELECT id, is_default FROM root_folders ORDER BY id"
+        ).fetchall()
+    assert rows == [(301, 0), (302, 1)]
+
+
+def test_api_v1_set_default_root_folder_rejects_unknown_id(env):
+    resp = _client().post(
+        "/api/v1/rootfolder/99999/default",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "root folder not found"
+
+    with sqlite3.connect(env) as c:
+        rows = c.execute(
+            "SELECT id, is_default FROM root_folders ORDER BY id"
+        ).fetchall()
+    assert rows == [(301, 1), (302, 0)]
+
+
+def test_api_v1_set_default_root_folder_requires_api_key(env):
+    resp = _client().post("/api/v1/rootfolder/302/default")
+    assert resp.status_code == 401
+
+
+def test_api_v1_delete_root_folder_removes_row_and_keeps_default(env):
+    resp = _client().delete(
+        "/api/v1/rootfolder/301",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 301}
+
+    with sqlite3.connect(env) as c:
+        rows = c.execute(
+            "SELECT id, is_default FROM root_folders ORDER BY id"
+        ).fetchall()
+    assert rows == [(302, 1)]
+
+
+def test_api_v1_delete_root_folder_rejects_unknown_id(env):
+    resp = _client().delete(
+        "/api/v1/rootfolder/99999",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "root folder not found"
+
+
+def test_api_v1_delete_root_folder_requires_api_key(env):
+    resp = _client().delete("/api/v1/rootfolder/301")
     assert resp.status_code == 401
 
 
