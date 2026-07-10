@@ -330,6 +330,17 @@ def _optional_payload_int(payload: dict, key: str) -> int | None:
     return value
 
 
+def _optional_bool_query(value: str | None, name: str) -> bool | None:
+    if value in (None, ""):
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in ("1", "true", "yes", "on"):
+        return True
+    if normalized in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(f"{name} must be a boolean")
+
+
 @router.get("/api/v1/system/status")
 async def api_v1_system_status():
     return JSONResponse(
@@ -435,21 +446,94 @@ async def api_v1_release_profiles():
 
 
 @router.get("/api/v1/series")
-async def api_v1_series():
+async def api_v1_series(
+    request: Request,
+    term: str = "",
+    monitored: str | None = None,
+    rootFolderId: int = 0,
+    qualityProfileId: int = 0,
+    languageProfileId: int = 0,
+    status: str = "",
+    tag: str = "",
+    includeDeleted: str | None = None,
+    sortKey: str = "title",
+    sortDirection: str = "asc",
+    page: int = 0,
+    pageSize: int = 0,
+):
+    try:
+        monitored_filter = _optional_bool_query(monitored, "monitored")
+        include_deleted = _optional_bool_query(includeDeleted, "includeDeleted") or False
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    where_parts: list[str] = []
+    params: list = []
+    if not include_deleted:
+        where_parts.append("s.deleted_at IS NULL")
+    if term:
+        like = f"%{term.strip()}%"
+        where_parts.append("(s.title LIKE ? OR s.search_pattern LIKE ?)")
+        params.extend([like, like])
+    if monitored_filter is not None:
+        where_parts.append("COALESCE(s.monitored, 1)=?")
+        params.append(1 if monitored_filter else 0)
+    if rootFolderId:
+        where_parts.append("s.root_folder_id=?")
+        params.append(rootFolderId)
+    if qualityProfileId:
+        where_parts.append("s.quality_profile_id=?")
+        params.append(qualityProfileId)
+    if languageProfileId:
+        where_parts.append("s.language_profile_id=?")
+        params.append(languageProfileId)
+    if status:
+        where_parts.append("s.status=?")
+        params.append(status)
+
+    sort_key = sortKey if sortKey in {"title", "added", "year", "id"} else "title"
+    sort_dir = "DESC" if sortDirection.lower() == "desc" else "ASC"
+    sort_sql = {
+        "title": f"s.title COLLATE NOCASE {sort_dir}, s.id ASC",
+        "added": f"s.added_at {sort_dir}, s.id ASC",
+        "year": f"s.pub_year {sort_dir}, s.title COLLATE NOCASE ASC",
+        "id": f"s.id {sort_dir}",
+    }[sort_key]
+    where = "WHERE " + " AND ".join(where_parts) if where_parts else ""
+
     with get_db() as db:
         rows = db.execute(
             _series_base_query()
-            + """
-            WHERE s.deleted_at IS NULL
+            + f"""
+            {where}
             GROUP BY s.id
-            ORDER BY s.title COLLATE NOCASE
-            """
+            ORDER BY {sort_sql}
+            """,
+            params,
         ).fetchall()
         payload = [
             _series_payload(db, row)
             for row in rows
         ]
-    return JSONResponse(payload)
+    if tag:
+        payload = [row for row in payload if tag in row["tags"]]
+    total = len(payload)
+    if pageSize:
+        page = max(page, 1)
+        page_size = max(min(pageSize, 250), 1)
+        offset = (page - 1) * page_size
+        payload = payload[offset:offset + page_size]
+    else:
+        page = 1
+        page_size = total
+    return JSONResponse(
+        payload,
+        headers={
+            "X-Total-Count": str(total),
+            "X-Page": str(page),
+            "X-Page-Size": str(page_size),
+        },
+    )
 
 
 @router.get("/api/v1/series/{series_id}")

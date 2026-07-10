@@ -64,9 +64,10 @@ Mangarr now has an initial `/api/v1/*` surface for external automation
 clients, including series list/detail, profiles, root folders, queue, history,
 wanted, cutoff-unmet, blocklist, commands, system status, series patching, and
 command execution. Profile/configuration read coverage includes quality,
-language, custom-format, and release-profile endpoints. Remaining API gaps
-are deeper compatibility, richer paging/filtering, and broader mutation
-coverage.
+language, custom-format, and release-profile endpoints. Series reads support
+common filters, sorting, and header-based paging. Remaining API gaps are
+deeper compatibility, richer filtering on other resources, and broader
+mutation coverage.
 
 Recommended scope:
 
