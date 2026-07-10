@@ -1654,6 +1654,417 @@ def test_api_v1_delete_delay_profile_rejects_unknown_id(env):
     assert resp.json()["error"] == "delay profile not found"
 
 
+def test_api_v1_create_import_list_adds_row(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO quality_profiles(id, name, qualities)"
+            " VALUES(1600, 'API Import Quality', '[\"cbz\"]')"
+        )
+
+    resp = _client().post(
+        "/api/v1/importlist",
+        json={
+            "name": "API Import List",
+            "implementation": "anilist_user",
+            "enable": False,
+            "qualityProfileId": 1600,
+            "rootFolderId": 302,
+            "monitorMode": "missing",
+            "settings": {"username": "vinland"},
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["status"] == "created"
+    assert body["importList"]["name"] == "API Import List"
+    assert body["importList"]["implementation"] == "anilist_user"
+    assert body["importList"]["enable"] is False
+    assert body["importList"]["qualityProfileId"] == 1600
+    assert body["importList"]["rootFolderId"] == 302
+    assert body["importList"]["monitorMode"] == "missing"
+    assert body["importList"]["settings"] == {"username": "vinland"}
+    list_id = body["importList"]["id"]
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT type, enabled, quality_profile_id, root_folder_id,"
+            " monitor_mode, settings FROM import_lists WHERE id=?",
+            (list_id,),
+        ).fetchone()
+    assert row["type"] == "anilist_user"
+    assert row["enabled"] == 0
+    assert row["quality_profile_id"] == 1600
+    assert row["root_folder_id"] == 302
+    assert row["monitor_mode"] == "missing"
+    assert json.loads(row["settings"]) == {"username": "vinland"}
+
+
+def test_api_v1_create_import_list_requires_api_key(env):
+    resp = _client().post(
+        "/api/v1/importlist",
+        json={"name": "No Auth", "implementation": "anilist_user"},
+    )
+    assert resp.status_code == 401
+
+
+def test_api_v1_create_import_list_rejects_unknown_root_folder(env):
+    resp = _client().post(
+        "/api/v1/importlist",
+        json={
+            "name": "Bad Root",
+            "implementation": "anilist_user",
+            "rootFolderId": 99999,
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "rootFolderId not found"
+
+    with sqlite3.connect(env) as c:
+        count = c.execute(
+            "SELECT COUNT(*) FROM import_lists WHERE name='Bad Root'"
+        ).fetchone()[0]
+    assert count == 0
+
+
+def test_api_v1_create_import_list_rejects_bad_settings(env):
+    resp = _client().post(
+        "/api/v1/importlist",
+        json={
+            "name": "Bad Settings",
+            "implementation": "anilist_user",
+            "settings": ["not", "an", "object"],
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "settings must be an object"
+
+
+def test_api_v1_update_import_list_updates_submitted_fields(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO quality_profiles(id, name, qualities)"
+            " VALUES(1610, 'Old Import Quality', '[\"cbz\"]')"
+        )
+        c.execute(
+            "INSERT INTO quality_profiles(id, name, qualities)"
+            " VALUES(1611, 'New Import Quality', '[\"epub\"]')"
+        )
+        c.execute(
+            "INSERT INTO import_lists"
+            "(id, name, type, enabled, quality_profile_id, root_folder_id,"
+            " monitor_mode, settings)"
+            " VALUES(1620, 'Old Import List', 'anilist_user', 1,"
+            " 1610, 301, 'all', '{\"username\":\"old\"}')"
+        )
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/importlist/1620",
+        json={
+            "name": "Updated Import List",
+            "implementation": "custom_rss",
+            "enable": False,
+            "qualityProfileId": 1611,
+            "rootFolderId": 302,
+            "monitorMode": "missing",
+            "settings": {"url": "https://example.invalid/feed.xml"},
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["importList"]["name"] == "Updated Import List"
+    assert body["importList"]["implementation"] == "custom_rss"
+    assert body["importList"]["enable"] is False
+    assert body["importList"]["qualityProfileId"] == 1611
+    assert body["importList"]["rootFolderId"] == 302
+    assert body["importList"]["monitorMode"] == "missing"
+    assert body["importList"]["settings"] == {
+        "url": "https://example.invalid/feed.xml"
+    }
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT name, type, enabled, quality_profile_id, root_folder_id,"
+            " monitor_mode, settings FROM import_lists WHERE id=1620"
+        ).fetchone()
+    assert row["name"] == "Updated Import List"
+    assert row["type"] == "custom_rss"
+    assert row["enabled"] == 0
+    assert row["quality_profile_id"] == 1611
+    assert row["root_folder_id"] == 302
+    assert row["monitor_mode"] == "missing"
+    assert json.loads(row["settings"]) == {
+        "url": "https://example.invalid/feed.xml"
+    }
+
+
+def test_api_v1_update_import_list_can_clear_optional_fks(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO quality_profiles(id, name, qualities)"
+            " VALUES(1630, 'Clear Import Quality', '[\"cbz\"]')"
+        )
+        c.execute(
+            "INSERT INTO import_lists"
+            "(id, name, type, quality_profile_id, root_folder_id, settings)"
+            " VALUES(1631, 'Clear Import List', 'anilist_user',"
+            " 1630, 301, '{}')"
+        )
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/importlist/1631",
+        json={"qualityProfileId": "", "rootFolderId": ""},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["importList"]["qualityProfileId"] is None
+    assert resp.json()["importList"]["rootFolderId"] is None
+
+    with sqlite3.connect(env) as c:
+        row = c.execute(
+            "SELECT quality_profile_id, root_folder_id"
+            " FROM import_lists WHERE id=1631"
+        ).fetchone()
+    assert row == (None, None)
+
+
+def test_api_v1_update_import_list_rejects_unknown_id(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/importlist/99999",
+        json={"name": "Missing"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "import list not found"
+
+
+def test_api_v1_sync_import_lists_schedules_background_task(env, monkeypatch):
+    import main
+
+    scheduled: list[str] = []
+
+    def fake_create_background_task(coro, name: str):
+        scheduled.append(name)
+        coro.close()
+
+    monkeypatch.setattr(main, "create_background_task", fake_create_background_task)
+
+    resp = _client().post(
+        "/api/v1/importlist/sync",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "ok": True,
+        "message": "Sync started in background",
+    }
+    assert scheduled == ["import_lists:sync_all"]
+
+
+def test_api_v1_sync_import_list_schedules_background_task(env, monkeypatch):
+    import main
+
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO import_lists(id, name, type, settings)"
+            " VALUES(1640, 'Sync Import List', 'anilist_user', '{}')"
+        )
+    scheduled: list[str] = []
+
+    def fake_create_background_task(coro, name: str):
+        scheduled.append(name)
+        coro.close()
+
+    monkeypatch.setattr(main, "create_background_task", fake_create_background_task)
+
+    resp = _client().post(
+        "/api/v1/importlist/1640/sync",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "ok": True,
+        "message": "Sync started for Sync Import List",
+    }
+    assert scheduled == ["import_lists:sync:1640"]
+
+
+def test_api_v1_sync_import_list_rejects_unknown_id(env):
+    resp = _client().post(
+        "/api/v1/importlist/99999/sync",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "import list not found"
+
+
+def test_api_v1_delete_import_list_removes_row(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO import_lists(id, name, type, settings)"
+            " VALUES(1650, 'Delete Import List', 'anilist_user', '{}')"
+        )
+
+    resp = _client().delete(
+        "/api/v1/importlist/1650",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 1650}
+
+    with sqlite3.connect(env) as c:
+        row = c.execute("SELECT 1 FROM import_lists WHERE id=1650").fetchone()
+    assert row is None
+
+
+def test_api_v1_delete_import_list_rejects_unknown_id(env):
+    resp = _client().delete(
+        "/api/v1/importlist/99999",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "import list not found"
+
+
+def test_api_v1_create_remote_path_mapping_adds_row(env):
+    resp = _client().post(
+        "/api/v1/downloadclient/remotepathmapping",
+        json={
+            "host": "qbittorrent",
+            "remotePath": "/remote/downloads",
+            "localPath": "/downloads",
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["status"] == "created"
+    assert body["remotePathMapping"]["host"] == "qbittorrent"
+    assert body["remotePathMapping"]["remotePath"] == "/remote/downloads"
+    assert body["remotePathMapping"]["localPath"] == "/downloads"
+    mapping_id = body["remotePathMapping"]["id"]
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT host, remote_path, local_path"
+            " FROM remote_path_mappings WHERE id=?",
+            (mapping_id,),
+        ).fetchone()
+    assert dict(row) == {
+        "host": "qbittorrent",
+        "remote_path": "/remote/downloads",
+        "local_path": "/downloads",
+    }
+
+
+def test_api_v1_create_remote_path_mapping_requires_api_key(env):
+    resp = _client().post(
+        "/api/v1/downloadclient/remotepathmapping",
+        json={"remotePath": "/remote", "localPath": "/local"},
+    )
+    assert resp.status_code == 401
+
+
+def test_api_v1_create_remote_path_mapping_rejects_missing_paths(env):
+    resp = _client().post(
+        "/api/v1/downloadclient/remotepathmapping",
+        json={"host": "qbittorrent", "localPath": "/downloads"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "remotePath is required"
+
+
+def test_api_v1_update_remote_path_mapping_updates_submitted_fields(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO remote_path_mappings"
+            "(id, host, remote_path, local_path)"
+            " VALUES(1660, 'qbittorrent', '/old-remote', '/old-local')"
+        )
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/downloadclient/remotepathmapping/1660",
+        json={
+            "host": "",
+            "remotePath": "/new-remote",
+            "localPath": "/new-local",
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["remotePathMapping"] == {
+        "id": 1660,
+        "host": "",
+        "remotePath": "/new-remote",
+        "localPath": "/new-local",
+    }
+
+    with sqlite3.connect(env) as c:
+        row = c.execute(
+            "SELECT host, remote_path, local_path"
+            " FROM remote_path_mappings WHERE id=1660"
+        ).fetchone()
+    assert row == ("", "/new-remote", "/new-local")
+
+
+def test_api_v1_update_remote_path_mapping_rejects_unknown_id(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/downloadclient/remotepathmapping/99999",
+        json={"remotePath": "/missing"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "remote path mapping not found"
+
+
+def test_api_v1_delete_remote_path_mapping_removes_row(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO remote_path_mappings"
+            "(id, host, remote_path, local_path)"
+            " VALUES(1670, 'qbittorrent', '/remote', '/local')"
+        )
+
+    resp = _client().delete(
+        "/api/v1/downloadclient/remotepathmapping/1670",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 1670}
+
+    with sqlite3.connect(env) as c:
+        row = c.execute(
+            "SELECT 1 FROM remote_path_mappings WHERE id=1670"
+        ).fetchone()
+    assert row is None
+
+
+def test_api_v1_delete_remote_path_mapping_rejects_unknown_id(env):
+    resp = _client().delete(
+        "/api/v1/downloadclient/remotepathmapping/99999",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "remote path mapping not found"
+
+
 def test_api_v1_create_import_list_exclusion_adds_row(env):
     resp = _client().post(
         "/api/v1/importlistexclusion",

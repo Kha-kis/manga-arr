@@ -33,6 +33,7 @@ from routers.history_ import (
     delete_history_entry,
     mark_history_failed,
 )
+from routers.import_lists import _sync_all_lists, _sync_list
 from routers.import_ import (
     clear_inactive_import_queue_entries,
     dismiss_import_queue_entry,
@@ -285,6 +286,14 @@ def _import_list(row) -> dict:
     }
 
 
+def _import_list_by_id(db, list_id: int) -> dict | None:
+    row = db.execute(
+        "SELECT * FROM import_lists WHERE id=?",
+        (list_id,),
+    ).fetchone()
+    return _import_list(row) if row else None
+
+
 def _import_list_exclusion(row) -> dict:
     return {
         "id": row["id"],
@@ -383,6 +392,14 @@ def _remote_path_mapping(row) -> dict:
         "remotePath": row["remote_path"],
         "localPath": row["local_path"],
     }
+
+
+def _remote_path_mapping_by_id(db, mapping_id: int) -> dict | None:
+    row = db.execute(
+        "SELECT * FROM remote_path_mappings WHERE id=?",
+        (mapping_id,),
+    ).fetchone()
+    return _remote_path_mapping(row) if row else None
 
 
 def _root_folder(row) -> dict:
@@ -647,6 +664,40 @@ def _payload_non_negative_alias(
 ) -> int:
     value = _optional_non_negative_int(payload, *keys)
     return default if value is None else value
+
+
+def _payload_optional_fk_alias(payload: dict, keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        if key not in payload:
+            continue
+        value = payload.get(key)
+        if value in (None, ""):
+            return None
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"{key} must be zero or a positive integer")
+        return value or None
+    return None
+
+
+def _payload_json_object(payload: dict, key: str, default: dict) -> str:
+    if key not in payload:
+        return json.dumps(default)
+    value = payload.get(key)
+    if value in (None, ""):
+        return json.dumps(default)
+    if isinstance(value, str):
+        value = from_json(value, None)
+    if not isinstance(value, dict):
+        raise ValueError(f"{key} must be an object")
+    return json.dumps(value)
+
+
+def _validate_optional_fk(db, table: str, value: int | None, label: str) -> None:
+    if value is None:
+        return
+    row = db.execute(f"SELECT 1 FROM {table} WHERE id=?", (value,)).fetchone()
+    if not row:
+        raise ValueError(f"{label} not found")
 
 
 def _payload_quality_list(payload: dict, key: str, default: list[str]) -> str:
@@ -1806,6 +1857,193 @@ async def api_v1_import_lists():
     return JSONResponse(payload)
 
 
+@router.post("/api/v1/importlist")
+async def api_v1_create_import_list(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+
+    name = _payload_str(payload, "name")
+    if not name:
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    implementation = _payload_str(payload, "implementation", "type")
+    if not implementation:
+        return JSONResponse({"error": "implementation is required"}, status_code=400)
+    try:
+        settings = _payload_json_object(payload, "settings", {})
+        quality_profile_id = _payload_optional_fk_alias(
+            payload, ("qualityProfileId", "quality_profile_id")
+        )
+        root_folder_id = _payload_optional_fk_alias(
+            payload, ("rootFolderId", "root_folder_id")
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    enabled = _payload_bool_alias(payload, ("enable", "enabled"), True)
+    monitor_mode = _payload_str(payload, "monitorMode", "monitor_mode") or "all"
+
+    try:
+        with get_db() as db:
+            _validate_optional_fk(
+                db, "quality_profiles", quality_profile_id, "qualityProfileId"
+            )
+            _validate_optional_fk(db, "root_folders", root_folder_id, "rootFolderId")
+            cur = db.execute(
+                "INSERT INTO import_lists"
+                "(name, type, enabled, quality_profile_id, root_folder_id,"
+                " monitor_mode, settings)"
+                " VALUES(?,?,?,?,?,?,?)",
+                (
+                    name,
+                    implementation,
+                    1 if enabled else 0,
+                    quality_profile_id,
+                    root_folder_id,
+                    monitor_mode,
+                    settings,
+                ),
+            )
+            import_list = _import_list_by_id(db, cur.lastrowid)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "status": "created", "importList": import_list})
+
+
+@router.post("/api/v1/importlist/sync")
+async def api_v1_sync_import_lists():
+    import main as _m
+
+    _m.create_background_task(_sync_all_lists(), name="import_lists:sync_all")
+    return JSONResponse({"ok": True, "message": "Sync started in background"})
+
+
+@router.put("/api/v1/importlist/{list_id}")
+@router.patch("/api/v1/importlist/{list_id}")
+async def api_v1_update_import_list(request: Request, list_id: int):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+
+    fields: list[str] = []
+    params: list = []
+    try:
+        if "name" in payload:
+            name = _payload_str(payload, "name")
+            if not name:
+                return JSONResponse({"error": "name is required"}, status_code=400)
+            fields.append("name=?")
+            params.append(name)
+        if "implementation" in payload or "type" in payload:
+            implementation = _payload_str(payload, "implementation", "type")
+            if not implementation:
+                return JSONResponse(
+                    {"error": "implementation is required"},
+                    status_code=400,
+                )
+            fields.append("type=?")
+            params.append(implementation)
+        if "enable" in payload or "enabled" in payload:
+            fields.append("enabled=?")
+            params.append(
+                1 if _payload_bool_alias(payload, ("enable", "enabled"), True) else 0
+            )
+        if "qualityProfileId" in payload or "quality_profile_id" in payload:
+            quality_profile_id = _payload_optional_fk_alias(
+                payload, ("qualityProfileId", "quality_profile_id")
+            )
+            fields.append("quality_profile_id=?")
+            params.append(quality_profile_id)
+        else:
+            quality_profile_id = None
+        if "rootFolderId" in payload or "root_folder_id" in payload:
+            root_folder_id = _payload_optional_fk_alias(
+                payload, ("rootFolderId", "root_folder_id")
+            )
+            fields.append("root_folder_id=?")
+            params.append(root_folder_id)
+        else:
+            root_folder_id = None
+        if "monitorMode" in payload or "monitor_mode" in payload:
+            fields.append("monitor_mode=?")
+            params.append(
+                _payload_str(payload, "monitorMode", "monitor_mode") or "all"
+            )
+        if "settings" in payload:
+            fields.append("settings=?")
+            params.append(_payload_json_object(payload, "settings", {}))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    try:
+        with get_db() as db:
+            existing = db.execute(
+                "SELECT 1 FROM import_lists WHERE id=?",
+                (list_id,),
+            ).fetchone()
+            if not existing:
+                return JSONResponse(
+                    {"error": "import list not found"},
+                    status_code=HTTP_404_NOT_FOUND,
+                )
+            if "qualityProfileId" in payload or "quality_profile_id" in payload:
+                _validate_optional_fk(
+                    db, "quality_profiles", quality_profile_id, "qualityProfileId"
+                )
+            if "rootFolderId" in payload or "root_folder_id" in payload:
+                _validate_optional_fk(db, "root_folders", root_folder_id, "rootFolderId")
+            if fields:
+                params.append(list_id)
+                db.execute(
+                    f"UPDATE import_lists SET {', '.join(fields)} WHERE id=?",
+                    params,
+                )
+            import_list = _import_list_by_id(db, list_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "importList": import_list})
+
+
+@router.post("/api/v1/importlist/{list_id}/sync")
+async def api_v1_sync_import_list(list_id: int):
+    with get_db() as db:
+        row = db.execute("SELECT * FROM import_lists WHERE id=?", (list_id,)).fetchone()
+        if not row:
+            return JSONResponse(
+                {"error": "import list not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        import_list = dict(row)
+    import main as _m
+
+    _m.create_background_task(_sync_list(import_list), name=f"import_lists:sync:{list_id}")
+    return JSONResponse({"ok": True, "message": f"Sync started for {import_list['name']}"})
+
+
+@router.delete("/api/v1/importlist/{list_id}")
+async def api_v1_delete_import_list(list_id: int):
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM import_lists WHERE id=?",
+            (list_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "import list not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        db.execute("DELETE FROM import_lists WHERE id=?", (list_id,))
+    return JSONResponse({"ok": True, "id": list_id})
+
+
 @router.get("/api/v1/importlistexclusion")
 async def api_v1_import_list_exclusions():
     with get_db() as db:
@@ -2006,6 +2244,102 @@ async def api_v1_remote_path_mappings():
         ).fetchall()
         payload = [_remote_path_mapping(row) for row in rows]
     return JSONResponse(payload)
+
+
+@router.post("/api/v1/downloadclient/remotepathmapping")
+async def api_v1_create_remote_path_mapping(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+
+    remote_path = _payload_str(payload, "remotePath", "remote_path")
+    local_path = _payload_str(payload, "localPath", "local_path")
+    if not remote_path:
+        return JSONResponse({"error": "remotePath is required"}, status_code=400)
+    if not local_path:
+        return JSONResponse({"error": "localPath is required"}, status_code=400)
+    host = _payload_str(payload, "host")
+
+    with get_db() as db:
+        cur = db.execute(
+            "INSERT INTO remote_path_mappings(host, remote_path, local_path)"
+            " VALUES(?,?,?)",
+            (host, remote_path, local_path),
+        )
+        mapping = _remote_path_mapping_by_id(db, cur.lastrowid)
+    return JSONResponse(
+        {"ok": True, "status": "created", "remotePathMapping": mapping}
+    )
+
+
+@router.put("/api/v1/downloadclient/remotepathmapping/{mapping_id}")
+@router.patch("/api/v1/downloadclient/remotepathmapping/{mapping_id}")
+async def api_v1_update_remote_path_mapping(request: Request, mapping_id: int):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+
+    fields: list[str] = []
+    params: list = []
+    if "host" in payload:
+        fields.append("host=?")
+        params.append(_payload_str(payload, "host"))
+    if "remotePath" in payload or "remote_path" in payload:
+        remote_path = _payload_str(payload, "remotePath", "remote_path")
+        if not remote_path:
+            return JSONResponse({"error": "remotePath is required"}, status_code=400)
+        fields.append("remote_path=?")
+        params.append(remote_path)
+    if "localPath" in payload or "local_path" in payload:
+        local_path = _payload_str(payload, "localPath", "local_path")
+        if not local_path:
+            return JSONResponse({"error": "localPath is required"}, status_code=400)
+        fields.append("local_path=?")
+        params.append(local_path)
+
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM remote_path_mappings WHERE id=?",
+            (mapping_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "remote path mapping not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        if fields:
+            params.append(mapping_id)
+            db.execute(
+                f"UPDATE remote_path_mappings SET {', '.join(fields)} WHERE id=?",
+                params,
+            )
+        mapping = _remote_path_mapping_by_id(db, mapping_id)
+    return JSONResponse({"ok": True, "remotePathMapping": mapping})
+
+
+@router.delete("/api/v1/downloadclient/remotepathmapping/{mapping_id}")
+async def api_v1_delete_remote_path_mapping(mapping_id: int):
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM remote_path_mappings WHERE id=?",
+            (mapping_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "remote path mapping not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        db.execute("DELETE FROM remote_path_mappings WHERE id=?", (mapping_id,))
+    return JSONResponse({"ok": True, "id": mapping_id})
 
 
 @router.get("/api/v1/tag")
