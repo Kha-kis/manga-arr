@@ -1327,7 +1327,7 @@ if (_packsTable && _packsToggleIcon) {
     <div class="modal-content">
       <div class="modal-header">
         <h6 class="modal-title"><i class="bi bi-tags me-2 text-ember"></i>Tags — {{ s['title'] }}</h6>
-        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <form method="POST" action="/series/{{ s['id'] }}/set-tags"
             hx-post="/series/{{ s['id'] }}/set-tags"
@@ -1359,7 +1359,7 @@ if (_packsTable && _packsToggleIcon) {
           <div class="fw-bold text-ember"><i class="bi bi-search me-2"></i>Interactive Search — <span id="srch-vol-label"></span></div>
           <div class="text-muted series-search-subtitle">Query: <span id="srch-query" class="text-main"></span></div>
         </div>
-        <button type="button" class="btn-close ms-3" data-bs-dismiss="modal"></button>
+        <button type="button" class="btn-close ms-3" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body p-0" id="srch-body"></div>
       <div class="modal-footer">

@@ -118,7 +118,7 @@
         <input type="hidden" name="settings_base" value='{{ conn.settings_display|tojson }}'>
         <div class="modal-header">
           <h6 class="modal-title text-ember">Edit: {{ conn.name }}</h6>
-          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
           <div class="row g-3 mb-3">
@@ -215,7 +215,7 @@
         <input type="hidden" name="settings_base" value='{{ notification_defaults_by_type.get("discord", {}) | tojson }}'>
         <div class="modal-header">
           <h6 class="modal-title text-ember"><i class="bi bi-plus-circle me-2"></i>Add Notification</h6>
-          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
           <div class="row g-3 mb-3">
