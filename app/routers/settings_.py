@@ -64,6 +64,12 @@ async def settings_page(request: Request, saved: str = ""):
 
     with get_db() as db:
         root_folders = _get_root_folders(db)
+        quality_profiles = db.execute(
+            "SELECT id, name, is_default FROM quality_profiles ORDER BY is_default DESC, name"
+        ).fetchall()
+        language_profiles = db.execute(
+            "SELECT id, name FROM language_profiles ORDER BY name"
+        ).fetchall()
         secret_health = get_secret_health_summary(db)
         first_run = _is_first_run(db)
     return templates.TemplateResponse(
@@ -73,6 +79,8 @@ async def settings_page(request: Request, saved: str = ""):
             "cfg": CONFIG,
             "saved": saved,
             "root_folders": root_folders,
+            "quality_profiles": quality_profiles,
+            "language_profiles": language_profiles,
             "secret_health": secret_health,
             "secret_key_source": "environment"
             if os.getenv("MANGARR_SECRET_KEY")

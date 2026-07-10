@@ -169,6 +169,19 @@ def test_unmapped_folder_scan_404s_for_unknown_root(env):
     assert resp.status_code == 404
 
 
+def test_settings_page_renders_unmapped_folder_adoption_controls(env):
+    resp = _client().get("/settings")
+    assert resp.status_code == 200, resp.text
+    html = resp.text
+    assert 'x-data="unmappedAdoption()"' in html
+    assert "Scan unmapped folders" in html
+    assert "Existing Library" in html
+    assert "adopt-quality-profile" in html
+    assert "adopt-language-profile" in html
+    assert "/api/v1/rootfolder/${rootId}/unmappedfolders" in html
+    assert "/api/v1/rootfolder/${this.activeRootId}/unmappedfolders/adopt" in html
+
+
 def test_unmapped_folder_adoption_creates_series_and_rescans_files(env):
     target = os.path.join(env["library_root"], "Unmapped A")
     resp = _client().post(

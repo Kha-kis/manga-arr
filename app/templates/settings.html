@@ -123,8 +123,11 @@
             hx-post="/settings" hx-swap="none" data-track-changes>
 
       <!-- Root Folders -->
-      <div class="panel">
-        <div class="panel-header"><i class="bi bi-folder2-open"></i>Root Folders</div>
+      <div class="panel" x-data="unmappedAdoption()">
+        <div class="panel-header">
+          <i class="bi bi-folder2-open"></i>Root Folders
+          <span class="settings-unmapped-status ms-auto" x-show="status" x-text="status" x-cloak></span>
+        </div>
         <div class="panel-body">
           {% if root_folders %}
           <div class="table-wrap mb-3">
@@ -149,6 +152,13 @@
                   {% endif %}
                 </td>
                 <td>
+                  <button type="button" class="btn-icon text-sky me-1"
+                          title="Scan unmapped folders" aria-label="Scan unmapped folders"
+                          @click="scan({{ rf['id'] }})"
+                          :disabled="loadingRootId === {{ rf['id'] }}">
+                    <i class="bi"
+                       :class="loadingRootId === {{ rf['id'] }} ? 'bi-arrow-repeat settings-spin' : 'bi-folder-symlink'"></i>
+                  </button>
                   <form method="POST" action="/settings/root-folders/{{ rf['id'] }}/delete"
                         data-confirm="Remove root folder &quot;{{ rf['path'] }}&quot;? Series assigned to this folder will become orphaned."
                         data-confirm-heading="Remove root folder" data-confirm-ok="Remove">
@@ -183,6 +193,114 @@
             </div>
             <button type="submit" class="btn btn-outline-ember btn-sm"><i class="bi bi-plus-lg me-1"></i>Add</button>
           </form>
+
+          <div class="settings-unmapped-section" x-show="scanResult" x-cloak>
+            <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+              <div class="settings-unmapped-title">
+                <i class="bi bi-folder-symlink text-sky me-1"></i>
+                Existing Library
+              </div>
+              <span class="badge-status badge-unknown" x-text="rootLabel"></span>
+              <span class="badge-status badge-grabbed" x-show="folders.length" x-text="folders.length + ' unmapped'"></span>
+              <span class="badge-status badge-downloaded" x-show="scanResult && scanResult.exists && !folders.length">Clean</span>
+              <a class="settings-unmapped-link ms-auto" x-show="lastSeriesUrl" :href="lastSeriesUrl" x-cloak>
+                <i class="bi bi-box-arrow-up-right me-1"></i>Open series
+              </a>
+            </div>
+
+            <template x-if="scanResult && !scanResult.exists">
+              <div class="settings-unmapped-empty">
+                <i class="bi bi-exclamation-triangle text-gold me-1"></i>
+                Root folder unavailable
+              </div>
+            </template>
+
+            <template x-if="scanResult && scanResult.exists && !folders.length">
+              <div class="settings-unmapped-empty">
+                <i class="bi bi-check-circle text-jade me-1"></i>
+                No unmapped folders
+              </div>
+            </template>
+
+            <div class="table-wrap mb-3" x-show="folders.length">
+              <table class="table table-sm mb-0">
+                <thead>
+                  <tr>
+                    <th>Folder</th>
+                    <th class="settings-col-status">Files</th>
+                    <th class="settings-col-status">Manga</th>
+                    <th class="settings-col-type">Size</th>
+                    <th class="settings-col-actions"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="folder in folders" :key="folder.path">
+                    <tr>
+                      <td>
+                        <div class="settings-base-cell fw-semibold" x-text="folder.name"></div>
+                        <div class="settings-mono-cell text-muted-3" x-text="folder.relativePath"></div>
+                      </td>
+                      <td x-text="folder.totalFileCount"></td>
+                      <td x-text="folder.mangaFileCount"></td>
+                      <td x-text="formatBytes(folder.sizeBytes)"></td>
+                      <td class="text-end">
+                        <button type="button" class="btn btn-outline-ember btn-sm"
+                                @click="select(folder)"
+                                :aria-label="'Adopt ' + folder.name">
+                          <i class="bi bi-plus-circle me-1"></i>Adopt
+                        </button>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="settings-unmapped-adopt" x-show="selected" x-cloak>
+              <div class="row g-3 align-items-end">
+                <div class="col-12 col-md-4">
+                  <label class="form-label" for="adopt-title">Title</label>
+                  <input type="text" id="adopt-title" class="form-control form-control-sm"
+                         x-model="title" :placeholder="selected ? selected.name : ''">
+                </div>
+                <div class="col-12 col-md-3">
+                  <label class="form-label" for="adopt-quality-profile">Quality Profile</label>
+                  <select id="adopt-quality-profile" class="form-select form-select-sm" x-model="qualityProfileId">
+                    <option value="">Default</option>
+                    {% for qp in quality_profiles %}
+                    <option value="{{ qp['id'] }}">{{ qp['name'] }}{% if qp['is_default'] %} · Default{% endif %}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="col-12 col-md-3">
+                  <label class="form-label" for="adopt-language-profile">Language Profile</label>
+                  <select id="adopt-language-profile" class="form-select form-select-sm" x-model="languageProfileId">
+                    <option value="">Default</option>
+                    {% for lp in language_profiles %}
+                    <option value="{{ lp['id'] }}">{{ lp['name'] }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="col-12 col-md-2">
+                  <div class="form-check mb-2">
+                    <input class="form-check-input" type="checkbox" id="adopt-monitored" x-model="monitored">
+                    <label class="form-check-label" for="adopt-monitored">Monitored</label>
+                  </div>
+                </div>
+              </div>
+              <div class="d-flex flex-wrap gap-2 align-items-center mt-3">
+                <button type="button" class="btn btn-ember btn-sm"
+                        @click="adopt()"
+                        :disabled="adopting || adopted || !selected || !title.trim()">
+                  <i class="bi" :class="adopting ? 'bi-arrow-repeat settings-spin' : 'bi-check-circle'"></i>
+                  <span class="ms-1" x-text="adopting ? 'Adopting' : 'Adopt Folder'"></span>
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" @click="clearSelection()">
+                  <i class="bi bi-x-lg me-1"></i>Cancel
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -688,8 +806,151 @@
 .settings-sidebar-item:hover { background: var(--ink-3); color: var(--text); }
 .settings-sidebar-item.active { background: var(--ember-bg); color: var(--ember); }
 .settings-sidebar-link.active { background: var(--ink-3); color: var(--text); }
+.settings-unmapped-status {
+  color: var(--text-3);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.settings-unmapped-section {
+  margin-top: var(--space-3xl);
+  padding-top: var(--space-xl);
+  border-top: var(--line-hairline) solid var(--edge);
+}
+.settings-unmapped-title {
+  color: var(--text);
+  font-size: var(--text-base);
+  font-weight: 700;
+}
+.settings-unmapped-empty {
+  color: var(--text-2);
+  font-size: var(--text-base);
+  padding: var(--space-xl);
+  border: var(--line-hairline) solid var(--edge);
+  border-radius: var(--radius-md);
+  background: var(--ink-3);
+}
+.settings-unmapped-adopt {
+  padding: var(--space-xl);
+  border: var(--line-hairline) solid var(--edge-2);
+  border-radius: var(--radius-md);
+  background: var(--ink-3);
+}
+.settings-unmapped-link {
+  color: var(--sky);
+  font-size: var(--text-base);
+  font-weight: 600;
+  text-decoration: none;
+}
+.settings-unmapped-link:hover { color: var(--text); }
+.settings-spin { animation: settings-spin 0.8s linear infinite; }
+@keyframes settings-spin { to { transform: rotate(1turn); } }
 </style>
 <script>
+function unmappedAdoption() {
+  return {
+    loadingRootId: null,
+    activeRootId: null,
+    scanResult: null,
+    selected: null,
+    title: '',
+    monitored: true,
+    qualityProfileId: '',
+    languageProfileId: '',
+    adopting: false,
+    adopted: false,
+    status: '',
+    lastSeriesUrl: '',
+    get folders() {
+      return this.scanResult ? (this.scanResult.unmappedFolders || []) : [];
+    },
+    get rootLabel() {
+      if (!this.scanResult) return '';
+      return this.scanResult.label || this.scanResult.path || `Root ${this.scanResult.rootFolderId}`;
+    },
+    formatBytes(n) {
+      if (!n) return '—';
+      let value = Number(n);
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let unit = 0;
+      while (value >= 1024 && unit < units.length - 1) {
+        value = value / 1024;
+        unit += 1;
+      }
+      return `${value.toFixed(value >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+    },
+    async scan(rootId) {
+      this.loadingRootId = rootId;
+      this.activeRootId = rootId;
+      this.status = 'Scanning';
+      this.lastSeriesUrl = '';
+      try {
+        const resp = await fetch(`/api/v1/rootfolder/${rootId}/unmappedfolders`);
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.description || data.error || data.message || 'Scan failed');
+        this.scanResult = data;
+        this.clearSelection();
+        this.status = data.exists ? `${data.unmappedFolderCount} unmapped` : 'Unavailable';
+      } catch (err) {
+        this.status = 'Scan failed';
+        showToast(err.message || 'Scan failed', 'error');
+      } finally {
+        this.loadingRootId = null;
+      }
+    },
+    select(folder) {
+      this.selected = folder;
+      this.title = folder.name || '';
+      this.monitored = true;
+      this.qualityProfileId = '';
+      this.languageProfileId = '';
+      this.adopted = false;
+      this.lastSeriesUrl = '';
+      this.status = `Selected ${folder.name}`;
+    },
+    clearSelection() {
+      this.selected = null;
+      this.title = '';
+      this.monitored = true;
+      this.qualityProfileId = '';
+      this.languageProfileId = '';
+      this.adopted = false;
+    },
+    async adopt() {
+      if (!this.selected || !this.title.trim() || this.adopting || this.adopted) return;
+      this.adopting = true;
+      this.status = 'Adopting';
+      const payload = {
+        path: this.selected.path,
+        title: this.title.trim(),
+        monitored: !!this.monitored
+      };
+      if (this.qualityProfileId) payload.qualityProfileId = Number(this.qualityProfileId);
+      if (this.languageProfileId) payload.languageProfileId = Number(this.languageProfileId);
+      try {
+        const resp = await fetch(`/api/v1/rootfolder/${this.activeRootId}/unmappedfolders/adopt`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.description || data.error || data.message || 'Adoption failed');
+        this.adopted = true;
+        this.lastSeriesUrl = `/series/${data.series.id}`;
+        this.status = `Adopted ${data.series.title}`;
+        showToast(`Adopted ${data.series.title}`, 'success');
+        await this.scan(this.activeRootId);
+        this.lastSeriesUrl = `/series/${data.series.id}`;
+        this.status = `Adopted ${data.series.title}`;
+      } catch (err) {
+        this.status = 'Adoption failed';
+        showToast(err.message || 'Adoption failed', 'error');
+      } finally {
+        this.adopting = false;
+      }
+    }
+  };
+}
+
 // ── Sidebar tab switching ─────────────────────────────────────────────────────
 const tabItems = document.querySelectorAll('[data-tab]');
 const panels   = {
