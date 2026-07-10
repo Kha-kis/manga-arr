@@ -17,6 +17,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.status import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND
 
+from routers.blocklist_ import clear_blocklist_entries
 from files import build_chapter_label
 from library_scan import adopt_unmapped_folder, scan_unmapped_root_folder
 from metadata import search_series
@@ -820,6 +821,12 @@ async def api_v1_blocklist():
             }
         )
     return JSONResponse(payload)
+
+
+@router.delete("/api/v1/blocklist")
+async def api_v1_clear_blocklist():
+    result = clear_blocklist_entries()
+    return JSONResponse({"ok": True, "deleted": result["deleted"]})
 
 
 @router.delete("/api/v1/blocklist/{blocklist_id}")
