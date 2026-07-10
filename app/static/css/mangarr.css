@@ -108,6 +108,13 @@
   --text-lg: 0.95rem;
   --text-xl: 1rem;
   --text-2xl: 1.1rem;
+  --text-display-sm: 1.25rem;
+  --text-display-md: 1.35rem;
+  --text-display-lg: 1.45rem;
+  --text-display-xl: 1.75rem;
+  --icon-size-lg: 2.5rem;
+  --icon-size-xl: 3rem;
+  --text-relative-half: 0.5em;
   /* ═══ TYPOGRAPHY — Fraunces (editorial) + system-ui (chrome) ═══ */
   --font-display: "Fraunces", Georgia, serif;
   --font-serif: "Fraunces", Georgia, serif;
@@ -167,7 +174,7 @@ body {
   );
   color: var(--text);
   font-family: var(--font-ui);
-  font-size: 14px;
+  font-size: var(--text-base);
   line-height: 1.5;
   min-height: 100dvh;
   overflow-x: hidden;
@@ -233,7 +240,7 @@ a:hover {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  font-size: 15px;
+  font-size: var(--text-lg);
   color: #fff;
   box-shadow: 0 0 16px var(--ember-soft);
 }
@@ -241,7 +248,7 @@ a:hover {
 .brand-name {
   font-family: var(--font-serif);
   font-style: italic;
-  font-size: 1.25rem;
+  font-size: var(--text-display-sm);
   color: var(--text);
   letter-spacing: 0.02em;
   white-space: nowrap;
@@ -467,7 +474,7 @@ a:hover {
 
 /* Page heading */
 .page-heading {
-  font-size: 1.35rem;
+  font-size: var(--text-display-md);
   font-weight: 700;
   color: var(--text);
   letter-spacing: -0.02em;
@@ -515,7 +522,7 @@ a:hover {
 }
 
 .stat-item .val {
-  font-size: 1.45rem;
+  font-size: var(--text-display-lg);
   font-weight: 800;
   color: var(--text);
   line-height: 1;
@@ -626,7 +633,7 @@ a:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 2.5rem;
+  font-size: var(--icon-size-lg);
   color: var(--text-3);
 }
 
@@ -725,7 +732,7 @@ a:hover {
 }
 
 .library-percent-unit {
-  font-size: 0.5em;
+  font-size: var(--text-relative-half);
   color: var(--text-3);
 }
 
@@ -1649,7 +1656,7 @@ a:hover {
 }
 
 .empty-state .empty-icon {
-  font-size: 3rem;
+  font-size: var(--icon-size-xl);
   margin-bottom: 16px;
   opacity: 0.4;
 }
@@ -3688,7 +3695,7 @@ body {
 }
 
 .queue-status-dot {
-  font-size: 0.5em;
+  font-size: var(--text-relative-half);
 }
 
 .badge-warning-soft {
@@ -4599,7 +4606,7 @@ body {
 }
 
 .recycle-empty-icon {
-  font-size: 3rem;
+  font-size: var(--icon-size-xl);
   color: var(--text-3);
   margin-bottom: 1rem;
   display: block;
