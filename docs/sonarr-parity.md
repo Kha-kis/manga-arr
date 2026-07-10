@@ -52,7 +52,7 @@ not exact TV terminology, exact Sonarr UI, or identical plugin breadth.
 | API authentication | `/api/*` API-key middleware, CSRF bypass for API-key clients, fail-closed tests | Covered |
 | API v1 seed | `/api/v1/system/status`, `/api/v1/series`, `/api/v1/series/{id}`, `/api/v1/queue`, `/api/v1/history`, `/api/v1/wanted`, `/api/v1/wanted/cutoff`, `/api/v1/blocklist`, `/api/v1/command`, `/api/v1/rootfolder`, `/api/v1/qualityprofile`, plus `PATCH /api/v1/series/{id}` and `POST /api/v1/command` with response-contract tests | Initial slice covered |
 | Rename/organize files | `/api/v1/rename/series/{id}/preview`, `POST /api/v1/rename/series/{id}`, and the series-page HTMX rename panel preview selected renames, report conflicts, rename safe files, and update import paths | Mostly covered |
-| Existing-library adoption | `/api/v1/rootfolder/{id}/unmappedfolders` reports root-folder child directories not mapped to known series; `POST /api/v1/rootfolder/{id}/unmappedfolders/adopt` creates a series for a selected folder and rescans existing files; Settings → Root Folders exposes scan/adopt controls | Mostly covered |
+| Existing-library adoption | `/api/v1/rootfolder/{id}/unmappedfolders` reports root-folder child directories not mapped to known series; `/api/v1/rootfolder/{id}/unmappedfolders/matches` proposes metadata matches; `POST /api/v1/rootfolder/{id}/unmappedfolders/adopt` creates a series for a selected folder and rescans existing files; Settings → Root Folders exposes scan/adopt controls | Mostly covered |
 | Import-list exclusions | `import_list_exclusions` table, `/import-lists` management UI, and sync-time skip logic by source/external ID or normalized title | Covered |
 | Minimum free-space guard | Media Management `minimum_free_space_mb` setting blocks imports before staging when the destination would fall below the configured reserve | Covered |
 
@@ -95,13 +95,15 @@ Recommended scope:
 Mangarr supports root folders, root-folder disk usage, manual import,
 unmapped-folder scans per root folder, an API endpoint that adopts a selected
 unmapped folder into a series before rescanning existing files, and Settings
-UI controls for scanning/adopting folders. It does not yet have Sonarr-style
-metadata match proposals with confidence scoring before adoption.
+UI controls for scanning/adopting folders. It also has a read-only metadata
+match proposal endpoint for unmapped folders. It does not yet show those
+metadata match proposals in the adoption UI.
 
 Recommended scope:
 
-1. Match folder names against existing metadata providers and show confidence.
-2. Add metadata-match selection before adoption for ambiguous folder names.
+1. Add metadata-match selection before adoption for ambiguous folder names.
+2. Carry selected metadata into adoption so title/IDs/cover/volume counts are
+   seeded from the chosen match.
 3. Keep ad-hoc download-folder manual import separate from existing organized
    library adoption.
 
@@ -191,8 +193,8 @@ Recommended scope:
    test without file I/O risk.
 2. Rename planner dry-run. This is the largest remaining user-facing Sonarr
    workflow gap and should start read-only.
-3. Existing-library metadata matching. Build on the current unmapped-folder
-   scan and adoption workflow.
+3. Existing-library metadata-match UI. Build on the current unmapped-folder
+   scan, match proposal endpoint, and adoption workflow.
 4. API mutation endpoints. Add after read endpoints and route contracts are
    stable.
 5. General settings polish: URL base/proxy docs, log-level controls, selected

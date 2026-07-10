@@ -220,6 +220,79 @@ def test_unmapped_folder_adoption_creates_series_and_rescans_files(env):
     assert names == ["Unmapped B"]
 
 
+def test_unmapped_folder_match_proposals_search_metadata(env, monkeypatch):
+    import routers.api_v1 as api_v1
+
+    async def fake_search(query):
+        assert query == "Unmapped A"
+        return [
+            {
+                "title": "Unmapped A",
+                "source": "anilist",
+                "anilist_id": 123,
+                "mal_id": 456,
+                "mu_id": None,
+                "cover_url": "https://example.invalid/cover.jpg",
+                "status": "FINISHED",
+                "volumes": 3,
+                "chapters": 24,
+                "pub_year": 2020,
+                "description": "Exact",
+            },
+            {
+                "title": "Different Manga",
+                "source": "mangaupdates",
+                "anilist_id": None,
+                "mal_id": None,
+                "mu_id": "789",
+                "cover_url": "",
+                "status": "RELEASING",
+                "volumes": 2,
+                "chapters": None,
+                "description": "Loose",
+            },
+        ], "anilist"
+
+    monkeypatch.setattr(api_v1, "search_series", fake_search)
+
+    target = os.path.join(env["library_root"], "Unmapped A")
+    resp = _client().get(
+        "/api/v1/rootfolder/1/unmappedfolders/matches",
+        params={"path": target},
+        headers={"X-Api-Key": _api_key(env["db_path"])},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["rootFolderId"] == 1
+    assert body["folder"]["name"] == "Unmapped A"
+    assert body["query"] == "Unmapped A"
+    assert body["source"] == "anilist"
+    assert body["matches"][0]["title"] == "Unmapped A"
+    assert body["matches"][0]["confidence"] == 100
+    assert body["matches"][0]["anilistId"] == 123
+    assert body["matches"][0]["malId"] == 456
+    assert body["matches"][1]["title"] == "Different Manga"
+    assert body["matches"][1]["mangaUpdatesId"] == "789"
+    assert body["matches"][0]["confidence"] >= body["matches"][1]["confidence"]
+
+
+def test_unmapped_folder_match_proposals_reject_non_unmapped_path(env, monkeypatch):
+    import routers.api_v1 as api_v1
+
+    async def should_not_search(_query):
+        raise AssertionError("metadata search should not run")
+
+    monkeypatch.setattr(api_v1, "search_series", should_not_search)
+
+    resp = _client().get(
+        "/api/v1/rootfolder/1/unmappedfolders/matches",
+        params={"path": os.path.join(env["library_root"], "Known Manga")},
+        headers={"X-Api-Key": _api_key(env["db_path"])},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "path is not an unmapped folder"
+
+
 def test_unmapped_folder_adoption_rejects_already_mapped_path(env):
     before = _series_count(env["db_path"])
     resp = _client().post(

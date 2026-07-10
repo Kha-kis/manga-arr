@@ -6,6 +6,7 @@ workflow-specific `/api/*` actions.
 """
 from __future__ import annotations
 
+import difflib
 import os
 import platform
 import re
@@ -18,6 +19,8 @@ from starlette.status import HTTP_404_NOT_FOUND
 
 from files import build_chapter_label
 from library_scan import adopt_unmapped_folder, scan_unmapped_root_folder
+from metadata import search_series
+from parsing import normalize
 from rename_plan import build_series_rename_preview, execute_series_rename
 from routers.series_ import patch_series as _patch_series
 from routers.system import APP_VERSION, TASKS, TASK_STATE, run_command as _run_command
@@ -245,6 +248,40 @@ def _optional_id_set(payload: dict, key: str) -> set[int] | None:
             raise ValueError(f"{key} must be a list of integer IDs")
         ids.add(item)
     return ids
+
+
+def _norm_fs_path(path: str) -> str:
+    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
+def _match_confidence(query: str, title: str) -> int:
+    q = normalize(query)
+    t = normalize(title)
+    if not q or not t:
+        return 0
+    if q == t:
+        return 100
+    if q in t or t in q:
+        return 86
+    return int(round(difflib.SequenceMatcher(None, q, t).ratio() * 100))
+
+
+def _metadata_match_payload(query: str, result: dict) -> dict:
+    title = result.get("title") or ""
+    return {
+        "title": title,
+        "source": result.get("source") or "",
+        "confidence": _match_confidence(query, title),
+        "anilistId": result.get("anilist_id"),
+        "mangaUpdatesId": result.get("mu_id"),
+        "malId": result.get("mal_id"),
+        "coverUrl": result.get("cover_url") or "",
+        "status": result.get("status") or "",
+        "volumes": result.get("volumes"),
+        "chapters": result.get("chapters"),
+        "year": result.get("pub_year"),
+        "description": result.get("description") or "",
+    }
 
 
 @router.get("/api/v1/system/status")
@@ -715,6 +752,49 @@ async def api_v1_root_folder_unmapped(root_folder_id: int):
             status_code=HTTP_404_NOT_FOUND,
         )
     return JSONResponse(scan)
+
+
+@router.get("/api/v1/rootfolder/{root_folder_id}/unmappedfolders/matches")
+async def api_v1_root_folder_unmapped_matches(root_folder_id: int, path: str = ""):
+    folder_path = (path or "").strip()
+    if not folder_path:
+        return JSONResponse({"error": "path is required"}, status_code=400)
+
+    scan = scan_unmapped_root_folder(root_folder_id)
+    if scan is None:
+        return JSONResponse(
+            {"message": "Not Found", "description": "Root folder not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+
+    requested = _norm_fs_path(folder_path)
+    folder = None
+    for item in scan["unmappedFolders"]:
+        if _norm_fs_path(item["path"]) == requested:
+            folder = item
+            break
+    if folder is None:
+        return JSONResponse(
+            {
+                "error": "path is not an unmapped folder",
+                "description": "Requested path is not in the current unmapped-folder scan",
+            },
+            status_code=400,
+        )
+
+    query = folder["name"]
+    results, source = await search_series(query)
+    matches = [_metadata_match_payload(query, item) for item in results]
+    matches.sort(key=lambda item: item["confidence"], reverse=True)
+    return JSONResponse(
+        {
+            "rootFolderId": scan["rootFolderId"],
+            "folder": folder,
+            "query": query,
+            "source": source,
+            "matches": matches,
+        }
+    )
 
 
 @router.post("/api/v1/rootfolder/{root_folder_id}/unmappedfolders/adopt")
