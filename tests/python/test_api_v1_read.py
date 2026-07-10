@@ -37,6 +37,8 @@ def env():
         c.execute("DELETE FROM import_queue")
         c.execute("DELETE FROM pending_releases")
         c.execute("DELETE FROM history")
+        c.execute("DELETE FROM blocklist")
+        c.execute("DELETE FROM chapters")
         c.execute("DELETE FROM volumes")
         c.execute("DELETE FROM series_tags")
         c.execute("DELETE FROM series")
@@ -91,6 +93,20 @@ def env():
             " 'qBittorrent', 3000)"
         )
         c.execute(
+            "INSERT INTO volumes"
+            "(id, series_id, volume_num, status, monitored, quality,"
+            " import_path, grabbed_at)"
+            " VALUES(104, 5, 4.0, 'downloaded', 1, 'pdf',"
+            " '/library/Vinland Saga v04.pdf', '2026-01-02T00:00:00Z')"
+        )
+        c.execute(
+            "INSERT INTO chapters"
+            "(id, series_id, volume_id, chapter_num, title, status,"
+            " monitored, quality, import_path)"
+            " VALUES(501, 5, 101, 1.0, 'Somewhere Not Here',"
+            " 'downloaded', 1, 'cbz', '/library/Vinland Saga c001.cbz')"
+        )
+        c.execute(
             "INSERT INTO import_queue"
             "(id, series_id, download_id, torrent_name, volume_num, src_dir, status)"
             " VALUES(201, 5, 'import-1', 'Vinland Saga v02', 2.0,"
@@ -110,6 +126,14 @@ def env():
             " VALUES(401, 'grabbed', 5, 'Vinland Saga', 'Vol 3',"
             " 'Vinland Saga v03', 'Nyaa', 'torrent', 'qBittorrent',"
             " 'abc123', 3000, 'Group', '{\"score\": 10}')"
+        )
+        c.execute(
+            "INSERT INTO blocklist"
+            "(id, series_id, torrent_url, torrent_name, reason, indexer,"
+            " protocol, size_bytes, added_at)"
+            " VALUES(601, 5, 'https://example.invalid/bad.torrent',"
+            " 'Bad Release', 'Manual', 'Nyaa', 'torrent', 1234,"
+            " '2026-01-03T00:00:00+00:00')"
         )
 
     try:
@@ -196,8 +220,8 @@ def test_api_v1_profiles_roots_and_series_contract(env):
     assert item["qualityProfileName"] == "Best Available"
     assert item["rootFolderId"] == 1
     assert item["tags"] == ["favorite", "owned"]
-    assert item["statistics"]["volumeCount"] == 3
-    assert item["statistics"]["volumeFileCount"] == 1
+    assert item["statistics"]["volumeCount"] == 4
+    assert item["statistics"]["volumeFileCount"] == 2
     assert item["statistics"]["wantedCount"] == 1
     assert item["statistics"]["grabbedCount"] == 1
 
@@ -231,5 +255,67 @@ def test_api_v1_queue_history_and_wanted_contract(env):
             "volumeLabel": "Vol 2",
             "monitored": True,
             "status": "wanted",
+        }
+    ]
+
+
+def test_api_v1_series_detail_blocklist_commands_and_cutoff(env):
+    client = _client()
+    headers = {"X-Api-Key": _api_key(env)}
+
+    detail = client.get("/api/v1/series/5", headers=headers).json()
+    assert detail["id"] == 5
+    assert [v["id"] for v in detail["volumes"]] == [101, 102, 103, 104]
+    assert detail["volumes"][0]["label"] == "Vol 1"
+    assert detail["volumes"][0]["quality"] == "cbz"
+    assert detail["chapters"] == [
+        {
+            "id": 501,
+            "seriesId": 5,
+            "volumeId": 101,
+            "chapterNumber": 1.0,
+            "chapterRangeEnd": None,
+            "label": "Ch.001",
+            "title": "Somewhere Not Here",
+            "status": "downloaded",
+            "monitored": True,
+            "quality": "cbz",
+            "size": 0,
+            "sourceTitle": None,
+            "indexer": None,
+            "protocol": None,
+            "downloadClient": None,
+            "downloadId": None,
+            "importPath": "/library/Vinland Saga c001.cbz",
+            "grabbedAt": None,
+            "importedAt": None,
+        }
+    ]
+    missing = client.get("/api/v1/series/999", headers=headers)
+    assert missing.status_code == 404
+
+    blocklist = client.get("/api/v1/blocklist", headers=headers).json()
+    assert blocklist[0]["id"] == 601
+    assert blocklist[0]["seriesTitle"] == "Vinland Saga"
+    assert blocklist[0]["sourceTitle"] == "Bad Release"
+    assert blocklist[0]["expiresAt"].startswith("2026-04-03")
+
+    commands = client.get("/api/v1/command", headers=headers).json()
+    assert {cmd["name"] for cmd in commands} >= {"RssSyncAll", "CheckDownloads"}
+    assert all("manual" in cmd and "displayName" in cmd for cmd in commands)
+
+    cutoff = client.get("/api/v1/wanted/cutoff", headers=headers).json()
+    assert cutoff == [
+        {
+            "id": 104,
+            "seriesId": 5,
+            "seriesTitle": "Vinland Saga",
+            "volumeNumber": 4.0,
+            "volumeLabel": "Vol 4",
+            "currentQuality": "pdf",
+            "cutoff": "cbz",
+            "qualityCutoffSource": "profile",
+            "importPath": "/library/Vinland Saga v04.pdf",
+            "grabbedAt": "2026-01-02T00:00:00Z",
         }
     ]

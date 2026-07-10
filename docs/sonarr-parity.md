@@ -50,7 +50,7 @@ not exact TV terminology, exact Sonarr UI, or identical plugin breadth.
 | Root-folder free-space display | `/system/status` disk-space panel, `/stats` disk usage summary | Covered |
 | Health and maintenance | `/health`, recycle bin, metadata health/reconcile tools, API key regeneration | Covered |
 | API authentication | `/api/*` API-key middleware, CSRF bypass for API-key clients, fail-closed tests | Covered |
-| Read-only API v1 seed | `/api/v1/system/status`, `/api/v1/series`, `/api/v1/queue`, `/api/v1/history`, `/api/v1/wanted`, `/api/v1/rootfolder`, `/api/v1/qualityprofile` with response-contract tests | Initial slice covered |
+| Read-only API v1 seed | `/api/v1/system/status`, `/api/v1/series`, `/api/v1/series/{id}`, `/api/v1/queue`, `/api/v1/history`, `/api/v1/wanted`, `/api/v1/wanted/cutoff`, `/api/v1/blocklist`, `/api/v1/command`, `/api/v1/rootfolder`, `/api/v1/qualityprofile` with response-contract tests | Initial slice covered |
 | Rename planner dry run | `/api/v1/rename/series/{id}/preview` reports old/new paths, conflicts, missing sources, and unchanged rows without filesystem mutation | Backend seed covered |
 | Existing-library discovery seed | `/api/v1/rootfolder/{id}/unmappedfolders` reports root-folder child directories not mapped to known series | Backend seed covered |
 | Import-list exclusions | `import_list_exclusions` table, `/import-lists` management UI, and sync-time skip logic by source/external ID or normalized title | Covered |
@@ -60,15 +60,16 @@ not exact TV terminology, exact Sonarr UI, or identical plugin breadth.
 ### 1. Sonarr-Compatible REST API Coverage
 
 Mangarr now has an initial read-only `/api/v1/*` surface for external
-automation clients. Remaining API gaps are breadth and deeper compatibility:
-detail endpoints, blocklist, commands, cutoff-unmet, richer paging/filtering,
-and mutation endpoints are still incomplete compared with Sonarr's API.
+automation clients, including series list/detail, profiles, root folders,
+queue, history, wanted, cutoff-unmet, blocklist, commands, and system status.
+Remaining API gaps are deeper compatibility, richer paging/filtering, and
+mutation endpoints.
 
 Recommended scope:
 
-1. Extend the read-only API layer with detail endpoints, cutoff-unmet,
-   blocklist, commands, and richer filters/paging.
-2. Keep response-contract tests ahead of mutations.
+1. Extend the read API with richer filters/paging and any integration-needed
+   detail fields.
+2. Add mutation endpoints behind response-contract tests.
 3. Keep the existing `X-Api-Key` behavior and `/api` CSRF bypass.
 4. Treat exact Sonarr field names as compatibility affordances, not a reason
    to leak TV-specific concepts into the manga domain.
