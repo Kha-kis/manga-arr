@@ -407,6 +407,116 @@ def test_api_v1_diskspace_lists_root_folder_usage(env):
     assert archive["freeSpace"] is None
 
 
+def test_api_v1_host_config_contract(env):
+    import main
+
+    with sqlite3.connect(env) as c:
+        for key, value in [
+            ("instance_name", "Mangarr Test"),
+            ("url_base", "/mangarr"),
+            ("log_level", "DEBUG"),
+            ("backup_folder", "/custom/backups"),
+            ("backup_interval_days", "14"),
+            ("backup_retention", "5"),
+            ("ui_date_format", "absolute"),
+            ("blocklist_ttl_days", "180"),
+            ("recycle_bin_retention_days", "45"),
+            ("recycle_bin_remove_files", "true"),
+        ]:
+            c.execute(
+                "INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
+                (key, value),
+            )
+    main.load_config()
+
+    resp = _client().get(
+        "/api/v1/config/host",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "instanceName": "Mangarr Test",
+        "urlBase": "/mangarr",
+        "logLevel": "DEBUG",
+        "backupFolder": "/custom/backups",
+        "backupIntervalDays": 14,
+        "backupRetention": 5,
+        "uiDateFormat": "absolute",
+        "blocklistTtlDays": 180,
+        "recycleBinRetentionDays": 45,
+        "recycleBinRemoveFiles": True,
+    }
+
+
+def test_api_v1_media_management_config_contract(env):
+    import main
+
+    with sqlite3.connect(env) as c:
+        for key, value in [
+            ("torrent_save_path", "/downloads/manga"),
+            ("import_mode", "copy"),
+            ("remove_completed", "true"),
+            ("minimum_free_space_mb", "2048"),
+            ("file_format", "{Series Title} v{Volume:02d}"),
+            ("chapter_format", "{Series Title} c{Chapter:04d}"),
+            ("folder_format", "{Series Title} ({Year})"),
+            ("quality_cutoff", "cbz"),
+            ("propers_and_repacks", "do_not_upgrade"),
+        ]:
+            c.execute(
+                "INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
+                (key, value),
+            )
+    main.load_config()
+
+    resp = _client().get(
+        "/api/v1/config/mediamanagement",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "torrentSavePath": "/downloads/manga",
+        "importMode": "copy",
+        "removeCompleted": True,
+        "minimumFreeSpaceMb": 2048,
+        "fileFormat": "{Series Title} v{Volume:02d}",
+        "chapterFormat": "{Series Title} c{Chapter:04d}",
+        "folderFormat": "{Series Title} ({Year})",
+        "qualityCutoff": "cbz",
+        "propersAndRepacks": "do_not_upgrade",
+    }
+
+
+def test_api_v1_config_numeric_fields_have_safe_defaults(env):
+    import main
+
+    with sqlite3.connect(env) as c:
+        for key, value in [
+            ("backup_interval_days", "not-an-int"),
+            ("backup_retention", ""),
+            ("blocklist_ttl_days", "not-an-int"),
+            ("recycle_bin_retention_days", "not-an-int"),
+            ("minimum_free_space_mb", "not-an-int"),
+        ]:
+            c.execute(
+                "INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
+                (key, value),
+            )
+    main.load_config()
+    headers = {"X-Api-Key": _api_key(env)}
+
+    host = _client().get("/api/v1/config/host", headers=headers)
+    assert host.status_code == 200, host.text
+    assert host.json()["backupIntervalDays"] == 7
+    assert host.json()["backupRetention"] == 10
+    assert host.json()["blocklistTtlDays"] == 90
+    assert host.json()["recycleBinRetentionDays"] == 30
+
+    media = _client().get("/api/v1/config/mediamanagement", headers=headers)
+    assert media.status_code == 200, media.text
+    assert media.json()["minimumFreeSpaceMb"] == 0
+
+
 def test_api_v1_system_tasks_include_schedule_state(env, monkeypatch):
     import routers.system as system_router
 

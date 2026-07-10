@@ -1221,6 +1221,13 @@ def _json_bool(value, default: bool = False) -> bool:
     return bool(value)
 
 
+def _int_cfg(name: str, default: int) -> int:
+    try:
+        return int(str(get_cfg(name, str(default)) or default))
+    except (TypeError, ValueError):
+        return default
+
+
 @router.get("/api/v1/system/status")
 async def api_v1_system_status():
     return JSONResponse(
@@ -1288,6 +1295,45 @@ async def api_v1_disk_space():
         )
         payload.append(entry)
     return JSONResponse(payload)
+
+
+@router.get("/api/v1/config/host")
+async def api_v1_config_host():
+    return JSONResponse(
+        {
+            "instanceName": get_cfg("instance_name", "Mangarr") or "Mangarr",
+            "urlBase": get_cfg("url_base", ""),
+            "logLevel": get_cfg("log_level", "INFO"),
+            "backupFolder": get_cfg("backup_folder", "/config/backups/"),
+            "backupIntervalDays": _int_cfg("backup_interval_days", 7),
+            "backupRetention": _int_cfg("backup_retention", 10),
+            "uiDateFormat": get_cfg("ui_date_format", "relative"),
+            "blocklistTtlDays": _int_cfg("blocklist_ttl_days", 90),
+            "recycleBinRetentionDays": _int_cfg("recycle_bin_retention_days", 30),
+            "recycleBinRemoveFiles": _json_bool(
+                get_cfg("recycle_bin_remove_files", "false")
+            ),
+        }
+    )
+
+
+@router.get("/api/v1/config/mediamanagement")
+async def api_v1_config_media_management():
+    return JSONResponse(
+        {
+            "torrentSavePath": get_cfg("torrent_save_path", ""),
+            "importMode": get_cfg("import_mode", "hardlink"),
+            "removeCompleted": _json_bool(get_cfg("remove_completed", "false")),
+            "minimumFreeSpaceMb": _int_cfg("minimum_free_space_mb", 0),
+            "fileFormat": get_cfg("file_format", ""),
+            "chapterFormat": get_cfg("chapter_format", ""),
+            "folderFormat": get_cfg("folder_format", ""),
+            "qualityCutoff": get_cfg("quality_cutoff", ""),
+            "propersAndRepacks": get_cfg(
+                "propers_and_repacks", "prefer_and_upgrade"
+            ),
+        }
+    )
 
 
 @router.get("/api/v1/system/backup")
