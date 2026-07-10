@@ -110,15 +110,13 @@ unmapped folder into a series before rescanning existing files, and Settings
 UI controls for scanning, matching, and adopting folders. Selected metadata
 can seed search pattern, external IDs, cover, status, description, counts, and
 year. Match proposals default to the folder name and can be rerun with a custom
-metadata search query for ambiguous or abbreviated folders. The remaining gap is
-folder rename/custom path handling when the preferred metadata title does not
-match the existing folder name.
+metadata search query for ambiguous or abbreviated folders. Adopted folders are
+pinned to their existing library folder leaf, so the series title can differ
+from the on-disk folder without breaking rescans or imports.
 
 Recommended scope:
 
-1. Design explicit folder rename/custom-path handling for cases where the
-   preferred metadata title differs from the existing folder name.
-2. Keep ad-hoc download-folder manual import separate from existing organized
+1. Keep ad-hoc download-folder manual import separate from existing organized
    library adoption.
 
 ### 4. Backup Restore Workflow

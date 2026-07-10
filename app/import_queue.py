@@ -11,7 +11,6 @@ from files import (
     safe_join_under,
     sanitize_filename,
 )
-from helpers import _resolve_series_dest_root
 from parsing import (
     _parse_vol_suffix,
     detect_pack_type,
@@ -25,6 +24,7 @@ from parsing import (
 from shared import get_cfg, get_db
 from comicinfo import read_comic_info
 from events import add_history, log_event
+from rescan import _series_library_dir
 
 
 def _queue_import(
@@ -90,13 +90,6 @@ def _queue_import(
         )
         return None, False
 
-    rf = (
-        db.execute(
-            "SELECT path FROM root_folders WHERE id=?", (s["root_folder_id"],)
-        ).fetchone()
-        if s["root_folder_id"]
-        else None
-    )
     cvm: dict = json.loads(s["chapter_vol_map"]) if s["chapter_vol_map"] else {}
 
     if os.path.isdir(content_path):
@@ -149,9 +142,16 @@ def _queue_import(
         )
         return None, False
 
-    dest_root = _resolve_series_dest_root(db, s["root_folder_id"], rf)
-    safe_dir = sanitize_filename(s["title"] or "Unknown")
-    dst_dir = os.path.join(dest_root, safe_dir)
+    dst_dir = _series_library_dir(db, series_id)
+    if not dst_dir:
+        log_event(
+            "error",
+            f"Import queue: cannot resolve destination folder for {torrent_name}",
+            series_id,
+            db=db,
+            dedup=True,
+        )
+        return None, False
 
     _chap_stub = db.execute(
         "SELECT id FROM volumes WHERE series_id=? AND download_id=?"

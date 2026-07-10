@@ -191,7 +191,8 @@ def adopt_unmapped_folder(
                 "Requested path is already assigned to a series",
             )
 
-        series_title = (title or os.path.basename(requested_path)).strip()
+        folder_name = os.path.basename(requested_path)
+        series_title = (title or folder_name).strip()
         if not series_title:
             return AdoptUnmappedFolderResult(False, 400, "title is required")
         search_pattern = (metadata_title or series_title).strip() or series_title
@@ -221,9 +222,9 @@ def adopt_unmapped_folder(
         cur = db.execute(
             "INSERT INTO series(title, search_pattern, anilist_id, mal_id, mu_id,"
             " cover_url, status, description, total_volumes, total_chapters,"
-            " root_folder_id, pub_year, enabled, monitored, monitor_mode,"
+            " root_folder_id, folder_name, pub_year, enabled, monitored, monitor_mode,"
             " quality_profile_id, language_profile_id, vol_count_source)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 series_title,
                 search_pattern,
@@ -236,6 +237,7 @@ def adopt_unmapped_folder(
                 total_volumes,
                 total_chapters,
                 root_folder_id,
+                folder_name,
                 pub_year,
                 1,
                 1 if monitored else 0,
@@ -263,7 +265,7 @@ def adopt_unmapped_folder(
             "SELECT id, title, search_pattern, root_folder_id, monitored,"
             " monitor_mode, quality_profile_id, language_profile_id,"
             " anilist_id, mal_id, mu_id, cover_url, status, description,"
-            " total_volumes, total_chapters, pub_year, vol_count_source"
+            " total_volumes, total_chapters, pub_year, vol_count_source, folder_name"
             " FROM series WHERE id=?",
             (series_id,),
         ).fetchone()
@@ -279,6 +281,7 @@ def adopt_unmapped_folder(
                     "title": series_row["title"],
                     "searchPattern": series_row["search_pattern"],
                     "rootFolderId": series_row["root_folder_id"],
+                    "folderName": series_row["folder_name"],
                     "path": requested_path,
                     "monitored": bool(series_row["monitored"]),
                     "monitorMode": series_row["monitor_mode"] or "all",
