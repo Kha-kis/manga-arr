@@ -176,6 +176,60 @@ def build_series_rename_preview(series_id: int) -> dict | None:
     }
 
 
+def build_library_rename_preview() -> dict:
+    """Return a read-only rename plan across all series with downloaded files."""
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT DISTINCT s.id
+            FROM series s
+            WHERE s.deleted_at IS NULL
+              AND (
+                EXISTS (
+                  SELECT 1
+                  FROM volumes v
+                  WHERE v.series_id=s.id
+                    AND v.status='downloaded'
+                    AND v.import_path IS NOT NULL
+                )
+                OR EXISTS (
+                  SELECT 1
+                  FROM chapters c
+                  WHERE c.series_id=s.id
+                    AND c.status='downloaded'
+                    AND c.import_path IS NOT NULL
+                )
+              )
+            ORDER BY s.title COLLATE NOCASE, s.id
+            """
+        ).fetchall()
+        series_ids = [row["id"] for row in rows]
+
+    series_plans = []
+    for series_id in series_ids:
+        plan = build_series_rename_preview(series_id)
+        if not plan or not plan["total"]:
+            continue
+        series_plans.append(plan)
+
+    total = sum(plan["total"] for plan in series_plans)
+    changed = sum(plan["changed"] for plan in series_plans)
+    renameable = sum(plan["renameable"] for plan in series_plans)
+    conflicts = sum(plan["conflicts"] for plan in series_plans)
+    return {
+        "fileFormat": get_cfg("file_format", ""),
+        "chapterFormat": get_cfg("chapter_format", ""),
+        "folderFormat": get_cfg("folder_format", ""),
+        "seriesCount": len(series_plans),
+        "seriesWithChanges": sum(1 for plan in series_plans if plan["changed"]),
+        "total": total,
+        "changed": changed,
+        "renameable": renameable,
+        "conflicts": conflicts,
+        "series": series_plans,
+    }
+
+
 def execute_series_rename(
     series_id: int,
     *,
