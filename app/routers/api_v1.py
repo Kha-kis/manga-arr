@@ -923,7 +923,14 @@ async def api_v1_patch_series(request: Request, series_id: int):
 
 
 @router.get("/api/v1/queue")
-async def api_v1_queue():
+async def api_v1_queue(
+    seriesId: int = 0,
+    status: str = "",
+    trackedDownloadStatus: str = "",
+    queueType: str = "",
+    page: int = 0,
+    pageSize: int = 0,
+):
     with get_db() as db:
         grabbed_rows = db.execute(
             """
@@ -965,6 +972,7 @@ async def api_v1_queue():
             payload.append(
                 {
                     "id": f"volume-{row['id']}",
+                    "queueType": "grabbed",
                     "queueId": None,
                     "seriesId": row["series_id"],
                     "seriesTitle": row["series_title"],
@@ -987,6 +995,7 @@ async def api_v1_queue():
             payload.append(
                 {
                     "id": f"import-{row['id']}",
+                    "queueType": "import",
                     "queueId": row["id"],
                     "seriesId": row["series_id"],
                     "seriesTitle": row["series_title"],
@@ -1008,6 +1017,7 @@ async def api_v1_queue():
             payload.append(
                 {
                     "id": f"pending-{row['id']}",
+                    "queueType": "pending",
                     "queueId": None,
                     "seriesId": row["series_id"],
                     "seriesTitle": row["series_title"],
@@ -1025,7 +1035,43 @@ async def api_v1_queue():
                     "downloadUrl": row["url"],
                 }
             )
-    return JSONResponse(payload)
+    if seriesId:
+        payload = [row for row in payload if row["seriesId"] == seriesId]
+    if status:
+        status_key = status.strip().lower()
+        payload = [row for row in payload if row["status"].lower() == status_key]
+    if trackedDownloadStatus:
+        tracked_key = trackedDownloadStatus.strip().lower()
+        payload = [
+            row for row in payload
+            if row["trackedDownloadStatus"].lower() == tracked_key
+        ]
+    if queueType:
+        type_key = queueType.strip().lower()
+        if type_key not in {"grabbed", "import", "pending"}:
+            return JSONResponse(
+                {"error": "queueType must be grabbed, import, or pending"},
+                status_code=HTTP_400_BAD_REQUEST,
+            )
+        payload = [row for row in payload if row["queueType"] == type_key]
+
+    total = len(payload)
+    if pageSize:
+        page = max(page, 1)
+        page_size = max(min(pageSize, 250), 1)
+        offset = (page - 1) * page_size
+        payload = payload[offset:offset + page_size]
+    else:
+        page = 1
+        page_size = total
+    return JSONResponse(
+        payload,
+        headers={
+            "X-Total-Count": str(total),
+            "X-Page": str(page),
+            "X-Page-Size": str(page_size),
+        },
+    )
 
 
 @router.post("/api/v1/queue/grabbed/{volume_id}/reset")
