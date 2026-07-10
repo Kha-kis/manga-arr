@@ -70,6 +70,28 @@ def _dt_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _paged_list_response(
+    payload: list[dict], page: int, page_size: int
+) -> JSONResponse:
+    total = len(payload)
+    if page_size:
+        page = max(page, 1)
+        page_size = max(min(page_size, 250), 1)
+        offset = (page - 1) * page_size
+        payload = payload[offset:offset + page_size]
+    else:
+        page = 1
+        page_size = total
+    return JSONResponse(
+        payload,
+        headers={
+            "X-Total-Count": str(total),
+            "X-Page": str(page),
+            "X-Page-Size": str(page_size),
+        },
+    )
+
+
 def _series_tags(db, series_id: int, json_tags: str | None) -> list[str]:
     tags: set[str] = set()
     for tag in from_json(json_tags, []) or []:
@@ -860,23 +882,7 @@ async def api_v1_series(
         ]
     if tag:
         payload = [row for row in payload if tag in row["tags"]]
-    total = len(payload)
-    if pageSize:
-        page = max(page, 1)
-        page_size = max(min(pageSize, 250), 1)
-        offset = (page - 1) * page_size
-        payload = payload[offset:offset + page_size]
-    else:
-        page = 1
-        page_size = total
-    return JSONResponse(
-        payload,
-        headers={
-            "X-Total-Count": str(total),
-            "X-Page": str(page),
-            "X-Page-Size": str(page_size),
-        },
-    )
+    return _paged_list_response(payload, page, pageSize)
 
 
 @router.get("/api/v1/series/{series_id}")
@@ -1055,23 +1061,7 @@ async def api_v1_queue(
             )
         payload = [row for row in payload if row["queueType"] == type_key]
 
-    total = len(payload)
-    if pageSize:
-        page = max(page, 1)
-        page_size = max(min(pageSize, 250), 1)
-        offset = (page - 1) * page_size
-        payload = payload[offset:offset + page_size]
-    else:
-        page = 1
-        page_size = total
-    return JSONResponse(
-        payload,
-        headers={
-            "X-Total-Count": str(total),
-            "X-Page": str(page),
-            "X-Page-Size": str(page_size),
-        },
-    )
+    return _paged_list_response(payload, page, pageSize)
 
 
 @router.post("/api/v1/queue/grabbed/{volume_id}/reset")
@@ -1157,16 +1147,43 @@ async def api_v1_queue_retry_import(queue_id: int):
 
 
 @router.get("/api/v1/blocklist")
-async def api_v1_blocklist():
+async def api_v1_blocklist(
+    seriesId: int = 0,
+    protocol: str = "",
+    indexer: str = "",
+    term: str = "",
+    page: int = 0,
+    pageSize: int = 0,
+):
     ttl_days = max(0, int(get_cfg("blocklist_ttl_days", "90") or "90"))
+    where_parts: list[str] = []
+    params: list = []
+    if seriesId:
+        where_parts.append("bl.series_id=?")
+        params.append(seriesId)
+    if protocol:
+        where_parts.append("LOWER(COALESCE(bl.protocol, ''))=?")
+        params.append(protocol.strip().lower())
+    if indexer:
+        where_parts.append("LOWER(COALESCE(bl.indexer, ''))=?")
+        params.append(indexer.strip().lower())
+    if term:
+        like = f"%{term.strip()}%"
+        where_parts.append(
+            "(bl.torrent_name LIKE ? OR bl.torrent_url LIKE ? OR s.title LIKE ?)"
+        )
+        params.extend([like, like, like])
+    where = "WHERE " + " AND ".join(where_parts) if where_parts else ""
     with get_db() as db:
         rows = db.execute(
-            """
+            f"""
             SELECT bl.*, s.title AS series_title
             FROM blocklist bl
             LEFT JOIN series s ON s.id=bl.series_id
+            {where}
             ORDER BY bl.added_at DESC
-            """
+            """,
+            params,
         ).fetchall()
     payload = []
     for row in rows:
@@ -1196,7 +1213,7 @@ async def api_v1_blocklist():
                 "expiresAt": expires_at,
             }
         )
-    return JSONResponse(payload)
+    return _paged_list_response(payload, page, pageSize)
 
 
 @router.delete("/api/v1/blocklist")
@@ -1332,23 +1349,41 @@ async def api_v1_history_delete(history_id: int):
 
 
 @router.get("/api/v1/wanted")
-async def api_v1_wanted():
+async def api_v1_wanted(
+    seriesId: int = 0,
+    term: str = "",
+    page: int = 0,
+    pageSize: int = 0,
+):
+    where_parts = [
+        "v.status='wanted'",
+        "COALESCE(v.monitored, 1)=1",
+        "COALESCE(s.monitored, 1)=1",
+        "COALESCE(s.enabled, 1)=1",
+        "s.deleted_at IS NULL",
+    ]
+    params: list = []
+    if seriesId:
+        where_parts.append("v.series_id=?")
+        params.append(seriesId)
+    if term:
+        like = f"%{term.strip()}%"
+        where_parts.append("(s.title LIKE ? OR s.search_pattern LIKE ?)")
+        params.extend([like, like])
+    where = "WHERE " + " AND ".join(where_parts)
     with get_db() as db:
         rows = db.execute(
-            """
+            f"""
             SELECT v.id, v.series_id, s.title AS series_title, v.volume_num,
                    v.chapter_num, v.vol_range_start, v.vol_range_end,
                    v.pack_type, v.monitored, s.monitored AS series_monitored,
                    s.enabled AS series_enabled
             FROM volumes v
             JOIN series s ON s.id=v.series_id
-            WHERE v.status='wanted'
-              AND COALESCE(v.monitored, 1)=1
-              AND COALESCE(s.monitored, 1)=1
-              AND COALESCE(s.enabled, 1)=1
-              AND s.deleted_at IS NULL
+            {where}
             ORDER BY s.title COLLATE NOCASE, v.volume_num
-            """
+            """,
+            params,
         ).fetchall()
         payload = []
         for row in rows:
@@ -1371,26 +1406,44 @@ async def api_v1_wanted():
                     "status": "wanted",
                 }
             )
-    return JSONResponse(payload)
+    return _paged_list_response(payload, page, pageSize)
 
 
 @router.get("/api/v1/wanted/cutoff")
-async def api_v1_wanted_cutoff():
+async def api_v1_wanted_cutoff(
+    seriesId: int = 0,
+    term: str = "",
+    page: int = 0,
+    pageSize: int = 0,
+):
     global_cutoff = get_cfg("quality_cutoff", "")
+    where_parts = [
+        "v.status = 'downloaded'",
+        "s.monitored = 1",
+        "s.deleted_at IS NULL",
+    ]
+    params: list = []
+    if seriesId:
+        where_parts.append("v.series_id=?")
+        params.append(seriesId)
+    if term:
+        like = f"%{term.strip()}%"
+        where_parts.append("(s.title LIKE ? OR s.search_pattern LIKE ?)")
+        params.extend([like, like])
+    where = "WHERE " + " AND ".join(where_parts)
     with get_db() as db:
         rows = db.execute(
-            """
+            f"""
             SELECT v.id, v.series_id, v.volume_num, v.quality, v.import_path,
                    s.title AS series_title, s.quality_cutoff, s.quality_profile_id,
                    qp.cutoff AS profile_cutoff, v.grabbed_at
             FROM volumes v
             JOIN series s ON s.id = v.series_id
             LEFT JOIN quality_profiles qp ON qp.id = s.quality_profile_id
-            WHERE v.status = 'downloaded'
-              AND s.monitored = 1
-              AND s.deleted_at IS NULL
+            {where}
             ORDER BY s.title COLLATE NOCASE, v.volume_num
-            """
+            """,
+            params,
         ).fetchall()
     payload = []
     for row in rows:
@@ -1419,7 +1472,7 @@ async def api_v1_wanted_cutoff():
                     "grabbedAt": row["grabbed_at"],
                 }
             )
-    return JSONResponse(payload)
+    return _paged_list_response(payload, page, pageSize)
 
 
 @router.get("/api/v1/calendar")

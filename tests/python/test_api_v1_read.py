@@ -708,6 +708,26 @@ def test_api_v1_queue_history_and_wanted_contract(env):
         }
     ]
 
+    wanted_filtered = client.get(
+        "/api/v1/wanted",
+        params={"seriesId": 5, "term": "Vinland", "page": 1, "pageSize": 1},
+        headers=headers,
+    )
+    assert wanted_filtered.status_code == 200, wanted_filtered.text
+    assert [row["id"] for row in wanted_filtered.json()] == [102]
+    assert wanted_filtered.headers["X-Total-Count"] == "1"
+    assert wanted_filtered.headers["X-Page"] == "1"
+    assert wanted_filtered.headers["X-Page-Size"] == "1"
+
+    wanted_empty = client.get(
+        "/api/v1/wanted",
+        params={"seriesId": 999},
+        headers=headers,
+    )
+    assert wanted_empty.status_code == 200, wanted_empty.text
+    assert wanted_empty.json() == []
+    assert wanted_empty.headers["X-Total-Count"] == "0"
+
 
 def test_api_v1_calendar_contract(env):
     with sqlite3.connect(env) as c:
@@ -819,6 +839,32 @@ def test_api_v1_series_detail_blocklist_commands_and_cutoff(env):
     assert blocklist[0]["sourceTitle"] == "Bad Release"
     assert blocklist[0]["expiresAt"].startswith("2026-04-03")
 
+    blocklist_filtered = client.get(
+        "/api/v1/blocklist",
+        params={
+            "seriesId": 5,
+            "protocol": "Torrent",
+            "indexer": "nyaa",
+            "term": "Bad",
+            "page": 1,
+            "pageSize": 1,
+        },
+        headers=headers,
+    )
+    assert blocklist_filtered.status_code == 200, blocklist_filtered.text
+    assert [row["id"] for row in blocklist_filtered.json()] == [601]
+    assert blocklist_filtered.headers["X-Total-Count"] == "1"
+    assert blocklist_filtered.headers["X-Page-Size"] == "1"
+
+    blocklist_empty = client.get(
+        "/api/v1/blocklist",
+        params={"term": "trusted"},
+        headers=headers,
+    )
+    assert blocklist_empty.status_code == 200, blocklist_empty.text
+    assert blocklist_empty.json() == []
+    assert blocklist_empty.headers["X-Total-Count"] == "0"
+
     commands = client.get("/api/v1/command", headers=headers).json()
     assert {cmd["name"] for cmd in commands} >= {"RssSyncAll", "CheckDownloads"}
     assert all("manual" in cmd and "displayName" in cmd for cmd in commands)
@@ -838,3 +884,22 @@ def test_api_v1_series_detail_blocklist_commands_and_cutoff(env):
             "grabbedAt": "2026-01-02T00:00:00Z",
         }
     ]
+
+    cutoff_filtered = client.get(
+        "/api/v1/wanted/cutoff",
+        params={"seriesId": 5, "term": "Vinland", "page": 1, "pageSize": 1},
+        headers=headers,
+    )
+    assert cutoff_filtered.status_code == 200, cutoff_filtered.text
+    assert [row["id"] for row in cutoff_filtered.json()] == [104]
+    assert cutoff_filtered.headers["X-Total-Count"] == "1"
+    assert cutoff_filtered.headers["X-Page-Size"] == "1"
+
+    cutoff_empty = client.get(
+        "/api/v1/wanted/cutoff",
+        params={"seriesId": 999},
+        headers=headers,
+    )
+    assert cutoff_empty.status_code == 200, cutoff_empty.text
+    assert cutoff_empty.json() == []
+    assert cutoff_empty.headers["X-Total-Count"] == "0"
