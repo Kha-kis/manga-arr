@@ -813,6 +813,73 @@ def test_api_v1_remaining_config_read_contracts(env):
     ]
 
 
+def test_api_v1_config_detail_read_contracts(env):
+    client = _client()
+    headers = {"X-Api-Key": _api_key(env)}
+
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO notification_connections"
+            "(id, name, type, enabled, settings, on_grab, on_download,"
+            " on_upgrade, on_series_add, on_health_issue, on_health_restored)"
+            " VALUES(95, 'Discord', 'discord', 1,"
+            " '{\"webhook_url\":\"SECRET\",\"username\":\"Mangarr\"}',"
+            " 1, 1, 0, 1, 1, 0)"
+        )
+
+    def _json(path: str):
+        resp = client.get(path, headers=headers)
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    detail_cases = [
+        ("/api/v1/rootfolder", 1, "/api/v1/rootfolder/1"),
+        ("/api/v1/notification", 95, "/api/v1/notification/95"),
+        ("/api/v1/qualityprofile", 10, "/api/v1/qualityprofile/10"),
+        ("/api/v1/languageprofile", 20, "/api/v1/languageprofile/20"),
+        ("/api/v1/customformat", 30, "/api/v1/customformat/30"),
+        ("/api/v1/releaseprofile", 40, "/api/v1/releaseprofile/40"),
+        ("/api/v1/delayprofile", 45, "/api/v1/delayprofile/45"),
+        ("/api/v1/importlist", 80, "/api/v1/importlist/80"),
+        ("/api/v1/importlistexclusion", 90, "/api/v1/importlistexclusion/90"),
+        ("/api/v1/qualitydefinition", "cbz", "/api/v1/qualitydefinition/cbz"),
+        ("/api/v1/indexer", 70, "/api/v1/indexer/70"),
+        ("/api/v1/downloadclient", 50, "/api/v1/downloadclient/50"),
+        (
+            "/api/v1/downloadclient/remotepathmapping",
+            60,
+            "/api/v1/downloadclient/remotepathmapping/60",
+        ),
+        ("/api/v1/tag", "favorite", "/api/v1/tag/favorite"),
+    ]
+    for list_path, item_id, detail_path in detail_cases:
+        listed = _json(list_path)
+        expected = next(
+            item
+            for item in listed
+            if item.get("id", item.get("quality", item.get("label"))) == item_id
+        )
+        assert _json(detail_path) == expected
+
+    discord = _json("/api/v1/notification/95")
+    assert discord["settings"] == {"username": "Mangarr"}
+    assert discord["hasSecretSettings"] == {"webhook_url": True}
+
+    missing_cases = [
+        ("/api/v1/rootfolder/9999", "root folder not found"),
+        ("/api/v1/indexer/9999", "indexer not found"),
+        (
+            "/api/v1/downloadclient/remotepathmapping/9999",
+            "remote path mapping not found",
+        ),
+        ("/api/v1/tag/not-present", "tag not found"),
+    ]
+    for path, error in missing_cases:
+        resp = client.get(path, headers=headers)
+        assert resp.status_code == 404, resp.text
+        assert resp.json() == {"error": error}
+
+
 def test_api_v1_series_filters_sort_and_paging(env):
     client = _client()
     headers = {"X-Api-Key": _api_key(env)}

@@ -71,6 +71,9 @@ release-profile, delay-profile, notification, indexer, download-client,
 remote-path-mapping, import-list, import-list-exclusion, and tag endpoints.
 Notification, indexer, download-client, remote-path-mapping, import-list,
 import-list-exclusion, and tag rename/delete mutations are also covered.
+Individual detail reads are covered for root folders, notifications, profiles,
+custom formats, indexers, download clients, remote-path mappings, import lists,
+import-list exclusions, quality definitions, and tags.
 Series reads support common filters, sorting, and header-based paging. Queue,
 history, wanted, cutoff-unmet, and blocklist reads support common filters and
 paging. Remaining API gaps are deeper compatibility, richer filtering on other
