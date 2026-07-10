@@ -58,6 +58,19 @@ def _queue_import(
     if not s:
         return None, False
     _total_vols = s["total_volumes"] if "total_volumes" in s.keys() else None
+    scan_events: list[tuple[str, str, bool]] = []
+
+    def _defer_scan_event(
+        event_type: str,
+        message: str,
+        *,
+        dedup: bool = False,
+    ) -> None:
+        scan_events.append((event_type, message, dedup))
+
+    def _replay_scan_events() -> None:
+        for event_type, message, dedup in scan_events:
+            log_event(event_type, message, series_id, db=db, dedup=dedup)
 
     _rel_vol_range = extract_volume_range(torrent_name or "")
     _rel_chap_range = extract_chapter_range(torrent_name or "")
@@ -109,22 +122,18 @@ def _queue_import(
                 if size:
                     packed_paths.append(cbz_path)
                 else:
-                    log_event(
+                    _defer_scan_event(
                         "error",
                         f"Auto-pack failed for {leaf}: "
                         f"check disk space + /config writable",
-                        series_id,
-                        db=db,
                         dedup=True,
                     )
             if packed_paths:
-                log_event(
+                _defer_scan_event(
                     "import",
                     f"Auto-packed {len(packed_paths)} image-only chapter "
                     f"director{'ies' if len(packed_paths) != 1 else 'y'} "
                     f"into CBZs: {torrent_name}",
-                    series_id,
-                    db=db,
                 )
                 scan_paths = packed_paths
     elif os.path.isfile(content_path):
@@ -179,8 +188,9 @@ def _queue_import(
             continue
 
         if is_foreign_language(fname):
-            log_event(
-                "import", f"Skipped foreign-language file: {fname}", series_id, db=db
+            _defer_scan_event(
+                "import",
+                f"Skipped foreign-language file: {fname}",
             )
             continue
 
@@ -204,11 +214,9 @@ def _queue_import(
             if ci.get("volume") is not None:
                 ci_vol = ci["volume"]
                 if ci_vol != proposed_vol:
-                    log_event(
+                    _defer_scan_event(
                         "import",
                         f"ComicInfo.xml: vol {proposed_vol} → {ci_vol} for {fname}",
-                        series_id,
-                        db=db,
                     )
                     proposed_vol = ci_vol
                     proposed_chap = None
@@ -249,11 +257,9 @@ def _queue_import(
                             ci_vol = _parse_vol_suffix(_raw_vol)
                             if ci_vol is not None:
                                 if ci_vol != proposed_vol:
-                                    log_event(
+                                    _defer_scan_event(
                                         "import",
                                         f"ComicInfo.xml (CBR): vol {proposed_vol} → {ci_vol} for {fname}",
-                                        series_id,
-                                        db=db,
                                     )
                                 proposed_vol = ci_vol
                                 proposed_chap = None
@@ -335,13 +341,12 @@ def _queue_import(
         )
 
     if mapped == 0 and unmapped == 0:
-        log_event(
+        _defer_scan_event(
             "import",
             f"No manga files found in {src_dir} — skipping: {torrent_name}",
-            series_id,
-            db=db,
             dedup=True,
         )
+        _replay_scan_events()
         return None, False
 
     cur = db.execute(
@@ -369,6 +374,7 @@ def _queue_import(
             series_id,
             db=db,
         )
+    _replay_scan_events()
     return queue_id, needs_review
 
 
