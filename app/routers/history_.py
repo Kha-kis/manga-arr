@@ -11,6 +11,55 @@ from shared import cascade_chapters, get_db
 router = APIRouter()
 
 
+def mark_history_failed(hist_id: int) -> dict:
+    """Mark a grabbed history entry failed and blocklist its release."""
+    with get_db() as db:
+        h = db.execute("SELECT * FROM history WHERE id=?", (hist_id,)).fetchone()
+        if not h:
+            return {"ok": False, "status": "not_found"}
+        if h['event_type'] != 'grabbed':
+            return {"ok": False, "status": "not_grabbed"}
+
+        bl_url = (h['torrent_url'] if 'torrent_url' in h.keys() and h['torrent_url']
+                  else h['download_id'] or h['source_title'] or '')
+        db.execute(
+            "INSERT OR IGNORE INTO blocklist"
+            "(series_id, torrent_url, torrent_name, reason, indexer, protocol, size_bytes)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (h['series_id'], bl_url, h['source_title'] or '',
+             'Marked failed via history',
+             h['indexer'], h['protocol'], h['size_bytes'])
+        )
+        db.execute("UPDATE history SET event_type='grab_failed' WHERE id=?", (hist_id,))
+        if h['download_id']:
+            grabbed = db.execute(
+                "SELECT id FROM volumes WHERE series_id=? AND download_id=?"
+                " AND status='grabbed' AND volume_num IS NOT NULL",
+                (h['series_id'], h['download_id'])
+            ).fetchall()
+            vol_ids = [r['id'] for r in grabbed]
+            db.execute(
+                "DELETE FROM volumes WHERE series_id=? AND download_id=?"
+                " AND status='grabbed' AND volume_num IS NULL",
+                (h['series_id'], h['download_id'])
+            )
+            db.execute(
+                "UPDATE volumes SET status='wanted', download_id=NULL, grabbed_at=NULL,"
+                " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
+                " client=NULL, release_group=NULL "
+                "WHERE series_id=? AND download_id=? AND status='grabbed'",
+                (h['series_id'], h['download_id'])
+            )
+            if vol_ids:
+                cascade_chapters(db, h['series_id'], vol_ids, 'wanted',
+                                 grabbed_at=None, torrent_name=None, torrent_url=None,
+                                 indexer=None, protocol=None, client=None,
+                                 download_id=None, release_group=None)
+            db.execute("DELETE FROM seen WHERE download_id=?", (h['download_id'],))
+
+    return {"ok": True, "status": "marked_failed"}
+
+
 @router.get("/activity")
 async def activity_redirect():
     return RedirectResponse("/history", status_code=302)
@@ -93,45 +142,7 @@ async def history_page(
 @router.post("/history/{hist_id}/mark-failed")
 async def history_mark_failed(request: Request, hist_id: int):
     """Mark a grabbed entry as failed and add to blocklist."""
-    with get_db() as db:
-        h = db.execute("SELECT * FROM history WHERE id=?", (hist_id,)).fetchone()
-        if h and h['event_type'] == 'grabbed':
-            bl_url = (h['torrent_url'] if 'torrent_url' in h.keys() and h['torrent_url']
-                      else h['download_id'] or h['source_title'] or '')
-            db.execute(
-                "INSERT OR IGNORE INTO blocklist"
-                "(series_id, torrent_url, torrent_name, reason, indexer, protocol, size_bytes)"
-                " VALUES(?,?,?,?,?,?,?)",
-                (h['series_id'], bl_url, h['source_title'] or '',
-                 'Marked failed via history',
-                 h['indexer'], h['protocol'], h['size_bytes'])
-            )
-            db.execute("UPDATE history SET event_type='grab_failed' WHERE id=?", (hist_id,))
-            if h['download_id']:
-                grabbed = db.execute(
-                    "SELECT id FROM volumes WHERE series_id=? AND download_id=?"
-                    " AND status='grabbed' AND volume_num IS NOT NULL",
-                    (h['series_id'], h['download_id'])
-                ).fetchall()
-                vol_ids = [r['id'] for r in grabbed]
-                db.execute(
-                    "DELETE FROM volumes WHERE series_id=? AND download_id=?"
-                    " AND status='grabbed' AND volume_num IS NULL",
-                    (h['series_id'], h['download_id'])
-                )
-                db.execute(
-                    "UPDATE volumes SET status='wanted', download_id=NULL, grabbed_at=NULL,"
-                    " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
-                    " client=NULL, release_group=NULL "
-                    "WHERE series_id=? AND download_id=? AND status='grabbed'",
-                    (h['series_id'], h['download_id'])
-                )
-                if vol_ids:
-                    cascade_chapters(db, h['series_id'], vol_ids, 'wanted',
-                                     grabbed_at=None, torrent_name=None, torrent_url=None,
-                                     indexer=None, protocol=None, client=None,
-                                     download_id=None, release_group=None)
-                db.execute("DELETE FROM seen WHERE download_id=?", (h['download_id'],))
+    mark_history_failed(hist_id)
     if request.headers.get("HX-Request") == "true":
         import json
         from fastapi.responses import Response as _Resp
