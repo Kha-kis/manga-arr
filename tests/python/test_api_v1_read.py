@@ -638,6 +638,89 @@ def test_api_v1_series_filters_sort_and_paging(env):
     assert bad_bool.json()["error"] == "monitored must be a boolean"
 
 
+def test_api_v1_series_lookup_contract(env, monkeypatch):
+    import routers.api_v1 as api_v1
+
+    async def fake_search(query):
+        assert query == "Vinland"
+        return [
+            {
+                "title": "Different Saga",
+                "source": "mangaupdates",
+                "anilist_id": None,
+                "mu_id": "mu-2",
+                "mal_id": None,
+                "cover_url": "",
+                "status": "RELEASING",
+                "volumes": 1,
+                "chapters": None,
+                "pub_year": 2024,
+                "description": "Loose match",
+            },
+            {
+                "title": "Vinland",
+                "source": "anilist",
+                "anilist_id": 123,
+                "mu_id": None,
+                "mal_id": 456,
+                "cover_url": "https://example.invalid/cover.jpg",
+                "status": "FINISHED",
+                "volumes": 13,
+                "chapters": 212,
+                "pub_year": 2005,
+                "description": "Exact match",
+            },
+        ], "anilist"
+
+    monkeypatch.setattr(api_v1, "search_series", fake_search)
+
+    resp = _client().get(
+        "/api/v1/series/lookup",
+        params={"term": " Vinland "},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert [row["title"] for row in body] == ["Vinland", "Different Saga"]
+    assert body[0] == {
+        "title": "Vinland",
+        "source": "anilist",
+        "confidence": 100,
+        "anilistId": 123,
+        "mangaUpdatesId": None,
+        "malId": 456,
+        "coverUrl": "https://example.invalid/cover.jpg",
+        "status": "FINISHED",
+        "volumes": 13,
+        "chapters": 212,
+        "year": 2005,
+        "description": "Exact match",
+    }
+    assert body[0]["confidence"] >= body[1]["confidence"]
+
+
+def test_api_v1_series_lookup_rejects_blank_term(env, monkeypatch):
+    import routers.api_v1 as api_v1
+
+    async def should_not_search(_query):
+        raise AssertionError("blank lookup should not call metadata search")
+
+    monkeypatch.setattr(api_v1, "search_series", should_not_search)
+
+    resp = _client().get(
+        "/api/v1/series/lookup",
+        params={"term": "  "},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "term is required"
+
+
+def test_api_v1_series_lookup_requires_api_key(env):
+    resp = _client().get("/api/v1/series/lookup", params={"term": "Vinland"})
+    assert resp.status_code == 401
+
+
 def test_api_v1_queue_history_and_wanted_contract(env):
     client = _client()
     headers = {"X-Api-Key": _api_key(env)}
