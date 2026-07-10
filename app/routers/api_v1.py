@@ -18,7 +18,7 @@ from starlette.status import HTTP_404_NOT_FOUND
 
 from files import build_chapter_label
 from library_scan import scan_unmapped_root_folder
-from rename_plan import build_series_rename_preview
+from rename_plan import build_series_rename_preview, execute_series_rename
 from routers.series_ import patch_series as _patch_series
 from routers.system import APP_VERSION, TASKS, TASK_STATE, run_command as _run_command
 from shared import (
@@ -231,6 +231,20 @@ def _iso_or_none(value) -> str | None:
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return str(value)
+
+
+def _optional_id_set(payload: dict, key: str) -> set[int] | None:
+    if key not in payload:
+        return None
+    value = payload[key]
+    if not isinstance(value, list):
+        raise ValueError(f"{key} must be a list of integer IDs")
+    ids: set[int] = set()
+    for item in value:
+        if not isinstance(item, int) or isinstance(item, bool):
+            raise ValueError(f"{key} must be a list of integer IDs")
+        ids.add(item)
+    return ids
 
 
 @router.get("/api/v1/system/status")
@@ -661,6 +675,35 @@ async def api_v1_rename_series_preview(series_id: int):
             status_code=HTTP_404_NOT_FOUND,
         )
     return JSONResponse(preview)
+
+
+@router.post("/api/v1/rename/series/{series_id}")
+async def api_v1_rename_series_execute(request: Request, series_id: int):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+    try:
+        volume_ids = _optional_id_set(payload, "volumeIds")
+        chapter_ids = _optional_id_set(payload, "chapterIds")
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    result = execute_series_rename(
+        series_id,
+        volume_ids=volume_ids,
+        chapter_ids=chapter_ids,
+    )
+    if result is None:
+        return JSONResponse(
+            {"message": "Not Found", "description": "Series not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    return JSONResponse(result)
 
 
 @router.get("/api/v1/rootfolder/{root_folder_id}/unmappedfolders")

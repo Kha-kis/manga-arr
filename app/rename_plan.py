@@ -1,8 +1,9 @@
-"""Read-only library rename planning."""
+"""Library rename planning and execution."""
 from __future__ import annotations
 
 import os
 
+from events import add_history, log_event
 from files import build_chapter_label, build_filename
 from rescan import _series_library_dir
 from shared import build_volume_label, get_cfg, get_db
@@ -172,4 +173,163 @@ def build_series_rename_preview(series_id: int) -> dict | None:
         "renameable": renameable,
         "conflicts": conflicts,
         "items": items,
+    }
+
+
+def execute_series_rename(
+    series_id: int,
+    *,
+    volume_ids: set[int] | None = None,
+    chapter_ids: set[int] | None = None,
+) -> dict | None:
+    """Rename selected downloaded files and update their stored import paths.
+
+    If neither ID set is provided, every currently renameable item is executed.
+    The plan is recalculated immediately before each run, so conflict checks are
+    based on current DB and filesystem state rather than a stale preview.
+    """
+    preview = build_series_rename_preview(series_id)
+    if preview is None:
+        return None
+
+    filter_active = volume_ids is not None or chapter_ids is not None
+    selected = []
+    skipped = []
+    for item in preview["items"]:
+        if filter_active:
+            if item["type"] == "volume":
+                wanted = volume_ids is not None and item["id"] in volume_ids
+            else:
+                wanted = chapter_ids is not None and item["id"] in chapter_ids
+            if not wanted:
+                continue
+        if item["canRename"]:
+            selected.append(item)
+        else:
+            skipped.append(
+                {
+                    "type": item["type"],
+                    "id": item["id"],
+                    "oldPath": item["oldPath"],
+                    "newPath": item["newPath"],
+                    "status": "skipped",
+                    "conflict": item["conflict"],
+                }
+            )
+
+    renamed = []
+    errors = []
+    for item in selected:
+        old_path = item["oldPath"]
+        new_path = item["newPath"]
+        if not old_path or not new_path:
+            errors.append(
+                {
+                    "type": item["type"],
+                    "id": item["id"],
+                    "oldPath": old_path,
+                    "newPath": new_path,
+                    "status": "error",
+                    "message": "missing rename path",
+                }
+            )
+            continue
+
+        moved = False
+        try:
+            if not os.path.exists(old_path):
+                raise FileNotFoundError(old_path)
+            if os.path.exists(new_path) and _norm(new_path) != _norm(old_path):
+                raise FileExistsError(new_path)
+            os.makedirs(os.path.dirname(new_path), exist_ok=True)
+            os.rename(old_path, new_path)
+            moved = True
+
+            with get_db() as db:
+                if item["type"] == "volume":
+                    row = db.execute(
+                        "SELECT import_path FROM volumes WHERE id=? AND series_id=?",
+                        (item["id"], series_id),
+                    ).fetchone()
+                    if not row:
+                        raise RuntimeError("volume row no longer exists")
+                    if _norm(row["import_path"]) != _norm(old_path):
+                        raise RuntimeError("volume import path changed")
+                    db.execute(
+                        "UPDATE volumes SET import_path=? WHERE id=? AND series_id=?",
+                        (new_path, item["id"], series_id),
+                    )
+                else:
+                    row = db.execute(
+                        "SELECT import_path FROM chapters WHERE id=? AND series_id=?",
+                        (item["id"], series_id),
+                    ).fetchone()
+                    if not row:
+                        raise RuntimeError("chapter row no longer exists")
+                    if _norm(row["import_path"]) != _norm(old_path):
+                        raise RuntimeError("chapter import path changed")
+                    db.execute(
+                        "UPDATE chapters SET import_path=? WHERE id=? AND series_id=?",
+                        (new_path, item["id"], series_id),
+                    )
+                add_history(
+                    db,
+                    "file_renamed",
+                    series_id,
+                    preview["seriesTitle"],
+                    item["label"],
+                    source_title=item["oldName"],
+                    data={
+                        "type": item["type"],
+                        "old_path": old_path,
+                        "new_path": new_path,
+                    },
+                )
+                log_event(
+                    "rename",
+                    f"Renamed {item['label']}: {item['oldName']} -> {item['newName']}",
+                    series_id,
+                    db=db,
+                )
+            renamed.append(
+                {
+                    "type": item["type"],
+                    "id": item["id"],
+                    "oldPath": old_path,
+                    "newPath": new_path,
+                    "status": "renamed",
+                }
+            )
+        except Exception as exc:
+            if moved:
+                try:
+                    if not os.path.exists(old_path) and os.path.exists(new_path):
+                        os.rename(new_path, old_path)
+                except Exception as rollback_exc:
+                    log_event(
+                        "error",
+                        "Rename rollback failed for "
+                        f"{new_path}: {rollback_exc}",
+                        series_id,
+                    )
+            errors.append(
+                {
+                    "type": item["type"],
+                    "id": item["id"],
+                    "oldPath": old_path,
+                    "newPath": new_path,
+                    "status": "error",
+                    "message": str(exc),
+                }
+            )
+            log_event("error", f"Rename failed for {old_path}: {exc}", series_id)
+
+    return {
+        "seriesId": preview["seriesId"],
+        "seriesTitle": preview["seriesTitle"],
+        "requested": len(selected) + len(skipped),
+        "renamed": len(renamed),
+        "skipped": len(skipped),
+        "errors": len(errors),
+        "results": renamed + skipped + errors,
     }
