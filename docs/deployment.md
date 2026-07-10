@@ -189,6 +189,23 @@ Common deployment-facing overrides:
 `CRITICAL`. `MANGARR_URL_BASE` should be empty or a path prefix such as
 `/mangarr`; absolute URLs are rejected.
 
+### Outbound HTTP proxies
+
+Mangarr's outbound HTTP clients use the standard proxy environment variables
+supported by the Python HTTP stack. Set these only when your network requires
+metadata, indexer, notification, or integration requests to traverse a proxy:
+
+```env
+HTTP_PROXY=http://proxy.example:8080
+HTTPS_PROXY=http://proxy.example:8080
+NO_PROXY=localhost,127.0.0.1,prowlarr,qbittorrent,sabnzbd,komga
+```
+
+Keep Docker service names and private in-stack integrations in `NO_PROXY` when
+they should stay on the Docker network instead of traversing the proxy. This is
+deployment guidance, not an in-app setting; the Settings UI remains the source
+of truth for Mangarr-specific configuration.
+
 ## Container user and file ownership
 
 The image runs as a non-root user: **`mangarr`, UID/GID 1000**. This is

@@ -154,15 +154,16 @@ Recommended scope:
 ### 6. General/System Settings Breadth
 
 Mangarr covers API keys, backups, logging views, root folders, log-level
-controls, URL-base storage, selected environment defaults, and deployment
-documentation. Sonarr also exposes broader settings for proxy, analytics,
-updates, detailed syslog, UI date/style preferences, and server options.
+controls, URL-base storage, selected environment defaults, outbound proxy
+deployment guidance, and deployment documentation. Sonarr also exposes broader
+settings for analytics, updates, detailed syslog, UI date/style preferences,
+and server options.
 
 Recommended scope:
 
-1. Add only deployment-relevant settings first: proxy guidance, additional
-   documented environment overrides, and any server options that map cleanly
-   to Docker Compose.
+1. Add only deployment-relevant settings first: additional documented
+   environment overrides and any server options that map cleanly to Docker
+   Compose.
 2. Keep analytics out unless explicitly desired.
 3. Treat UI date/style preferences as low priority because Mangarr's current
    UI has one maintained theme.

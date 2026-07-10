@@ -121,6 +121,19 @@ def test_deployment_doc_documents_uid_override():
             f"docs/deployment.md missing UID-override marker: {marker!r}"
 
 
+def test_deployment_doc_documents_proxy_env_guidance():
+    """Outbound proxy setup is deployment-level guidance, not an in-app
+    setting. Keep the docs and env template discoverable together."""
+    doc = _read("docs/deployment.md")
+    env_example = _read(".env.example")
+    for marker in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"):
+        assert marker in doc, \
+            f"docs/deployment.md missing proxy env marker: {marker!r}"
+        assert marker in env_example, \
+            f".env.example missing proxy env marker: {marker!r}"
+    assert "Outbound HTTP proxies" in doc
+
+
 def test_compose_shows_user_override_pattern():
     """docker-compose.yml should expose the `user:` override pattern
     (commented) so self-hosters on UIDs other than 1000 don't have to
