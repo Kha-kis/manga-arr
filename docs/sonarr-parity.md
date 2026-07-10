@@ -52,7 +52,7 @@ not exact TV terminology, exact Sonarr UI, or identical plugin breadth.
 | API authentication | `/api/*` API-key middleware, CSRF bypass for API-key clients, fail-closed tests | Covered |
 | API v1 seed | `/api/v1/system/status`, `/api/v1/series`, `/api/v1/series/{id}`, `/api/v1/queue`, `/api/v1/history`, `/api/v1/wanted`, `/api/v1/wanted/cutoff`, `/api/v1/blocklist`, `/api/v1/command`, `/api/v1/rootfolder`, `/api/v1/qualityprofile`, plus `PATCH /api/v1/series/{id}` and `POST /api/v1/command` with response-contract tests | Initial slice covered |
 | Rename/organize files | `/api/v1/rename/series/{id}/preview`, `POST /api/v1/rename/series/{id}`, and the series-page HTMX rename panel preview selected renames, report conflicts, rename safe files, and update import paths | Mostly covered |
-| Existing-library discovery seed | `/api/v1/rootfolder/{id}/unmappedfolders` reports root-folder child directories not mapped to known series | Backend seed covered |
+| Existing-library adoption seed | `/api/v1/rootfolder/{id}/unmappedfolders` reports root-folder child directories not mapped to known series; `POST /api/v1/rootfolder/{id}/unmappedfolders/adopt` creates a series for a selected folder and rescans existing files | Backend seed covered |
 | Import-list exclusions | `import_list_exclusions` table, `/import-lists` management UI, and sync-time skip logic by source/external ID or normalized title | Covered |
 | Minimum free-space guard | Media Management `minimum_free_space_mb` setting blocks imports before staging when the destination would fall below the configured reserve | Covered |
 
@@ -92,16 +92,17 @@ Recommended scope:
 
 ### 3. Existing Library Import / Unmapped Folder Adoption
 
-Mangarr supports root folders, root-folder disk usage, manual import, and a
-read-only unmapped-folder scan per root folder. It does not yet have a full
-Sonarr-style existing-library import flow that proposes metadata matches and
-adopts selected folders into the library.
+Mangarr supports root folders, root-folder disk usage, manual import,
+unmapped-folder scans per root folder, and an API endpoint that adopts a
+selected unmapped folder into a series before rescanning existing files. It
+does not yet have a full Sonarr-style existing-library import flow that
+proposes metadata matches in the UI.
 
 Recommended scope:
 
 1. Match folder names against existing metadata providers and show confidence.
-2. Let users adopt selected folders with monitored/profile/root-folder
-   choices.
+2. Add a UI workflow for reviewing and adopting selected folders with
+   monitored/profile choices.
 3. Keep ad-hoc download-folder manual import separate from existing organized
    library adoption.
 
@@ -191,8 +192,8 @@ Recommended scope:
    test without file I/O risk.
 2. Rename planner dry-run. This is the largest remaining user-facing Sonarr
    workflow gap and should start read-only.
-3. Existing-library unmapped-folder scan. Start with read-only discovery before
-   adoption.
+3. Existing-library adoption UI. Build on the current unmapped-folder scan and
+   API adoption endpoint.
 4. API mutation endpoints. Add after read endpoints and route contracts are
    stable.
 5. General settings polish: URL base/proxy docs, log-level controls, selected
