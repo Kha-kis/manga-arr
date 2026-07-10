@@ -276,6 +276,11 @@ If you supply `MANGARR_SECRET_KEY` from your orchestrator instead of the
 file, that environment secret becomes part of the restore requirement.
 Use one source consistently.
 
+The Backup page can validate server-side backup ZIP files before a restore
+window. Validation checks that the ZIP contains `manga_arr.db` and that the
+embedded database opens successfully. It does not replace the live database;
+stop the container before restoring the database file.
+
 ### Wrong-key behavior
 
 If Mangarr starts with the wrong key, or with encrypted rows but no

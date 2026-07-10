@@ -4,7 +4,9 @@ import asyncio
 import os
 import platform
 import shutil
+import sqlite3
 import sys
+import tempfile
 import zipfile
 from datetime import datetime, timezone
 from io import BytesIO
@@ -28,6 +30,82 @@ _STARTUP_TIME: datetime = datetime.now(timezone.utc)
 APP_VERSION = "1.0.0"
 
 BACKUP_DIR = "/config/backups"
+
+
+def _backup_file_path(filename: str) -> tuple[str, str] | None:
+    safe_name = os.path.basename(filename or "")
+    if safe_name != filename or not safe_name.endswith(".zip"):
+        return None
+    return safe_name, os.path.join(BACKUP_DIR, safe_name)
+
+
+def _validate_backup_zip(filename: str) -> tuple[dict, int]:
+    resolved = _backup_file_path(filename)
+    if not resolved:
+        return {"ok": False, "message": "Invalid filename"}, 400
+
+    safe_name, fpath = resolved
+    if not os.path.exists(fpath):
+        return {"ok": False, "message": "Backup not found"}, 404
+
+    try:
+        with zipfile.ZipFile(fpath, "r") as zf:
+            names = zf.namelist()
+            if "manga_arr.db" not in names:
+                return {
+                    "ok": False,
+                    "filename": safe_name,
+                    "message": "Backup does not contain manga_arr.db",
+                    "entries": names,
+                    "containsDatabase": False,
+                    "databaseValid": False,
+                }, 422
+            db_bytes = zf.read("manga_arr.db")
+    except zipfile.BadZipFile:
+        return {"ok": False, "filename": safe_name, "message": "Invalid ZIP file"}, 400
+    except OSError as exc:
+        return {
+            "ok": False,
+            "filename": safe_name,
+            "message": f"Backup validation failed: {type(exc).__name__}",
+        }, 500
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    try:
+        tmp.write(db_bytes)
+        tmp.close()
+        with sqlite3.connect(tmp.name) as c:
+            quick_check = c.execute("PRAGMA quick_check").fetchone()
+            db_valid = bool(quick_check and quick_check[0] == "ok")
+            if db_valid:
+                c.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+    except sqlite3.DatabaseError:
+        db_valid = False
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+    if not db_valid:
+        return {
+            "ok": False,
+            "filename": safe_name,
+            "message": "manga_arr.db is not a valid SQLite database",
+            "entries": names,
+            "containsDatabase": True,
+            "databaseValid": False,
+        }, 422
+
+    return {
+        "ok": True,
+        "filename": safe_name,
+        "message": "Backup validated",
+        "entries": names,
+        "containsDatabase": True,
+        "databaseValid": True,
+        "sizeBytes": os.path.getsize(fpath),
+    }, 200
 
 # ── Task registry ─────────────────────────────────────────────────────────────
 TASKS: list[dict] = [
@@ -379,18 +457,23 @@ async def create_backup():
 
 @router.post("/api/system/backup/{filename}/delete")
 async def delete_backup(filename: str):
-    # Safety: only allow .zip files, no path traversal
-    safe_name = os.path.basename(filename)
-    if not safe_name.endswith(".zip"):
+    resolved = _backup_file_path(filename)
+    if not resolved:
         return JSONResponse(
             {"ok": False, "message": "Invalid filename"}, status_code=400
         )
-    fpath = os.path.join(BACKUP_DIR, safe_name)
+    _safe_name, fpath = resolved
     try:
         os.remove(fpath)
     except OSError:
         pass
     return RedirectResponse("/system/backup", status_code=303)
+
+
+@router.post("/api/system/backup/{filename}/validate")
+async def validate_backup(filename: str):
+    payload, status_code = _validate_backup_zip(filename)
+    return JSONResponse(payload, status_code=status_code)
 
 
 # ── Tags ──────────────────────────────────────────────────────────────────────
