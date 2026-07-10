@@ -342,6 +342,30 @@ def test_api_v1_system_status(env):
     assert body["urlBase"] == "/mangarr"
 
 
+def test_api_v1_system_update_status(env):
+    resp = _client().get(
+        "/api/v1/system/update",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["currentVersion"]
+    assert body["updateMechanism"] == "docker"
+    assert body["canUpdateInApp"] is False
+    assert body["latestVersion"] is None
+    assert body["updateAvailable"] is None
+    assert body["releaseUrl"].endswith("/releases/latest")
+
+
+def test_system_status_page_shows_update_guidance(env):
+    resp = _client().get("/system/status")
+    assert resp.status_code == 200, resp.text
+    assert "Updates" in resp.text
+    assert "Docker-managed" in resp.text
+    assert "In-app updates disabled" in resp.text
+    assert "https://github.com/Kha-kis/manga-arr/releases/latest" in resp.text
+
+
 def test_api_v1_health_summary_contract(env, monkeypatch):
     import routers.health_ as health_router
 

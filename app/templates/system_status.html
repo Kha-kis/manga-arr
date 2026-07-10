@@ -35,6 +35,35 @@
     </div>
   </div>
 
+  <!-- Updates -->
+  <div class="col-12 col-md-6">
+    <div class="panel h-100 mb-0">
+      <div class="panel-header">
+        <i class="bi bi-arrow-repeat"></i>Updates
+      </div>
+      <div class="panel-body">
+        <div class="row g-2">
+          <div class="col-6">
+            <div class="form-label">Status</div>
+            <span class="badge-status badge-grabbed">Docker-managed</span>
+          </div>
+          <div class="col-6">
+            <div class="form-label">Install</div>
+            <span class="text-muted system-status-text">In-app updates disabled</span>
+          </div>
+        </div>
+        <div class="mt-3 d-flex flex-wrap align-items-center gap-2">
+          <a href="{{ update_status.releaseUrl }}" class="btn btn-secondary btn-sm"
+             target="_blank" rel="noopener noreferrer"
+             aria-label="Open Mangarr release notes">
+            <i class="bi bi-box-arrow-up-right me-1"></i>Release Notes
+          </a>
+          <span class="text-muted system-status-text">{{ update_status.message }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- System Info -->
   <div class="col-12 col-md-6">
     <div class="panel h-100 mb-0">

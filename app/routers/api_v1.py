@@ -1259,6 +1259,11 @@ async def api_v1_system_status():
     )
 
 
+@router.get("/api/v1/system/update")
+async def api_v1_system_update():
+    return JSONResponse(system_router.build_update_status())
+
+
 @router.get("/api/v1/health")
 async def api_v1_health():
     payload = await build_health_payload()

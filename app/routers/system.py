@@ -28,8 +28,26 @@ router = APIRouter()
 # ── Module-level startup time ─────────────────────────────────────────────────
 _STARTUP_TIME: datetime = datetime.now(timezone.utc)
 APP_VERSION = "1.0.0"
+LATEST_RELEASE_URL = "https://github.com/Kha-kis/manga-arr/releases/latest"
+RELEASES_URL = "https://github.com/Kha-kis/manga-arr/releases"
 
 BACKUP_DIR = "/config/backups"
+
+
+def build_update_status() -> dict:
+    return {
+        "currentVersion": APP_VERSION,
+        "updateMechanism": "docker",
+        "canUpdateInApp": False,
+        "latestVersion": None,
+        "updateAvailable": None,
+        "releaseUrl": LATEST_RELEASE_URL,
+        "releasesUrl": RELEASES_URL,
+        "message": (
+            "Docker deployments update by pulling the latest image and "
+            "recreating the container."
+        ),
+    }
 
 
 def _backup_file_path(filename: str) -> tuple[str, str] | None:
@@ -273,6 +291,7 @@ async def system_status_page(request: Request):
             "downloaded_count": downloaded_count,
             "wanted_count": wanted_count,
             "root_folders": root_folders,
+            "update_status": build_update_status(),
         },
     )
 

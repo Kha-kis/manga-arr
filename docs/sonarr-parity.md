@@ -46,11 +46,11 @@ not exact TV terminology, exact Sonarr UI, or identical plugin breadth.
 | Remote path mappings | `remote_path_mappings` schema/table, download-client UI, create/delete tests | Covered |
 | Import lists | `/import-lists`, sync routes, scheduled import-list task | Covered |
 | Notifications/connect | `/notifications`, Discord, Ntfy, Gotify, Apprise, Pushover, Pushbullet, Slack, email, webhooks, Komga scan | Covered |
-| System tasks/status/logs/backups | `/system/status`, `/system/tasks`, `/logs`, `/system/backup`, scheduled backups, General settings for log level and URL base | Mostly covered |
+| System tasks/status/logs/backups/updates | `/system/status`, `/system/tasks`, `/logs`, `/system/backup`, scheduled backups, Docker-safe update status, General settings for log level and URL base | Mostly covered |
 | Root-folder free-space display | `/system/status` disk-space panel, `/stats` disk usage summary | Covered |
 | Health and maintenance | `/health`, recycle bin, metadata health/reconcile tools, API key regeneration | Covered |
 | API authentication | `/api/*` API-key middleware, CSRF bypass for API-key clients, fail-closed tests | Covered |
-| API v1 seed | `/api/v1/system/status`, `/api/v1/health`, `/api/v1/diskspace`, `/api/v1/config/host`, `/api/v1/config/mediamanagement`, `/api/v1/system/task`, `/api/v1/system/backup`, `/api/v1/log`, `/api/v1/series`, `/api/v1/series/lookup`, `/api/v1/series/{id}`, `/api/v1/calendar`, `/api/v1/queue`, `/api/v1/history`, `/api/v1/wanted`, `/api/v1/wanted/cutoff`, `/api/v1/blocklist`, `/api/v1/command`, `/api/v1/rootfolder`, `/api/v1/notification`, `/api/v1/qualityprofile`, `/api/v1/qualitydefinition`, `/api/v1/languageprofile`, `/api/v1/customformat`, `/api/v1/releaseprofile`, `/api/v1/delayprofile`, `/api/v1/indexer`, `/api/v1/downloadclient`, `/api/v1/downloadclient/remotepathmapping`, `/api/v1/importlist`, `/api/v1/importlistexclusion`, `/api/v1/tag`, plus `POST /api/v1/series`, `PATCH /api/v1/series/{id}`, `DELETE /api/v1/series/{id}`, `POST /api/v1/series/{id}/restore`, `POST /api/v1/command`, `POST /api/v1/system/backup`, `POST /api/v1/system/backup/{filename}/validate`, `DELETE /api/v1/system/backup/{filename}`, `POST /api/v1/rootfolder`, `POST /api/v1/rootfolder/{id}/default`, `DELETE /api/v1/rootfolder/{id}`, `POST /api/v1/notification`, `PATCH /api/v1/notification/{id}`, `PUT /api/v1/notification/{id}`, `DELETE /api/v1/notification/{id}`, `POST /api/v1/qualityprofile`, `PATCH /api/v1/qualityprofile/{id}`, `PUT /api/v1/qualityprofile/{id}`, `POST /api/v1/qualityprofile/{id}/default`, `DELETE /api/v1/qualityprofile/{id}`, `POST /api/v1/languageprofile`, `PATCH /api/v1/languageprofile/{id}`, `PUT /api/v1/languageprofile/{id}`, `POST /api/v1/languageprofile/{id}/default`, `DELETE /api/v1/languageprofile/{id}`, `POST /api/v1/customformat`, `PATCH /api/v1/customformat/{id}`, `PUT /api/v1/customformat/{id}`, `DELETE /api/v1/customformat/{id}`, `POST /api/v1/releaseprofile`, `PATCH /api/v1/releaseprofile/{id}`, `PUT /api/v1/releaseprofile/{id}`, `DELETE /api/v1/releaseprofile/{id}`, `POST /api/v1/delayprofile`, `PATCH /api/v1/delayprofile/{id}`, `PUT /api/v1/delayprofile/{id}`, `DELETE /api/v1/delayprofile/{id}`, `POST /api/v1/indexer`, `PATCH /api/v1/indexer/{id}`, `PUT /api/v1/indexer/{id}`, `DELETE /api/v1/indexer/{id}`, `POST /api/v1/downloadclient`, `PATCH /api/v1/downloadclient/{id}`, `PUT /api/v1/downloadclient/{id}`, `DELETE /api/v1/downloadclient/{id}`, `POST /api/v1/downloadclient/remotepathmapping`, `PATCH /api/v1/downloadclient/remotepathmapping/{id}`, `PUT /api/v1/downloadclient/remotepathmapping/{id}`, `DELETE /api/v1/downloadclient/remotepathmapping/{id}`, `POST /api/v1/importlist`, `POST /api/v1/importlist/sync`, `PATCH /api/v1/importlist/{id}`, `PUT /api/v1/importlist/{id}`, `POST /api/v1/importlist/{id}/sync`, `DELETE /api/v1/importlist/{id}`, `POST /api/v1/importlistexclusion`, `PATCH /api/v1/importlistexclusion/{id}`, `PUT /api/v1/importlistexclusion/{id}`, `DELETE /api/v1/importlistexclusion/{id}`, `PATCH /api/v1/tag/{label}`, `PUT /api/v1/tag/{label}`, `DELETE /api/v1/tag/{label}`, `DELETE /api/v1/blocklist`, `DELETE /api/v1/blocklist/{id}`, `POST /api/v1/history/{id}/failed`, `DELETE /api/v1/history/failed`, `DELETE /api/v1/history/{id}`, `POST /api/v1/queue/grabbed/{volume_id}/reset`, `DELETE /api/v1/queue/pending/{pending_id}`, `DELETE /api/v1/queue/import/failed`, `DELETE /api/v1/queue/import/{queue_id}`, `POST /api/v1/queue/import/{queue_id}/skip`, and `POST /api/v1/queue/import/{queue_id}/retry` with response-contract tests | Initial slice covered |
+| API v1 seed | `/api/v1/system/status`, `/api/v1/system/update`, `/api/v1/health`, `/api/v1/diskspace`, `/api/v1/config/host`, `/api/v1/config/mediamanagement`, `/api/v1/system/task`, `/api/v1/system/backup`, `/api/v1/log`, `/api/v1/series`, `/api/v1/series/lookup`, `/api/v1/series/{id}`, `/api/v1/calendar`, `/api/v1/queue`, `/api/v1/history`, `/api/v1/wanted`, `/api/v1/wanted/cutoff`, `/api/v1/blocklist`, `/api/v1/command`, `/api/v1/rootfolder`, `/api/v1/notification`, `/api/v1/qualityprofile`, `/api/v1/qualitydefinition`, `/api/v1/languageprofile`, `/api/v1/customformat`, `/api/v1/releaseprofile`, `/api/v1/delayprofile`, `/api/v1/indexer`, `/api/v1/downloadclient`, `/api/v1/downloadclient/remotepathmapping`, `/api/v1/importlist`, `/api/v1/importlistexclusion`, `/api/v1/tag`, plus `POST /api/v1/series`, `PATCH /api/v1/series/{id}`, `DELETE /api/v1/series/{id}`, `POST /api/v1/series/{id}/restore`, `POST /api/v1/command`, `POST /api/v1/system/backup`, `POST /api/v1/system/backup/{filename}/validate`, `DELETE /api/v1/system/backup/{filename}`, `POST /api/v1/rootfolder`, `POST /api/v1/rootfolder/{id}/default`, `DELETE /api/v1/rootfolder/{id}`, `POST /api/v1/notification`, `PATCH /api/v1/notification/{id}`, `PUT /api/v1/notification/{id}`, `DELETE /api/v1/notification/{id}`, `POST /api/v1/qualityprofile`, `PATCH /api/v1/qualityprofile/{id}`, `PUT /api/v1/qualityprofile/{id}`, `POST /api/v1/qualityprofile/{id}/default`, `DELETE /api/v1/qualityprofile/{id}`, `POST /api/v1/languageprofile`, `PATCH /api/v1/languageprofile/{id}`, `PUT /api/v1/languageprofile/{id}`, `POST /api/v1/languageprofile/{id}/default`, `DELETE /api/v1/languageprofile/{id}`, `POST /api/v1/customformat`, `PATCH /api/v1/customformat/{id}`, `PUT /api/v1/customformat/{id}`, `DELETE /api/v1/customformat/{id}`, `POST /api/v1/releaseprofile`, `PATCH /api/v1/releaseprofile/{id}`, `PUT /api/v1/releaseprofile/{id}`, `DELETE /api/v1/releaseprofile/{id}`, `POST /api/v1/delayprofile`, `PATCH /api/v1/delayprofile/{id}`, `PUT /api/v1/delayprofile/{id}`, `DELETE /api/v1/delayprofile/{id}`, `POST /api/v1/indexer`, `PATCH /api/v1/indexer/{id}`, `PUT /api/v1/indexer/{id}`, `DELETE /api/v1/indexer/{id}`, `POST /api/v1/downloadclient`, `PATCH /api/v1/downloadclient/{id}`, `PUT /api/v1/downloadclient/{id}`, `DELETE /api/v1/downloadclient/{id}`, `POST /api/v1/downloadclient/remotepathmapping`, `PATCH /api/v1/downloadclient/remotepathmapping/{id}`, `PUT /api/v1/downloadclient/remotepathmapping/{id}`, `DELETE /api/v1/downloadclient/remotepathmapping/{id}`, `POST /api/v1/importlist`, `POST /api/v1/importlist/sync`, `PATCH /api/v1/importlist/{id}`, `PUT /api/v1/importlist/{id}`, `POST /api/v1/importlist/{id}/sync`, `DELETE /api/v1/importlist/{id}`, `POST /api/v1/importlistexclusion`, `PATCH /api/v1/importlistexclusion/{id}`, `PUT /api/v1/importlistexclusion/{id}`, `DELETE /api/v1/importlistexclusion/{id}`, `PATCH /api/v1/tag/{label}`, `PUT /api/v1/tag/{label}`, `DELETE /api/v1/tag/{label}`, `DELETE /api/v1/blocklist`, `DELETE /api/v1/blocklist/{id}`, `POST /api/v1/history/{id}/failed`, `DELETE /api/v1/history/failed`, `DELETE /api/v1/history/{id}`, `POST /api/v1/queue/grabbed/{volume_id}/reset`, `DELETE /api/v1/queue/pending/{pending_id}`, `DELETE /api/v1/queue/import/failed`, `DELETE /api/v1/queue/import/{queue_id}`, `POST /api/v1/queue/import/{queue_id}/skip`, and `POST /api/v1/queue/import/{queue_id}/retry` with response-contract tests | Initial slice covered |
 | Rename/organize files | `/organize`, `/api/v1/rename/library/preview`, `POST /api/v1/rename/library`, `/api/v1/rename/series/{id}/preview`, `POST /api/v1/rename/series/{id}`, and the series-page HTMX rename panel preview selected renames, report conflicts, rename safe files, and update import paths | Mostly covered |
 | Existing-library adoption | `/api/v1/rootfolder/{id}/unmappedfolders` reports root-folder child directories not mapped to known series; `/api/v1/rootfolder/{id}/unmappedfolders/matches` proposes metadata matches; `POST /api/v1/rootfolder/{id}/unmappedfolders/adopt` creates a series for a selected folder, selected metadata, and existing files; Settings → Root Folders exposes scan/match/adopt controls | Mostly covered |
 | Import-list exclusions | `import_list_exclusions` table, `/import-lists` management UI, and sync-time skip logic by source/external ID or normalized title | Covered |
@@ -182,14 +182,16 @@ Recommended scope:
 ### 8. Built-In Updater
 
 Sonarr has an in-app updater. Mangarr is deployed by Docker Compose and should
-not mutate its own running installation by default.
+not mutate its own running installation by default. Mangarr now exposes a
+Docker-safe update status card on `/system/status` and read-only
+`/api/v1/system/update` metadata with release-note links.
 
 Recommended scope:
 
 1. Treat in-app binary update as intentionally out-of-scope for Docker
    deployments.
-2. Optionally add an update-available indicator that links to release notes,
-   without editing the running install.
+2. Keep the update surface read-only unless a non-Docker deployment model needs
+   an explicit updater.
 
 ### 9. PostgreSQL Backend
 
@@ -205,18 +207,14 @@ Recommended scope:
 
 ## Prioritized Execution Plan
 
-1. Continue API parity coverage. This unlocks external automation and is easy
-   to test without file I/O risk.
-2. Rename planner dry-run. This is the largest remaining user-facing Sonarr
-   workflow gap and should start read-only.
-3. Existing-library advanced matching/path handling. Build on the current
-   scan, match proposal, and adoption workflow.
-4. API mutation endpoints. Add after read endpoints and route contracts are
-   stable.
-5. General settings polish: additional proxy guidance, server options, and
-   selected env overrides.
-6. Optional backup restore UI, extra download clients, update indicator, and
-   PostgreSQL evaluation. These should wait for explicit deployment/user demand.
+1. Continue API compatibility only where integrations need specific fields,
+   filters, paging, or command contracts.
+2. Keep rename/organize and existing-library adoption conservative: preview
+   first, preserve pinned folder names, and avoid risky bulk file movement.
+3. Treat custom scripts, chmod/chown, extra download clients, live backup
+   restore, and PostgreSQL as demand-driven deployment work.
+4. Maintain Docker-first operations: documented environment overrides,
+   read-only update status, release-note links, and manual image upgrades.
 
 ## Non-Goals
 
