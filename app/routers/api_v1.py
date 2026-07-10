@@ -1,4 +1,4 @@
-"""Read-only Sonarr-style API v1 endpoints.
+"""Sonarr-style API v1 endpoints.
 
 These endpoints are intentionally conservative: they expose stable JSON
 contracts for external automation without replacing Mangarr's existing
@@ -12,14 +12,15 @@ import re
 import shutil
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.status import HTTP_404_NOT_FOUND
 
 from files import build_chapter_label
 from library_scan import scan_unmapped_root_folder
 from rename_plan import build_series_rename_preview
-from routers.system import APP_VERSION, TASKS, TASK_STATE
+from routers.series_ import patch_series as _patch_series
+from routers.system import APP_VERSION, TASKS, TASK_STATE, run_command as _run_command
 from shared import (
     build_volume_label,
     from_json,
@@ -326,6 +327,11 @@ async def api_v1_series_detail(series_id: int):
     return JSONResponse(payload)
 
 
+@router.patch("/api/v1/series/{series_id}")
+async def api_v1_patch_series(request: Request, series_id: int):
+    return await _patch_series(request, series_id)
+
+
 @router.get("/api/v1/queue")
 async def api_v1_queue():
     with get_db() as db:
@@ -491,6 +497,11 @@ async def api_v1_commands():
             }
         )
     return JSONResponse(payload)
+
+
+@router.post("/api/v1/command")
+async def api_v1_run_command(request: Request):
+    return await _run_command(request)
 
 
 @router.get("/api/v1/history")
