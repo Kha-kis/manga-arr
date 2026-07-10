@@ -44,6 +44,10 @@ def env():
         c.execute("DELETE FROM series")
         c.execute("DELETE FROM quality_profile_custom_formats")
         c.execute("DELETE FROM quality_profiles")
+        c.execute("DELETE FROM custom_formats")
+        c.execute("DELETE FROM release_profile_tags")
+        c.execute("DELETE FROM release_profiles")
+        c.execute("DELETE FROM language_profiles")
         c.execute("DELETE FROM root_folders")
         c.execute(
             "INSERT INTO root_folders(id, path, label, is_default)"
@@ -57,6 +61,36 @@ def env():
             " min_upgrade_format_score, is_default)"
             " VALUES(10, 'Best Available', '[\"cbz\",\"cbr\",\"epub\"]',"
             " 'cbz', 1, 25, 10000, 10, 1)"
+        )
+        c.execute(
+            "INSERT INTO language_profiles(id, name, languages, allow_any)"
+            " VALUES(20, 'English', '[\"en\"]', 0)"
+        )
+        c.execute(
+            "INSERT OR REPLACE INTO settings(key,value)"
+            " VALUES('default_language_profile_id', '20')"
+        )
+        c.execute(
+            "INSERT INTO custom_formats"
+            "(id, name, specifications, include_custom_format_when_renaming)"
+            " VALUES(30, 'Official Digital',"
+            " '[{\"name\":\"official\",\"implementation\":\"source_is\","
+            " \"value\":\"official_digital\"}]', 1)"
+        )
+        c.execute(
+            "INSERT INTO quality_profile_custom_formats"
+            "(profile_id, format_id, score) VALUES(10, 30, 50)"
+        )
+        c.execute(
+            "INSERT INTO release_profiles"
+            "(id, name, enabled, required, ignored, preferred,"
+            " include_preferred_when_renaming)"
+            " VALUES(40, 'Trusted Groups', 1, 'group', 'raw',"
+            " '[{\"term\":\"deluxe\",\"score\":25}]', 1)"
+        )
+        c.execute(
+            "INSERT INTO release_profile_tags(profile_id, tag)"
+            " VALUES(40, 'favorite')"
         )
         c.execute(
             "INSERT INTO series"
@@ -216,6 +250,52 @@ def test_api_v1_profiles_roots_and_series_contract(env):
             "cutoffFormatScore": 10000,
             "minUpgradeFormatScore": 10,
             "isDefault": True,
+        }
+    ]
+
+    language_profiles = client.get(
+        "/api/v1/languageprofile", headers=headers
+    ).json()
+    assert language_profiles == [
+        {
+            "id": 20,
+            "name": "English",
+            "languages": ["en"],
+            "allowAny": False,
+            "isDefault": True,
+        }
+    ]
+
+    custom_formats = client.get("/api/v1/customformat", headers=headers).json()
+    assert custom_formats == [
+        {
+            "id": 30,
+            "name": "Official Digital",
+            "specifications": [
+                {
+                    "name": "official",
+                    "implementation": "source_is",
+                    "value": "official_digital",
+                }
+            ],
+            "includeCustomFormatWhenRenaming": True,
+            "qualityProfileScores": [
+                {"qualityProfileId": 10, "score": 50},
+            ],
+        }
+    ]
+
+    release_profiles = client.get("/api/v1/releaseprofile", headers=headers).json()
+    assert release_profiles == [
+        {
+            "id": 40,
+            "name": "Trusted Groups",
+            "enabled": True,
+            "required": "group",
+            "ignored": "raw",
+            "preferred": [{"term": "deluxe", "score": 25}],
+            "includePreferredWhenRenaming": True,
+            "tags": ["favorite"],
         }
     ]
 

@@ -82,6 +82,43 @@ def _quality_profile(row) -> dict:
     }
 
 
+def _language_profile(row, default_id: int | None) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "languages": from_json(row["languages"], []) or [],
+        "allowAny": _bool(row["allow_any"]),
+        "isDefault": row["id"] == default_id,
+    }
+
+
+def _custom_format(row, scores: list[dict]) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "specifications": from_json(row["specifications"], []) or [],
+        "includeCustomFormatWhenRenaming": _bool(
+            row["include_custom_format_when_renaming"]
+        ),
+        "qualityProfileScores": scores,
+    }
+
+
+def _release_profile(row, tags: list[str]) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "enabled": _bool(row["enabled"]),
+        "required": row["required"] or "",
+        "ignored": row["ignored"] or "",
+        "preferred": from_json(row["preferred"], []) or [],
+        "includePreferredWhenRenaming": _bool(
+            row["include_preferred_when_renaming"]
+        ),
+        "tags": tags,
+    }
+
+
 def _root_folder(row) -> dict:
     path = row["path"]
     disk = {
@@ -328,6 +365,72 @@ async def api_v1_quality_profiles():
             "SELECT * FROM quality_profiles ORDER BY id"
         ).fetchall()
         payload = [_quality_profile(row) for row in rows]
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/languageprofile")
+async def api_v1_language_profiles():
+    with get_db() as db:
+        default_id = None
+        row = db.execute(
+            "SELECT value FROM settings WHERE key='default_language_profile_id'"
+        ).fetchone()
+        if row:
+            try:
+                default_id = int(row["value"])
+            except (TypeError, ValueError):
+                default_id = None
+        rows = db.execute(
+            "SELECT * FROM language_profiles ORDER BY id"
+        ).fetchall()
+        payload = [_language_profile(row, default_id) for row in rows]
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/customformat")
+async def api_v1_custom_formats():
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT * FROM custom_formats ORDER BY name COLLATE NOCASE"
+        ).fetchall()
+        score_rows = db.execute(
+            """
+            SELECT format_id, profile_id, score
+            FROM quality_profile_custom_formats
+            ORDER BY profile_id
+            """
+        ).fetchall()
+        scores_by_format: dict[int, list[dict]] = {}
+        for score in score_rows:
+            scores_by_format.setdefault(score["format_id"], []).append(
+                {
+                    "qualityProfileId": score["profile_id"],
+                    "score": score["score"],
+                }
+            )
+        payload = [
+            _custom_format(row, scores_by_format.get(row["id"], []))
+            for row in rows
+        ]
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/releaseprofile")
+async def api_v1_release_profiles():
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT * FROM release_profiles ORDER BY id"
+        ).fetchall()
+        tag_rows = db.execute(
+            "SELECT profile_id, tag FROM release_profile_tags ORDER BY tag"
+        ).fetchall()
+        tags_by_profile: dict[int, list[str]] = {}
+        for tag in tag_rows:
+            tags_by_profile.setdefault(tag["profile_id"], []).append(tag["tag"])
+        payload = [
+            _release_profile(row, tags_by_profile.get(row["id"], []))
+            for row in rows
+        ]
     return JSONResponse(payload)
 
 
