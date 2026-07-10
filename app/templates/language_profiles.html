@@ -26,11 +26,13 @@
       <i class="bi bi-globe2"></i>
       {{ p.name }}
       {% if p.id == default_id %}
-        <span class="badge-status badge-downloaded ms-1 text-[0.65rem]">DEFAULT</span>
+        <span class="badge-status badge-downloaded ms-1 text-2xs">DEFAULT</span>
       {% endif %}
       <div class="ms-auto d-flex gap-2">
         <form method="POST" action="/language-profiles/{{ p.id }}/set-default" class="d-inline">
-          <button class="btn btn-sm btn-secondary" type="submit" title="Set as default">
+          <button class="btn btn-sm btn-secondary" type="submit"
+                  title="Set as default"
+                  aria-label="Set {{ p.name }} as default language profile">
             <i class="bi bi-check-circle"></i>
           </button>
         </form>
