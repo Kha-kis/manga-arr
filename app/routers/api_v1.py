@@ -10,20 +10,22 @@ import os
 import platform
 import re
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from starlette.status import HTTP_404_NOT_FOUND
 
+from files import build_chapter_label
 from library_scan import scan_unmapped_root_folder
 from rename_plan import build_series_rename_preview
-from routers.system import APP_VERSION
+from routers.system import APP_VERSION, TASKS, TASK_STATE
 from shared import (
     build_volume_label,
     from_json,
     get_cfg,
     get_db,
+    quality_rank,
 )
 
 router = APIRouter()
@@ -150,6 +152,86 @@ def _series(row, tags: list[str]) -> dict:
     }
 
 
+def _series_payload(db, row) -> dict:
+    return _series(row, _series_tags(db, row["id"], row["tags"]))
+
+
+def _volume(row) -> dict:
+    vol_range = (
+        (row["vol_range_start"], row["vol_range_end"])
+        if row["vol_range_start"] is not None and row["vol_range_end"] is not None
+        else None
+    )
+    return {
+        "id": row["id"],
+        "seriesId": row["series_id"],
+        "volumeNumber": row["volume_num"],
+        "chapterNumber": row["chapter_num"],
+        "label": build_volume_label(row["volume_num"], vol_range, row["pack_type"]),
+        "title": row["title"],
+        "status": row["status"],
+        "monitored": _bool_default_true(row["monitored"]),
+        "quality": row["quality"],
+        "size": row["size_bytes"] or 0,
+        "sourceTitle": row["torrent_name"],
+        "indexer": row["indexer"],
+        "protocol": row["protocol"],
+        "downloadClient": row["client"],
+        "downloadId": row["download_id"],
+        "importPath": row["import_path"],
+        "grabbedAt": row["grabbed_at"],
+        "importedAt": row["imported_at"],
+    }
+
+
+def _chapter(row) -> dict:
+    return {
+        "id": row["id"],
+        "seriesId": row["series_id"],
+        "volumeId": row["volume_id"],
+        "chapterNumber": row["chapter_num"],
+        "chapterRangeEnd": row["chapter_range_end"],
+        "label": build_chapter_label(row["chapter_num"], row["chapter_range_end"]),
+        "title": row["title"],
+        "status": row["status"],
+        "monitored": _bool_default_true(row["monitored"]),
+        "quality": row["quality"],
+        "size": row["size_bytes"] or 0,
+        "sourceTitle": row["torrent_name"],
+        "indexer": row["indexer"],
+        "protocol": row["protocol"],
+        "downloadClient": row["client"],
+        "downloadId": row["download_id"],
+        "importPath": row["import_path"],
+        "grabbedAt": row["grabbed_at"],
+        "importedAt": row["imported_at"],
+    }
+
+
+def _series_base_query() -> str:
+    return """
+        SELECT s.*,
+               rf.path AS root_folder_path,
+               qp.name AS quality_profile_name,
+               COUNT(v.id) AS total_volume_count,
+               SUM(CASE WHEN v.status='downloaded' THEN 1 ELSE 0 END) AS downloaded_count,
+               SUM(CASE WHEN v.status='wanted' THEN 1 ELSE 0 END) AS wanted_count,
+               SUM(CASE WHEN v.status='grabbed' THEN 1 ELSE 0 END) AS grabbed_count
+        FROM series s
+        LEFT JOIN root_folders rf ON rf.id=s.root_folder_id
+        LEFT JOIN quality_profiles qp ON qp.id=s.quality_profile_id
+        LEFT JOIN volumes v ON v.series_id=s.id
+    """
+
+
+def _iso_or_none(value) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
 @router.get("/api/v1/system/status")
 async def api_v1_system_status():
     return JSONResponse(
@@ -192,27 +274,55 @@ async def api_v1_quality_profiles():
 async def api_v1_series():
     with get_db() as db:
         rows = db.execute(
-            """
-            SELECT s.*,
-                   rf.path AS root_folder_path,
-                   qp.name AS quality_profile_name,
-                   COUNT(v.id) AS total_volume_count,
-                   SUM(CASE WHEN v.status='downloaded' THEN 1 ELSE 0 END) AS downloaded_count,
-                   SUM(CASE WHEN v.status='wanted' THEN 1 ELSE 0 END) AS wanted_count,
-                   SUM(CASE WHEN v.status='grabbed' THEN 1 ELSE 0 END) AS grabbed_count
-            FROM series s
-            LEFT JOIN root_folders rf ON rf.id=s.root_folder_id
-            LEFT JOIN quality_profiles qp ON qp.id=s.quality_profile_id
-            LEFT JOIN volumes v ON v.series_id=s.id
+            _series_base_query()
+            + """
             WHERE s.deleted_at IS NULL
             GROUP BY s.id
             ORDER BY s.title COLLATE NOCASE
             """
         ).fetchall()
         payload = [
-            _series(row, _series_tags(db, row["id"], row["tags"]))
+            _series_payload(db, row)
             for row in rows
         ]
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/series/{series_id}")
+async def api_v1_series_detail(series_id: int):
+    with get_db() as db:
+        row = db.execute(
+            _series_base_query()
+            + """
+            WHERE s.id=? AND s.deleted_at IS NULL
+            GROUP BY s.id
+            """,
+            (series_id,),
+        ).fetchone()
+        if not row:
+            return JSONResponse(
+                {"message": "Not Found", "description": "Series not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        payload = _series_payload(db, row)
+        volumes = db.execute(
+            """
+            SELECT * FROM volumes
+            WHERE series_id=?
+            ORDER BY COALESCE(volume_num, 999999), id
+            """,
+            (series_id,),
+        ).fetchall()
+        chapters = db.execute(
+            """
+            SELECT * FROM chapters
+            WHERE series_id=?
+            ORDER BY chapter_num, id
+            """,
+            (series_id,),
+        ).fetchall()
+        payload["volumes"] = [_volume(v) for v in volumes]
+        payload["chapters"] = [_chapter(c) for c in chapters]
     return JSONResponse(payload)
 
 
@@ -322,6 +432,67 @@ async def api_v1_queue():
     return JSONResponse(payload)
 
 
+@router.get("/api/v1/blocklist")
+async def api_v1_blocklist():
+    ttl_days = max(0, int(get_cfg("blocklist_ttl_days", "90") or "90"))
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT bl.*, s.title AS series_title
+            FROM blocklist bl
+            LEFT JOIN series s ON s.id=bl.series_id
+            ORDER BY bl.added_at DESC
+            """
+        ).fetchall()
+    payload = []
+    for row in rows:
+        expires_at = None
+        if ttl_days > 0 and row["added_at"]:
+            try:
+                added = datetime.fromisoformat(
+                    str(row["added_at"]).replace("Z", "+00:00")
+                )
+                if added.tzinfo is None:
+                    added = added.replace(tzinfo=timezone.utc)
+                expires_at = (added + timedelta(days=ttl_days)).isoformat()
+            except Exception:
+                expires_at = None
+        payload.append(
+            {
+                "id": row["id"],
+                "seriesId": row["series_id"],
+                "seriesTitle": row["series_title"],
+                "sourceTitle": row["torrent_name"],
+                "downloadUrl": row["torrent_url"],
+                "reason": row["reason"],
+                "indexer": row["indexer"],
+                "protocol": row["protocol"],
+                "size": row["size_bytes"] or 0,
+                "date": row["added_at"],
+                "expiresAt": expires_at,
+            }
+        )
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/command")
+async def api_v1_commands():
+    payload = []
+    for task in TASKS:
+        state = TASK_STATE.get(task["key"], {})
+        payload.append(
+            {
+                "name": task["key"],
+                "displayName": task["name"],
+                "interval": task["interval"],
+                "manual": _bool(task["manual"]),
+                "lastRun": _iso_or_none(state.get("last_run")),
+                "nextRun": _iso_or_none(state.get("next_run")),
+            }
+        )
+    return JSONResponse(payload)
+
+
 @router.get("/api/v1/history")
 async def api_v1_history(
     page: int = 1,
@@ -417,6 +588,54 @@ async def api_v1_wanted():
                     ),
                     "monitored": _bool_default_true(row["monitored"]),
                     "status": "wanted",
+                }
+            )
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/wanted/cutoff")
+async def api_v1_wanted_cutoff():
+    global_cutoff = get_cfg("quality_cutoff", "")
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT v.id, v.series_id, v.volume_num, v.quality, v.import_path,
+                   s.title AS series_title, s.quality_cutoff, s.quality_profile_id,
+                   qp.cutoff AS profile_cutoff, v.grabbed_at
+            FROM volumes v
+            JOIN series s ON s.id = v.series_id
+            LEFT JOIN quality_profiles qp ON qp.id = s.quality_profile_id
+            WHERE v.status = 'downloaded'
+              AND s.monitored = 1
+              AND s.deleted_at IS NULL
+            ORDER BY s.title COLLATE NOCASE, v.volume_num
+            """
+        ).fetchall()
+    payload = []
+    for row in rows:
+        effective_cutoff = (
+            row["quality_cutoff"] or row["profile_cutoff"] or global_cutoff or ""
+        ).lower()
+        current_quality = (row["quality"] or "").lower()
+        if not effective_cutoff or not current_quality:
+            continue
+        cutoff_rank = quality_rank(effective_cutoff)
+        current_rank = quality_rank(current_quality)
+        if cutoff_rank > 0 and current_rank < cutoff_rank:
+            payload.append(
+                {
+                    "id": row["id"],
+                    "seriesId": row["series_id"],
+                    "seriesTitle": row["series_title"],
+                    "volumeNumber": row["volume_num"],
+                    "volumeLabel": build_volume_label(row["volume_num"], None, None),
+                    "currentQuality": current_quality,
+                    "cutoff": effective_cutoff,
+                    "qualityCutoffSource": "series"
+                    if row["quality_cutoff"]
+                    else ("profile" if row["profile_cutoff"] else "global"),
+                    "importPath": row["import_path"],
+                    "grabbedAt": row["grabbed_at"],
                 }
             )
     return JSONResponse(payload)
