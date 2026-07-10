@@ -483,6 +483,53 @@ async def queue_refresh(request: Request):
     )
 
 
+def reset_grabbed_volume(vol_id: int) -> dict:
+    """Reset one grabbed volume to wanted and clear its seen dedup rows."""
+    with get_db() as db:
+        row = db.execute(
+            "SELECT status, source_url, download_id, series_id FROM volumes WHERE id=?",
+            (vol_id,),
+        ).fetchone()
+        if not row:
+            return {"ok": False, "status": "not_found"}
+        if row["status"] != "grabbed":
+            return {"ok": False, "status": "not_grabbed"}
+
+        if row["source_url"]:
+            db.execute("DELETE FROM seen WHERE torrent_url=?", (row["source_url"],))
+        if row["download_id"]:
+            others = db.execute(
+                "SELECT COUNT(*) FROM volumes WHERE download_id=? AND status='grabbed' AND id != ?",
+                (row["download_id"], vol_id),
+            ).fetchone()[0]
+            if others == 0:
+                db.execute(
+                    "DELETE FROM seen WHERE download_id=?",
+                    (row["download_id"],),
+                )
+        db.execute(
+            "UPDATE volumes SET status='wanted', download_id=NULL, grabbed_at=NULL,"
+            " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
+            " client=NULL, release_group=NULL WHERE id=? AND status='grabbed'",
+            (vol_id,),
+        )
+        cascade_chapters(
+            db,
+            row["series_id"],
+            [vol_id],
+            "wanted",
+            grabbed_at=None,
+            torrent_name=None,
+            torrent_url=None,
+            indexer=None,
+            protocol=None,
+            client=None,
+            download_id=None,
+            release_group=None,
+        )
+    return {"ok": True, "status": "reset"}
+
+
 @router.post("/queue/grabbed/{dl_hash}/reset-all")
 async def reset_orphaned_by_hash(request: Request, dl_hash: str):
     """Reset all grabbed volumes sharing a download_id back to wanted (for 'missing' queue items)."""
@@ -512,44 +559,7 @@ async def reset_orphaned_by_hash(request: Request, dl_hash: str):
 @router.post("/queue/grabbed/{vol_id}/reset")
 async def reset_orphaned_volume(request: Request, vol_id: int):
     """Reset an orphaned grabbed volume back to wanted so it can be re-grabbed."""
-    with get_db() as db:
-        row = db.execute(
-            "SELECT source_url, download_id, series_id FROM volumes WHERE id=? AND status='grabbed'",
-            (vol_id,),
-        ).fetchone()
-        if row:
-            if row["source_url"]:
-                db.execute("DELETE FROM seen WHERE torrent_url=?", (row["source_url"],))
-            if row["download_id"]:
-                others = db.execute(
-                    "SELECT COUNT(*) FROM volumes WHERE download_id=? AND status='grabbed' AND id != ?",
-                    (row["download_id"], vol_id),
-                ).fetchone()[0]
-                if others == 0:
-                    db.execute(
-                        "DELETE FROM seen WHERE download_id=?", (row["download_id"],)
-                    )
-        db.execute(
-            "UPDATE volumes SET status='wanted', download_id=NULL, grabbed_at=NULL,"
-            " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
-            " client=NULL, release_group=NULL WHERE id=? AND status='grabbed'",
-            (vol_id,),
-        )
-        if row:
-            cascade_chapters(
-                db,
-                row["series_id"],
-                [vol_id],
-                "wanted",
-                grabbed_at=None,
-                torrent_name=None,
-                torrent_url=None,
-                indexer=None,
-                protocol=None,
-                client=None,
-                download_id=None,
-                release_group=None,
-            )
+    reset_grabbed_volume(vol_id)
     return await _queue_partial_response(request)
 
 
