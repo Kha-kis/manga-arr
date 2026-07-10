@@ -179,8 +179,10 @@ def test_settings_page_renders_unmapped_folder_adoption_controls(env):
     assert "Metadata Matches" in html
     assert "adopt-quality-profile" in html
     assert "adopt-language-profile" in html
+    assert "unmapped-match-query" in html
+    assert "new URLSearchParams" in html
     assert "/api/v1/rootfolder/${rootId}/unmappedfolders" in html
-    assert "/unmappedfolders/matches?path=${encodeURIComponent(folder.path)}" in html
+    assert "/unmappedfolders/matches?${params.toString()}" in html
     assert "/api/v1/rootfolder/${this.activeRootId}/unmappedfolders/adopt" in html
     assert "payload.metadataTitle = this.selectedMatch.title" in html
     assert "payload.anilistId = this.selectedMatch.anilistId" in html
@@ -277,11 +279,13 @@ def test_unmapped_folder_adoption_can_seed_selected_metadata(env):
 def test_unmapped_folder_match_proposals_search_metadata(env, monkeypatch):
     import routers.api_v1 as api_v1
 
+    queries = []
+
     async def fake_search(query):
-        assert query == "Unmapped A"
+        queries.append(query)
         return [
             {
-                "title": "Unmapped A",
+                "title": "Official Unmapped A",
                 "source": "anilist",
                 "anilist_id": 123,
                 "mal_id": 456,
@@ -312,16 +316,17 @@ def test_unmapped_folder_match_proposals_search_metadata(env, monkeypatch):
     target = os.path.join(env["library_root"], "Unmapped A")
     resp = _client().get(
         "/api/v1/rootfolder/1/unmappedfolders/matches",
-        params={"path": target},
+        params={"path": target, "query": "Official Unmapped A"},
         headers={"X-Api-Key": _api_key(env["db_path"])},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["rootFolderId"] == 1
     assert body["folder"]["name"] == "Unmapped A"
-    assert body["query"] == "Unmapped A"
+    assert body["query"] == "Official Unmapped A"
     assert body["source"] == "anilist"
-    assert body["matches"][0]["title"] == "Unmapped A"
+    assert queries == ["Official Unmapped A"]
+    assert body["matches"][0]["title"] == "Official Unmapped A"
     assert body["matches"][0]["confidence"] == 100
     assert body["matches"][0]["anilistId"] == 123
     assert body["matches"][0]["malId"] == 456

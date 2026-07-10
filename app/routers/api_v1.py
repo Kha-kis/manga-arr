@@ -4917,7 +4917,9 @@ async def api_v1_root_folder_unmapped(root_folder_id: int):
 
 
 @router.get("/api/v1/rootfolder/{root_folder_id}/unmappedfolders/matches")
-async def api_v1_root_folder_unmapped_matches(root_folder_id: int, path: str = ""):
+async def api_v1_root_folder_unmapped_matches(
+    root_folder_id: int, path: str = "", query: str = ""
+):
     folder_path = (path or "").strip()
     if not folder_path:
         return JSONResponse({"error": "path is required"}, status_code=400)
@@ -4944,15 +4946,15 @@ async def api_v1_root_folder_unmapped_matches(root_folder_id: int, path: str = "
             status_code=400,
         )
 
-    query = folder["name"]
-    results, source = await search_series(query)
-    matches = [_metadata_match_payload(query, item) for item in results]
+    search_query = (query or "").strip() or folder["name"]
+    results, source = await search_series(search_query)
+    matches = [_metadata_match_payload(search_query, item) for item in results]
     matches.sort(key=lambda item: item["confidence"], reverse=True)
     return JSONResponse(
         {
             "rootFolderId": scan["rootFolderId"],
             "folder": folder,
-            "query": query,
+            "query": search_query,
             "source": source,
             "matches": matches,
         }

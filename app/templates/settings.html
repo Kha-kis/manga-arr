@@ -266,6 +266,23 @@
                 <span class="badge-status badge-downloaded" x-show="selectedMatch" x-text="selectedMatch ? selectedMatch.source : ''"></span>
               </div>
 
+              <div class="row g-2 align-items-end mb-3">
+                <div class="col-12 col-md">
+                  <label class="form-label" for="unmapped-match-query">Metadata Search</label>
+                  <input type="text" id="unmapped-match-query" class="form-control form-control-sm"
+                         x-model="matchQuery" :placeholder="selected ? selected.name : ''"
+                         @keydown.enter.prevent="loadMatches(selected)">
+                </div>
+                <div class="col-12 col-md-auto">
+                  <button type="button" class="btn btn-outline-ember btn-sm"
+                          @click="loadMatches(selected)"
+                          :disabled="!selected || matchLoading"
+                          aria-label="Search metadata matches">
+                    <i class="bi bi-search me-1"></i>Search
+                  </button>
+                </div>
+              </div>
+
               <div class="settings-unmapped-empty" x-show="!matchLoading && selected && !matches.length">
                 <i class="bi bi-dash-circle text-muted-3 me-1"></i>
                 No metadata matches
@@ -923,6 +940,7 @@ function unmappedAdoption() {
     qualityProfileId: '',
     languageProfileId: '',
     matchLoading: false,
+    matchQuery: '',
     matches: [],
     selectedMatch: null,
     adopting: false,
@@ -972,6 +990,7 @@ function unmappedAdoption() {
       this.monitored = true;
       this.qualityProfileId = '';
       this.languageProfileId = '';
+      this.matchQuery = folder.name || '';
       this.matches = [];
       this.selectedMatch = null;
       this.adopted = false;
@@ -985,6 +1004,7 @@ function unmappedAdoption() {
       this.monitored = true;
       this.qualityProfileId = '';
       this.languageProfileId = '';
+      this.matchQuery = '';
       this.matches = [];
       this.selectedMatch = null;
       this.matchLoading = false;
@@ -994,9 +1014,11 @@ function unmappedAdoption() {
       if (!folder || !this.activeRootId) return;
       this.matchLoading = true;
       try {
-        const resp = await fetch(
-          `/api/v1/rootfolder/${this.activeRootId}/unmappedfolders/matches?path=${encodeURIComponent(folder.path)}`
-        );
+        const params = new URLSearchParams({
+          path: folder.path,
+          query: (this.matchQuery || folder.name || '').trim()
+        });
+        const resp = await fetch(`/api/v1/rootfolder/${this.activeRootId}/unmappedfolders/matches?${params.toString()}`);
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.description || data.error || data.message || 'Match search failed');
         this.matches = data.matches || [];
