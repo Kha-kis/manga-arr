@@ -7,10 +7,12 @@ workflow-specific `/api/*` actions.
 from __future__ import annotations
 
 import difflib
+import json
 import os
 import platform
 import re
 import shutil
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Request
@@ -138,6 +140,14 @@ def _quality_profile(row) -> dict:
         "minUpgradeFormatScore": row["min_upgrade_format_score"] or 10,
         "isDefault": _bool(row["is_default"]),
     }
+
+
+def _quality_profile_by_id(db, profile_id: int) -> dict | None:
+    row = db.execute(
+        "SELECT * FROM quality_profiles WHERE id=?",
+        (profile_id,),
+    ).fetchone()
+    return _quality_profile(row) if row else None
 
 
 def _language_profile(row, default_id: int | None) -> dict:
@@ -539,6 +549,30 @@ def _optional_non_negative_int(payload: dict, *keys: str) -> int | None:
     return None
 
 
+def _payload_int(payload: dict, key: str, default: int) -> int:
+    if key not in payload:
+        return default
+    value = _optional_payload_int(payload, key)
+    return default if value is None else value
+
+
+def _payload_quality_list(payload: dict, key: str, default: list[str]) -> str:
+    if key not in payload:
+        return json.dumps(default)
+    value = payload.get(key)
+    if value in (None, ""):
+        return json.dumps(default)
+    if isinstance(value, str):
+        parsed = from_json(value, None)
+        if not isinstance(parsed, list):
+            raise ValueError(f"{key} must be a list of quality names")
+        value = parsed
+    if not isinstance(value, list):
+        raise ValueError(f"{key} must be a list of quality names")
+    qualities = [str(item).strip() for item in value if str(item).strip()]
+    return json.dumps(qualities)
+
+
 def _default_profile_id(db, table: str) -> int | None:
     if table == "quality_profiles":
         row = db.execute(
@@ -670,6 +704,180 @@ async def api_v1_quality_profiles():
         ).fetchall()
         payload = [_quality_profile(row) for row in rows]
     return JSONResponse(payload)
+
+
+@router.post("/api/v1/qualityprofile")
+async def api_v1_create_quality_profile(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+
+    name = _payload_str(payload, "name")
+    if not name:
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    try:
+        qualities = _payload_quality_list(
+            payload, "qualities", ["cbz", "epub", "cbr", "pdf"]
+        )
+        upgrades_allowed = _json_bool(payload.get("upgradesAllowed"), True)
+        minimum_score = _payload_int(payload, "minimumCustomFormatScore", 0)
+        cutoff_score = _payload_int(payload, "cutoffFormatScore", 10000)
+        min_upgrade_score = _payload_int(payload, "minUpgradeFormatScore", 10)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    cutoff = _payload_str(payload, "cutoff") or None
+    is_default = _json_bool(payload.get("isDefault"), False)
+
+    try:
+        with get_db() as db:
+            if is_default:
+                db.execute("UPDATE quality_profiles SET is_default=0")
+            cur = db.execute(
+                "INSERT INTO quality_profiles"
+                "(name, qualities, cutoff, upgrades_allowed,"
+                " minimum_custom_format_score, cutoff_format_score,"
+                " min_upgrade_format_score, is_default)"
+                " VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    name,
+                    qualities,
+                    cutoff,
+                    1 if upgrades_allowed else 0,
+                    minimum_score,
+                    cutoff_score,
+                    min_upgrade_score,
+                    1 if is_default else 0,
+                ),
+            )
+            profile = _quality_profile_by_id(db, cur.lastrowid)
+    except sqlite3.IntegrityError:
+        return JSONResponse(
+            {"error": "quality profile name already exists"},
+            status_code=HTTP_400_BAD_REQUEST,
+        )
+    return JSONResponse({"ok": True, "status": "created", "qualityProfile": profile})
+
+
+@router.put("/api/v1/qualityprofile/{profile_id}")
+@router.patch("/api/v1/qualityprofile/{profile_id}")
+async def api_v1_update_quality_profile(request: Request, profile_id: int):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+
+    fields: list[str] = []
+    params: list = []
+    try:
+        if "name" in payload:
+            name = _payload_str(payload, "name")
+            if not name:
+                return JSONResponse({"error": "name is required"}, status_code=400)
+            fields.append("name=?")
+            params.append(name)
+        if "qualities" in payload:
+            fields.append("qualities=?")
+            params.append(_payload_quality_list(payload, "qualities", []))
+        if "cutoff" in payload:
+            fields.append("cutoff=?")
+            params.append(_payload_str(payload, "cutoff") or None)
+        if "upgradesAllowed" in payload:
+            fields.append("upgrades_allowed=?")
+            params.append(
+                1 if _json_bool(payload.get("upgradesAllowed"), True) else 0
+            )
+        int_fields = {
+            "minimumCustomFormatScore": "minimum_custom_format_score",
+            "cutoffFormatScore": "cutoff_format_score",
+            "minUpgradeFormatScore": "min_upgrade_format_score",
+        }
+        for key, column in int_fields.items():
+            if key in payload:
+                fields.append(f"{column}=?")
+                params.append(_payload_int(payload, key, 0))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    is_default = payload.get("isDefault")
+    wants_default = _json_bool(is_default, False) if is_default is not None else None
+
+    try:
+        with get_db() as db:
+            existing = db.execute(
+                "SELECT 1 FROM quality_profiles WHERE id=?",
+                (profile_id,),
+            ).fetchone()
+            if not existing:
+                return JSONResponse(
+                    {"error": "quality profile not found"},
+                    status_code=HTTP_404_NOT_FOUND,
+                )
+            if wants_default:
+                db.execute("UPDATE quality_profiles SET is_default=0")
+                fields.append("is_default=?")
+                params.append(1)
+            elif wants_default is False:
+                fields.append("is_default=?")
+                params.append(0)
+            if fields:
+                params.append(profile_id)
+                db.execute(
+                    f"UPDATE quality_profiles SET {', '.join(fields)} WHERE id=?",
+                    params,
+                )
+            profile = _quality_profile_by_id(db, profile_id)
+    except sqlite3.IntegrityError:
+        return JSONResponse(
+            {"error": "quality profile name already exists"},
+            status_code=HTTP_400_BAD_REQUEST,
+        )
+    return JSONResponse({"ok": True, "qualityProfile": profile})
+
+
+@router.post("/api/v1/qualityprofile/{profile_id}/default")
+async def api_v1_set_default_quality_profile(profile_id: int):
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM quality_profiles WHERE id=?",
+            (profile_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "quality profile not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        db.execute("UPDATE quality_profiles SET is_default=0")
+        db.execute("UPDATE quality_profiles SET is_default=1 WHERE id=?", (profile_id,))
+        profile = _quality_profile_by_id(db, profile_id)
+    return JSONResponse({"ok": True, "qualityProfile": profile})
+
+
+@router.delete("/api/v1/qualityprofile/{profile_id}")
+async def api_v1_delete_quality_profile(profile_id: int):
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM quality_profiles WHERE id=?",
+            (profile_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "quality profile not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        db.execute(
+            "UPDATE series SET quality_profile_id=NULL WHERE quality_profile_id=?",
+            (profile_id,),
+        )
+        db.execute("DELETE FROM quality_profiles WHERE id=?", (profile_id,))
+    return JSONResponse({"ok": True, "id": profile_id})
 
 
 @router.get("/api/v1/languageprofile")

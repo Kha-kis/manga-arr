@@ -687,6 +687,183 @@ def test_api_v1_delete_root_folder_requires_api_key(env):
     assert resp.status_code == 401
 
 
+def test_api_v1_create_quality_profile_adds_row(env):
+    resp = _client().post(
+        "/api/v1/qualityprofile",
+        json={
+            "name": "API Quality",
+            "qualities": ["cbz", "cbr"],
+            "cutoff": "cbr",
+            "upgradesAllowed": False,
+            "minimumCustomFormatScore": 15,
+            "cutoffFormatScore": 250,
+            "minUpgradeFormatScore": 20,
+            "isDefault": True,
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["status"] == "created"
+    assert body["qualityProfile"]["name"] == "API Quality"
+    assert body["qualityProfile"]["qualities"] == ["cbz", "cbr"]
+    assert body["qualityProfile"]["cutoff"] == "cbr"
+    assert body["qualityProfile"]["upgradesAllowed"] is False
+    assert body["qualityProfile"]["minimumCustomFormatScore"] == 15
+    assert body["qualityProfile"]["cutoffFormatScore"] == 250
+    assert body["qualityProfile"]["minUpgradeFormatScore"] == 20
+    assert body["qualityProfile"]["isDefault"] is True
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT qualities, cutoff, upgrades_allowed,"
+            " minimum_custom_format_score, cutoff_format_score,"
+            " min_upgrade_format_score, is_default FROM quality_profiles"
+            " WHERE name='API Quality'"
+        ).fetchone()
+    assert json.loads(row["qualities"]) == ["cbz", "cbr"]
+    assert row["cutoff"] == "cbr"
+    assert row["upgrades_allowed"] == 0
+    assert row["minimum_custom_format_score"] == 15
+    assert row["cutoff_format_score"] == 250
+    assert row["min_upgrade_format_score"] == 20
+    assert row["is_default"] == 1
+
+
+def test_api_v1_create_quality_profile_requires_api_key(env):
+    resp = _client().post(
+        "/api/v1/qualityprofile",
+        json={"name": "No Auth"},
+    )
+    assert resp.status_code == 401
+
+
+def test_api_v1_create_quality_profile_rejects_bad_qualities(env):
+    resp = _client().post(
+        "/api/v1/qualityprofile",
+        json={"name": "Bad Quality", "qualities": {"cbz": True}},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "qualities must be a list of quality names"
+
+
+def test_api_v1_update_quality_profile_updates_submitted_fields(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO quality_profiles(id, name, qualities, cutoff,"
+            " upgrades_allowed, minimum_custom_format_score)"
+            " VALUES(1001, 'Old API Quality', '[\"cbz\"]', 'cbz', 1, 0)"
+        )
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/qualityprofile/1001",
+        json={
+            "name": "Updated API Quality",
+            "qualities": ["cbz", "epub"],
+            "cutoff": "epub",
+            "upgradesAllowed": False,
+            "minimumCustomFormatScore": 7,
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["qualityProfile"]["name"] == "Updated API Quality"
+    assert body["qualityProfile"]["qualities"] == ["cbz", "epub"]
+    assert body["qualityProfile"]["cutoff"] == "epub"
+    assert body["qualityProfile"]["upgradesAllowed"] is False
+    assert body["qualityProfile"]["minimumCustomFormatScore"] == 7
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT name, qualities, cutoff, upgrades_allowed,"
+            " minimum_custom_format_score FROM quality_profiles WHERE id=1001"
+        ).fetchone()
+    assert row["name"] == "Updated API Quality"
+    assert json.loads(row["qualities"]) == ["cbz", "epub"]
+    assert row["cutoff"] == "epub"
+    assert row["upgrades_allowed"] == 0
+    assert row["minimum_custom_format_score"] == 7
+
+
+def test_api_v1_update_quality_profile_rejects_unknown_id(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/qualityprofile/99999",
+        json={"name": "Missing"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "quality profile not found"
+
+
+def test_api_v1_set_default_quality_profile_is_unique(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO quality_profiles(id, name, qualities, is_default)"
+            " VALUES(1010, 'Default A', '[]', 1)"
+        )
+        c.execute(
+            "INSERT INTO quality_profiles(id, name, qualities, is_default)"
+            " VALUES(1011, 'Default B', '[]', 0)"
+        )
+
+    resp = _client().post(
+        "/api/v1/qualityprofile/1011/default",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["qualityProfile"]["isDefault"] is True
+
+    with sqlite3.connect(env) as c:
+        rows = c.execute(
+            "SELECT id, is_default FROM quality_profiles"
+            " WHERE id IN (1010, 1011) ORDER BY id"
+        ).fetchall()
+    assert rows == [(1010, 0), (1011, 1)]
+
+
+def test_api_v1_delete_quality_profile_clears_series_references(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO quality_profiles(id, name, qualities)"
+            " VALUES(1020, 'Delete API Quality', '[]')"
+        )
+        c.execute("UPDATE series SET quality_profile_id=1020 WHERE id=5")
+
+    resp = _client().delete(
+        "/api/v1/qualityprofile/1020",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 1020}
+
+    with sqlite3.connect(env) as c:
+        profile = c.execute(
+            "SELECT 1 FROM quality_profiles WHERE id=1020"
+        ).fetchone()
+        series_profile = c.execute(
+            "SELECT quality_profile_id FROM series WHERE id=5"
+        ).fetchone()[0]
+    assert profile is None
+    assert series_profile is None
+
+
+def test_api_v1_delete_quality_profile_rejects_unknown_id(env):
+    resp = _client().delete(
+        "/api/v1/qualityprofile/99999",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "quality profile not found"
+
+
 def test_api_v1_command_cleanup_seen_mutates_stale_rows(env):
     client = _client()
     headers = {"X-Api-Key": _api_key(env)}
