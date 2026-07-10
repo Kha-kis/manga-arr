@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from files import MANGA_EXTENSIONS
 from rescan import _series_library_dir, rescan_series_folder
 from shared import get_db
+from volumes import create_volume_stubs
 
 
 @dataclass
@@ -112,6 +113,17 @@ def adopt_unmapped_folder(
     folder_path: str,
     *,
     title: str | None = None,
+    metadata_title: str | None = None,
+    anilist_id: int | None = None,
+    mal_id: int | None = None,
+    mu_id: str | None = None,
+    cover_url: str | None = None,
+    status: str | None = None,
+    description: str | None = None,
+    total_volumes: int | None = None,
+    total_chapters: int | None = None,
+    pub_year: int | None = None,
+    metadata_source: str | None = None,
     monitored: bool = True,
     quality_profile_id: int | None = None,
     language_profile_id: int | None = None,
@@ -182,6 +194,12 @@ def adopt_unmapped_folder(
         series_title = (title or os.path.basename(requested_path)).strip()
         if not series_title:
             return AdoptUnmappedFolderResult(False, 400, "title is required")
+        search_pattern = (metadata_title or series_title).strip() or series_title
+        vol_count_source = metadata_source if metadata_source in (
+            "anilist",
+            "mangaupdates",
+            "manual",
+        ) else "manual"
 
         if quality_profile_id is not None:
             if not db.execute(
@@ -201,20 +219,30 @@ def adopt_unmapped_folder(
 
         monitor_mode = "missing" if monitored else "none"
         cur = db.execute(
-            "INSERT INTO series(title, search_pattern, root_folder_id, enabled,"
-            " monitored, monitor_mode, quality_profile_id, language_profile_id,"
-            " vol_count_source)"
-            " VALUES(?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO series(title, search_pattern, anilist_id, mal_id, mu_id,"
+            " cover_url, status, description, total_volumes, total_chapters,"
+            " root_folder_id, pub_year, enabled, monitored, monitor_mode,"
+            " quality_profile_id, language_profile_id, vol_count_source)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 series_title,
-                series_title,
+                search_pattern,
+                anilist_id,
+                mal_id,
+                mu_id,
+                cover_url,
+                status,
+                description,
+                total_volumes,
+                total_chapters,
                 root_folder_id,
+                pub_year,
                 1,
                 1 if monitored else 0,
                 monitor_mode,
                 quality_profile_id,
                 language_profile_id,
-                "manual",
+                vol_count_source,
             ),
         )
         series_id = cur.lastrowid
@@ -228,11 +256,15 @@ def adopt_unmapped_folder(
                 "Requested path does not match the configured series folder path",
             )
 
+        if total_volumes and total_volumes > 0:
+            create_volume_stubs(db, series_id, total_volumes)
         rescan = rescan_series_folder(db, series_id)
         series_row = db.execute(
             "SELECT id, title, search_pattern, root_folder_id, monitored,"
             " monitor_mode, quality_profile_id, language_profile_id,"
-            " total_volumes FROM series WHERE id=?",
+            " anilist_id, mal_id, mu_id, cover_url, status, description,"
+            " total_volumes, total_chapters, pub_year, vol_count_source"
+            " FROM series WHERE id=?",
             (series_id,),
         ).fetchone()
         if not series_row:
@@ -252,7 +284,16 @@ def adopt_unmapped_folder(
                     "monitorMode": series_row["monitor_mode"] or "all",
                     "qualityProfileId": series_row["quality_profile_id"],
                     "languageProfileId": series_row["language_profile_id"],
+                    "anilistId": series_row["anilist_id"],
+                    "malId": series_row["mal_id"],
+                    "mangaUpdatesId": series_row["mu_id"],
+                    "coverUrl": series_row["cover_url"],
+                    "status": series_row["status"],
+                    "overview": series_row["description"],
                     "totalVolumes": series_row["total_volumes"],
+                    "totalChapters": series_row["total_chapters"],
+                    "year": series_row["pub_year"],
+                    "volumeCountSource": series_row["vol_count_source"],
                 },
                 "rescan": rescan,
             },

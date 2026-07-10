@@ -284,6 +284,15 @@ def _metadata_match_payload(query: str, result: dict) -> dict:
     }
 
 
+def _optional_payload_int(payload: dict, key: str) -> int | None:
+    value = payload.get(key)
+    if value in (None, ""):
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{key} must be an integer")
+    return value
+
+
 @router.get("/api/v1/system/status")
 async def api_v1_system_status():
     return JSONResponse(
@@ -812,6 +821,20 @@ async def api_v1_root_folder_adopt_unmapped(request: Request, root_folder_id: in
     title = payload.get("title")
     if title is not None:
         title = str(title).strip()
+    metadata_title = str(payload.get("metadataTitle") or "").strip() or None
+    manga_updates_id = str(payload.get("mangaUpdatesId") or "").strip() or None
+    cover_url = str(payload.get("coverUrl") or "").strip() or None
+    status = str(payload.get("status") or "").strip() or None
+    overview = str(payload.get("overview") or "").strip() or None
+    metadata_source = str(payload.get("metadataSource") or "").strip() or None
+    try:
+        anilist_id = _optional_payload_int(payload, "anilistId")
+        mal_id = _optional_payload_int(payload, "malId")
+        total_volumes = _optional_payload_int(payload, "totalVolumes")
+        total_chapters = _optional_payload_int(payload, "totalChapters")
+        pub_year = _optional_payload_int(payload, "year")
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     monitored = payload.get("monitored")
     if monitored is not None and not isinstance(monitored, bool):
         return JSONResponse({"error": "monitored must be a boolean"}, status_code=400)
@@ -835,6 +858,17 @@ async def api_v1_root_folder_adopt_unmapped(request: Request, root_folder_id: in
         root_folder_id,
         path,
         title=title,
+        metadata_title=metadata_title,
+        anilist_id=anilist_id,
+        mal_id=mal_id,
+        mu_id=manga_updates_id,
+        cover_url=cover_url,
+        status=status,
+        description=overview,
+        total_volumes=total_volumes,
+        total_chapters=total_chapters,
+        pub_year=pub_year,
+        metadata_source=metadata_source,
         monitored=monitored_bool,
         quality_profile_id=quality_profile_id,
         language_profile_id=language_profile_id,
