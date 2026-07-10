@@ -728,6 +728,19 @@ async def api_v1_blocklist():
     return JSONResponse(payload)
 
 
+@router.delete("/api/v1/blocklist/{blocklist_id}")
+async def api_v1_delete_blocklist_entry(blocklist_id: int):
+    with get_db() as db:
+        cur = db.execute("DELETE FROM blocklist WHERE id=?", (blocklist_id,))
+        deleted = cur.rowcount
+    if deleted < 1:
+        return JSONResponse(
+            {"error": "blocklist entry not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    return JSONResponse({"ok": True, "id": blocklist_id})
+
+
 @router.get("/api/v1/command")
 async def api_v1_commands():
     payload = []
