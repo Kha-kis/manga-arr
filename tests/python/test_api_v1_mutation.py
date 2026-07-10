@@ -687,6 +687,232 @@ def test_api_v1_delete_root_folder_requires_api_key(env):
     assert resp.status_code == 401
 
 
+def test_api_v1_create_notification_adds_row_and_redacts_secret(env):
+    from security import decrypt_secret
+
+    resp = _client().post(
+        "/api/v1/notification",
+        json={
+            "name": "API Discord",
+            "implementation": "discord",
+            "enable": False,
+            "settings": {
+                "webhook_url": "https://discord.example/webhook-secret",
+                "avatar": "mangarr",
+            },
+            "onGrab": True,
+            "onDownload": False,
+            "onUpgrade": True,
+            "onSeriesAdd": False,
+            "onHealthIssue": True,
+            "onHealthRestored": True,
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "webhook-secret" not in resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["status"] == "created"
+    notification = body["notification"]
+    assert notification["name"] == "API Discord"
+    assert notification["implementation"] == "discord"
+    assert notification["enable"] is False
+    assert notification["settings"] == {"avatar": "mangarr"}
+    assert notification["hasSecretSettings"] == {"webhook_url": True}
+    assert notification["onGrab"] is True
+    assert notification["onDownload"] is False
+    assert notification["onUpgrade"] is True
+    assert notification["onSeriesAdd"] is False
+    assert notification["onHealthIssue"] is True
+    assert notification["onHealthRestored"] is True
+    notification_id = notification["id"]
+
+    with sqlite3.connect(env) as c:
+        row = c.execute(
+            "SELECT settings, enabled, on_download FROM notification_connections"
+            " WHERE id=?",
+            (notification_id,),
+        ).fetchone()
+    settings = json.loads(row[0])
+    assert settings["webhook_url"] != "https://discord.example/webhook-secret"
+    assert decrypt_secret(settings["webhook_url"]) == (
+        "https://discord.example/webhook-secret"
+    )
+    assert settings["avatar"] == "mangarr"
+    assert row[1] == 0
+    assert row[2] == 0
+
+
+def test_api_v1_create_notification_requires_api_key(env):
+    resp = _client().post(
+        "/api/v1/notification",
+        json={"name": "No Auth", "implementation": "discord"},
+    )
+    assert resp.status_code == 401
+
+
+def test_api_v1_create_notification_rejects_bad_implementation(env):
+    resp = _client().post(
+        "/api/v1/notification",
+        json={"name": "Bad", "implementation": "unsupported"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "implementation is not supported"
+
+
+def test_api_v1_read_notification_redacts_stored_secret(env):
+    from security import encrypt_if_cipher_available
+
+    settings = {
+        "webhook_url": encrypt_if_cipher_available("https://hooks.secret"),
+        "username": "bot",
+    }
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO notification_connections"
+            "(id, name, type, enabled, settings, on_grab, on_download,"
+            " on_upgrade, on_series_add, on_health_issue, on_health_restored)"
+            " VALUES(930, 'Read Discord', 'discord', 1, ?, 1, 1, 1, 1, 1, 0)",
+            (json.dumps(settings),),
+        )
+
+    resp = _client().get(
+        "/api/v1/notification",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "hooks.secret" not in resp.text
+    item = [entry for entry in resp.json() if entry["id"] == 930][0]
+    assert item["settings"] == {"username": "bot"}
+    assert item["hasSecretSettings"] == {"webhook_url": True}
+
+
+def test_api_v1_update_notification_merges_settings_and_preserves_blank_secret(env):
+    from security import decrypt_secret, encrypt_if_cipher_available
+
+    old_secret = encrypt_if_cipher_available("https://old.secret/webhook")
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO notification_connections"
+            "(id, name, type, enabled, settings, on_grab, on_download,"
+            " on_upgrade, on_series_add, on_health_issue, on_health_restored)"
+            " VALUES(931, 'Old Discord', 'discord', 1, ?, 1, 1, 1, 1, 1, 0)",
+            (json.dumps({"webhook_url": old_secret, "username": "old"}),),
+        )
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/notification/931",
+        json={
+            "name": "Updated Discord",
+            "settings": {
+                "webhook_url": "",
+                "username": "new",
+            },
+            "onDownload": False,
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "old.secret" not in resp.text
+    notification = resp.json()["notification"]
+    assert notification["name"] == "Updated Discord"
+    assert notification["settings"] == {"username": "new"}
+    assert notification["hasSecretSettings"] == {"webhook_url": True}
+    assert notification["onDownload"] is False
+    assert notification["onGrab"] is True
+
+    with sqlite3.connect(env) as c:
+        row = c.execute(
+            "SELECT settings, on_download, on_grab FROM notification_connections"
+            " WHERE id=931"
+        ).fetchone()
+    settings = json.loads(row[0])
+    assert decrypt_secret(settings["webhook_url"]) == "https://old.secret/webhook"
+    assert settings["username"] == "new"
+    assert row[1] == 0
+    assert row[2] == 1
+
+
+def test_api_v1_update_notification_type_change_resets_settings(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO notification_connections"
+            "(id, name, type, settings)"
+            " VALUES(932, 'Switch Type', 'discord', ?)",
+            (json.dumps({"webhook_url": "plain-old", "username": "old"}),),
+        )
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/notification/932",
+        json={
+            "implementation": "ntfy",
+            "settings": {"server": "https://ntfy.sh", "topic": "mangarr"},
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    notification = resp.json()["notification"]
+    assert notification["implementation"] == "ntfy"
+    assert notification["settings"] == {
+        "server": "https://ntfy.sh",
+        "topic": "mangarr",
+    }
+    assert notification["hasSecretSettings"] == {}
+
+    with sqlite3.connect(env) as c:
+        settings = json.loads(
+            c.execute(
+                "SELECT settings FROM notification_connections WHERE id=932"
+            ).fetchone()[0]
+        )
+    assert settings == {"server": "https://ntfy.sh", "topic": "mangarr"}
+
+
+def test_api_v1_update_notification_rejects_unknown_id(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/notification/99999",
+        json={"name": "Missing"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "notification connection not found"
+
+
+def test_api_v1_delete_notification_removes_row(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO notification_connections(id, name, type, settings)"
+            " VALUES(933, 'Delete Notification', 'discord', '{}')"
+        )
+
+    resp = _client().delete(
+        "/api/v1/notification/933",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 933}
+
+    with sqlite3.connect(env) as c:
+        row = c.execute(
+            "SELECT 1 FROM notification_connections WHERE id=933"
+        ).fetchone()
+    assert row is None
+
+
+def test_api_v1_delete_notification_rejects_unknown_id(env):
+    resp = _client().delete(
+        "/api/v1/notification/99999",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "notification connection not found"
+
+
 def test_api_v1_create_quality_profile_adds_row(env):
     resp = _client().post(
         "/api/v1/qualityprofile",

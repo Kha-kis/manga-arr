@@ -41,6 +41,11 @@ from routers.import_ import (
     skip_import_queue_entry,
 )
 from routers.language_profiles import SUPPORTED_LANGUAGES
+from routers.notification_connections import (
+    CONNECTION_TYPES as NOTIFICATION_CONNECTION_TYPES,
+    _encrypt_secret_fields as _encrypt_notification_secret_fields,
+    _secret_keys_for as _notification_secret_keys_for,
+)
 from routers.queue_ import dismiss_pending_release, reset_grabbed_volume
 from routers.settings_ import (
     add_root_folder_entry,
@@ -313,6 +318,45 @@ def _import_list_exclusion_by_id(db, exclusion_id: int) -> dict | None:
         (exclusion_id,),
     ).fetchone()
     return _import_list_exclusion(row) if row else None
+
+
+def _notification_connection(row) -> dict:
+    settings = from_json(row["settings"], {}) or {}
+    if not isinstance(settings, dict):
+        settings = {}
+    secret_keys = set(_notification_secret_keys_for(row["type"]))
+    redacted_settings = {
+        key: value for key, value in settings.items() if key not in secret_keys
+    }
+    has_secret_settings = {
+        key: bool(settings.get(key))
+        for key in sorted(secret_keys)
+        if key in settings
+    }
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "implementation": row["type"],
+        "implementationName": row["type"],
+        "configContract": row["type"],
+        "enable": _bool(row["enabled"]),
+        "settings": redacted_settings,
+        "hasSecretSettings": has_secret_settings,
+        "onGrab": _bool(row["on_grab"]),
+        "onDownload": _bool(row["on_download"]),
+        "onUpgrade": _bool(row["on_upgrade"]),
+        "onSeriesAdd": _bool(row["on_series_add"]),
+        "onHealthIssue": _bool(row["on_health_issue"]),
+        "onHealthRestored": _bool(row["on_health_restored"]),
+    }
+
+
+def _notification_connection_by_id(db, connection_id: int) -> dict | None:
+    row = db.execute(
+        "SELECT * FROM notification_connections WHERE id=?",
+        (connection_id,),
+    ).fetchone()
+    return _notification_connection(row) if row else None
 
 
 def _quality_definition(row) -> dict:
@@ -904,6 +948,39 @@ def _payload_tag_list(payload: dict, key: str = "tags") -> list[str]:
     return tags
 
 
+def _payload_notification_settings(
+    payload: dict,
+    connection_type: str,
+    *,
+    base_settings: dict | None = None,
+    reset_base: bool = False,
+) -> str:
+    if "settings" not in payload:
+        settings = {} if reset_base else dict(base_settings or {})
+        return json.dumps(_encrypt_notification_secret_fields(connection_type, settings))
+
+    value = payload.get("settings")
+    if value in (None, ""):
+        submitted = {}
+    elif isinstance(value, str):
+        submitted = from_json(value, None)
+    else:
+        submitted = value
+    if not isinstance(submitted, dict):
+        raise ValueError("settings must be an object")
+
+    settings = {} if reset_base else dict(base_settings or {})
+    secret_keys = set(_notification_secret_keys_for(connection_type))
+    for key, raw_value in submitted.items():
+        if key in secret_keys and raw_value in (None, ""):
+            continue
+        if raw_value is None:
+            settings.pop(key, None)
+        else:
+            settings[str(key)] = raw_value
+    return json.dumps(_encrypt_notification_secret_fields(connection_type, settings))
+
+
 def _default_language_profile_id(db) -> int | None:
     row = db.execute(
         "SELECT value FROM settings WHERE key='default_language_profile_id'"
@@ -1037,6 +1114,206 @@ async def api_v1_delete_root_folder(root_folder_id: int):
             status_code=HTTP_404_NOT_FOUND,
         )
     return JSONResponse({"ok": True, "id": root_folder_id})
+
+
+@router.get("/api/v1/notification")
+async def api_v1_notifications():
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT * FROM notification_connections ORDER BY name, id"
+        ).fetchall()
+        payload = [_notification_connection(row) for row in rows]
+    return JSONResponse(payload)
+
+
+@router.post("/api/v1/notification")
+async def api_v1_create_notification(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+
+    name = _payload_str(payload, "name")
+    if not name:
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    implementation = _payload_str(payload, "implementation", "type")
+    if not implementation:
+        return JSONResponse({"error": "implementation is required"}, status_code=400)
+    if implementation not in NOTIFICATION_CONNECTION_TYPES:
+        return JSONResponse(
+            {"error": "implementation is not supported"},
+            status_code=400,
+        )
+    try:
+        settings = _payload_notification_settings(payload, implementation)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    with get_db() as db:
+        cur = db.execute(
+            "INSERT INTO notification_connections"
+            "(name,type,enabled,settings,on_grab,on_download,on_upgrade,"
+            " on_series_add,on_health_issue,on_health_restored)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                name,
+                implementation,
+                1 if _payload_bool_alias(payload, ("enable", "enabled"), True) else 0,
+                settings,
+                1 if _payload_bool_alias(payload, ("onGrab", "on_grab"), True) else 0,
+                1
+                if _payload_bool_alias(payload, ("onDownload", "on_download"), True)
+                else 0,
+                1
+                if _payload_bool_alias(payload, ("onUpgrade", "on_upgrade"), True)
+                else 0,
+                1
+                if _payload_bool_alias(
+                    payload,
+                    ("onSeriesAdd", "on_series_add"),
+                    True,
+                )
+                else 0,
+                1
+                if _payload_bool_alias(
+                    payload,
+                    ("onHealthIssue", "on_health_issue"),
+                    True,
+                )
+                else 0,
+                1
+                if _payload_bool_alias(
+                    payload,
+                    ("onHealthRestored", "on_health_restored"),
+                    False,
+                )
+                else 0,
+            ),
+        )
+        connection = _notification_connection_by_id(db, cur.lastrowid)
+    return JSONResponse(
+        {"ok": True, "status": "created", "notification": connection}
+    )
+
+
+@router.put("/api/v1/notification/{connection_id}")
+@router.patch("/api/v1/notification/{connection_id}")
+async def api_v1_update_notification(request: Request, connection_id: int):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT * FROM notification_connections WHERE id=?",
+            (connection_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "notification connection not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+
+        fields: list[str] = []
+        params: list = []
+        if "name" in payload:
+            name = _payload_str(payload, "name")
+            if not name:
+                return JSONResponse({"error": "name is required"}, status_code=400)
+            fields.append("name=?")
+            params.append(name)
+
+        type_submitted = "implementation" in payload or "type" in payload
+        implementation = (
+            _payload_str(payload, "implementation", "type")
+            if type_submitted
+            else existing["type"]
+        )
+        if type_submitted:
+            if not implementation:
+                return JSONResponse(
+                    {"error": "implementation is required"},
+                    status_code=400,
+                )
+            if implementation not in NOTIFICATION_CONNECTION_TYPES:
+                return JSONResponse(
+                    {"error": "implementation is not supported"},
+                    status_code=400,
+                )
+            fields.append("type=?")
+            params.append(implementation)
+
+        if "enable" in payload or "enabled" in payload:
+            fields.append("enabled=?")
+            params.append(
+                1 if _payload_bool_alias(payload, ("enable", "enabled"), True) else 0
+            )
+
+        if "settings" in payload or type_submitted:
+            current_settings = from_json(existing["settings"], {}) or {}
+            if not isinstance(current_settings, dict):
+                current_settings = {}
+            try:
+                settings = _payload_notification_settings(
+                    payload,
+                    implementation,
+                    base_settings=current_settings,
+                    reset_base=implementation != existing["type"],
+                )
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            fields.append("settings=?")
+            params.append(settings)
+
+        event_aliases = {
+            "on_grab": ("onGrab", "on_grab"),
+            "on_download": ("onDownload", "on_download"),
+            "on_upgrade": ("onUpgrade", "on_upgrade"),
+            "on_series_add": ("onSeriesAdd", "on_series_add"),
+            "on_health_issue": ("onHealthIssue", "on_health_issue"),
+            "on_health_restored": ("onHealthRestored", "on_health_restored"),
+        }
+        for column, aliases in event_aliases.items():
+            if any(alias in payload for alias in aliases):
+                fields.append(f"{column}=?")
+                params.append(1 if _payload_bool_alias(payload, aliases, True) else 0)
+
+        if fields:
+            params.append(connection_id)
+            db.execute(
+                f"UPDATE notification_connections SET {', '.join(fields)}"
+                " WHERE id=?",
+                params,
+            )
+        connection = _notification_connection_by_id(db, connection_id)
+    return JSONResponse({"ok": True, "notification": connection})
+
+
+@router.delete("/api/v1/notification/{connection_id}")
+async def api_v1_delete_notification(connection_id: int):
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM notification_connections WHERE id=?",
+            (connection_id,),
+        ).fetchone()
+        if not existing:
+            return JSONResponse(
+                {"error": "notification connection not found"},
+                status_code=HTTP_404_NOT_FOUND,
+            )
+        db.execute(
+            "DELETE FROM notification_connections WHERE id=?",
+            (connection_id,),
+        )
+    return JSONResponse({"ok": True, "id": connection_id})
 
 
 @router.get("/api/v1/qualityprofile")
