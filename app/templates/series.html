@@ -899,11 +899,13 @@
                   {{ ch_num }}
                   <span class="ch-pill-actions">
                     <button class="series-inline-icon-button is-ember"
+                            aria-label="Grab chapter {{ ch_num }}"
                             hx-post="/series/{{ s['id'] }}/chapters/{{ ch['id'] }}/grab"
                             hx-swap="none"
                             hx-disabled-elt="this"
                             hx-on::after-request="showToast(event.detail.successful ? 'Search queued' : 'Failed', event.detail.successful ? 'success' : 'error')"><i class="bi bi-cloud-download"></i></button>
                     <button class="series-inline-icon-button is-jade"
+                            aria-label="Mark chapter {{ ch_num }} downloaded"
                             hx-post="/series/{{ s['id'] }}/chapters/{{ ch['id'] }}/mark-downloaded"
                             hx-swap="none"
                             hx-disabled-elt="this"
