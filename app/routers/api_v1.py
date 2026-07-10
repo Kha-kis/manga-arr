@@ -29,7 +29,11 @@ from library_scan import adopt_unmapped_folder, scan_unmapped_root_folder
 from metadata import search_series
 from metadata_enrichment import _NON_STANDARD_STUB_EDITIONS
 from parsing import normalize
-from rename_plan import build_series_rename_preview, execute_series_rename
+from rename_plan import (
+    build_library_rename_preview,
+    build_series_rename_preview,
+    execute_series_rename,
+)
 from routers.history_ import (
     clear_failed_history_entries,
     delete_history_entry,
@@ -4827,6 +4831,11 @@ async def api_v1_calendar():
             "hiatus": hiatus,
         }
     )
+
+
+@router.get("/api/v1/rename/library/preview")
+async def api_v1_rename_library_preview():
+    return JSONResponse(build_library_rename_preview())
 
 
 @router.get("/api/v1/rename/series/{series_id}/preview")

@@ -188,6 +188,38 @@ def test_rename_preview_reports_dry_run_plan(env):
     assert by_id[201]["canRename"] is True
 
 
+def test_library_rename_preview_aggregates_series_plans(env):
+    before = _volume_paths(env["db_path"])
+    resp = _client().get(
+        "/api/v1/rename/library/preview",
+        headers={"X-Api-Key": _api_key(env["db_path"])},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert body["fileFormat"] == "{Series Title} v{Volume:02d}"
+    assert body["chapterFormat"] == "{Series Title} c{Chapter:03d}"
+    assert body["seriesCount"] == 1
+    assert body["seriesWithChanges"] == 1
+    assert body["total"] == 4
+    assert body["changed"] == 4
+    assert body["renameable"] == 2
+    assert body["conflicts"] == 2
+    assert len(body["series"]) == 1
+    assert body["series"][0]["seriesId"] == 7
+    assert body["series"][0]["seriesTitle"] == "Plan Manga"
+    assert {item["id"] for item in body["series"][0]["items"]} == {
+        101,
+        102,
+        103,
+        201,
+    }
+
+    assert _volume_paths(env["db_path"]) == before
+    assert os.path.exists(env["old_v1"])
+    assert not os.path.exists(os.path.join(env["series_dir"], "Plan Manga v01.cbz"))
+
+
 def test_rename_preview_is_read_only(env):
     before = _volume_paths(env["db_path"])
     resp = _client().get(
