@@ -699,6 +699,17 @@ def _system_task(task: dict) -> dict:
     }
 
 
+def _event_log_record(row) -> dict:
+    return {
+        "id": row["id"],
+        "eventType": row["event_type"],
+        "seriesId": row["series_id"],
+        "seriesTitle": row["series_title"],
+        "message": row["message"],
+        "date": row["created_at"],
+    }
+
+
 def _series(row, tags: list[str]) -> dict:
     title = row["title"]
     downloaded = row["downloaded_count"] or 0
@@ -4227,6 +4238,50 @@ async def api_v1_commands():
 @router.post("/api/v1/command")
 async def api_v1_run_command(request: Request):
     return await _run_command(request)
+
+
+@router.get("/api/v1/log")
+async def api_v1_logs(
+    page: int = 1,
+    pageSize: int = 100,
+    eventType: str = "",
+    seriesId: int = 0,
+):
+    page = max(page, 1)
+    page_size = max(min(pageSize, 250), 1)
+    where_parts: list[str] = []
+    params: list = []
+    if eventType:
+        where_parts.append("e.event_type=?")
+        params.append(eventType)
+    if seriesId:
+        where_parts.append("e.series_id=?")
+        params.append(seriesId)
+    where = "WHERE " + " AND ".join(where_parts) if where_parts else ""
+    offset = (page - 1) * page_size
+    with get_db() as db:
+        total = db.execute(
+            f"SELECT COUNT(*) FROM events e {where}",
+            params,
+        ).fetchone()[0]
+        rows = db.execute(
+            "SELECT e.*, s.title AS series_title"
+            " FROM events e"
+            " LEFT JOIN series s ON s.id=e.series_id"
+            f" {where}"
+            " ORDER BY e.created_at DESC, e.id DESC"
+            " LIMIT ? OFFSET ?",
+            params + [page_size, offset],
+        ).fetchall()
+        records = [_event_log_record(row) for row in rows]
+    return JSONResponse(
+        {
+            "page": page,
+            "pageSize": page_size,
+            "totalRecords": total,
+            "records": records,
+        }
+    )
 
 
 @router.get("/api/v1/history")
