@@ -316,46 +316,84 @@ async def save_general_settings(request: Request):
 # ── Root folder management ────────────────────────────────────────────────────
 
 
-@router.post("/settings/root-folders/add")
-async def add_root_folder(
-    path: str = Form(...),
-    label: str = Form(""),
-    is_default: str = Form(""),
-):
-    path = path.strip().rstrip("/")
-    if path:
-        with get_db() as db:
-            if is_default:
-                db.execute("UPDATE root_folders SET is_default=0")
-            db.execute(
-                "INSERT OR IGNORE INTO root_folders(path, label, is_default) VALUES(?,?,?)",
-                (path, label.strip() or None, 1 if is_default else 0),
-            )
-            count = db.execute("SELECT COUNT(*) FROM root_folders").fetchone()[0]
-            if count == 1:
-                db.execute("UPDATE root_folders SET is_default=1")
-    return RedirectResponse("/settings?saved=1", status_code=303)
+def add_root_folder_entry(path: str, label: str = "", is_default: bool = False) -> dict:
+    """Create a root folder row or return the existing row for the path."""
+    path = str(path or "").strip().rstrip("/")
+    if not path:
+        return {"ok": False, "status": "invalid_path"}
 
-
-@router.post("/settings/root-folders/{folder_id}/delete")
-async def delete_root_folder(folder_id: int):
     with get_db() as db:
+        if is_default:
+            db.execute("UPDATE root_folders SET is_default=0")
+        cur = db.execute(
+            "INSERT OR IGNORE INTO root_folders(path, label, is_default) VALUES(?,?,?)",
+            (path, label.strip() or None, 1 if is_default else 0),
+        )
+        status = "created" if cur.rowcount else "exists"
+        count = db.execute("SELECT COUNT(*) FROM root_folders").fetchone()[0]
+        if count == 1:
+            db.execute("UPDATE root_folders SET is_default=1")
+        row = db.execute("SELECT * FROM root_folders WHERE path=?", (path,)).fetchone()
+        if not row:
+            return {"ok": False, "status": "not_found"}
+        return {"ok": True, "status": status, "root_folder": dict(row)}
+
+
+def delete_root_folder_entry(folder_id: int) -> dict:
+    """Delete a root folder row and keep one remaining row defaulted."""
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM root_folders WHERE id=?",
+            (folder_id,),
+        ).fetchone()
+        if not existing:
+            return {"ok": False, "status": "not_found"}
         db.execute("DELETE FROM root_folders WHERE id=?", (folder_id,))
         has_default = db.execute(
             "SELECT 1 FROM root_folders WHERE is_default=1"
         ).fetchone()
         if not has_default:
             db.execute(
-                "UPDATE root_folders SET is_default=1 WHERE id=(SELECT id FROM root_folders LIMIT 1)"
+                "UPDATE root_folders SET is_default=1 "
+                "WHERE id=(SELECT id FROM root_folders LIMIT 1)"
             )
+    return {"ok": True, "status": "deleted"}
+
+
+def set_default_root_folder_entry(folder_id: int) -> dict:
+    """Make a root folder the default."""
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM root_folders WHERE id=?",
+            (folder_id,),
+        ).fetchone()
+        if not existing:
+            return {"ok": False, "status": "not_found"}
+        db.execute("UPDATE root_folders SET is_default=0")
+        db.execute("UPDATE root_folders SET is_default=1 WHERE id=?", (folder_id,))
+        row = db.execute("SELECT * FROM root_folders WHERE id=?", (folder_id,)).fetchone()
+    return {"ok": True, "status": "defaulted", "root_folder": dict(row)}
+
+
+@router.post("/settings/root-folders/add")
+async def add_root_folder(
+    path: str = Form(...),
+    label: str = Form(""),
+    is_default: str = Form(""),
+):
+    add_root_folder_entry(path, label, bool(is_default))
+    return RedirectResponse("/settings?saved=1", status_code=303)
+
+
+@router.post("/settings/root-folders/{folder_id}/delete")
+async def delete_root_folder(folder_id: int):
+    delete_root_folder_entry(folder_id)
     return RedirectResponse("/settings?saved=1", status_code=303)
 
 
 @router.post("/settings/root-folders/{folder_id}/default")
 async def set_default_root_folder(folder_id: int):
-    with get_db() as db:
-        db.execute("UPDATE root_folders SET is_default=0")
-        db.execute("UPDATE root_folders SET is_default=1 WHERE id=?", (folder_id,))
+    set_default_root_folder_entry(folder_id)
     return RedirectResponse("/settings?saved=1", status_code=303)
 
 
