@@ -5,6 +5,11 @@
 # Keeping this file under a non-recognized name preserves the configuration without
 # allowing the generated workflow to run.
 #
+# Note: GitHub may still list dynamic/dependabot/dependabot-updates as "active"
+# in the Actions workflow API. The REST disable endpoint returns HTTP 422 for
+# that generated workflow, so the supported off switch in this repository is
+# keeping the recognized .github/dependabot.yml file absent.
+#
 # Three ecosystems:
 #   - pip            (requirements.txt + requirements-test.txt)
 #   - docker         (the python:3.12-slim base in Dockerfile)

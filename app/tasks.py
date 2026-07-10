@@ -483,10 +483,10 @@ def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
     # marked completion. Two real causes observed in production:
     #   (a) Worker died mid-flight (crash, restart) before the final
     #       UPDATE.
-    #   (b) Concurrent SQLite writers — _execute_import holds the write
-    #       lock during file I/O; if the per-row commit-failed UPDATE
-    #       can't acquire the lock within busy_timeout, the row stays
-    #       claimed and the worker logs (but can't write to) the error.
+    #   (b) An old importer revision held the SQLite write lock during
+    #       file I/O; if the per-row commit-failed UPDATE could not
+    #       acquire the lock within busy_timeout, the row stayed claimed
+    #       and the worker logged (but could not write to) the error.
     # Recovery: revert to 'failed' so the next status_loop can retry.
     # Skip rows that have files in 'needs_review' state — those carry
     # user decisions and need manual operator action via the reconcile
