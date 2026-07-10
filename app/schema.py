@@ -445,6 +445,21 @@ def init_db():
                 settings           TEXT NOT NULL DEFAULT '{}',
                 last_sync          TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS import_list_exclusions (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                source           TEXT NOT NULL,
+                external_id      TEXT,
+                title            TEXT NOT NULL DEFAULT '',
+                title_normalized TEXT NOT NULL DEFAULT '',
+                reason           TEXT,
+                added_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_import_list_excl_external
+            ON import_list_exclusions(source, external_id)
+            WHERE external_id IS NOT NULL AND external_id != '';
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_import_list_excl_title
+            ON import_list_exclusions(source, title_normalized)
+            WHERE title_normalized != '';
 
             -- Series Tags (normalized, separate from JSON column)
             CREATE TABLE IF NOT EXISTS series_tags (

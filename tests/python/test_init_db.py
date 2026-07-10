@@ -40,6 +40,7 @@ EXPECTED_TABLES = {
     "indexers",
     "notification_connections",
     "import_lists",
+    "import_list_exclusions",
     "language_profiles",
     "quality_definitions",
     "remote_path_mappings",

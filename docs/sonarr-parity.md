@@ -53,6 +53,7 @@ not exact TV terminology, exact Sonarr UI, or identical plugin breadth.
 | Read-only API v1 seed | `/api/v1/system/status`, `/api/v1/series`, `/api/v1/queue`, `/api/v1/history`, `/api/v1/wanted`, `/api/v1/rootfolder`, `/api/v1/qualityprofile` with response-contract tests | Initial slice covered |
 | Rename planner dry run | `/api/v1/rename/series/{id}/preview` reports old/new paths, conflicts, missing sources, and unchanged rows without filesystem mutation | Backend seed covered |
 | Existing-library discovery seed | `/api/v1/rootfolder/{id}/unmappedfolders` reports root-folder child directories not mapped to known series | Backend seed covered |
+| Import-list exclusions | `import_list_exclusions` table, `/import-lists` management UI, and sync-time skip logic by source/external ID or normalized title | Covered |
 
 ## True Parity Gaps
 
@@ -88,21 +89,7 @@ Recommended scope:
 3. Reuse the existing staging/import safety patterns rather than moving files
    while holding long SQLite write locks.
 
-### 3. Import-List Exclusions
-
-Mangarr has import lists and scheduled sync, but no clearly surfaced
-Sonarr-style import-list exclusion workflow for preventing a discovered item
-from being re-added later.
-
-Recommended scope:
-
-1. Add an `import_list_exclusions` table keyed by provider/source and external
-   manga ID.
-2. Add exclude actions from import-list preview/sync results.
-3. Make sync skip exclusions and expose an exclusions management page.
-4. Cover deletion/re-add prevention with route and sync tests.
-
-### 4. Existing Library Import / Unmapped Folder Adoption
+### 3. Existing Library Import / Unmapped Folder Adoption
 
 Mangarr supports root folders, root-folder disk usage, manual import, and a
 read-only unmapped-folder scan per root folder. It does not yet have a full
@@ -117,7 +104,7 @@ Recommended scope:
 3. Keep ad-hoc download-folder manual import separate from existing organized
    library adoption.
 
-### 5. Backup Restore Workflow
+### 4. Backup Restore Workflow
 
 Mangarr can create, download, retain, and delete backups. The restore guidance
 is documented, and the app warns about secret-key requirements, but there is
@@ -131,7 +118,7 @@ Recommended scope:
 3. Do not restore over a live DB without a deliberately designed maintenance
    mode.
 
-### 6. Media-Management Permissions And Import Options
+### 5. Media-Management Permissions And Import Options
 
 Sonarr exposes advanced import/rename options such as chmod/chown, minimum
 free-space thresholds, hardlink/copy preferences, extra-file import, and custom
@@ -148,7 +135,7 @@ Recommended scope:
 4. Keep hardlink/copy behavior scoped to manga archive workflows; do not copy
    Sonarr options that do not map cleanly.
 
-### 7. General/System Settings Breadth
+### 6. General/System Settings Breadth
 
 Mangarr covers API keys, backups, logging views, root folders, and deployment
 documentation. Sonarr also exposes broader settings for proxy, analytics,
@@ -163,7 +150,7 @@ Recommended scope:
 3. Treat UI date/style preferences as low priority because Mangarr's current
    UI has one maintained theme.
 
-### 8. Download-Client Breadth
+### 7. Download-Client Breadth
 
 Mangarr covers the clients used by this project, but Sonarr supports many more
 download clients and exposes more per-client advanced options.
@@ -174,7 +161,7 @@ Recommended scope:
 2. Add new clients only when backed by user demand and integration tests.
 3. Consider Transmission/Deluge after API and rename workflows are complete.
 
-### 9. Built-In Updater
+### 8. Built-In Updater
 
 Sonarr has an in-app updater. Mangarr is deployed by Docker Compose and should
 not mutate its own running installation by default.
@@ -186,7 +173,7 @@ Recommended scope:
 2. Optionally add an update-available indicator that links to release notes,
    without editing the running install.
 
-### 10. PostgreSQL Backend
+### 9. PostgreSQL Backend
 
 Sonarr documents PostgreSQL environment settings. Mangarr is SQLite-first and
 has active work specifically focused on SQLite contention and short write
@@ -206,14 +193,13 @@ Recommended scope:
    workflow gap and should start read-only.
 3. Existing-library unmapped-folder scan. Start with read-only discovery before
    adoption.
-4. Import-list exclusions. Medium-sized DB and UI feature with clear tests.
-5. API mutation endpoints. Add after read endpoints and route contracts are
+4. API mutation endpoints. Add after read endpoints and route contracts are
    stable.
-6. Minimum-free-space guard. Useful operational safety without chmod/chown
+5. Minimum-free-space guard. Useful operational safety without chmod/chown
    risk.
-7. General settings polish: URL base/proxy docs, log-level controls, selected
+6. General settings polish: URL base/proxy docs, log-level controls, selected
    env overrides.
-8. Optional backup restore UI, extra download clients, update indicator, and
+7. Optional backup restore UI, extra download clients, update indicator, and
    PostgreSQL evaluation. These should wait for explicit deployment/user demand.
 
 ## Non-Goals
