@@ -1394,6 +1394,30 @@ def _download_client_config_payload() -> dict:
     }
 
 
+def _ui_config_payload() -> dict:
+    ui_date_format = get_cfg("ui_date_format", "relative") or "relative"
+    return {
+        "uiDateFormat": ui_date_format,
+        "showRelativeDates": ui_date_format == "relative",
+        "theme": "dark",
+        "language": "en",
+        "timeFormat": "24h",
+    }
+
+
+def _naming_config_payload() -> dict:
+    file_format = get_cfg("file_format", "")
+    chapter_format = get_cfg("chapter_format", "")
+    folder_format = get_cfg("folder_format", "")
+    return {
+        "renameVolumes": bool(file_format or chapter_format),
+        "replaceIllegalCharacters": True,
+        "fileFormat": file_format,
+        "chapterFormat": chapter_format,
+        "folderFormat": folder_format,
+    }
+
+
 def _config_update_fields(payload: dict, aliases: dict[str, tuple[str, ...]]) -> dict:
     fields = {}
     for key, names in aliases.items():
@@ -1659,32 +1683,68 @@ async def api_v1_update_config_download_client(request: Request):
 
 @router.get("/api/v1/config/ui")
 async def api_v1_config_ui():
-    ui_date_format = get_cfg("ui_date_format", "relative") or "relative"
-    return JSONResponse(
+    return JSONResponse(_ui_config_payload())
+
+
+@router.put("/api/v1/config/ui")
+@router.patch("/api/v1/config/ui")
+async def api_v1_update_config_ui(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+    fields = _config_update_fields(
+        payload,
         {
-            "uiDateFormat": ui_date_format,
-            "showRelativeDates": ui_date_format == "relative",
-            "theme": "dark",
-            "language": "en",
-            "timeFormat": "24h",
-        }
+            "ui_date_format": ("uiDateFormat", "ui_date_format"),
+        },
     )
+    if not fields:
+        return JSONResponse(
+            {"error": "no supported settings submitted"},
+            status_code=HTTP_400_BAD_REQUEST,
+        )
+    update_general_settings_entries(fields)
+    return JSONResponse({"ok": True, "uiConfig": _ui_config_payload()})
 
 
 @router.get("/api/v1/config/naming")
 async def api_v1_config_naming():
-    file_format = get_cfg("file_format", "")
-    chapter_format = get_cfg("chapter_format", "")
-    folder_format = get_cfg("folder_format", "")
-    return JSONResponse(
+    return JSONResponse(_naming_config_payload())
+
+
+@router.put("/api/v1/config/naming")
+@router.patch("/api/v1/config/naming")
+async def api_v1_update_config_naming(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+    fields = _config_update_fields(
+        payload,
         {
-            "renameVolumes": bool(file_format or chapter_format),
-            "replaceIllegalCharacters": True,
-            "fileFormat": file_format,
-            "chapterFormat": chapter_format,
-            "folderFormat": folder_format,
-        }
+            "file_format": ("fileFormat", "file_format"),
+            "chapter_format": ("chapterFormat", "chapter_format"),
+            "folder_format": ("folderFormat", "folder_format"),
+        },
     )
+    if not fields:
+        return JSONResponse(
+            {"error": "no supported settings submitted"},
+            status_code=HTTP_400_BAD_REQUEST,
+        )
+    update_media_management_settings_entries(fields)
+    return JSONResponse({"ok": True, "namingConfig": _naming_config_payload()})
 
 
 @router.get("/api/v1/system/backup")
