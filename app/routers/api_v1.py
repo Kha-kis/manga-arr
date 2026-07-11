@@ -129,6 +129,88 @@ def _paged_list_response(
     )
 
 
+def _query_int(request: Request, name: str, default: int) -> int:
+    try:
+        return int(request.query_params.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _query_bool(request: Request, *names: str) -> bool | None:
+    for name in names:
+        if name not in request.query_params:
+            continue
+        value = request.query_params.get(name)
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
+def _filtered_config_list_response(
+    request: Request,
+    payload: list[dict],
+    *,
+    text_fields: tuple[str, ...],
+    sortable_fields: set[str],
+    default_sort_key: str = "name",
+) -> JSONResponse:
+    query = (
+        request.query_params.get("term")
+        or request.query_params.get("query")
+        or request.query_params.get("name")
+        or ""
+    ).strip().lower()
+    implementation = (
+        request.query_params.get("implementation")
+        or request.query_params.get("type")
+        or ""
+    ).strip().lower()
+    tag = (request.query_params.get("tag") or "").strip().lower()
+    enabled = _query_bool(request, "enabled", "enable")
+
+    def _matches(item: dict) -> bool:
+        if query and not any(
+            query in str(item.get(field) or "").lower()
+            for field in text_fields
+        ):
+            return False
+        if implementation and implementation != str(
+            item.get("implementation") or ""
+        ).lower():
+            return False
+        if enabled is not None and item.get("enable") is not enabled:
+            return False
+        if tag and tag not in {
+            str(value).lower() for value in item.get("tags", []) or []
+        }:
+            return False
+        return True
+
+    payload = [item for item in payload if _matches(item)]
+    sort_key = request.query_params.get("sortKey") or default_sort_key
+    if sort_key not in sortable_fields:
+        sort_key = default_sort_key if default_sort_key in sortable_fields else "name"
+    reverse = (request.query_params.get("sortDirection") or "").lower() == "desc"
+
+    def _sort_value(item: dict):
+        value = item.get(sort_key)
+        if isinstance(value, (int, float, bool)):
+            return (0, value)
+        return (1, str(value or "").lower())
+
+    payload.sort(key=_sort_value, reverse=reverse)
+    return _paged_list_response(
+        payload,
+        _query_int(request, "page", 1),
+        _query_int(request, "pageSize", 0),
+    )
+
+
 def _series_tags(db, series_id: int, json_tags: str | None) -> list[str]:
     tags: set[str] = set()
     for tag in from_json(json_tags, []) or []:
@@ -2730,11 +2812,16 @@ async def api_v1_delete_delay_profile(profile_id: int):
 
 
 @router.get("/api/v1/importlist")
-async def api_v1_import_lists():
+async def api_v1_import_lists(request: Request):
     with get_db() as db:
         rows = db.execute("SELECT * FROM import_lists ORDER BY name").fetchall()
         payload = [_import_list(row) for row in rows]
-    return JSONResponse(payload)
+    return _filtered_config_list_response(
+        request,
+        payload,
+        text_fields=("name", "implementation", "monitorMode"),
+        sortable_fields={"id", "name", "implementation", "enable", "lastSync"},
+    )
 
 
 @router.get("/api/v1/importlist/{list_id}")
@@ -3120,7 +3207,7 @@ async def api_v1_quality_definition(quality: str):
 
 
 @router.get("/api/v1/indexer")
-async def api_v1_indexers():
+async def api_v1_indexers(request: Request):
     with get_db() as db:
         rows = db.execute("SELECT * FROM indexers ORDER BY priority, id").fetchall()
         tag_rows = db.execute(
@@ -3130,7 +3217,13 @@ async def api_v1_indexers():
         for tag in tag_rows:
             tags_by_indexer.setdefault(tag["indexer_id"], []).append(tag["tag"])
         payload = [_indexer(row, tags_by_indexer.get(row["id"], [])) for row in rows]
-    return JSONResponse(payload)
+    return _filtered_config_list_response(
+        request,
+        payload,
+        text_fields=("name", "implementation", "baseUrl"),
+        sortable_fields={"id", "name", "implementation", "enable", "priority"},
+        default_sort_key="priority",
+    )
 
 
 @router.get("/api/v1/indexer/{indexer_id}")
@@ -3403,7 +3496,7 @@ async def api_v1_delete_indexer(indexer_id: int):
 
 
 @router.get("/api/v1/downloadclient")
-async def api_v1_download_clients():
+async def api_v1_download_clients(request: Request):
     with get_db() as db:
         rows = db.execute(
             "SELECT * FROM download_clients ORDER BY priority, id"
@@ -3418,7 +3511,13 @@ async def api_v1_download_clients():
             _download_client(row, tags_by_client.get(row["id"], []))
             for row in rows
         ]
-    return JSONResponse(payload)
+    return _filtered_config_list_response(
+        request,
+        payload,
+        text_fields=("name", "implementation", "host", "category"),
+        sortable_fields={"id", "name", "implementation", "enable", "priority"},
+        default_sort_key="priority",
+    )
 
 
 @router.post("/api/v1/downloadclient")

@@ -863,6 +863,96 @@ def test_api_v1_indexers_download_clients_and_remote_paths_contract(env):
     ]
 
 
+def test_api_v1_source_and_client_lists_support_filters_and_paging(env):
+    client = _client()
+    headers = {"X-Api-Key": _api_key(env)}
+
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO indexers"
+            "(id, name, type, url, api_key, priority, enabled, categories,"
+            " settings, client_id, min_seeders, seed_ratio,"
+            " parent_prowlarr_id, prowlarr_indexer_id, use_rss,"
+            " use_auto_search, use_interactive_search, min_size_mb,"
+            " max_size_mb)"
+            " VALUES(71, 'Disabled Torznab', 'torznab',"
+            " 'https://disabled.example/torznab', NULL, 10, 0,"
+            " '[7000]', '{}', NULL, 0, 0, NULL, NULL, 0, 0, 0, 0, 0)"
+        )
+        c.execute(
+            "INSERT INTO indexer_tags(indexer_id, tag) VALUES(71, 'archive')"
+        )
+        c.execute(
+            "INSERT INTO download_clients"
+            "(id, name, type, host, port, use_ssl, url_base, username,"
+            " password, category, priority, enabled, remove_completed,"
+            " post_import_category, recent_priority, older_priority,"
+            " initial_state, sequential_order, first_last_first,"
+            " content_layout, remove_failed, source_id, download_path,"
+            " merge_chapters)"
+            " VALUES(51, 'Disabled SAB', 'sabnzbd',"
+            " 'http://sabnzbd', 8081, 0, '', '', NULL, 'manga',"
+            " 5, 0, 0, NULL, 'last', 'last', 'normal', 0, 0,"
+            " 'original', 1, 'sab-main', '/downloads/usenet', 1)"
+        )
+        c.execute(
+            "INSERT INTO download_client_tags(client_id, tag)"
+            " VALUES(51, 'archive')"
+        )
+        c.execute(
+            "INSERT INTO import_lists"
+            "(id, name, type, enabled, quality_profile_id, root_folder_id,"
+            " monitor_mode, settings, last_sync)"
+            " VALUES(81, 'Disabled MAL', 'mal_user', 0, 10, 1,"
+            " 'none', '{}', '2026-01-06T00:00:00+00:00')"
+        )
+
+    enabled_indexers = client.get(
+        "/api/v1/indexer",
+        params={"enabled": "true", "tag": "favorite", "page": 1, "pageSize": 1},
+        headers=headers,
+    )
+    assert enabled_indexers.status_code == 200, enabled_indexers.text
+    assert enabled_indexers.headers["X-Total-Count"] == "1"
+    assert [row["id"] for row in enabled_indexers.json()] == [70]
+
+    disabled_indexers = client.get(
+        "/api/v1/indexer",
+        params={"enable": "false", "sortKey": "priority"},
+        headers=headers,
+    )
+    assert disabled_indexers.status_code == 200, disabled_indexers.text
+    assert disabled_indexers.headers["X-Total-Count"] == "1"
+    assert [row["id"] for row in disabled_indexers.json()] == [71]
+
+    sab_clients = client.get(
+        "/api/v1/downloadclient",
+        params={"type": "sabnzbd", "tag": "archive"},
+        headers=headers,
+    )
+    assert sab_clients.status_code == 200, sab_clients.text
+    assert sab_clients.headers["X-Total-Count"] == "1"
+    assert [row["id"] for row in sab_clients.json()] == [51]
+
+    client_page = client.get(
+        "/api/v1/downloadclient",
+        params={"sortKey": "priority", "sortDirection": "desc", "pageSize": 1},
+        headers=headers,
+    )
+    assert client_page.status_code == 200, client_page.text
+    assert client_page.headers["X-Total-Count"] == "2"
+    assert [row["id"] for row in client_page.json()] == [51]
+
+    disabled_lists = client.get(
+        "/api/v1/importlist",
+        params={"enabled": "false", "query": "mal"},
+        headers=headers,
+    )
+    assert disabled_lists.status_code == 200, disabled_lists.text
+    assert disabled_lists.headers["X-Total-Count"] == "1"
+    assert [row["id"] for row in disabled_lists.json()] == [81]
+
+
 def test_api_v1_remaining_config_read_contracts(env):
     client = _client()
     headers = {"X-Api-Key": _api_key(env)}
