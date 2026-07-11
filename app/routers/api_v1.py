@@ -1354,6 +1354,36 @@ async def api_v1_config_media_management():
     )
 
 
+@router.get("/api/v1/config/ui")
+async def api_v1_config_ui():
+    ui_date_format = get_cfg("ui_date_format", "relative") or "relative"
+    return JSONResponse(
+        {
+            "uiDateFormat": ui_date_format,
+            "showRelativeDates": ui_date_format == "relative",
+            "theme": "dark",
+            "language": "en",
+            "timeFormat": "24h",
+        }
+    )
+
+
+@router.get("/api/v1/config/naming")
+async def api_v1_config_naming():
+    file_format = get_cfg("file_format", "")
+    chapter_format = get_cfg("chapter_format", "")
+    folder_format = get_cfg("folder_format", "")
+    return JSONResponse(
+        {
+            "renameVolumes": bool(file_format or chapter_format),
+            "replaceIllegalCharacters": True,
+            "fileFormat": file_format,
+            "chapterFormat": chapter_format,
+            "folderFormat": folder_format,
+        }
+    )
+
+
 @router.get("/api/v1/system/backup")
 async def api_v1_system_backups():
     return JSONResponse(_list_backup_entries())

@@ -511,6 +511,59 @@ def test_api_v1_media_management_config_contract(env):
     }
 
 
+def test_api_v1_ui_config_contract(env):
+    import main
+
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT OR REPLACE INTO settings(key,value) VALUES('ui_date_format', ?)",
+            ("absolute",),
+        )
+    main.load_config()
+
+    resp = _client().get(
+        "/api/v1/config/ui",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "uiDateFormat": "absolute",
+        "showRelativeDates": False,
+        "theme": "dark",
+        "language": "en",
+        "timeFormat": "24h",
+    }
+
+
+def test_api_v1_naming_config_contract(env):
+    import main
+
+    with sqlite3.connect(env) as c:
+        for key, value in [
+            ("file_format", "{Series Title} v{Volume:02d}"),
+            ("chapter_format", "{Series Title} c{Chapter:04d}"),
+            ("folder_format", "{Series Title} ({Year})"),
+        ]:
+            c.execute(
+                "INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
+                (key, value),
+            )
+    main.load_config()
+
+    resp = _client().get(
+        "/api/v1/config/naming",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "renameVolumes": True,
+        "replaceIllegalCharacters": True,
+        "fileFormat": "{Series Title} v{Volume:02d}",
+        "chapterFormat": "{Series Title} c{Chapter:04d}",
+        "folderFormat": "{Series Title} ({Year})",
+    }
+
+
 def test_api_v1_config_numeric_fields_have_safe_defaults(env):
     import main
 
