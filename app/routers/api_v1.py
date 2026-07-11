@@ -183,7 +183,8 @@ def _filtered_config_list_response(
             item.get("implementation") or ""
         ).lower():
             return False
-        if enabled is not None and item.get("enable") is not enabled:
+        item_enabled = item.get("enable", item.get("enabled"))
+        if enabled is not None and item_enabled is not enabled:
             return False
         if tag and tag not in {
             str(value).lower() for value in item.get("tags", []) or []
@@ -1623,13 +1624,18 @@ async def api_v1_delete_root_folder(root_folder_id: int):
 
 
 @router.get("/api/v1/notification")
-async def api_v1_notifications():
+async def api_v1_notifications(request: Request):
     with get_db() as db:
         rows = db.execute(
             "SELECT * FROM notification_connections ORDER BY name, id"
         ).fetchall()
         payload = [_notification_connection(row) for row in rows]
-    return JSONResponse(payload)
+    return _filtered_config_list_response(
+        request,
+        payload,
+        text_fields=("name", "implementation"),
+        sortable_fields={"id", "name", "implementation", "enable"},
+    )
 
 
 @router.get("/api/v1/notification/{connection_id}")
@@ -1835,13 +1841,19 @@ async def api_v1_delete_notification(connection_id: int):
 
 
 @router.get("/api/v1/qualityprofile")
-async def api_v1_quality_profiles():
+async def api_v1_quality_profiles(request: Request):
     with get_db() as db:
         rows = db.execute(
             "SELECT * FROM quality_profiles ORDER BY id"
         ).fetchall()
         payload = [_quality_profile(row) for row in rows]
-    return JSONResponse(payload)
+    return _filtered_config_list_response(
+        request,
+        payload,
+        text_fields=("name", "cutoff"),
+        sortable_fields={"id", "name", "cutoff", "isDefault"},
+        default_sort_key="id",
+    )
 
 
 @router.get("/api/v1/qualityprofile/{profile_id}")
@@ -2031,14 +2043,20 @@ async def api_v1_delete_quality_profile(profile_id: int):
 
 
 @router.get("/api/v1/languageprofile")
-async def api_v1_language_profiles():
+async def api_v1_language_profiles(request: Request):
     with get_db() as db:
         default_id = _default_language_profile_id(db)
         rows = db.execute(
             "SELECT * FROM language_profiles ORDER BY id"
         ).fetchall()
         payload = [_language_profile(row, default_id) for row in rows]
-    return JSONResponse(payload)
+    return _filtered_config_list_response(
+        request,
+        payload,
+        text_fields=("name",),
+        sortable_fields={"id", "name", "isDefault"},
+        default_sort_key="id",
+    )
 
 
 @router.get("/api/v1/languageprofile/{profile_id}")
@@ -2220,7 +2238,7 @@ async def api_v1_delete_language_profile(profile_id: int):
 
 
 @router.get("/api/v1/customformat")
-async def api_v1_custom_formats():
+async def api_v1_custom_formats(request: Request):
     with get_db() as db:
         rows = db.execute(
             "SELECT * FROM custom_formats ORDER BY name COLLATE NOCASE"
@@ -2244,7 +2262,12 @@ async def api_v1_custom_formats():
             _custom_format(row, scores_by_format.get(row["id"], []))
             for row in rows
         ]
-    return JSONResponse(payload)
+    return _filtered_config_list_response(
+        request,
+        payload,
+        text_fields=("name",),
+        sortable_fields={"id", "name"},
+    )
 
 
 @router.get("/api/v1/customformat/{format_id}")
@@ -2417,7 +2440,7 @@ async def api_v1_delete_custom_format(format_id: int):
 
 
 @router.get("/api/v1/releaseprofile")
-async def api_v1_release_profiles():
+async def api_v1_release_profiles(request: Request):
     with get_db() as db:
         rows = db.execute(
             "SELECT * FROM release_profiles ORDER BY id"
@@ -2432,7 +2455,13 @@ async def api_v1_release_profiles():
             _release_profile(row, tags_by_profile.get(row["id"], []))
             for row in rows
         ]
-    return JSONResponse(payload)
+    return _filtered_config_list_response(
+        request,
+        payload,
+        text_fields=("name", "required", "ignored"),
+        sortable_fields={"id", "name", "enabled"},
+        default_sort_key="id",
+    )
 
 
 @router.get("/api/v1/releaseprofile/{profile_id}")
@@ -2597,7 +2626,7 @@ async def api_v1_delete_release_profile(profile_id: int):
 
 
 @router.get("/api/v1/delayprofile")
-async def api_v1_delay_profiles():
+async def api_v1_delay_profiles(request: Request):
     with get_db() as db:
         rows = db.execute(
             "SELECT * FROM delay_profiles ORDER BY order_num, id"
@@ -2612,7 +2641,13 @@ async def api_v1_delay_profiles():
             _delay_profile(row, tags_by_profile.get(row["id"], []))
             for row in rows
         ]
-    return JSONResponse(payload)
+    return _filtered_config_list_response(
+        request,
+        payload,
+        text_fields=("name",),
+        sortable_fields={"id", "name", "order", "isDefault"},
+        default_sort_key="order",
+    )
 
 
 @router.get("/api/v1/delayprofile/{profile_id}")
