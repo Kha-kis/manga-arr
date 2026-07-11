@@ -1391,7 +1391,7 @@ async def suwayomi_monitor_loop():
                         "suwayomi_sync",
                         f"Suwayomi monitor: {vol_total} vol(s), {ch_total} chapter(s) queued",
                     )
-        except asyncio.CancelledError:
+        except _aio.CancelledError:
             log.error(
                 "suwayomi_monitor_loop: Loop cancelled during shutdown", exc_info=True
             )
@@ -1402,7 +1402,7 @@ async def suwayomi_monitor_loop():
         interval = max(3600, int(get_cfg("suwayomi_check_interval", "21600")))
         try:
             await _aio.sleep(interval)
-        except asyncio.CancelledError:
+        except _aio.CancelledError:
             log.error(
                 "suwayomi_monitor_loop: Loop cancelled during shutdown", exc_info=True
             )
