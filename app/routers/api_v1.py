@@ -3268,6 +3268,75 @@ async def api_v1_quality_definition(quality: str):
     return JSONResponse(payload)
 
 
+@router.put("/api/v1/qualitydefinition/{quality}")
+@router.patch("/api/v1/qualitydefinition/{quality}")
+async def api_v1_update_quality_definition(request: Request, quality: str):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+
+    fields: list[str] = []
+    params: list = []
+    try:
+        with get_db() as db:
+            existing = db.execute(
+                "SELECT * FROM quality_definitions WHERE quality=?",
+                (quality,),
+            ).fetchone()
+            if not existing:
+                return JSONResponse(
+                    {"error": "quality definition not found"},
+                    status_code=HTTP_404_NOT_FOUND,
+                )
+            title = existing["title"]
+            min_size = existing["min_size"]
+            max_size = existing["max_size"]
+            if "title" in payload:
+                title = _payload_str(payload, "title")
+                if not title:
+                    return JSONResponse({"error": "title is required"}, status_code=400)
+                fields.append("title=?")
+                params.append(title)
+            if "minSize" in payload or "min_size" in payload:
+                min_size = _payload_non_negative_float_alias(
+                    payload,
+                    ("minSize", "min_size"),
+                    existing["min_size"],
+                )
+                fields.append("min_size=?")
+                params.append(min_size)
+            if "maxSize" in payload or "max_size" in payload:
+                max_size = _payload_non_negative_float_alias(
+                    payload,
+                    ("maxSize", "max_size"),
+                    existing["max_size"],
+                )
+                fields.append("max_size=?")
+                params.append(max_size)
+            if max_size and min_size > max_size:
+                return JSONResponse(
+                    {"error": "minSize must be less than or equal to maxSize"},
+                    status_code=400,
+                )
+            if fields:
+                params.append(quality)
+                db.execute(
+                    f"UPDATE quality_definitions SET {', '.join(fields)}"
+                    " WHERE quality=?",
+                    params,
+                )
+            definition = _quality_definition_by_quality(db, quality)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "qualityDefinition": definition})
+
+
 @router.get("/api/v1/indexer")
 async def api_v1_indexers(request: Request):
     with get_db() as db:
