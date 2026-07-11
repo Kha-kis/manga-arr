@@ -268,7 +268,56 @@ async function run() {
     fail('notification modal test-before-save', e.message);
   }
 
-  console.log('\n=== R2.10: Session console error summary ===');
+  console.log('\n=== R2.10: Indexer modal Test Before Save validation ===');
+  try {
+    await page.goto(BASE + '/indexers', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.click('[data-bs-target="#newModal"]');
+    await page.waitForSelector('#newModal.show', { timeout: 3000 });
+    await page.fill('#newModal input[name="name"]', 'Browser Indexer Test');
+    await page.selectOption('#newModal select[name="type"]', 'torznab');
+    await page.click('#new-indexer-test-btn');
+    await page.waitForSelector('#new-indexer-test-result.connection-fail', { timeout: 3000 });
+    const text = await page.textContent('#new-indexer-test-result');
+    if (text && text.includes('No URL configured')) ok('Indexer modal shows validation feedback before save');
+    else fail('Indexer modal validation', text || 'no message');
+  } catch (e) {
+    fail('indexer modal test-before-save', e.message);
+  }
+
+  console.log('\n=== R2.11: Download client modal Test Before Save validation ===');
+  try {
+    await page.goto(BASE + '/download-clients', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.click('[data-bs-target="#newModal"]');
+    await page.waitForSelector('#newModal.show', { timeout: 3000 });
+    await page.fill('#newModal input[name="name"]', 'Browser Client Test');
+    await page.selectOption('#newModal select[name="type"]', 'qbittorrent');
+    await page.click('#new-download-client-test-btn');
+    await page.waitForSelector('#new-download-client-test-result.connection-fail', { timeout: 3000 });
+    const text = await page.textContent('#new-download-client-test-result');
+    if (text && text.includes('No host configured')) ok('Download client modal shows validation feedback before save');
+    else fail('Download client modal validation', text || 'no message');
+  } catch (e) {
+    fail('download client modal test-before-save', e.message);
+  }
+
+  console.log('\n=== R2.12: Custom format preview modal evaluates a title ===');
+  try {
+    await page.goto(BASE + '/custom-formats', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const previewButton = await page.$('button[aria-label="Test format Browser Digital"]');
+    if (!previewButton) throw new Error('no custom format preview button found');
+    await previewButton.click();
+    await page.waitForSelector('#previewModal.show', { timeout: 3000 });
+    await page.fill('#previewTitle', 'One Piece Digital Vol 1');
+    await page.click('#previewModal .btn-outline-ember');
+    await page.waitForSelector('#previewResult.is-match:not(.is-hidden)', { timeout: 3000 });
+    const text = await page.textContent('#previewResult');
+    if (text && text.includes('MATCHED')) ok('Custom format preview shows match feedback');
+    else fail('Custom format preview', text || 'no message');
+  } catch (e) {
+    fail('custom format preview', e.message);
+  }
+
+  console.log('\n=== R2.13: Session console error summary ===');
   if (consoleErrors.length === 0) ok('Zero console errors in entire test run');
   else {
     fail(`${consoleErrors.length} total console errors`, '');
