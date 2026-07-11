@@ -59,6 +59,7 @@ from routers.settings_ import (
     add_root_folder_entry,
     delete_root_folder_entry,
     set_default_root_folder_entry,
+    update_root_folder_entry,
 )
 from routers.series_ import patch_series as _patch_series
 import routers.system as system_router
@@ -1621,6 +1622,52 @@ async def api_v1_set_default_root_folder(root_folder_id: int):
         return JSONResponse(
             {"error": "root folder not found"},
             status_code=HTTP_404_NOT_FOUND,
+        )
+    return JSONResponse(
+        {"ok": True, "rootFolder": _root_folder(result["root_folder"])}
+    )
+
+
+@router.put("/api/v1/rootfolder/{root_folder_id}")
+@router.patch("/api/v1/rootfolder/{root_folder_id}")
+async def api_v1_update_root_folder(request: Request, root_folder_id: int):
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(data, dict) or not data:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+    label = None
+    if "label" in data:
+        label = str(data.get("label") or "")
+    elif "name" in data:
+        label = str(data.get("name") or "")
+    is_default = None
+    if "isDefault" in data or "is_default" in data:
+        is_default = _json_bool(data.get("isDefault", data.get("is_default")), False)
+    result = update_root_folder_entry(
+        root_folder_id,
+        path=str(data.get("path") or "") if "path" in data else None,
+        label=label,
+        is_default=is_default,
+    )
+    if result["status"] == "not_found":
+        return JSONResponse(
+            {"error": "root folder not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    if result["status"] == "invalid_path":
+        return JSONResponse(
+            {"error": "path is required"},
+            status_code=HTTP_400_BAD_REQUEST,
+        )
+    if result["status"] == "duplicate_path":
+        return JSONResponse(
+            {"error": "root folder path already exists"},
+            status_code=HTTP_400_BAD_REQUEST,
         )
     return JSONResponse(
         {"ok": True, "rootFolder": _root_folder(result["root_folder"])}

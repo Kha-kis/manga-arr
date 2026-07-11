@@ -73,6 +73,7 @@ download-client, remote-path-mapping, import-list, import-list-exclusion, and
 tag endpoints.
 Quality-definition size/title mutations are covered for the fields Mangarr
 already exposes in the UI.
+Root-folder update mutations cover path, label/name, and default selection.
 Notification, indexer, download-client, remote-path-mapping, import-list,
 import-list-exclusion, and tag rename/delete mutations are also covered.
 Individual detail reads are covered for root folders, notifications, profiles,

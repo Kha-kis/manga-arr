@@ -779,6 +779,82 @@ def test_api_v1_create_root_folder_requires_api_key(env):
     assert resp.status_code == 401
 
 
+def test_api_v1_update_root_folder_updates_submitted_fields(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/rootfolder/302",
+        json={
+            "path": "/library/updated/",
+            "name": "Updated Library",
+            "isDefault": True,
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["rootFolder"]["id"] == 302
+    assert body["rootFolder"]["path"] == "/library/updated"
+    assert body["rootFolder"]["label"] == "Updated Library"
+    assert body["rootFolder"]["isDefault"] is True
+
+    with sqlite3.connect(env) as c:
+        rows = c.execute(
+            "SELECT id, path, label, is_default FROM root_folders ORDER BY id"
+        ).fetchall()
+    assert rows == [
+        (301, "/library/a", "Library A", 0),
+        (302, "/library/updated", "Updated Library", 1),
+    ]
+
+
+def test_api_v1_update_root_folder_unsetting_default_keeps_a_default(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/rootfolder/301",
+        json={"isDefault": False},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["rootFolder"]["id"] == 301
+    assert body["rootFolder"]["isDefault"] is False
+
+    with sqlite3.connect(env) as c:
+        rows = c.execute(
+            "SELECT id, is_default FROM root_folders ORDER BY id"
+        ).fetchall()
+    assert rows == [(301, 0), (302, 1)]
+
+
+def test_api_v1_update_root_folder_rejects_duplicate_path(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/rootfolder/302",
+        json={"path": "/library/a", "isDefault": True},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "root folder path already exists"
+
+    with sqlite3.connect(env) as c:
+        rows = c.execute(
+            "SELECT id, path, is_default FROM root_folders ORDER BY id"
+        ).fetchall()
+    assert rows == [(301, "/library/a", 1), (302, "/library/b", 0)]
+
+
+def test_api_v1_update_root_folder_rejects_unknown_id(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/rootfolder/99999",
+        json={"label": "Missing"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "root folder not found"
+
+
 def test_api_v1_set_default_root_folder_switches_default(env):
     resp = _client().post(
         "/api/v1/rootfolder/302/default",
