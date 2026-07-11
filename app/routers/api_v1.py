@@ -157,7 +157,7 @@ def _filtered_config_list_response(
     *,
     text_fields: tuple[str, ...],
     sortable_fields: set[str],
-    default_sort_key: str = "name",
+    default_sort_key: str | None = "name",
 ) -> JSONResponse:
     query = (
         request.query_params.get("term")
@@ -170,6 +170,7 @@ def _filtered_config_list_response(
         or request.query_params.get("type")
         or ""
     ).strip().lower()
+    source = (request.query_params.get("source") or "").strip().lower()
     tag = (request.query_params.get("tag") or "").strip().lower()
     enabled = _query_bool(request, "enabled", "enable")
 
@@ -183,6 +184,8 @@ def _filtered_config_list_response(
             item.get("implementation") or ""
         ).lower():
             return False
+        if source and source != str(item.get("source") or "").lower():
+            return False
         item_enabled = item.get("enable", item.get("enabled"))
         if enabled is not None and item_enabled is not enabled:
             return False
@@ -194,17 +197,23 @@ def _filtered_config_list_response(
 
     payload = [item for item in payload if _matches(item)]
     sort_key = request.query_params.get("sortKey") or default_sort_key
-    if sort_key not in sortable_fields:
-        sort_key = default_sort_key if default_sort_key in sortable_fields else "name"
-    reverse = (request.query_params.get("sortDirection") or "").lower() == "desc"
+    if sort_key:
+        if sort_key not in sortable_fields:
+            sort_key = (
+                default_sort_key
+                if default_sort_key and default_sort_key in sortable_fields
+                else None
+            )
+        if sort_key:
+            reverse = (request.query_params.get("sortDirection") or "").lower() == "desc"
 
-    def _sort_value(item: dict):
-        value = item.get(sort_key)
-        if isinstance(value, (int, float, bool)):
-            return (0, value)
-        return (1, str(value or "").lower())
+            def _sort_value(item: dict):
+                value = item.get(sort_key)
+                if isinstance(value, (int, float, bool)):
+                    return (0, value)
+                return (1, str(value or "").lower())
 
-    payload.sort(key=_sort_value, reverse=reverse)
+            payload.sort(key=_sort_value, reverse=reverse)
     return _paged_list_response(
         payload,
         _query_int(request, "page", 1),
@@ -1551,13 +1560,19 @@ async def api_v1_system_tasks():
 
 
 @router.get("/api/v1/rootfolder")
-async def api_v1_root_folders():
+async def api_v1_root_folders(request: Request):
     with get_db() as db:
         rows = db.execute(
             "SELECT * FROM root_folders ORDER BY is_default DESC, label, path"
         ).fetchall()
         payload = [_root_folder(row) for row in rows]
-    return JSONResponse(payload)
+    return _filtered_config_list_response(
+        request,
+        payload,
+        text_fields=("name", "label", "path"),
+        sortable_fields={"id", "name", "label", "path", "isDefault"},
+        default_sort_key=None,
+    )
 
 
 @router.get("/api/v1/rootfolder/{root_folder_id}")
@@ -3059,14 +3074,20 @@ async def api_v1_delete_import_list(list_id: int):
 
 
 @router.get("/api/v1/importlistexclusion")
-async def api_v1_import_list_exclusions():
+async def api_v1_import_list_exclusions(request: Request):
     with get_db() as db:
         rows = db.execute(
             "SELECT * FROM import_list_exclusions"
             " ORDER BY source, title, external_id, id"
         ).fetchall()
         payload = [_import_list_exclusion(row) for row in rows]
-    return JSONResponse(payload)
+    return _filtered_config_list_response(
+        request,
+        payload,
+        text_fields=("title", "titleNormalized", "externalId", "reason", "source"),
+        sortable_fields={"id", "source", "title", "externalId", "addedAt"},
+        default_sort_key=None,
+    )
 
 
 @router.get("/api/v1/importlistexclusion/{exclusion_id}")
@@ -3220,13 +3241,19 @@ async def api_v1_delete_import_list_exclusion(exclusion_id: int):
 
 
 @router.get("/api/v1/qualitydefinition")
-async def api_v1_quality_definitions():
+async def api_v1_quality_definitions(request: Request):
     with get_db() as db:
         rows = db.execute(
             "SELECT * FROM quality_definitions ORDER BY order_num, quality"
         ).fetchall()
         payload = [_quality_definition(row) for row in rows]
-    return JSONResponse(payload)
+    return _filtered_config_list_response(
+        request,
+        payload,
+        text_fields=("quality", "title"),
+        sortable_fields={"quality", "title", "minSize", "maxSize", "order"},
+        default_sort_key="order",
+    )
 
 
 @router.get("/api/v1/qualitydefinition/{quality}")
@@ -3652,13 +3679,19 @@ async def api_v1_create_download_client(request: Request):
 
 
 @router.get("/api/v1/downloadclient/remotepathmapping")
-async def api_v1_remote_path_mappings():
+async def api_v1_remote_path_mappings(request: Request):
     with get_db() as db:
         rows = db.execute(
             "SELECT * FROM remote_path_mappings ORDER BY id"
         ).fetchall()
         payload = [_remote_path_mapping(row) for row in rows]
-    return JSONResponse(payload)
+    return _filtered_config_list_response(
+        request,
+        payload,
+        text_fields=("host", "remotePath", "localPath"),
+        sortable_fields={"id", "host", "remotePath", "localPath"},
+        default_sort_key=None,
+    )
 
 
 @router.get("/api/v1/downloadclient/remotepathmapping/{mapping_id}")
@@ -3924,7 +3957,7 @@ async def api_v1_delete_download_client(client_id: int):
 
 
 @router.get("/api/v1/tag")
-async def api_v1_tags():
+async def api_v1_tags(request: Request):
     with get_db() as db:
         tag_counts: dict[str, dict] = {}
 
@@ -3943,7 +3976,20 @@ async def api_v1_tags():
             tag_counts[tag]
             for tag in sorted(tag_counts.keys(), key=lambda value: value.lower())
         ]
-    return JSONResponse(payload)
+    return _filtered_config_list_response(
+        request,
+        payload,
+        text_fields=("label",),
+        sortable_fields={
+            "label",
+            "seriesCount",
+            "indexerCount",
+            "delayProfileCount",
+            "releaseProfileCount",
+            "downloadClientCount",
+        },
+        default_sort_key=None,
+    )
 
 
 @router.get("/api/v1/tag/{tag_label}")
