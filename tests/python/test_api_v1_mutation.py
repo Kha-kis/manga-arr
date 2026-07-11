@@ -1389,6 +1389,62 @@ def test_api_v1_update_quality_profile_rejects_unknown_id(env):
     assert resp.json()["error"] == "quality profile not found"
 
 
+def test_api_v1_update_quality_definition_updates_submitted_fields(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/qualitydefinition/cbz",
+        json={
+            "title": "CBZ Archive",
+            "minSize": 2.5,
+            "maxSize": 700.0,
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["qualityDefinition"] == {
+        "quality": "cbz",
+        "title": "CBZ Archive",
+        "minSize": 2.5,
+        "maxSize": 700.0,
+        "order": 1,
+    }
+
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT title, min_size, max_size, order_num"
+            " FROM quality_definitions WHERE quality='cbz'"
+        ).fetchone()
+    assert row["title"] == "CBZ Archive"
+    assert row["min_size"] == 2.5
+    assert row["max_size"] == 700.0
+    assert row["order_num"] == 1
+
+
+def test_api_v1_update_quality_definition_rejects_bad_size_range(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/qualitydefinition/cbz",
+        json={"minSize": 900.0, "maxSize": 700.0},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "minSize must be less than or equal to maxSize"
+
+
+def test_api_v1_update_quality_definition_rejects_unknown_quality(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/qualitydefinition/missing",
+        json={"title": "Missing"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "quality definition not found"
+
+
 def test_api_v1_set_default_quality_profile_is_unique(env):
     with sqlite3.connect(env) as c:
         c.execute(
