@@ -105,6 +105,7 @@
         <td class="text-end pe-2">
           <button class="btn btn-sm p-0 px-1 text-sm leading-none bg-transparent border-0 cutoff-unmet-upgrade-btn"
                   title="Search for upgrade"
+                  aria-label="Search for upgrade"
                   hx-post="/series/{{ item.series_id }}/volumes/{{ item.id }}/trigger-upgrade"
                   hx-swap="none"
                   hx-disabled-elt="this"

@@ -154,6 +154,7 @@
               <input type="password" id="api-key-input" name="api_key" class="form-control"
                      value="{{ cfg.api_key or '' }}" autocomplete="off">
               <button type="button" class="btn btn-secondary" id="api-key-toggle"
+                      aria-label="Show API key"
                       onclick="toggleApiKey()">
                 <i class="bi bi-eye" id="api-key-eye"></i>
               </button>
@@ -319,12 +320,15 @@
 function toggleApiKey() {
   const inp = document.getElementById('api-key-input');
   const eye = document.getElementById('api-key-eye');
+  const toggle = document.getElementById('api-key-toggle');
   if (inp.type === 'password') {
     inp.type = 'text';
     eye.className = 'bi bi-eye-slash';
+    toggle.setAttribute('aria-label', 'Hide API key');
   } else {
     inp.type = 'password';
     eye.className = 'bi bi-eye';
+    toggle.setAttribute('aria-label', 'Show API key');
   }
 }
 

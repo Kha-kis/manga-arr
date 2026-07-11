@@ -118,6 +118,11 @@ INDEXER_SETTING_COERCERS = {
 }
 
 
+METADATA_SETTING_COERCERS = {
+    "refresh_interval": lambda v: _coerce_int_range(v, 86400, 60, 86400 * 30),
+}
+
+
 def _write_settings_fields(fields: dict[str, str]) -> None:
     with get_db() as db:
         for key, value in fields.items():
@@ -157,6 +162,16 @@ def update_indexer_settings_entries(raw_fields: dict) -> dict[str, str]:
         key: INDEXER_SETTING_COERCERS[key](value)
         for key, value in raw_fields.items()
         if key in INDEXER_SETTING_COERCERS
+    }
+    _write_settings_fields(fields)
+    return fields
+
+
+def update_metadata_settings_entries(raw_fields: dict) -> dict[str, str]:
+    fields = {
+        key: METADATA_SETTING_COERCERS[key](value)
+        for key, value in raw_fields.items()
+        if key in METADATA_SETTING_COERCERS
     }
     _write_settings_fields(fields)
     return fields

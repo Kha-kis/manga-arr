@@ -321,6 +321,54 @@ def test_api_v1_requires_api_key(env):
     assert resp.status_code == 401
 
 
+def test_api_v3_alias_preserves_api_key_and_response_contract(env):
+    client = _client()
+    headers = {"X-Api-Key": _api_key(env)}
+
+    unauthenticated = client.get("/api/v3/system/status")
+    assert unauthenticated.status_code == 401
+
+    v1_status = client.get("/api/v1/system/status", headers=headers)
+    v3_status = client.get("/api/v3/system/status", headers=headers)
+    assert v3_status.status_code == 200, v3_status.text
+    v1_status_body = v1_status.json()
+    v3_status_body = v3_status.json()
+    assert v3_status_body.pop("timestamp")
+    assert v1_status_body.pop("timestamp")
+    assert v3_status_body == v1_status_body
+
+    v1_media = client.get(
+        "/api/v1/mediafile",
+        params={"type": "volume", "quality": "pdf"},
+        headers=headers,
+    )
+    v3_media = client.get(
+        "/api/v3/mediafile",
+        params={"type": "volume", "quality": "pdf"},
+        headers=headers,
+    )
+    assert v3_media.status_code == 200, v3_media.text
+    assert v3_media.json() == v1_media.json()
+    assert v3_media.headers["X-Total-Count"] == v1_media.headers["X-Total-Count"]
+
+    v3_episode = client.get("/api/v3/episode", headers=headers)
+    v1_chapter = client.get("/api/v1/chapter", headers=headers)
+    assert v3_episode.status_code == 200, v3_episode.text
+    assert v3_episode.json() == v1_chapter.json()
+    assert v3_episode.headers["X-Total-Count"] == v1_chapter.headers["X-Total-Count"]
+
+    v3_episode_file = client.get(
+        "/api/v3/episodefile/chapter-501",
+        headers=headers,
+    )
+    v1_media_file = client.get(
+        "/api/v1/mediafile/chapter-501",
+        headers=headers,
+    )
+    assert v3_episode_file.status_code == 200, v3_episode_file.text
+    assert v3_episode_file.json() == v1_media_file.json()
+
+
 def test_api_v1_system_status(env):
     import main
 
@@ -618,6 +666,38 @@ def test_api_v1_naming_config_contract(env):
     }
 
 
+def test_api_v1_metadata_config_contract(env):
+    import main
+
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT OR REPLACE INTO settings(key,value)"
+            " VALUES('refresh_interval', ?)",
+            ("43200",),
+        )
+    main.load_config()
+
+    resp = _client().get(
+        "/api/v1/config/metadata",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "refreshInterval": 43200,
+        "enableAutomaticRefresh": True,
+        "supportedProviders": [
+            "anilist",
+            "mangadex",
+            "mangaupdates",
+            "kitsu",
+            "wikipedia",
+            "google_books",
+        ],
+        "writeComicInfo": True,
+        "updateCovers": True,
+    }
+
+
 def test_api_v1_config_numeric_fields_have_safe_defaults(env):
     import main
 
@@ -629,6 +709,7 @@ def test_api_v1_config_numeric_fields_have_safe_defaults(env):
             ("recycle_bin_retention_days", "not-an-int"),
             ("minimum_free_space_mb", "not-an-int"),
             ("rss_interval", "not-an-int"),
+            ("refresh_interval", "not-an-int"),
         ]:
             c.execute(
                 "INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
@@ -650,6 +731,10 @@ def test_api_v1_config_numeric_fields_have_safe_defaults(env):
 
     indexer = _client().get("/api/v1/config/indexer", headers=headers)
     assert indexer.status_code == 200, indexer.text
+
+    metadata = _client().get("/api/v1/config/metadata", headers=headers)
+    assert metadata.status_code == 200, metadata.text
+    assert metadata.json()["refreshInterval"] == 86400
     assert indexer.json()["rssSyncInterval"] == 900
 
 
@@ -727,6 +812,25 @@ def test_api_v1_profiles_roots_and_series_contract(env):
             "isDefault": True,
         }
     ]
+
+    languages = client.get("/api/v1/language", headers=headers)
+    assert languages.status_code == 200, languages.text
+    assert languages.headers["X-Total-Count"] == "9"
+    assert languages.json()[0] == {
+        "id": 1,
+        "code": "en",
+        "name": "English",
+        "nameLower": "english",
+    }
+
+    language_detail = client.get("/api/v1/language/ja", headers=headers)
+    assert language_detail.status_code == 200, language_detail.text
+    assert language_detail.json() == {
+        "id": 2,
+        "code": "ja",
+        "name": "Japanese Raw",
+        "nameLower": "japanese raw",
+    }
 
     custom_formats = client.get("/api/v1/customformat", headers=headers).json()
     assert custom_formats == [
@@ -845,6 +949,24 @@ def test_api_v1_profile_and_notification_lists_support_filters_and_paging(env):
     assert language_page.status_code == 200, language_page.text
     assert language_page.headers["X-Total-Count"] == "1"
     assert [row["id"] for row in language_page.json()] == [21]
+
+    supported_language_page = client.get(
+        "/api/v1/language",
+        params={
+            "query": "Chinese",
+            "sortKey": "code",
+            "page": 1,
+            "pageSize": 1,
+        },
+        headers=headers,
+    )
+    assert supported_language_page.status_code == 200, supported_language_page.text
+    assert supported_language_page.headers["X-Total-Count"] == "2"
+    assert [row["code"] for row in supported_language_page.json()] == ["zh-s"]
+
+    missing_language = client.get("/api/v1/language/it", headers=headers)
+    assert missing_language.status_code == 404
+    assert missing_language.json()["error"] == "language not found"
 
     custom_page = client.get(
         "/api/v1/customformat",
@@ -1424,6 +1546,24 @@ def test_api_v1_queue_history_and_wanted_contract(env):
     assert queue_resp.status_code == 200, queue_resp.text
     assert queue_resp.headers["X-Total-Count"] == "3"
     queue = queue_resp.json()
+    queue_details = client.get("/api/v1/queue/details", headers=headers)
+    assert queue_details.status_code == 200, queue_details.text
+    assert queue_details.headers["X-Total-Count"] == queue_resp.headers["X-Total-Count"]
+    assert queue_details.json() == queue
+    queue_status = client.get("/api/v1/queue/status", headers=headers)
+    assert queue_status.status_code == 200, queue_status.text
+    assert queue_status.json() == {
+        "totalCount": 3,
+        "count": 3,
+        "grabbedCount": 1,
+        "importCount": 1,
+        "pendingCount": 2,
+        "pendingReleaseCount": 1,
+        "failedCount": 0,
+        "processingCount": 0,
+        "partialCount": 0,
+        "unknownCount": 0,
+    }
     statuses = {row["id"]: row["status"] for row in queue}
     assert statuses["volume-103"] == "grabbed"
     assert statuses["import-201"] == "pending"
@@ -1525,6 +1665,10 @@ def test_api_v1_queue_history_and_wanted_contract(env):
     assert [row["id"] for row in series_logs.json()["records"]] == [702]
 
     wanted = client.get("/api/v1/wanted", headers=headers).json()
+    wanted_missing = client.get("/api/v1/wanted/missing", headers=headers)
+    assert wanted_missing.status_code == 200, wanted_missing.text
+    assert wanted_missing.headers["X-Total-Count"] == "1"
+    assert wanted_missing.json() == wanted
     assert wanted == [
         {
             "id": 102,
@@ -1557,6 +1701,160 @@ def test_api_v1_queue_history_and_wanted_contract(env):
     assert wanted_empty.status_code == 200, wanted_empty.text
     assert wanted_empty.json() == []
     assert wanted_empty.headers["X-Total-Count"] == "0"
+
+
+def test_api_v1_volume_and_chapter_inventory_contract(env):
+    client = _client()
+    headers = {"X-Api-Key": _api_key(env)}
+
+    volumes_resp = client.get("/api/v1/volume", headers=headers)
+    assert volumes_resp.status_code == 200, volumes_resp.text
+    volumes = volumes_resp.json()
+    assert [row["id"] for row in volumes] == [101, 102, 103, 104]
+    assert volumes_resp.headers["X-Total-Count"] == "4"
+    assert volumes[0]["seriesTitle"] == "Vinland Saga"
+    assert volumes[0]["label"] == "Vol 1"
+    assert volumes[0]["status"] == "downloaded"
+
+    filtered = client.get(
+        "/api/v1/volume",
+        params={"seriesId": 5, "status": "downloaded", "quality": "pdf"},
+        headers=headers,
+    )
+    assert filtered.status_code == 200, filtered.text
+    assert [row["id"] for row in filtered.json()] == [104]
+    assert filtered.headers["X-Total-Count"] == "1"
+
+    paged = client.get(
+        "/api/v1/volume",
+        params={"seriesId": 5, "page": 2, "pageSize": 2},
+        headers=headers,
+    )
+    assert paged.status_code == 200, paged.text
+    assert [row["id"] for row in paged.json()] == [103, 104]
+    assert paged.headers["X-Page"] == "2"
+    assert paged.headers["X-Page-Size"] == "2"
+    assert paged.headers["X-Total-Count"] == "4"
+
+    detail = client.get("/api/v1/volume/103", headers=headers)
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["downloadId"] == "abc123"
+
+    chapters_resp = client.get("/api/v1/chapter", headers=headers)
+    assert chapters_resp.status_code == 200, chapters_resp.text
+    chapters = chapters_resp.json()
+    assert chapters == [
+        {
+            "id": 501,
+            "seriesId": 5,
+            "volumeId": 101,
+            "chapterNumber": 1.0,
+            "chapterRangeEnd": None,
+            "label": "Ch.001",
+            "title": "Somewhere Not Here",
+            "status": "downloaded",
+            "monitored": True,
+            "quality": "cbz",
+            "size": 0,
+            "sourceTitle": None,
+            "indexer": None,
+            "protocol": None,
+            "downloadClient": None,
+            "downloadId": None,
+            "importPath": "/library/Vinland Saga c001.cbz",
+            "grabbedAt": None,
+            "importedAt": None,
+            "seriesTitle": "Vinland Saga",
+        }
+    ]
+    assert chapters_resp.headers["X-Total-Count"] == "1"
+
+    chapter_filtered = client.get(
+        "/api/v1/chapter",
+        params={"seriesId": 5, "volumeId": 101, "chapterNumber": 1},
+        headers=headers,
+    )
+    assert chapter_filtered.status_code == 200, chapter_filtered.text
+    assert [row["id"] for row in chapter_filtered.json()] == [501]
+
+    chapter_detail = client.get("/api/v1/chapter/501", headers=headers)
+    assert chapter_detail.status_code == 200, chapter_detail.text
+    assert chapter_detail.json()["seriesTitle"] == "Vinland Saga"
+
+    missing_volume = client.get("/api/v1/volume/999999", headers=headers)
+    assert missing_volume.status_code == 404
+    assert missing_volume.json()["error"] == "volume not found"
+
+    missing_chapter = client.get("/api/v1/chapter/999999", headers=headers)
+    assert missing_chapter.status_code == 404
+    assert missing_chapter.json()["error"] == "chapter not found"
+
+    media_files = client.get("/api/v1/mediafile", headers=headers)
+    assert media_files.status_code == 200, media_files.text
+    assert [row["id"] for row in media_files.json()] == ["volume-104", "chapter-501"]
+    assert media_files.headers["X-Total-Count"] == "2"
+
+    volume_files = client.get(
+        "/api/v1/mediafile",
+        params={"type": "volume", "seriesId": 5, "quality": "pdf"},
+        headers=headers,
+    )
+    assert volume_files.status_code == 200, volume_files.text
+    assert volume_files.json() == [
+        {
+            "id": "volume-104",
+            "sourceId": 104,
+            "type": "volume",
+            "seriesId": 5,
+            "seriesTitle": "Vinland Saga",
+            "volumeNumber": 4.0,
+            "chapterNumber": None,
+            "chapterRangeEnd": None,
+            "label": "Vol 4",
+            "path": "/library/Vinland Saga v04.pdf",
+            "relativePath": "Vinland Saga v04.pdf",
+            "quality": "pdf",
+            "size": 0,
+            "sourceTitle": None,
+            "indexer": None,
+            "protocol": None,
+            "downloadClient": None,
+            "downloadId": None,
+            "releaseGroup": None,
+            "grabbedAt": "2026-01-02T00:00:00Z",
+            "importedAt": None,
+        }
+    ]
+    assert volume_files.headers["X-Total-Count"] == "1"
+
+    chapter_file = client.get("/api/v1/mediafile/chapter-501", headers=headers)
+    assert chapter_file.status_code == 200, chapter_file.text
+    assert chapter_file.json()["path"] == "/library/Vinland Saga c001.cbz"
+    assert chapter_file.json()["label"] == "Ch.001"
+
+    numeric_volume_file = client.get("/api/v1/mediafile/104", headers=headers)
+    assert numeric_volume_file.status_code == 200, numeric_volume_file.text
+    assert numeric_volume_file.json() == volume_files.json()[0]
+
+    numeric_episode_file = client.get("/api/v3/episodefile/501", headers=headers)
+    assert numeric_episode_file.status_code == 200, numeric_episode_file.text
+    assert numeric_episode_file.json() == chapter_file.json()
+
+    invalid_type = client.get(
+        "/api/v1/mediafile",
+        params={"type": "episode"},
+        headers=headers,
+    )
+    assert invalid_type.status_code == 400
+    assert invalid_type.json()["error"] == "type must be volume or chapter"
+
+    missing_file = client.get("/api/v1/mediafile/volume-102", headers=headers)
+    assert missing_file.status_code == 404
+    assert missing_file.json()["error"] == "media file not found"
+
+    missing_numeric_file = client.get("/api/v1/mediafile/102", headers=headers)
+    assert missing_numeric_file.status_code == 404
+    assert missing_numeric_file.json()["error"] == "media file not found"
 
 
 def test_api_v1_calendar_contract(env):
@@ -1700,6 +1998,14 @@ def test_api_v1_series_detail_blocklist_commands_and_cutoff(env):
     assert all("manual" in cmd and "displayName" in cmd for cmd in commands)
 
     cutoff = client.get("/api/v1/wanted/cutoff", headers=headers).json()
+    cutoff_unmet = client.get("/api/v1/wanted/cutoffunmet", headers=headers)
+    assert cutoff_unmet.status_code == 200, cutoff_unmet.text
+    assert cutoff_unmet.headers["X-Total-Count"] == "1"
+    assert cutoff_unmet.json() == cutoff
+    cutoff_unmet_hyphen = client.get("/api/v1/wanted/cutoff-unmet", headers=headers)
+    assert cutoff_unmet_hyphen.status_code == 200, cutoff_unmet_hyphen.text
+    assert cutoff_unmet_hyphen.headers["X-Total-Count"] == "1"
+    assert cutoff_unmet_hyphen.json() == cutoff
     assert cutoff == [
         {
             "id": 104,

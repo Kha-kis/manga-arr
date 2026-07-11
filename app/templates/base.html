@@ -166,6 +166,8 @@
         --text-display-md: 1.35rem;
         --text-display-lg: 1.45rem;
         --text-display-xl: 1.75rem;
+        --text-display-2xl: 2.5rem;
+        --text-display-3xl: 3rem;
         --icon-size-lg: 2.5rem;
         --icon-size-xl: 3rem;
         --text-relative-half: 0.5em;
@@ -475,7 +477,7 @@
         font-size: var(--text-display-md);
         font-weight: 700;
         color: var(--text);
-        letter-spacing: -0.02em;
+        letter-spacing: 0;
         margin-bottom: var(--space-2xl);
         display: flex;
         align-items: center;
@@ -630,7 +632,7 @@
         font-weight: 700;
         color: var(--paper);
         line-height: 1.2;
-        letter-spacing: -0.005em;
+        letter-spacing: 0;
         margin-bottom: var(--space-xs);
         overflow: hidden;
         display: -webkit-box;
@@ -2151,7 +2153,28 @@
       .htmx-request            .htmx-indicator,
       .htmx-request.htmx-indicator { opacity: 1; }
       /* Disable buttons during HTMX requests to prevent double-clicks */
-      button.htmx-request { pointer-events: none; opacity: 0.7; }
+      button.htmx-request,
+      .btn.htmx-request {
+        pointer-events: none;
+        opacity: 0.78;
+        position: relative;
+      }
+      button.htmx-request::after,
+      .btn.htmx-request::after {
+        content: "";
+        width: var(--space-lg);
+        height: var(--space-lg);
+        margin-left: var(--space-xs);
+        border: var(--line-strong) solid currentColor;
+        border-right-color: transparent;
+        border-radius: var(--radius-full);
+        display: inline-block;
+        vertical-align: text-bottom;
+        animation: htmx-spinner 0.75s linear infinite;
+      }
+      @keyframes htmx-spinner {
+        to { transform: rotate(360deg); }
+      }
 
       /* Global top-of-page progress bar shown during any HTMX request */
       #htmx-progress {
@@ -2201,9 +2224,9 @@
       .page-head h1, .page-head .hero-title {
         font-family: var(--font-display);
         font-weight: 900;
-        font-size: clamp(2.5rem, 6vw, 4rem);
+        font-size: var(--text-display-3xl);
         line-height: 0.95;
-        letter-spacing: -0.02em;
+        letter-spacing: 0;
         color: var(--text);
         margin: 0 0 var(--space-xl);
         font-optical-sizing: auto;
@@ -2228,11 +2251,11 @@
         font-feature-settings: 'tnum' 1, 'lnum' 1;
       }
       .editorial-num .num {
-        font-size: clamp(2rem, 4vw, 3rem);
+        font-size: var(--text-display-2xl);
         line-height: 0.95;
         font-weight: 500;
         color: var(--text);
-        letter-spacing: -0.01em;
+        letter-spacing: 0;
       }
       .editorial-num .num.accent { color: var(--ember); }
       .editorial-num .num.jade   { color: var(--jade); }
@@ -3482,6 +3505,7 @@
             class="sidebar-toggle"
             onclick="toggleSidebar()"
             title="Toggle sidebar"
+            aria-label="Toggle sidebar"
           >
             <i class="bi bi-layout-sidebar"></i>
           </button>

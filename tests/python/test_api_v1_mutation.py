@@ -505,6 +505,30 @@ def test_api_v1_update_naming_config_updates_submitted_fields(env):
     }
 
 
+def test_api_v1_update_metadata_config_updates_submitted_fields(env):
+    import main
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/config/metadata",
+        json={"refreshInterval": 30},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["metadataConfig"]["refreshInterval"] == 60
+    assert body["metadataConfig"]["enableAutomaticRefresh"] is True
+    assert "anilist" in body["metadataConfig"]["supportedProviders"]
+    assert main.CONFIG["refresh_interval"] == "60"
+
+    with sqlite3.connect(env) as c:
+        value = c.execute(
+            "SELECT value FROM settings WHERE key='refresh_interval'"
+        ).fetchone()[0]
+    assert value == "60"
+
+
 def test_api_v1_update_config_rejects_unsupported_payload(env):
     resp = _client().request(
         "PATCH",
@@ -968,6 +992,56 @@ def test_api_v1_validate_system_backup_rejects_bad_filename(
     assert body["error"] == "Invalid filename"
 
 
+def test_api_v1_download_system_backup_streams_zip(env, tmp_path, monkeypatch):
+    backup_dir = _use_temp_backup_dir(monkeypatch, tmp_path, env)
+    backup = backup_dir / "mangarr_backup_20260103_000000.zip"
+    payload = b"PK\x03\x04backup-content"
+    backup.write_bytes(payload)
+
+    resp = _client().get(
+        "/api/v1/system/backup/mangarr_backup_20260103_000000.zip/download",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("application/zip")
+    assert "mangarr_backup_20260103_000000.zip" in resp.headers[
+        "content-disposition"
+    ]
+    assert resp.content == payload
+
+
+def test_api_v1_download_system_backup_requires_api_key(env, tmp_path, monkeypatch):
+    _use_temp_backup_dir(monkeypatch, tmp_path, env)
+    resp = _client().get(
+        "/api/v1/system/backup/mangarr_backup_20260103_000000.zip/download"
+    )
+    assert resp.status_code == 401
+
+
+def test_api_v1_download_system_backup_rejects_bad_filename(
+    env, tmp_path, monkeypatch
+):
+    _use_temp_backup_dir(monkeypatch, tmp_path, env)
+    resp = _client().get(
+        "/api/v1/system/backup/passwords.txt/download",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "invalid filename"
+
+
+def test_api_v1_download_system_backup_rejects_unknown_file(
+    env, tmp_path, monkeypatch
+):
+    _use_temp_backup_dir(monkeypatch, tmp_path, env)
+    resp = _client().get(
+        "/api/v1/system/backup/mangarr_backup_20990101_000000.zip/download",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "backup not found"
+
+
 def test_api_v1_delete_system_backup_removes_file(env, tmp_path, monkeypatch):
     backup_dir = _use_temp_backup_dir(monkeypatch, tmp_path, env)
     backup = backup_dir / "mangarr_backup_20260103_000000.zip"
@@ -1292,6 +1366,115 @@ def test_api_v1_read_notification_redacts_stored_secret(env):
     item = [entry for entry in resp.json() if entry["id"] == 930][0]
     assert item["settings"] == {"username": "bot"}
     assert item["hasSecretSettings"] == {"webhook_url": True}
+
+
+def test_api_v1_test_notification_draft_uses_sender_and_decrypts_secret(
+    env, monkeypatch
+):
+    import routers.notification_connections as notifications
+
+    observed = {}
+
+    async def _fake_discord(settings, message, embed):
+        observed.update(settings)
+        observed["message"] = message
+        observed["embed"] = embed
+        return True, "Draft Discord test sent"
+
+    monkeypatch.setattr(notifications, "_send_discord", _fake_discord)
+
+    resp = _client().post(
+        "/api/v1/notification/test",
+        json={
+            "name": "Draft Discord",
+            "implementation": "discord",
+            "settings": {
+                "webhook_url": "https://hooks.secret/draft",
+                "username": "bot",
+            },
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "message": "Draft Discord test sent"}
+    assert "hooks.secret" not in resp.text
+    assert observed["webhook_url"] == "https://hooks.secret/draft"
+    assert observed["username"] == "bot"
+    assert observed["message"] == "Test notification from Mangarr"
+    assert observed["embed"] is None
+
+
+def test_api_v1_test_notification_draft_rejects_bad_implementation(env):
+    resp = _client().post(
+        "/api/v1/notification/test",
+        json={"implementation": "unsupported"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "implementation is not supported"
+
+
+def test_api_v1_test_notification_draft_requires_api_key(env):
+    resp = _client().post(
+        "/api/v1/notification/test",
+        json={"implementation": "discord"},
+    )
+    assert resp.status_code == 401
+
+
+def test_api_v1_test_notification_uses_existing_sender_and_decrypts_secret(
+    env, monkeypatch
+):
+    import routers.notification_connections as notifications
+    from security import encrypt_if_cipher_available
+
+    settings = {
+        "webhook_url": encrypt_if_cipher_available("https://hooks.secret/test"),
+        "username": "bot",
+    }
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO notification_connections"
+            "(id, name, type, settings)"
+            " VALUES(934, 'Probe Discord', 'discord', ?)",
+            (json.dumps(settings),),
+        )
+
+    observed = {}
+
+    async def _fake_discord(settings, message, embed):
+        observed.update(settings)
+        observed["message"] = message
+        observed["embed"] = embed
+        return True, "Discord test sent"
+
+    monkeypatch.setattr(notifications, "_send_discord", _fake_discord)
+
+    resp = _client().post(
+        "/api/v1/notification/934/test",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "message": "Discord test sent"}
+    assert "hooks.secret" not in resp.text
+    assert observed["webhook_url"] == "https://hooks.secret/test"
+    assert observed["username"] == "bot"
+    assert observed["message"] == "Test notification from Mangarr"
+    assert observed["embed"] is None
+
+
+def test_api_v1_test_notification_rejects_unknown_id(env):
+    resp = _client().post(
+        "/api/v1/notification/99999/test",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "notification connection not found"
+
+
+def test_api_v1_test_notification_requires_api_key(env):
+    resp = _client().post("/api/v1/notification/934/test")
+    assert resp.status_code == 401
 
 
 def test_api_v1_update_notification_merges_settings_and_preserves_blank_secret(env):
@@ -2140,6 +2323,79 @@ def test_api_v1_create_custom_format_rejects_unknown_quality_profile(env):
             "SELECT COUNT(*) FROM custom_formats WHERE name='Bad Score Profile'"
         ).fetchone()[0]
     assert count == 0
+
+
+def test_api_v1_preview_custom_format_evaluates_existing_format(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO custom_formats(id, name, specifications)"
+            " VALUES(1415, 'Preview Format', ?)",
+            (
+                json.dumps(
+                    [
+                        {"type": "release_title_contains", "value": "Deluxe"},
+                        {"type": "indexer_is", "value": "Nyaa"},
+                        {"type": "language_is", "value": "en"},
+                    ]
+                ),
+            ),
+        )
+
+    resp = _client().post(
+        "/api/v1/customformat/1415/preview",
+        json={
+            "title": "Example Deluxe Vol 1",
+            "indexer": "Nyaa",
+            "language": "en",
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "id": 1415,
+        "title": "Example Deluxe Vol 1",
+        "matched": True,
+    }
+
+    miss = _client().post(
+        "/api/v1/customformat/1415/preview",
+        json={
+            "title": "Example Standard Vol 1",
+            "indexer": "Nyaa",
+            "language": "en",
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert miss.status_code == 200, miss.text
+    assert miss.json()["matched"] is False
+
+
+def test_api_v1_preview_custom_format_requires_title(env):
+    resp = _client().post(
+        "/api/v1/customformat/1415/preview",
+        json={"indexer": "Nyaa"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "title is required"
+
+
+def test_api_v1_preview_custom_format_rejects_unknown_id(env):
+    resp = _client().post(
+        "/api/v1/customformat/99999/preview",
+        json={"title": "Example Deluxe Vol 1"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "custom format not found"
+
+
+def test_api_v1_preview_custom_format_requires_api_key(env):
+    resp = _client().post(
+        "/api/v1/customformat/1415/preview",
+        json={"title": "Example Deluxe Vol 1"},
+    )
+    assert resp.status_code == 401
 
 
 def test_api_v1_update_custom_format_updates_submitted_fields_and_scores(env):
@@ -3194,6 +3450,109 @@ def test_api_v1_delete_indexer_removes_row_and_tags(env):
     assert tag is None
 
 
+def test_api_v1_test_indexer_draft_uses_existing_connection_probe(env, monkeypatch):
+    import routers.api_v1 as api_v1
+
+    observed = {}
+
+    async def _fake_probe(indexer):
+        observed.update(indexer)
+        return True, "Draft indexer connected"
+
+    monkeypatch.setattr(api_v1, "_test_indexer_connection", _fake_probe)
+
+    resp = _client().post(
+        "/api/v1/indexer/test",
+        json={
+            "name": "Draft Nyaa",
+            "implementation": "torznab",
+            "baseUrl": "https://nyaa.example/torznab",
+            "apiKey": "INDEXER-DRAFT-SECRET",
+            "categories": [7000, 7010, 7020],
+            "settings": {"animeStandardFormatSearch": True},
+            "downloadClientId": 12,
+            "minimumSeeders": 3,
+            "seedRatio": 1.5,
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "message": "Draft indexer connected"}
+    assert observed["name"] == "Draft Nyaa"
+    assert observed["type"] == "torznab"
+    assert observed["url"] == "https://nyaa.example/torznab"
+    assert observed["api_key"] == "INDEXER-DRAFT-SECRET"
+    assert observed["categories"] == [7000, 7010, 7020]
+    assert observed["settings"] == {"animeStandardFormatSearch": True}
+    assert observed["client_id"] == 12
+    assert observed["min_seeders"] == 3
+    assert observed["seed_ratio"] == 1.5
+
+
+def test_api_v1_test_indexer_draft_rejects_bad_numeric_field(env):
+    resp = _client().post(
+        "/api/v1/indexer/test",
+        json={"implementation": "torznab", "minimumSeeders": -1},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == (
+        "minimumSeeders must be zero or a positive integer"
+    )
+
+
+def test_api_v1_test_indexer_draft_requires_api_key(env):
+    resp = _client().post(
+        "/api/v1/indexer/test",
+        json={"implementation": "torznab"},
+    )
+    assert resp.status_code == 401
+
+
+def test_api_v1_test_indexer_uses_existing_connection_probe(env, monkeypatch):
+    import routers.api_v1 as api_v1
+
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO indexers"
+            "(id, name, type, url, api_key)"
+            " VALUES(1751, 'Probe Indexer', 'torznab',"
+            " 'https://nyaa.example/torznab', 'secret')"
+        )
+
+    observed = {}
+
+    async def _fake_probe(indexer):
+        observed.update(indexer)
+        return True, "Indexer connected"
+
+    monkeypatch.setattr(api_v1, "_test_indexer_connection", _fake_probe)
+
+    resp = _client().post(
+        "/api/v1/indexer/1751/test",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "message": "Indexer connected"}
+    assert observed["id"] == 1751
+    assert observed["name"] == "Probe Indexer"
+    assert observed["api_key"] == "secret"
+
+
+def test_api_v1_test_indexer_rejects_unknown_id(env):
+    resp = _client().post(
+        "/api/v1/indexer/99999/test",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "indexer not found"
+
+
+def test_api_v1_test_indexer_requires_api_key(env):
+    resp = _client().post("/api/v1/indexer/1751/test")
+    assert resp.status_code == 401
+
+
 def test_api_v1_create_download_client_adds_row_tags_and_secret(env):
     from security import decrypt_secret
 
@@ -3284,6 +3643,89 @@ def test_api_v1_create_download_client_requires_api_key(env):
     resp = _client().post(
         "/api/v1/downloadclient",
         json={"name": "No Auth", "implementation": "qbittorrent"},
+    )
+    assert resp.status_code == 401
+
+
+def test_api_v1_test_download_client_draft_uses_existing_connection_probe(
+    env, monkeypatch
+):
+    import routers.api_v1 as api_v1
+
+    observed = {}
+
+    async def _fake_probe(client):
+        observed.update(client)
+        return True, "Draft client connected"
+
+    monkeypatch.setattr(api_v1, "_test_download_client_connection", _fake_probe)
+
+    resp = _client().post(
+        "/api/v1/downloadclient/test",
+        json={
+            "name": "Draft qBit",
+            "implementation": "qbittorrent",
+            "host": "http://qbittorrent",
+            "port": 8080,
+            "useSsl": False,
+            "urlBase": "/qb",
+            "username": "user",
+            "password": "CLIENT-DRAFT-SECRET",
+            "category": "manga",
+            "postImportCategory": "imported",
+            "recentPriority": "first",
+            "olderPriority": "last",
+            "initialState": "paused",
+            "sequentialOrder": True,
+            "firstLastFirst": True,
+            "contentLayout": "series",
+            "priority": 7,
+            "enable": False,
+            "removeCompletedDownloads": True,
+            "removeFailedDownloads": True,
+            "downloadPath": "/downloads/manga",
+            "mergeChapters": False,
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "message": "Draft client connected"}
+    assert observed["name"] == "Draft qBit"
+    assert observed["type"] == "qbittorrent"
+    assert observed["host"] == "http://qbittorrent"
+    assert observed["port"] == 8080
+    assert observed["use_ssl"] == 0
+    assert observed["url_base"] == "/qb"
+    assert observed["username"] == "user"
+    assert observed["password"] == "CLIENT-DRAFT-SECRET"
+    assert observed["post_import_category"] == "imported"
+    assert observed["recent_priority"] == "first"
+    assert observed["initial_state"] == "paused"
+    assert observed["sequential_order"] == 1
+    assert observed["first_last_first"] == 1
+    assert observed["content_layout"] == "series"
+    assert observed["priority"] == 7
+    assert observed["enabled"] == 0
+    assert observed["remove_completed"] == 1
+    assert observed["remove_failed"] == 1
+    assert observed["download_path"] == "/downloads/manga"
+    assert observed["merge_chapters"] == 0
+
+
+def test_api_v1_test_download_client_draft_rejects_bad_implementation(env):
+    resp = _client().post(
+        "/api/v1/downloadclient/test",
+        json={"implementation": "unsupported"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "implementation is not supported"
+
+
+def test_api_v1_test_download_client_draft_requires_api_key(env):
+    resp = _client().post(
+        "/api/v1/downloadclient/test",
+        json={"implementation": "qbittorrent"},
     )
     assert resp.status_code == 401
 
@@ -3448,6 +3890,114 @@ def test_api_v1_delete_download_client_rejects_unknown_id(env):
     )
     assert resp.status_code == 404
     assert resp.json()["error"] == "download client not found"
+
+
+def test_api_v1_test_download_client_uses_existing_connection_probe(
+    env, monkeypatch
+):
+    import routers.api_v1 as api_v1
+
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO download_clients"
+            "(id, name, type, host, username, password)"
+            " VALUES(1691, 'Probe Client', 'qbittorrent',"
+            " 'http://qbittorrent', 'user', 'secret')"
+        )
+
+    observed = {}
+
+    async def _fake_probe(client):
+        observed.update(client)
+        return True, "Connected to test double"
+
+    monkeypatch.setattr(api_v1, "_test_download_client_connection", _fake_probe)
+
+    resp = _client().post(
+        "/api/v1/downloadclient/1691/test",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "message": "Connected to test double"}
+    assert observed["id"] == 1691
+    assert observed["name"] == "Probe Client"
+    assert observed["password"] == "secret"
+
+
+def test_api_v1_test_download_client_rejects_unknown_id(env):
+    resp = _client().post(
+        "/api/v1/downloadclient/99999/test",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "download client not found"
+
+
+def test_api_v1_test_download_client_requires_api_key(env):
+    resp = _client().post("/api/v1/downloadclient/1691/test")
+    assert resp.status_code == 401
+
+
+def test_api_v1_reset_download_client_circuit_clears_state(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO download_clients(id, name, type)"
+            " VALUES(1692, 'Circuit Client', 'qbittorrent')"
+        )
+        c.execute(
+            "INSERT INTO client_breaker_state(client_id, failures, open_until)"
+            " VALUES(1692, 3, 9999999999)"
+        )
+
+    resp = _client().post(
+        "/api/v1/downloadclient/1692/reset-circuit",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "message": "Circuit breaker reset"}
+
+    with sqlite3.connect(env) as c:
+        state = c.execute(
+            "SELECT 1 FROM client_breaker_state WHERE client_id=1692"
+        ).fetchone()
+    assert state is None
+
+
+def test_api_v1_reset_download_client_circuit_rejects_unknown_id(env):
+    resp = _client().post(
+        "/api/v1/downloadclient/99999/reset-circuit",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "download client not found"
+
+
+def test_api_v1_reset_all_download_client_circuits_clears_all(env):
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO client_breaker_state(client_id, failures, open_until)"
+            " VALUES(1693, 3, 9999999999)"
+        )
+        c.execute(
+            "INSERT INTO client_breaker_state(client_id, failures, open_until)"
+            " VALUES(1694, 2, 9999999999)"
+        )
+
+    resp = _client().post(
+        "/api/v1/downloadclient/reset-all-circuits",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "message": "All circuit breakers reset"}
+
+    with sqlite3.connect(env) as c:
+        count = c.execute("SELECT COUNT(*) FROM client_breaker_state").fetchone()[0]
+    assert count == 0
+
+
+def test_api_v1_reset_all_download_client_circuits_requires_api_key(env):
+    resp = _client().post("/api/v1/downloadclient/reset-all-circuits")
+    assert resp.status_code == 401
 
 
 def test_api_v1_create_remote_path_mapping_adds_row(env):
@@ -3786,6 +4336,18 @@ def test_api_v1_command_cleanup_seen_mutates_stale_rows(env):
     body = resp.json()
     assert body["ok"] is True
     assert "Removed 1 stale" in body["message"]
+    assert body["id"] > 0
+    assert body["name"] == "CleanupSeen"
+    assert body["commandName"] == "CleanupSeen"
+    assert body["status"] == "completed"
+    assert body["state"] == "completed"
+    assert body["queued"]
+    assert body["startedOn"]
+    assert body["endedOn"]
+
+    detail = client.get(f"/api/v1/command/{body['id']}", headers=headers)
+    assert detail.status_code == 200, detail.text
+    assert detail.json() == body
 
     with sqlite3.connect(env) as c:
         urls = [
@@ -3800,6 +4362,62 @@ def test_api_v1_command_cleanup_seen_mutates_stale_rows(env):
     ]
 
 
+def test_api_v1_command_accepts_servarr_alias(env, monkeypatch):
+    import asyncio
+    import main
+
+    scheduled = {}
+
+    async def fake_poll_rss():
+        return None
+
+    def fake_create_background_task(coro, name: str):
+        scheduled["name"] = name
+        task = asyncio.get_running_loop().create_task(coro)
+        scheduled["task"] = task
+        return task
+
+    monkeypatch.setattr(main, "poll_rss", fake_poll_rss)
+    monkeypatch.setattr(main, "create_background_task", fake_create_background_task)
+
+    client = _client()
+    headers = {"X-Api-Key": _api_key(env)}
+    resp = client.post("/api/v1/command", json={"name": "RssSync"}, headers=headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["name"] == "RssSyncAll"
+    assert body["commandName"] == "RssSyncAll"
+    assert body["requestedName"] == "RssSync"
+    assert body["status"] in {"started", "completed"}
+    assert scheduled["name"] == "command:RssSyncAll"
+
+
+def test_api_v1_command_backup_creates_archive(env, tmp_path, monkeypatch):
+    backup_dir = _use_temp_backup_dir(monkeypatch, tmp_path, env)
+    client = _client()
+    headers = {"X-Api-Key": _api_key(env)}
+
+    resp = client.post(
+        "/api/v1/command",
+        json={"commandName": "Backup"},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["name"] == "Backup"
+    assert body["requestedName"] == "Backup"
+    assert body["status"] == "completed"
+    assert body["state"] == "completed"
+    assert "Backup created: mangarr_backup_" in body["message"]
+
+    backups = list(backup_dir.glob("mangarr_backup_*.zip"))
+    assert len(backups) == 1
+    with zipfile.ZipFile(backups[0], "r") as zf:
+        assert "manga_arr.db" in zf.namelist()
+
+
 def test_api_v1_command_rejects_unknown_command(env):
     resp = _client().post(
         "/api/v1/command",
@@ -3808,6 +4426,15 @@ def test_api_v1_command_rejects_unknown_command(env):
     )
     assert resp.status_code == 400
     assert resp.json()["ok"] is False
+
+
+def test_api_v1_command_detail_rejects_unknown_id(env):
+    resp = _client().get(
+        "/api/v1/command/999999",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "command not found"
 
 
 def test_api_v1_clear_blocklist_removes_all_entries(env):

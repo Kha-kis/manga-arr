@@ -30,6 +30,30 @@ import logging
 from shared import get_cfg
 
 
+# ── API version compatibility ────────────────────────────────────────────────
+
+
+class ApiVersionAliasMiddleware:
+    """Rewrite Sonarr-style /api/v3 routes to Mangarr's /api/v1 surface."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        if path == "/api/v3" or path.startswith("/api/v3/"):
+            rewritten = "/api/v1" + path[len("/api/v3"):]
+            scope = dict(scope)
+            scope["path"] = rewritten
+            raw_path = scope.get("raw_path")
+            if isinstance(raw_path, (bytes, bytearray)):
+                scope["raw_path"] = b"/api/v1" + bytes(raw_path)[len(b"/api/v3"):]
+        await self.app(scope, receive, send)
+
+
 # ── API Key middleware ───────────────────────────────────────────────────────
 
 

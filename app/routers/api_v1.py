@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from starlette.status import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND
 
 from events import add_history
@@ -40,6 +40,17 @@ from routers.history_ import (
     delete_history_entry,
     mark_history_failed,
 )
+from routers.custom_formats import evaluate_custom_format
+from routers.indexers import (
+    _row_decrypted as _indexer_row_decrypted,
+    _test_indexer as _test_indexer_connection,
+)
+from routers.download_clients import (
+    CLIENT_TYPES as DOWNLOAD_CLIENT_TYPES,
+    _cb_clear as _clear_download_client_circuit,
+    _row_decrypted as _download_client_row_decrypted,
+    _test_client as _test_download_client_connection,
+)
 from routers.import_lists import _sync_all_lists, _sync_list
 from routers.import_ import (
     clear_inactive_import_queue_entries,
@@ -53,6 +64,7 @@ from routers.notification_connections import (
     CONNECTION_TYPES as NOTIFICATION_CONNECTION_TYPES,
     _encrypt_secret_fields as _encrypt_notification_secret_fields,
     _secret_keys_for as _notification_secret_keys_for,
+    send_connection as _send_notification_connection,
 )
 from routers.queue_ import dismiss_pending_release, reset_grabbed_volume
 from routers.settings_ import (
@@ -62,6 +74,7 @@ from routers.settings_ import (
     update_general_settings_entries,
     update_indexer_settings_entries,
     update_media_management_settings_entries,
+    update_metadata_settings_entries,
     update_root_folder_entry,
 )
 from routers.series_ import patch_series as _patch_series
@@ -280,6 +293,15 @@ def _language_profile_by_id(db, profile_id: int) -> dict | None:
         (profile_id,),
     ).fetchone()
     return _language_profile(row, default_id) if row else None
+
+
+def _language(code: str, name: str, index: int) -> dict:
+    return {
+        "id": index,
+        "code": code,
+        "name": name,
+        "nameLower": name.lower(),
+    }
 
 
 def _release_profile_by_id(db, profile_id: int) -> dict | None:
@@ -930,6 +952,78 @@ def _chapter(row) -> dict:
     }
 
 
+def _media_file(row, file_type: str) -> dict:
+    is_volume = file_type == "volume"
+    volume_number = row["volume_num"] if is_volume else None
+    chapter_number = row["chapter_num"]
+    chapter_range_end = None if is_volume else row["chapter_range_end"]
+    vol_range = (
+        (row["vol_range_start"], row["vol_range_end"])
+        if is_volume
+        and row["vol_range_start"] is not None
+        and row["vol_range_end"] is not None
+        else None
+    )
+    label = (
+        build_volume_label(row["volume_num"], vol_range, row["pack_type"])
+        if is_volume
+        else build_chapter_label(row["chapter_num"], row["chapter_range_end"])
+    )
+    return {
+        "id": f"{file_type}-{row['id']}",
+        "sourceId": row["id"],
+        "type": file_type,
+        "seriesId": row["series_id"],
+        "seriesTitle": row["series_title"],
+        "volumeNumber": volume_number,
+        "chapterNumber": chapter_number,
+        "chapterRangeEnd": chapter_range_end,
+        "label": label,
+        "path": row["import_path"],
+        "relativePath": os.path.basename(row["import_path"] or ""),
+        "quality": row["quality"],
+        "size": row["size_bytes"] or 0,
+        "sourceTitle": row["torrent_name"],
+        "indexer": row["indexer"],
+        "protocol": row["protocol"],
+        "downloadClient": row["client"],
+        "downloadId": row["download_id"],
+        "releaseGroup": row["release_group"],
+        "grabbedAt": row["grabbed_at"],
+        "importedAt": row["imported_at"],
+    }
+
+
+def _text_query_matches(item: dict, query: str, fields: tuple[str, ...]) -> bool:
+    if not query:
+        return True
+    query = query.lower()
+    return any(query in str(item.get(field) or "").lower() for field in fields)
+
+
+def _sort_api_payload(
+    payload: list[dict],
+    request: Request,
+    *,
+    sortable_fields: set[str],
+    default_sort_key: str,
+) -> None:
+    sort_key = request.query_params.get("sortKey") or default_sort_key
+    if sort_key not in sortable_fields:
+        sort_key = default_sort_key
+    reverse = (request.query_params.get("sortDirection") or "").lower() == "desc"
+
+    def _sort_value(item: dict):
+        value = item.get(sort_key)
+        if value is None:
+            return (1, "")
+        if isinstance(value, (int, float, bool)):
+            return (0, value)
+        return (0, str(value).lower())
+
+    payload.sort(key=_sort_value, reverse=reverse)
+
+
 def _series_base_query() -> str:
     return """
         SELECT s.*,
@@ -1418,6 +1512,24 @@ def _naming_config_payload() -> dict:
     }
 
 
+def _metadata_config_payload() -> dict:
+    refresh_interval = _int_cfg("refresh_interval", 86400)
+    return {
+        "refreshInterval": refresh_interval,
+        "enableAutomaticRefresh": refresh_interval > 0,
+        "supportedProviders": [
+            "anilist",
+            "mangadex",
+            "mangaupdates",
+            "kitsu",
+            "wikipedia",
+            "google_books",
+        ],
+        "writeComicInfo": True,
+        "updateCovers": True,
+    }
+
+
 def _config_update_fields(payload: dict, aliases: dict[str, tuple[str, ...]]) -> dict:
     fields = {}
     for key, names in aliases.items():
@@ -1747,6 +1859,38 @@ async def api_v1_update_config_naming(request: Request):
     return JSONResponse({"ok": True, "namingConfig": _naming_config_payload()})
 
 
+@router.get("/api/v1/config/metadata")
+async def api_v1_config_metadata():
+    return JSONResponse(_metadata_config_payload())
+
+
+@router.put("/api/v1/config/metadata")
+@router.patch("/api/v1/config/metadata")
+async def api_v1_update_config_metadata(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+    fields = _config_update_fields(
+        payload,
+        {
+            "refresh_interval": ("refreshInterval", "refresh_interval"),
+        },
+    )
+    if not fields:
+        return JSONResponse(
+            {"error": "no supported settings submitted"},
+            status_code=HTTP_400_BAD_REQUEST,
+        )
+    update_metadata_settings_entries(fields)
+    return JSONResponse({"ok": True, "metadataConfig": _metadata_config_payload()})
+
+
 @router.get("/api/v1/system/backup")
 async def api_v1_system_backups():
     return JSONResponse(_list_backup_entries())
@@ -1773,6 +1917,23 @@ async def api_v1_validate_system_backup(filename: str):
             "error": payload.get("message") or "backup validation failed",
         }
     return JSONResponse(payload, status_code=status_code)
+
+
+@router.get("/api/v1/system/backup/{filename}/download")
+async def api_v1_download_system_backup(filename: str):
+    if not _safe_backup_filename(filename):
+        return JSONResponse({"error": "invalid filename"}, status_code=400)
+    fpath = os.path.join(system_router.BACKUP_DIR, filename)
+    if not os.path.exists(fpath):
+        return JSONResponse(
+            {"error": "backup not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    return FileResponse(
+        fpath,
+        media_type="application/zip",
+        filename=filename,
+    )
 
 
 @router.delete("/api/v1/system/backup/{filename}")
@@ -1938,6 +2099,60 @@ async def api_v1_notifications(request: Request):
         text_fields=("name", "implementation"),
         sortable_fields={"id", "name", "implementation", "enable"},
     )
+
+
+@router.post("/api/v1/notification/test")
+async def api_v1_test_notification_draft(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+
+    implementation = _payload_str(payload, "implementation", "type")
+    if not implementation:
+        return JSONResponse({"error": "implementation is required"}, status_code=400)
+    if implementation not in NOTIFICATION_CONNECTION_TYPES:
+        return JSONResponse(
+            {"error": "implementation is not supported"},
+            status_code=400,
+        )
+    try:
+        settings = _payload_notification_settings(payload, implementation)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    ok, message = await _send_notification_connection(
+        {
+            "name": _payload_str(payload, "name") or "Unsaved notification",
+            "type": implementation,
+            "settings": settings,
+        },
+        "Test notification from Mangarr",
+        event="test",
+    )
+    return JSONResponse({"ok": ok, "message": message})
+
+
+@router.post("/api/v1/notification/{connection_id}/test")
+async def api_v1_test_notification(connection_id: int):
+    with get_db() as db:
+        row = db.execute(
+            "SELECT * FROM notification_connections WHERE id=?",
+            (connection_id,),
+        ).fetchone()
+    if not row:
+        return JSONResponse(
+            {"error": "notification connection not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    ok, message = await _send_notification_connection(
+        dict(row),
+        "Test notification from Mangarr",
+        event="test",
+    )
+    return JSONResponse({"ok": ok, "message": message})
 
 
 @router.get("/api/v1/notification/{connection_id}")
@@ -2344,6 +2559,33 @@ async def api_v1_delete_quality_profile(profile_id: int):
     return JSONResponse({"ok": True, "id": profile_id})
 
 
+@router.get("/api/v1/language")
+async def api_v1_languages(request: Request):
+    payload = [
+        _language(code, name, index)
+        for index, (code, name) in enumerate(SUPPORTED_LANGUAGES.items(), start=1)
+    ]
+    return _filtered_config_list_response(
+        request,
+        payload,
+        text_fields=("code", "name"),
+        sortable_fields={"id", "code", "name", "nameLower"},
+        default_sort_key="id",
+    )
+
+
+@router.get("/api/v1/language/{code}")
+async def api_v1_language(code: str):
+    normalized = str(code or "").strip().lower()
+    for index, (lang_code, name) in enumerate(SUPPORTED_LANGUAGES.items(), start=1):
+        if lang_code == normalized:
+            return JSONResponse(_language(lang_code, name, index))
+    return JSONResponse(
+        {"error": "language not found"},
+        status_code=HTTP_404_NOT_FOUND,
+    )
+
+
 @router.get("/api/v1/languageprofile")
 async def api_v1_language_profiles(request: Request):
     with get_db() as db:
@@ -2569,6 +2811,60 @@ async def api_v1_custom_formats(request: Request):
         payload,
         text_fields=("name",),
         sortable_fields={"id", "name"},
+    )
+
+
+@router.post("/api/v1/customformat/{format_id}/preview")
+async def api_v1_preview_custom_format(request: Request, format_id: int):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+
+    title = _payload_str(payload, "title")
+    if not title:
+        return JSONResponse({"error": "title is required"}, status_code=400)
+    try:
+        size_bytes = _payload_non_negative_alias(
+            payload,
+            ("sizeBytes", "size_bytes"),
+            0,
+        )
+        quality = _payload_non_negative_alias(
+            payload,
+            ("qualityRank", "quality_rank"),
+            0,
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    with get_db() as db:
+        row = db.execute(
+            "SELECT * FROM custom_formats WHERE id=?",
+            (format_id,),
+        ).fetchone()
+    if not row:
+        return JSONResponse(
+            {"error": "custom format not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    matched = evaluate_custom_format(
+        from_json(row["specifications"], []) or [],
+        title,
+        size_bytes,
+        quality,
+        release_group=_payload_str(payload, "releaseGroup", "release_group"),
+        indexer=_payload_str(payload, "indexer"),
+        language=_payload_str(payload, "language"),
+    )
+    return JSONResponse(
+        {
+            "id": format_id,
+            "title": title,
+            "matched": matched,
+        }
     )
 
 
@@ -3644,6 +3940,63 @@ async def api_v1_indexers(request: Request):
     )
 
 
+@router.post("/api/v1/indexer/test")
+async def api_v1_test_indexer_draft(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+
+    implementation = _payload_str(payload, "implementation", "type")
+    if not implementation:
+        return JSONResponse({"error": "implementation is required"}, status_code=400)
+    try:
+        indexer = {
+            "name": _payload_str(payload, "name") or "Unsaved indexer",
+            "type": implementation,
+            "url": _payload_str(payload, "baseUrl", "url") or None,
+            "api_key": _payload_str(payload, "apiKey", "api_key"),
+            "categories": payload.get("categories", "7000,7010,7020"),
+            "settings": payload.get("settings", "{}"),
+            "client_id": _payload_optional_fk_alias(
+                payload,
+                ("downloadClientId", "client_id"),
+            ),
+            "min_seeders": _payload_non_negative_alias(
+                payload,
+                ("minimumSeeders", "min_seeders"),
+                0,
+            ),
+            "seed_ratio": _payload_non_negative_float_alias(
+                payload,
+                ("seedRatio", "seed_ratio"),
+                0.0,
+            ),
+        }
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    ok, message = await _test_indexer_connection(indexer)
+    return JSONResponse({"ok": ok, "message": message})
+
+
+@router.post("/api/v1/indexer/{indexer_id}/test")
+async def api_v1_test_indexer(indexer_id: int):
+    with get_db() as db:
+        row = db.execute(
+            "SELECT * FROM indexers WHERE id=?",
+            (indexer_id,),
+        ).fetchone()
+    if not row:
+        return JSONResponse(
+            {"error": "indexer not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    ok, message = await _test_indexer_connection(_indexer_row_decrypted(row))
+    return JSONResponse({"ok": ok, "message": message})
+
+
 @router.get("/api/v1/indexer/{indexer_id}")
 async def api_v1_indexer(indexer_id: int):
     with get_db() as db:
@@ -3938,6 +4291,102 @@ async def api_v1_download_clients(request: Request):
     )
 
 
+@router.post("/api/v1/downloadclient/test")
+async def api_v1_test_download_client_draft(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected an object body"}, status_code=400)
+
+    implementation = _payload_str(payload, "implementation", "type")
+    if not implementation:
+        return JSONResponse({"error": "implementation is required"}, status_code=400)
+    if implementation not in DOWNLOAD_CLIENT_TYPES:
+        return JSONResponse(
+            {"error": "implementation is not supported"},
+            status_code=400,
+        )
+    try:
+        client = {
+            "name": _payload_str(payload, "name") or "Unsaved client",
+            "type": implementation,
+            "host": _payload_str(payload, "host"),
+            "port": _payload_int(payload, "port", 0) or None,
+            "use_ssl": 1
+            if _payload_bool_alias(payload, ("useSsl", "use_ssl"), False)
+            else 0,
+            "url_base": _payload_str(payload, "urlBase", "url_base") or None,
+            "username": _payload_str(payload, "username") or None,
+            "password": _payload_str(payload, "password"),
+            "category": _payload_str(payload, "category") or "manga",
+            "post_import_category": _payload_str(
+                payload,
+                "postImportCategory",
+                "post_import_category",
+            )
+            or None,
+            "recent_priority": _payload_str(
+                payload,
+                "recentPriority",
+                "recent_priority",
+            )
+            or "last",
+            "older_priority": _payload_str(
+                payload,
+                "olderPriority",
+                "older_priority",
+            )
+            or "last",
+            "initial_state": _payload_str(payload, "initialState", "initial_state")
+            or "normal",
+            "sequential_order": 1
+            if _payload_bool_alias(
+                payload,
+                ("sequentialOrder", "sequential_order"),
+                False,
+            )
+            else 0,
+            "first_last_first": 1
+            if _payload_bool_alias(
+                payload,
+                ("firstLastFirst", "first_last_first"),
+                False,
+            )
+            else 0,
+            "content_layout": _payload_str(payload, "contentLayout", "content_layout")
+            or "original",
+            "priority": _payload_non_negative_alias(payload, ("priority",), 1),
+            "enabled": 1
+            if _payload_bool_alias(payload, ("enable", "enabled"), True)
+            else 0,
+            "remove_completed": 1
+            if _payload_bool_alias(
+                payload,
+                ("removeCompletedDownloads", "remove_completed"),
+                False,
+            )
+            else 0,
+            "remove_failed": 1
+            if _payload_bool_alias(
+                payload,
+                ("removeFailedDownloads", "remove_failed"),
+                False,
+            )
+            else 0,
+            "download_path": _payload_str(payload, "downloadPath", "download_path")
+            or None,
+            "merge_chapters": 1
+            if _payload_bool_alias(payload, ("mergeChapters", "merge_chapters"), False)
+            else 0,
+        }
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    ok, message = await _test_download_client_connection(client)
+    return JSONResponse({"ok": ok, "message": message})
+
+
 @router.post("/api/v1/downloadclient")
 async def api_v1_create_download_client(request: Request):
     try:
@@ -4156,6 +4605,47 @@ async def api_v1_delete_remote_path_mapping(mapping_id: int):
             )
         db.execute("DELETE FROM remote_path_mappings WHERE id=?", (mapping_id,))
     return JSONResponse({"ok": True, "id": mapping_id})
+
+
+@router.post("/api/v1/downloadclient/reset-all-circuits")
+async def api_v1_reset_all_download_client_circuits():
+    with get_db() as db:
+        db.execute("DELETE FROM client_breaker_state")
+    return JSONResponse({"ok": True, "message": "All circuit breakers reset"})
+
+
+@router.post("/api/v1/downloadclient/{client_id}/reset-circuit")
+async def api_v1_reset_download_client_circuit(client_id: int):
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT 1 FROM download_clients WHERE id=?",
+            (client_id,),
+        ).fetchone()
+    if not existing:
+        return JSONResponse(
+            {"error": "download client not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    _clear_download_client_circuit(client_id)
+    return JSONResponse({"ok": True, "message": "Circuit breaker reset"})
+
+
+@router.post("/api/v1/downloadclient/{client_id}/test")
+async def api_v1_test_download_client(client_id: int):
+    with get_db() as db:
+        row = db.execute(
+            "SELECT * FROM download_clients WHERE id=?",
+            (client_id,),
+        ).fetchone()
+    if not row:
+        return JSONResponse(
+            {"error": "download client not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    ok, message = await _test_download_client_connection(
+        _download_client_row_decrypted(row)
+    )
+    return JSONResponse({"ok": ok, "message": message})
 
 
 @router.get("/api/v1/downloadclient/{client_id}")
@@ -4415,6 +4905,368 @@ async def api_v1_delete_tag(tag_label: str):
             )
         _delete_tag_everywhere(db, tag)
     return JSONResponse({"ok": True, "id": tag})
+
+
+@router.get("/api/v1/episodefile")
+@router.get("/api/v1/mediafile")
+async def api_v1_media_files(request: Request):
+    series_id = _query_int(request, "seriesId", 0)
+    source_id = _query_int(request, "sourceId", 0)
+    file_type = (
+        request.query_params.get("type")
+        or request.query_params.get("kind")
+        or ""
+    ).strip().lower()
+    quality = (request.query_params.get("quality") or "").strip().lower()
+    query = (
+        request.query_params.get("term")
+        or request.query_params.get("query")
+        or ""
+    ).strip()
+    if file_type and file_type not in {"volume", "chapter"}:
+        return JSONResponse(
+            {"error": "type must be volume or chapter"},
+            status_code=HTTP_400_BAD_REQUEST,
+        )
+
+    payload: list[dict] = []
+    with get_db() as db:
+        if file_type in {"", "volume"}:
+            volume_rows = db.execute(
+                """
+                SELECT v.*, s.title AS series_title
+                  FROM volumes v
+                  JOIN series s ON s.id=v.series_id
+                 WHERE s.deleted_at IS NULL
+                   AND v.import_path IS NOT NULL
+                   AND v.import_path != ''
+                 ORDER BY s.title COLLATE NOCASE,
+                          COALESCE(v.volume_num, 999999), v.id
+                """
+            ).fetchall()
+            payload.extend(_media_file(row, "volume") for row in volume_rows)
+        if file_type in {"", "chapter"}:
+            chapter_rows = db.execute(
+                """
+                SELECT c.*, s.title AS series_title
+                  FROM chapters c
+                  JOIN series s ON s.id=c.series_id
+                 WHERE s.deleted_at IS NULL
+                   AND c.import_path IS NOT NULL
+                   AND c.import_path != ''
+                 ORDER BY s.title COLLATE NOCASE, c.chapter_num, c.id
+                """
+            ).fetchall()
+            payload.extend(_media_file(row, "chapter") for row in chapter_rows)
+
+    filtered: list[dict] = []
+    for item in payload:
+        if series_id and item["seriesId"] != series_id:
+            continue
+        if source_id and item["sourceId"] != source_id:
+            continue
+        if quality and str(item["quality"] or "").lower() != quality:
+            continue
+        if not _text_query_matches(
+            item, query, ("seriesTitle", "label", "path", "sourceTitle")
+        ):
+            continue
+        filtered.append(item)
+
+    _sort_api_payload(
+        filtered,
+        request,
+        sortable_fields={
+            "id",
+            "sourceId",
+            "type",
+            "seriesId",
+            "seriesTitle",
+            "volumeNumber",
+            "chapterNumber",
+            "quality",
+            "size",
+            "path",
+            "grabbedAt",
+            "importedAt",
+        },
+        default_sort_key="seriesTitle",
+    )
+    return _paged_list_response(
+        filtered,
+        _query_int(request, "page", 1),
+        _query_int(request, "pageSize", 0),
+    )
+
+
+@router.get("/api/v1/episodefile/{media_file_id}")
+@router.get("/api/v1/mediafile/{media_file_id}")
+async def api_v1_media_file(media_file_id: str):
+    normalized = str(media_file_id or "").strip().lower()
+    if "-" not in normalized:
+        file_type = ""
+        raw_source_id = normalized
+    else:
+        file_type, raw_source_id = normalized.split("-", 1)
+    if file_type and file_type not in {"volume", "chapter"}:
+        return JSONResponse(
+            {"error": "media file not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    try:
+        source_id = int(raw_source_id)
+    except (TypeError, ValueError):
+        return JSONResponse(
+            {"error": "media file not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+
+    with get_db() as db:
+        row = None
+        resolved_type = file_type
+        if file_type in {"", "volume"}:
+            row = db.execute(
+                """
+                SELECT v.*, s.title AS series_title
+                  FROM volumes v
+                  JOIN series s ON s.id=v.series_id
+                 WHERE v.id=? AND s.deleted_at IS NULL
+                   AND v.import_path IS NOT NULL
+                   AND v.import_path != ''
+                """,
+                (source_id,),
+            ).fetchone()
+            if row:
+                resolved_type = "volume"
+        if row is None and file_type in {"", "chapter"}:
+            row = db.execute(
+                """
+                SELECT c.*, s.title AS series_title
+                  FROM chapters c
+                  JOIN series s ON s.id=c.series_id
+                 WHERE c.id=? AND s.deleted_at IS NULL
+                   AND c.import_path IS NOT NULL
+                   AND c.import_path != ''
+            """,
+                (source_id,),
+            ).fetchone()
+            if row:
+                resolved_type = "chapter"
+    if not row:
+        return JSONResponse(
+            {"error": "media file not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    return JSONResponse(_media_file(row, resolved_type))
+
+
+@router.get("/api/v1/volume")
+async def api_v1_volumes(request: Request):
+    series_id = _query_int(request, "seriesId", 0)
+    status = (request.query_params.get("status") or "").strip().lower()
+    quality = (request.query_params.get("quality") or "").strip().lower()
+    monitored = _query_bool(request, "monitored")
+    volume_number = request.query_params.get("volumeNumber")
+    query = (
+        request.query_params.get("term")
+        or request.query_params.get("query")
+        or ""
+    ).strip()
+    try:
+        volume_number_value = (
+            float(volume_number)
+            if volume_number not in (None, "")
+            else None
+        )
+    except (TypeError, ValueError):
+        volume_number_value = None
+
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT v.*, s.title AS series_title
+              FROM volumes v
+              JOIN series s ON s.id=v.series_id
+             WHERE s.deleted_at IS NULL
+             ORDER BY s.title COLLATE NOCASE, COALESCE(v.volume_num, 999999),
+                      COALESCE(v.chapter_num, 999999), v.id
+            """
+        ).fetchall()
+
+    payload: list[dict] = []
+    for row in rows:
+        item = _volume(row)
+        item["seriesTitle"] = row["series_title"]
+        if series_id and item["seriesId"] != series_id:
+            continue
+        if status and str(item["status"] or "").lower() != status:
+            continue
+        if quality and str(item["quality"] or "").lower() != quality:
+            continue
+        if monitored is not None and item["monitored"] is not monitored:
+            continue
+        if (
+            volume_number_value is not None
+            and item["volumeNumber"] != volume_number_value
+        ):
+            continue
+        if not _text_query_matches(
+            item, query, ("seriesTitle", "title", "label", "sourceTitle")
+        ):
+            continue
+        payload.append(item)
+
+    _sort_api_payload(
+        payload,
+        request,
+        sortable_fields={
+            "id",
+            "seriesId",
+            "seriesTitle",
+            "volumeNumber",
+            "chapterNumber",
+            "status",
+            "quality",
+            "size",
+            "grabbedAt",
+            "importedAt",
+        },
+        default_sort_key="seriesTitle",
+    )
+    return _paged_list_response(
+        payload,
+        _query_int(request, "page", 1),
+        _query_int(request, "pageSize", 0),
+    )
+
+
+@router.get("/api/v1/volume/{volume_id}")
+async def api_v1_volume(volume_id: int):
+    with get_db() as db:
+        row = db.execute(
+            """
+            SELECT v.*, s.title AS series_title
+              FROM volumes v
+              JOIN series s ON s.id=v.series_id
+             WHERE v.id=? AND s.deleted_at IS NULL
+            """,
+            (volume_id,),
+        ).fetchone()
+    if not row:
+        return JSONResponse(
+            {"error": "volume not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    payload = _volume(row)
+    payload["seriesTitle"] = row["series_title"]
+    return JSONResponse(payload)
+
+
+@router.get("/api/v1/episode")
+@router.get("/api/v1/chapter")
+async def api_v1_chapters(request: Request):
+    series_id = _query_int(request, "seriesId", 0)
+    volume_id = _query_int(request, "volumeId", 0)
+    status = (request.query_params.get("status") or "").strip().lower()
+    quality = (request.query_params.get("quality") or "").strip().lower()
+    monitored = _query_bool(request, "monitored")
+    chapter_number = request.query_params.get("chapterNumber")
+    query = (
+        request.query_params.get("term")
+        or request.query_params.get("query")
+        or ""
+    ).strip()
+    try:
+        chapter_number_value = (
+            float(chapter_number)
+            if chapter_number not in (None, "")
+            else None
+        )
+    except (TypeError, ValueError):
+        chapter_number_value = None
+
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT c.*, s.title AS series_title
+              FROM chapters c
+              JOIN series s ON s.id=c.series_id
+             WHERE s.deleted_at IS NULL
+             ORDER BY s.title COLLATE NOCASE, c.chapter_num, c.id
+            """
+        ).fetchall()
+
+    payload: list[dict] = []
+    for row in rows:
+        item = _chapter(row)
+        item["seriesTitle"] = row["series_title"]
+        if series_id and item["seriesId"] != series_id:
+            continue
+        if volume_id and item["volumeId"] != volume_id:
+            continue
+        if status and str(item["status"] or "").lower() != status:
+            continue
+        if quality and str(item["quality"] or "").lower() != quality:
+            continue
+        if monitored is not None and item["monitored"] is not monitored:
+            continue
+        if (
+            chapter_number_value is not None
+            and item["chapterNumber"] != chapter_number_value
+        ):
+            continue
+        if not _text_query_matches(
+            item, query, ("seriesTitle", "title", "label", "sourceTitle")
+        ):
+            continue
+        payload.append(item)
+
+    _sort_api_payload(
+        payload,
+        request,
+        sortable_fields={
+            "id",
+            "seriesId",
+            "seriesTitle",
+            "volumeId",
+            "chapterNumber",
+            "chapterRangeEnd",
+            "status",
+            "quality",
+            "size",
+            "grabbedAt",
+            "importedAt",
+        },
+        default_sort_key="seriesTitle",
+    )
+    return _paged_list_response(
+        payload,
+        _query_int(request, "page", 1),
+        _query_int(request, "pageSize", 0),
+    )
+
+
+@router.get("/api/v1/episode/{chapter_id}")
+@router.get("/api/v1/chapter/{chapter_id}")
+async def api_v1_chapter(chapter_id: int):
+    with get_db() as db:
+        row = db.execute(
+            """
+            SELECT c.*, s.title AS series_title
+              FROM chapters c
+              JOIN series s ON s.id=c.series_id
+             WHERE c.id=? AND s.deleted_at IS NULL
+            """,
+            (chapter_id,),
+        ).fetchone()
+    if not row:
+        return JSONResponse(
+            {"error": "chapter not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    payload = _chapter(row)
+    payload["seriesTitle"] = row["series_title"]
+    return JSONResponse(payload)
 
 
 @router.get("/api/v1/series")
@@ -4769,6 +5621,7 @@ async def api_v1_restore_series(series_id: int):
     return JSONResponse({"ok": True, "id": series_id})
 
 
+@router.get("/api/v1/queue/details")
 @router.get("/api/v1/queue")
 async def api_v1_queue(
     seriesId: int = 0,
@@ -4903,6 +5756,52 @@ async def api_v1_queue(
         payload = [row for row in payload if row["queueType"] == type_key]
 
     return _paged_list_response(payload, page, pageSize)
+
+
+@router.get("/api/v1/queue/status")
+async def api_v1_queue_status():
+    with get_db() as db:
+        grabbed_count = db.execute(
+            "SELECT COUNT(*) FROM volumes WHERE status='grabbed'"
+        ).fetchone()[0]
+        import_counts = {
+            row["status"]: row["count"]
+            for row in db.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM import_queue
+                WHERE status IN ('pending','processing','partial','failed')
+                GROUP BY status
+                """
+            ).fetchall()
+        }
+        pending_release_count = db.execute(
+            "SELECT COUNT(*) FROM pending_releases"
+        ).fetchone()[0]
+
+    import_count = sum(import_counts.values())
+    pending_count = (
+        import_counts.get("pending", 0)
+        + import_counts.get("processing", 0)
+        + import_counts.get("partial", 0)
+        + pending_release_count
+    )
+    failed_count = import_counts.get("failed", 0)
+    total_count = grabbed_count + import_count + pending_release_count
+    return JSONResponse(
+        {
+            "totalCount": total_count,
+            "count": total_count,
+            "grabbedCount": grabbed_count,
+            "importCount": import_count,
+            "pendingCount": pending_count,
+            "pendingReleaseCount": pending_release_count,
+            "failedCount": failed_count,
+            "processingCount": import_counts.get("processing", 0),
+            "partialCount": import_counts.get("partial", 0),
+            "unknownCount": 0,
+        }
+    )
 
 
 @router.post("/api/v1/queue/grabbed/{volume_id}/reset")
@@ -5081,6 +5980,17 @@ async def api_v1_commands():
     return JSONResponse([_system_task(task) for task in TASKS])
 
 
+@router.get("/api/v1/command/{command_id}")
+async def api_v1_command_detail(command_id: int):
+    record = system_router.get_command_record(command_id)
+    if not record:
+        return JSONResponse(
+            {"error": "command not found"},
+            status_code=HTTP_404_NOT_FOUND,
+        )
+    return JSONResponse(record)
+
+
 @router.post("/api/v1/command")
 async def api_v1_run_command(request: Request):
     return await _run_command(request)
@@ -5220,6 +6130,7 @@ async def api_v1_history_delete(history_id: int):
     return JSONResponse({"ok": True, "id": history_id})
 
 
+@router.get("/api/v1/wanted/missing")
 @router.get("/api/v1/wanted")
 async def api_v1_wanted(
     seriesId: int = 0,
@@ -5281,6 +6192,8 @@ async def api_v1_wanted(
     return _paged_list_response(payload, page, pageSize)
 
 
+@router.get("/api/v1/wanted/cutoffunmet")
+@router.get("/api/v1/wanted/cutoff-unmet")
 @router.get("/api/v1/wanted/cutoff")
 async def api_v1_wanted_cutoff(
     seriesId: int = 0,
