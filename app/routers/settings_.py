@@ -57,6 +57,96 @@ def _is_first_run(db) -> bool:
     return True
 
 
+def _coerce_bool_string(value, true_value: str = "true", false_value: str = "false"):
+    return true_value if str(value or "").strip().lower() in (
+        "1",
+        "true",
+        "on",
+        "yes",
+    ) else false_value
+
+
+def _coerce_int_range(value, default: int, minimum: int, maximum: int) -> str:
+    raw = str(value or "").strip()
+    parsed = int(raw) if raw.lstrip("-").isdigit() else default
+    return str(max(minimum, min(maximum, parsed)))
+
+
+GENERAL_SETTING_COERCERS = {
+    "instance_name": lambda v: str(v or ""),
+    "log_level": lambda v: (
+        str(v or "INFO").strip().upper()
+        if str(v or "INFO").strip().upper()
+        in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+        else "INFO"
+    ),
+    "url_base": normalize_url_base,
+    "backup_folder": lambda v: str(v or "/config/backups/"),
+    "backup_interval_days": lambda v: str(v or "7"),
+    "backup_retention": lambda v: str(v or "10"),
+    "ui_date_format": lambda v: str(v or "relative").strip() or "relative",
+    "blocklist_ttl_days": lambda v: _coerce_int_range(v, 90, 0, 10000000),
+    "recycle_bin_retention_days": lambda v: _coerce_int_range(v, 30, 1, 365),
+    "recycle_bin_remove_files": lambda v: _coerce_bool_string(v, "1", "0"),
+}
+
+
+MEDIA_MANAGEMENT_SETTING_COERCERS = {
+    "torrent_save_path": lambda v: str(v or "").strip(),
+    "import_mode": lambda v: (
+        str(v or "hardlink")
+        if str(v or "hardlink") in ("hardlink", "move", "copy")
+        else "hardlink"
+    ),
+    "remove_completed": lambda v: _coerce_bool_string(v),
+    "minimum_free_space_mb": lambda v: _coerce_int_range(v, 0, 0, 10000000),
+    "file_format": lambda v: str(v or "").strip(),
+    "chapter_format": lambda v: str(v or "").strip(),
+    "folder_format": lambda v: str(v or "").strip(),
+    "quality_cutoff": lambda v: str(v or "").strip(),
+    "propers_and_repacks": lambda v: (
+        str(v or "prefer_and_upgrade")
+        if str(v or "prefer_and_upgrade")
+        in ("prefer_and_upgrade", "do_not_upgrade", "do_not_prefer")
+        else "prefer_and_upgrade"
+    ),
+}
+
+
+def _write_settings_fields(fields: dict[str, str]) -> None:
+    with get_db() as db:
+        for key, value in fields.items():
+            db.execute(
+                "INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
+                (key, value),
+            )
+    _reload_config()
+
+
+def update_general_settings_entries(raw_fields: dict) -> dict[str, str]:
+    fields = {
+        key: GENERAL_SETTING_COERCERS[key](value)
+        for key, value in raw_fields.items()
+        if key in GENERAL_SETTING_COERCERS
+    }
+    _write_settings_fields(fields)
+    if "log_level" in fields:
+        logging.getLogger().setLevel(
+            getattr(logging, fields["log_level"].upper(), logging.INFO)
+        )
+    return fields
+
+
+def update_media_management_settings_entries(raw_fields: dict) -> dict[str, str]:
+    fields = {
+        key: MEDIA_MANAGEMENT_SETTING_COERCERS[key](value)
+        for key, value in raw_fields.items()
+        if key in MEDIA_MANAGEMENT_SETTING_COERCERS
+    }
+    _write_settings_fields(fields)
+    return fields
+
+
 # ── Settings pages ────────────────────────────────────────────────────────────
 
 

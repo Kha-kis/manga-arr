@@ -59,6 +59,8 @@ from routers.settings_ import (
     add_root_folder_entry,
     delete_root_folder_entry,
     set_default_root_folder_entry,
+    update_general_settings_entries,
+    update_media_management_settings_entries,
     update_root_folder_entry,
 )
 from routers.series_ import patch_series as _patch_series
@@ -1334,6 +1336,49 @@ def _int_cfg(name: str, default: int) -> int:
         return default
 
 
+def _host_config_payload() -> dict:
+    return {
+        "instanceName": get_cfg("instance_name", "Mangarr") or "Mangarr",
+        "urlBase": get_cfg("url_base", ""),
+        "logLevel": get_cfg("log_level", "INFO"),
+        "backupFolder": get_cfg("backup_folder", "/config/backups/"),
+        "backupIntervalDays": _int_cfg("backup_interval_days", 7),
+        "backupRetention": _int_cfg("backup_retention", 10),
+        "uiDateFormat": get_cfg("ui_date_format", "relative"),
+        "blocklistTtlDays": _int_cfg("blocklist_ttl_days", 90),
+        "recycleBinRetentionDays": _int_cfg("recycle_bin_retention_days", 30),
+        "recycleBinRemoveFiles": _json_bool(
+            get_cfg("recycle_bin_remove_files", "false")
+        ),
+    }
+
+
+def _media_management_config_payload() -> dict:
+    return {
+        "torrentSavePath": get_cfg("torrent_save_path", ""),
+        "importMode": get_cfg("import_mode", "hardlink"),
+        "removeCompleted": _json_bool(get_cfg("remove_completed", "false")),
+        "minimumFreeSpaceMb": _int_cfg("minimum_free_space_mb", 0),
+        "fileFormat": get_cfg("file_format", ""),
+        "chapterFormat": get_cfg("chapter_format", ""),
+        "folderFormat": get_cfg("folder_format", ""),
+        "qualityCutoff": get_cfg("quality_cutoff", ""),
+        "propersAndRepacks": get_cfg(
+            "propers_and_repacks", "prefer_and_upgrade"
+        ),
+    }
+
+
+def _config_update_fields(payload: dict, aliases: dict[str, tuple[str, ...]]) -> dict:
+    fields = {}
+    for key, names in aliases.items():
+        for name in names:
+            if name in payload:
+                fields[key] = payload[name]
+                break
+    return fields
+
+
 @router.get("/api/v1/system/status")
 async def api_v1_system_status():
     return JSONResponse(
@@ -1410,39 +1455,101 @@ async def api_v1_disk_space():
 
 @router.get("/api/v1/config/host")
 async def api_v1_config_host():
-    return JSONResponse(
+    return JSONResponse(_host_config_payload())
+
+
+@router.put("/api/v1/config/host")
+@router.patch("/api/v1/config/host")
+async def api_v1_update_config_host(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+    fields = _config_update_fields(
+        payload,
         {
-            "instanceName": get_cfg("instance_name", "Mangarr") or "Mangarr",
-            "urlBase": get_cfg("url_base", ""),
-            "logLevel": get_cfg("log_level", "INFO"),
-            "backupFolder": get_cfg("backup_folder", "/config/backups/"),
-            "backupIntervalDays": _int_cfg("backup_interval_days", 7),
-            "backupRetention": _int_cfg("backup_retention", 10),
-            "uiDateFormat": get_cfg("ui_date_format", "relative"),
-            "blocklistTtlDays": _int_cfg("blocklist_ttl_days", 90),
-            "recycleBinRetentionDays": _int_cfg("recycle_bin_retention_days", 30),
-            "recycleBinRemoveFiles": _json_bool(
-                get_cfg("recycle_bin_remove_files", "false")
+            "instance_name": ("instanceName", "instance_name"),
+            "url_base": ("urlBase", "url_base"),
+            "log_level": ("logLevel", "log_level"),
+            "backup_folder": ("backupFolder", "backup_folder"),
+            "backup_interval_days": (
+                "backupIntervalDays",
+                "backup_interval_days",
             ),
-        }
+            "backup_retention": ("backupRetention", "backup_retention"),
+            "ui_date_format": ("uiDateFormat", "ui_date_format"),
+            "blocklist_ttl_days": ("blocklistTtlDays", "blocklist_ttl_days"),
+            "recycle_bin_retention_days": (
+                "recycleBinRetentionDays",
+                "recycle_bin_retention_days",
+            ),
+            "recycle_bin_remove_files": (
+                "recycleBinRemoveFiles",
+                "recycle_bin_remove_files",
+            ),
+        },
     )
+    if not fields:
+        return JSONResponse(
+            {"error": "no supported settings submitted"},
+            status_code=HTTP_400_BAD_REQUEST,
+        )
+    update_general_settings_entries(fields)
+    return JSONResponse({"ok": True, "hostConfig": _host_config_payload()})
 
 
 @router.get("/api/v1/config/mediamanagement")
 async def api_v1_config_media_management():
+    return JSONResponse(_media_management_config_payload())
+
+
+@router.put("/api/v1/config/mediamanagement")
+@router.patch("/api/v1/config/mediamanagement")
+async def api_v1_update_config_media_management(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+    fields = _config_update_fields(
+        payload,
+        {
+            "torrent_save_path": ("torrentSavePath", "torrent_save_path"),
+            "import_mode": ("importMode", "import_mode"),
+            "remove_completed": ("removeCompleted", "remove_completed"),
+            "minimum_free_space_mb": (
+                "minimumFreeSpaceMb",
+                "minimum_free_space_mb",
+            ),
+            "file_format": ("fileFormat", "file_format"),
+            "chapter_format": ("chapterFormat", "chapter_format"),
+            "folder_format": ("folderFormat", "folder_format"),
+            "quality_cutoff": ("qualityCutoff", "quality_cutoff"),
+            "propers_and_repacks": (
+                "propersAndRepacks",
+                "propers_and_repacks",
+            ),
+        },
+    )
+    if not fields:
+        return JSONResponse(
+            {"error": "no supported settings submitted"},
+            status_code=HTTP_400_BAD_REQUEST,
+        )
+    update_media_management_settings_entries(fields)
     return JSONResponse(
         {
-            "torrentSavePath": get_cfg("torrent_save_path", ""),
-            "importMode": get_cfg("import_mode", "hardlink"),
-            "removeCompleted": _json_bool(get_cfg("remove_completed", "false")),
-            "minimumFreeSpaceMb": _int_cfg("minimum_free_space_mb", 0),
-            "fileFormat": get_cfg("file_format", ""),
-            "chapterFormat": get_cfg("chapter_format", ""),
-            "folderFormat": get_cfg("folder_format", ""),
-            "qualityCutoff": get_cfg("quality_cutoff", ""),
-            "propersAndRepacks": get_cfg(
-                "propers_and_repacks", "prefer_and_upgrade"
-            ),
+            "ok": True,
+            "mediaManagementConfig": _media_management_config_payload(),
         }
     )
 

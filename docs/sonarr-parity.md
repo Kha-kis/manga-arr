@@ -74,6 +74,8 @@ tag endpoints.
 Quality-definition size/title mutations are covered for the fields Mangarr
 already exposes in the UI.
 Root-folder update mutations cover path, label/name, and default selection.
+Host and media-management config mutations cover the settings Mangarr already
+stores for its General and Media Management forms.
 Notification, indexer, download-client, remote-path-mapping, import-list,
 import-list-exclusion, and tag rename/delete mutations are also covered.
 Individual detail reads are covered for root folders, notifications, profiles,
