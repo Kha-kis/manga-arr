@@ -1354,6 +1354,36 @@ async def api_v1_config_media_management():
     )
 
 
+@router.get("/api/v1/config/indexer")
+async def api_v1_config_indexer():
+    return JSONResponse(
+        {
+            "rssSyncInterval": _int_cfg("rss_interval", 900),
+            "minimumAge": 0,
+            "retention": 0,
+            "maximumSize": 0,
+            "enableRss": True,
+            "enableAutomaticSearch": True,
+            "enableInteractiveSearch": True,
+        }
+    )
+
+
+@router.get("/api/v1/config/downloadclient")
+async def api_v1_config_download_client():
+    return JSONResponse(
+        {
+            "downloadClientWorkingFolders": get_cfg("torrent_save_path", ""),
+            "removeCompletedDownloads": _json_bool(
+                get_cfg("remove_completed", "false")
+            ),
+            "removeFailedDownloads": True,
+            "redownloadFailed": False,
+            "enableCompletedDownloadHandling": True,
+        }
+    )
+
+
 @router.get("/api/v1/config/ui")
 async def api_v1_config_ui():
     ui_date_format = get_cfg("ui_date_format", "relative") or "relative"
