@@ -13,6 +13,7 @@ What's seeded (driven by what the browser test files require):
   - series id=40 "Vinland Saga" with baseline fields browser_e2e.js asserts and reverts on
   - download_client id=1, qbittorrent, enabled — browser_e2e.js E3.6 calls
     /api/download-clients/1/test on this id
+  - custom_format id=990 "Browser Digital" — browser_integration.js previews it
   - one custom tag visible on /tags so the integration page sweep finds it
 
 Production data is never touched: this script connects to /config/manga_arr.db
@@ -79,6 +80,12 @@ DL_CLIENT_1 = {
     "category": "manga",
     "priority": 1,
     "enabled": 1,
+}
+
+CUSTOM_FORMAT_1 = {
+    "id": 990,
+    "name": "Browser Digital",
+    "specifications": '[{"type":"release_title_contains","value":"Digital","negate":false}]',
 }
 
 
@@ -188,6 +195,21 @@ def main():
                 "INSERT INTO series_tags(series_id, tag) VALUES(?,?)", (40, "seed-tag")
             )
             print("seeded tag 'seed-tag' on series 40")
+
+        existing = db.execute(
+            "SELECT id FROM custom_formats WHERE id=?", (CUSTOM_FORMAT_1["id"],)
+        ).fetchone()
+        if not existing:
+            db.execute(
+                "INSERT INTO custom_formats(id, name, specifications)"
+                " VALUES(?,?,?)",
+                (
+                    CUSTOM_FORMAT_1["id"],
+                    CUSTOM_FORMAT_1["name"],
+                    CUSTOM_FORMAT_1["specifications"],
+                ),
+            )
+            print(f"seeded custom_format id={CUSTOM_FORMAT_1['id']}")
 
         # complete pack for series 37 so the smoke test Omnibus & Packs section has content
         db.execute(
