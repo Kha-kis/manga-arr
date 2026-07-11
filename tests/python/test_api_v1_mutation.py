@@ -436,6 +436,75 @@ def test_api_v1_update_download_client_config_updates_submitted_fields(env):
     }
 
 
+def test_api_v1_update_ui_config_updates_submitted_fields(env):
+    import main
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/config/ui",
+        json={"uiDateFormat": "absolute"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["uiConfig"]["uiDateFormat"] == "absolute"
+    assert body["uiConfig"]["showRelativeDates"] is False
+    assert body["uiConfig"]["theme"] == "dark"
+    assert main.CONFIG["ui_date_format"] == "absolute"
+
+    with sqlite3.connect(env) as c:
+        value = c.execute(
+            "SELECT value FROM settings WHERE key='ui_date_format'"
+        ).fetchone()[0]
+    assert value == "absolute"
+
+
+def test_api_v1_update_naming_config_updates_submitted_fields(env):
+    import main
+
+    with sqlite3.connect(env) as c:
+        for key, value in [
+            ("chapter_format", "{Series Title} c{Chapter:03d}"),
+            ("folder_format", "{Series Title}"),
+        ]:
+            c.execute(
+                "INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
+                (key, value),
+            )
+    main.load_config()
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/config/naming",
+        json={"fileFormat": "{Series Title} v{Volume:02d}"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    config = body["namingConfig"]
+    assert config["renameVolumes"] is True
+    assert config["fileFormat"] == "{Series Title} v{Volume:02d}"
+    assert config["chapterFormat"] == "{Series Title} c{Chapter:03d}"
+    assert config["folderFormat"] == "{Series Title}"
+    assert main.CONFIG["file_format"] == "{Series Title} v{Volume:02d}"
+
+    with sqlite3.connect(env) as c:
+        out = {
+            row[0]: row[1]
+            for row in c.execute(
+                "SELECT key, value FROM settings WHERE key IN ("
+                "'file_format','chapter_format','folder_format')"
+            )
+        }
+    assert out == {
+        "file_format": "{Series Title} v{Volume:02d}",
+        "chapter_format": "{Series Title} c{Chapter:03d}",
+        "folder_format": "{Series Title}",
+    }
+
+
 def test_api_v1_update_config_rejects_unsupported_payload(env):
     resp = _client().request(
         "PATCH",
