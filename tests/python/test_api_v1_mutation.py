@@ -368,6 +368,74 @@ def test_api_v1_update_media_management_config_updates_submitted_fields(env):
     }
 
 
+def test_api_v1_update_indexer_config_updates_submitted_fields(env):
+    import main
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/config/indexer",
+        json={"rssSyncInterval": 30},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["indexerConfig"]["rssSyncInterval"] == 60
+    assert body["indexerConfig"]["enableRss"] is True
+    assert main.CONFIG["rss_interval"] == "60"
+
+    with sqlite3.connect(env) as c:
+        value = c.execute(
+            "SELECT value FROM settings WHERE key='rss_interval'"
+        ).fetchone()[0]
+    assert value == "60"
+
+
+def test_api_v1_update_download_client_config_updates_submitted_fields(env):
+    import main
+
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT OR REPLACE INTO settings(key,value)"
+            " VALUES('import_mode','copy')"
+        )
+    main.load_config()
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/config/downloadclient",
+        json={
+            "downloadClientWorkingFolders": "/downloads/new",
+            "removeCompletedDownloads": True,
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    config = body["downloadClientConfig"]
+    assert config["downloadClientWorkingFolders"] == "/downloads/new"
+    assert config["removeCompletedDownloads"] is True
+    assert config["removeFailedDownloads"] is True
+    assert main.CONFIG["torrent_save_path"] == "/downloads/new"
+    assert main.CONFIG["remove_completed"] == "true"
+    assert main.CONFIG["import_mode"] == "copy"
+
+    with sqlite3.connect(env) as c:
+        out = {
+            row[0]: row[1]
+            for row in c.execute(
+                "SELECT key, value FROM settings WHERE key IN ("
+                "'torrent_save_path','remove_completed','import_mode')"
+            )
+        }
+    assert out == {
+        "torrent_save_path": "/downloads/new",
+        "remove_completed": "true",
+        "import_mode": "copy",
+    }
+
+
 def test_api_v1_update_config_rejects_unsupported_payload(env):
     resp = _client().request(
         "PATCH",

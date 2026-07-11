@@ -60,6 +60,7 @@ from routers.settings_ import (
     delete_root_folder_entry,
     set_default_root_folder_entry,
     update_general_settings_entries,
+    update_indexer_settings_entries,
     update_media_management_settings_entries,
     update_root_folder_entry,
 )
@@ -1369,6 +1370,30 @@ def _media_management_config_payload() -> dict:
     }
 
 
+def _indexer_config_payload() -> dict:
+    return {
+        "rssSyncInterval": _int_cfg("rss_interval", 900),
+        "minimumAge": 0,
+        "retention": 0,
+        "maximumSize": 0,
+        "enableRss": True,
+        "enableAutomaticSearch": True,
+        "enableInteractiveSearch": True,
+    }
+
+
+def _download_client_config_payload() -> dict:
+    return {
+        "downloadClientWorkingFolders": get_cfg("torrent_save_path", ""),
+        "removeCompletedDownloads": _json_bool(
+            get_cfg("remove_completed", "false")
+        ),
+        "removeFailedDownloads": True,
+        "redownloadFailed": False,
+        "enableCompletedDownloadHandling": True,
+    }
+
+
 def _config_update_fields(payload: dict, aliases: dict[str, tuple[str, ...]]) -> dict:
     fields = {}
     for key, names in aliases.items():
@@ -1556,30 +1581,78 @@ async def api_v1_update_config_media_management(request: Request):
 
 @router.get("/api/v1/config/indexer")
 async def api_v1_config_indexer():
-    return JSONResponse(
+    return JSONResponse(_indexer_config_payload())
+
+
+@router.put("/api/v1/config/indexer")
+@router.patch("/api/v1/config/indexer")
+async def api_v1_update_config_indexer(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+    fields = _config_update_fields(
+        payload,
         {
-            "rssSyncInterval": _int_cfg("rss_interval", 900),
-            "minimumAge": 0,
-            "retention": 0,
-            "maximumSize": 0,
-            "enableRss": True,
-            "enableAutomaticSearch": True,
-            "enableInteractiveSearch": True,
-        }
+            "rss_interval": ("rssSyncInterval", "rss_interval"),
+        },
     )
+    if not fields:
+        return JSONResponse(
+            {"error": "no supported settings submitted"},
+            status_code=HTTP_400_BAD_REQUEST,
+        )
+    update_indexer_settings_entries(fields)
+    return JSONResponse({"ok": True, "indexerConfig": _indexer_config_payload()})
 
 
 @router.get("/api/v1/config/downloadclient")
 async def api_v1_config_download_client():
+    return JSONResponse(_download_client_config_payload())
+
+
+@router.put("/api/v1/config/downloadclient")
+@router.patch("/api/v1/config/downloadclient")
+async def api_v1_update_config_download_client(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict) or not payload:
+        return JSONResponse(
+            {"error": "expected a non-empty object body"},
+            status_code=400,
+        )
+    fields = _config_update_fields(
+        payload,
+        {
+            "torrent_save_path": (
+                "downloadClientWorkingFolders",
+                "torrentSavePath",
+                "torrent_save_path",
+            ),
+            "remove_completed": (
+                "removeCompletedDownloads",
+                "removeCompleted",
+                "remove_completed",
+            ),
+        },
+    )
+    if not fields:
+        return JSONResponse(
+            {"error": "no supported settings submitted"},
+            status_code=HTTP_400_BAD_REQUEST,
+        )
+    update_media_management_settings_entries(fields)
     return JSONResponse(
         {
-            "downloadClientWorkingFolders": get_cfg("torrent_save_path", ""),
-            "removeCompletedDownloads": _json_bool(
-                get_cfg("remove_completed", "false")
-            ),
-            "removeFailedDownloads": True,
-            "redownloadFailed": False,
-            "enableCompletedDownloadHandling": True,
+            "ok": True,
+            "downloadClientConfig": _download_client_config_payload(),
         }
     )
 

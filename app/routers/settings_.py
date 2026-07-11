@@ -113,6 +113,11 @@ MEDIA_MANAGEMENT_SETTING_COERCERS = {
 }
 
 
+INDEXER_SETTING_COERCERS = {
+    "rss_interval": lambda v: _coerce_int_range(v, 900, 60, 86400),
+}
+
+
 def _write_settings_fields(fields: dict[str, str]) -> None:
     with get_db() as db:
         for key, value in fields.items():
@@ -142,6 +147,16 @@ def update_media_management_settings_entries(raw_fields: dict) -> dict[str, str]
         key: MEDIA_MANAGEMENT_SETTING_COERCERS[key](value)
         for key, value in raw_fields.items()
         if key in MEDIA_MANAGEMENT_SETTING_COERCERS
+    }
+    _write_settings_fields(fields)
+    return fields
+
+
+def update_indexer_settings_entries(raw_fields: dict) -> dict[str, str]:
+    fields = {
+        key: INDEXER_SETTING_COERCERS[key](value)
+        for key, value in raw_fields.items()
+        if key in INDEXER_SETTING_COERCERS
     }
     _write_settings_fields(fields)
     return fields

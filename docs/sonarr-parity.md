@@ -76,6 +76,8 @@ already exposes in the UI.
 Root-folder update mutations cover path, label/name, and default selection.
 Host and media-management config mutations cover the settings Mangarr already
 stores for its General and Media Management forms.
+Indexer and download-client config mutations cover the backed global settings
+for RSS interval, download working folder, and remove-completed behavior.
 Notification, indexer, download-client, remote-path-mapping, import-list,
 import-list-exclusion, and tag rename/delete mutations are also covered.
 Individual detail reads are covered for root folders, notifications, profiles,
