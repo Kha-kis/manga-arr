@@ -777,6 +777,112 @@ def test_api_v1_profiles_roots_and_series_contract(env):
     assert item["statistics"]["grabbedCount"] == 1
 
 
+def test_api_v1_profile_and_notification_lists_support_filters_and_paging(env):
+    client = _client()
+    headers = {"X-Api-Key": _api_key(env)}
+
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO quality_profiles"
+            "(id, name, qualities, cutoff, upgrades_allowed,"
+            " minimum_custom_format_score, cutoff_format_score,"
+            " min_upgrade_format_score, is_default)"
+            " VALUES(11, 'Archive Quality', '[\"cbz\"]',"
+            " 'cbz', 0, 0, 10000, 10, 0)"
+        )
+        c.execute(
+            "INSERT INTO language_profiles(id, name, languages, allow_any)"
+            " VALUES(21, 'Japanese', '[\"ja\"]', 0)"
+        )
+        c.execute(
+            "INSERT INTO custom_formats"
+            "(id, name, specifications, include_custom_format_when_renaming)"
+            " VALUES(31, 'Fan Scan', '[]', 0)"
+        )
+        c.execute(
+            "INSERT INTO release_profiles"
+            "(id, name, enabled, required, ignored, preferred,"
+            " include_preferred_when_renaming)"
+            " VALUES(41, 'Archive Groups', 0, 'archive', '', '[]', 0)"
+        )
+        c.execute(
+            "INSERT INTO release_profile_tags(profile_id, tag)"
+            " VALUES(41, 'archive')"
+        )
+        c.execute(
+            "INSERT INTO delay_profiles"
+            "(id, name, order_num, enable_usenet, enable_torrent,"
+            " usenet_delay, torrent_delay, bypass_if_highest_quality,"
+            " is_default)"
+            " VALUES(46, 'Archive Delay', 2, 1, 1, 0, 60, 0, 0)"
+        )
+        c.execute(
+            "INSERT INTO delay_profile_tags(profile_id, tag)"
+            " VALUES(46, 'archive')"
+        )
+        c.execute(
+            "INSERT INTO notification_connections"
+            "(id, name, type, enabled, settings, on_grab, on_download,"
+            " on_upgrade, on_series_add, on_health_issue, on_health_restored)"
+            " VALUES(96, 'Archive Webhook', 'webhook', 0,"
+            " '{}', 1, 1, 0, 1, 1, 0)"
+        )
+
+    quality_page = client.get(
+        "/api/v1/qualityprofile",
+        params={"query": "quality", "sortKey": "name", "pageSize": 1},
+        headers=headers,
+    )
+    assert quality_page.status_code == 200, quality_page.text
+    assert quality_page.headers["X-Total-Count"] == "1"
+    assert [row["id"] for row in quality_page.json()] == [11]
+
+    language_page = client.get(
+        "/api/v1/languageprofile",
+        params={"term": "japanese"},
+        headers=headers,
+    )
+    assert language_page.status_code == 200, language_page.text
+    assert language_page.headers["X-Total-Count"] == "1"
+    assert [row["id"] for row in language_page.json()] == [21]
+
+    custom_page = client.get(
+        "/api/v1/customformat",
+        params={"name": "fan"},
+        headers=headers,
+    )
+    assert custom_page.status_code == 200, custom_page.text
+    assert custom_page.headers["X-Total-Count"] == "1"
+    assert [row["id"] for row in custom_page.json()] == [31]
+
+    release_page = client.get(
+        "/api/v1/releaseprofile",
+        params={"enabled": "false", "tag": "archive"},
+        headers=headers,
+    )
+    assert release_page.status_code == 200, release_page.text
+    assert release_page.headers["X-Total-Count"] == "1"
+    assert [row["id"] for row in release_page.json()] == [41]
+
+    delay_page = client.get(
+        "/api/v1/delayprofile",
+        params={"tag": "archive", "sortKey": "order", "pageSize": 1},
+        headers=headers,
+    )
+    assert delay_page.status_code == 200, delay_page.text
+    assert delay_page.headers["X-Total-Count"] == "1"
+    assert [row["id"] for row in delay_page.json()] == [46]
+
+    notification_page = client.get(
+        "/api/v1/notification",
+        params={"type": "webhook", "enabled": "false"},
+        headers=headers,
+    )
+    assert notification_page.status_code == 200, notification_page.text
+    assert notification_page.headers["X-Total-Count"] == "1"
+    assert [row["id"] for row in notification_page.json()] == [96]
+
+
 def test_api_v1_indexers_download_clients_and_remote_paths_contract(env):
     client = _client()
     headers = {"X-Api-Key": _api_key(env)}
