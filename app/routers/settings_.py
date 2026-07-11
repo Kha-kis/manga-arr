@@ -4,6 +4,7 @@ import json
 import logging
 import secrets
 import os
+import sqlite3
 
 import httpx
 from fastapi import APIRouter, Form, Request
@@ -358,6 +359,76 @@ def delete_root_folder_entry(folder_id: int) -> dict:
                 "WHERE id=(SELECT id FROM root_folders LIMIT 1)"
             )
     return {"ok": True, "status": "deleted"}
+
+
+def update_root_folder_entry(
+    folder_id: int,
+    *,
+    path: str | None = None,
+    label: str | None = None,
+    is_default: bool | None = None,
+) -> dict:
+    """Update a root folder row and keep one remaining row defaulted."""
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT * FROM root_folders WHERE id=?",
+            (folder_id,),
+        ).fetchone()
+        if not existing:
+            return {"ok": False, "status": "not_found"}
+
+        fields: list[str] = []
+        params: list = []
+        if path is not None:
+            path = str(path or "").strip().rstrip("/")
+            if not path:
+                return {"ok": False, "status": "invalid_path"}
+            fields.append("path=?")
+            params.append(path)
+        if label is not None:
+            fields.append("label=?")
+            params.append(str(label or "").strip() or None)
+
+        if fields:
+            params.append(folder_id)
+            try:
+                db.execute(
+                    f"UPDATE root_folders SET {', '.join(fields)} WHERE id=?",
+                    params,
+                )
+            except sqlite3.IntegrityError:
+                return {"ok": False, "status": "duplicate_path"}
+
+        if is_default is True:
+            db.execute("UPDATE root_folders SET is_default=0")
+            db.execute(
+                "UPDATE root_folders SET is_default=1 WHERE id=?",
+                (folder_id,),
+            )
+        elif is_default is False:
+            db.execute(
+                "UPDATE root_folders SET is_default=0 WHERE id=?",
+                (folder_id,),
+            )
+        has_default = db.execute(
+            "SELECT 1 FROM root_folders WHERE is_default=1"
+        ).fetchone()
+        if not has_default:
+            fallback = db.execute(
+                "SELECT id FROM root_folders WHERE id<>? ORDER BY id LIMIT 1",
+                (folder_id,),
+            ).fetchone()
+            fallback_id = fallback["id"] if fallback else folder_id
+            db.execute(
+                "UPDATE root_folders SET is_default=1 WHERE id=?",
+                (fallback_id,),
+            )
+
+        row = db.execute(
+            "SELECT * FROM root_folders WHERE id=?",
+            (folder_id,),
+        ).fetchone()
+    return {"ok": True, "status": "updated", "root_folder": dict(row)}
 
 
 def set_default_root_folder_entry(folder_id: int) -> dict:
