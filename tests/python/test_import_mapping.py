@@ -68,6 +68,11 @@ def env(tmp_path):
     with sqlite3.connect(db.name) as c:
         c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('save_path', ?)",
                   (str(lib_root),))
+        c.execute(
+            "INSERT OR REPLACE INTO root_folders(id, path, label, is_default)"
+            " VALUES(1, ?, 'Manga', 1)",
+            (str(lib_root),),
+        )
     main.load_config()
 
     try:
@@ -84,9 +89,11 @@ def env(tmp_path):
 def _seed_series(db_path: str, *, series_id: int = 7, title: str = "Test Series",
                  total_volumes: int | None = None) -> None:
     with sqlite3.connect(db_path) as c:
-        c.execute("INSERT INTO series(id, title, search_pattern, total_volumes)"
-                  " VALUES(?, ?, ?, ?)",
-                  (series_id, title, title, total_volumes))
+        c.execute(
+            "INSERT INTO series(id, title, search_pattern, total_volumes, root_folder_id)"
+            " VALUES(?, ?, ?, ?, 1)",
+            (series_id, title, title, total_volumes),
+        )
 
 
 def _run_queue_import(db_path: str, *, series_id: int, torrent_name: str,
@@ -173,6 +180,127 @@ def test_queue_import_detects_chapter_range(env):
     assert row["proposed_chapter"] == 1.0
     assert row["proposed_chapter_range_end"] == 2.0
     assert row["proposed_pack_type"] == "chapter_range"
+
+
+def test_queue_import_uses_chapter_format_for_chapter_filename(env):
+    """Chapter-only imports must build their destination from chapter_format."""
+    import main
+
+    _seed_series(env["db_path"])
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute(
+            "INSERT OR REPLACE INTO settings(key, value) VALUES('chapter_format', ?)",
+            ("{Series Title} c{Chapter:04d}",),
+        )
+    main.load_config()
+
+    src_dir = env["src_root"] / "chapter-release"
+    src_dir.mkdir()
+    _make_zip(str(src_dir / "Series - c001.cbz"))
+
+    qid = _run_queue_import(
+        env["db_path"], series_id=7,
+        torrent_name="Series - c001",
+        content_path=str(src_dir),
+    )
+
+    with sqlite3.connect(env["db_path"]) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT filename, dst_path, proposed_chapter, file_type"
+            " FROM import_queue_files WHERE queue_id=?", (qid,)
+        ).fetchone()
+    assert row["file_type"] == "chapter"
+    assert row["proposed_chapter"] == 1.0
+    assert row["filename"] == "Test Series c0001.cbz"
+    assert row["dst_path"].endswith("Test Series c0001.cbz")
+
+
+def test_queue_import_does_not_apply_volume_template_to_chapter(env):
+    """When no chapter_format exists, a volume-only file_format must not
+    produce filenames with unresolved {Volume} tokens for chapter imports."""
+    import main
+
+    _seed_series(env["db_path"])
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute(
+            "INSERT OR REPLACE INTO settings(key, value) VALUES('file_format', ?)",
+            ("{Series Title} v{Volume:02d}",),
+        )
+        c.execute("DELETE FROM settings WHERE key='chapter_format'")
+    main.load_config()
+
+    src_dir = env["src_root"] / "chapter-no-format"
+    src_dir.mkdir()
+    _make_zip(str(src_dir / "Series - c001.cbz"))
+
+    qid = _run_queue_import(
+        env["db_path"], series_id=7,
+        torrent_name="Series - c001",
+        content_path=str(src_dir),
+    )
+
+    with sqlite3.connect(env["db_path"]) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT filename, dst_path, proposed_chapter, file_type"
+            " FROM import_queue_files WHERE queue_id=?", (qid,)
+        ).fetchone()
+    assert row["file_type"] == "chapter"
+    assert row["proposed_chapter"] == 1.0
+    assert row["filename"] == "Series - c001.cbz"
+    assert "{Volume" not in row["dst_path"]
+
+
+def test_import_plan_repairs_legacy_chapter_filename_tokens(env):
+    """Failed queue rows created before the fix may already contain a
+    persisted volume-template filename. Retry planning must repair those."""
+    import main
+    from import_plan import _plan_import
+
+    _seed_series(env["db_path"])
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute(
+            "INSERT OR REPLACE INTO settings(key, value) VALUES('file_format', ?)",
+            ("{Series Title} v{Volume:02d}",),
+        )
+        c.execute("DELETE FROM settings WHERE key='chapter_format'")
+    main.load_config()
+
+    src_dir = env["src_root"] / "legacy-token"
+    src_dir.mkdir()
+    src_path = _make_zip(str(src_dir / "Series - c001.cbz"))
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute(
+            "INSERT INTO import_queue(series_id, download_id, torrent_name,"
+            " torrent_url, volume_num, src_dir, status)"
+            " VALUES(7, 'legacy-dl', 'Series - c001', 'magnet:x', NULL, ?, 'pending')",
+            (str(src_dir),),
+        )
+        qid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+        c.execute(
+            "INSERT INTO import_queue_files(queue_id, filename, src_path, dst_path,"
+            " proposed_chapter, file_type, status)"
+            " VALUES(?,?,?,?,1.0,'chapter','pending')",
+            (
+                qid,
+                "Test Series v{Volume:02d}.cbz",
+                src_path,
+                str(env["lib_root"] / "Test Series" / "Test Series v{Volume:02d}.cbz"),
+            ),
+        )
+
+    with main.get_db() as db:
+        plan = _plan_import(db, qid, {}, {}, set(), "copy")
+
+    assert plan is not None
+    assert plan.files[0].filename == "Series - c001.cbz"
+    assert "{Volume" not in plan.files[0].dst_path
+    with sqlite3.connect(env["db_path"]) as c:
+        filename = c.execute(
+            "SELECT filename FROM import_queue_files WHERE queue_id=?", (qid,)
+        ).fetchone()[0]
+    assert filename == "Series - c001.cbz"
 
 
 # ─────────────── 3. review round-trip overrides chapter range ─────────
@@ -586,6 +714,46 @@ def test_mark_downloaded_volume_pack_handles_sqlite_row(env, monkeypatch):
 
     assert [r["volume_num"] for r in rows] == [1.0, 2.0, 3.0]
     assert {r["status"] for r in rows} == {"downloaded"}
+
+
+def test_mark_downloaded_chapter_pack_marks_placeholder_downloaded(env, monkeypatch):
+    """Chapter-pack imports create chapter rows, but the pack placeholder
+    must not remain grabbed after import completes."""
+    _seed_series(env["db_path"])
+    import import_download
+
+    def _close_task(coro):
+        coro.close()
+        return None
+
+    monkeypatch.setattr(import_download.asyncio, "create_task", _close_task)
+
+    with sqlite3.connect(env["db_path"]) as c:
+        c.row_factory = sqlite3.Row
+        c.execute(
+            "INSERT INTO seen(torrent_url, torrent_name, series_id, protocol, client,"
+            " download_id)"
+            " VALUES('http://example/chapter-pack', 'Series c001', 7, 'torrent',"
+            " 'qbittorrent', 'dl-chapter')"
+        )
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, source_url,"
+            " download_id, pack_type, torrent_name)"
+            " VALUES(7, NULL, 'grabbed', 'http://example/chapter-pack',"
+            " 'dl-chapter', 'chapter', 'Series c001')"
+        )
+
+        assert import_download._mark_downloaded(
+            c, 7, None, "http://example/chapter-pack"
+        )
+        row = c.execute(
+            "SELECT status, torrent_name, client FROM volumes"
+            " WHERE series_id=7 AND download_id='dl-chapter'"
+        ).fetchone()
+
+    assert row["status"] == "downloaded"
+    assert row["torrent_name"] == "Series c001"
+    assert row["client"] == "qbittorrent"
 
 
 # ─────────────── 13. review UI exposes new fields ─────────────────

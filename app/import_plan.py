@@ -5,7 +5,7 @@ import os
 
 from events import log_event
 from parsing import extract_chapter_num
-from files import safe_join_under
+from files import build_filename, safe_join_under
 from rescan import _series_library_dir
 
 log = logging.getLogger(__name__)
@@ -283,13 +283,30 @@ def _plan_import(
                 )
                 plan_status = "needs_review"
 
+        filename = f["filename"]
+        if (
+            file_type == "chapter"
+            and proposed_chap is not None
+            and ("{Volume" in filename or "{Chapter" in filename)
+        ):
+            filename = build_filename(
+                s["title"] if s else "",
+                proposed_vol,
+                os.path.basename(f["src_path"] or filename),
+                chapter_num=proposed_chap,
+            )
+            db.execute(
+                "UPDATE import_queue_files SET filename=? WHERE id=?",
+                (filename, f["id"]),
+            )
+
         dst_path = ""
         if plan_status == "ready":
             try:
-                dst_path = safe_join_under(dst_dir, f["filename"])
+                dst_path = safe_join_under(dst_dir, filename)
             except ValueError as _e:
                 plan_status = "pre_failed"
-                plan_failure_reason = f"unsafe destination ({f['filename']}): {_e}"
+                plan_failure_reason = f"unsafe destination ({filename}): {_e}"
             if plan_status == "ready" and not os.path.isfile(f["src_path"]):
                 plan_status = "pre_failed"
                 plan_failure_reason = f"source file missing: {f['src_path']}"
@@ -298,7 +315,7 @@ def _plan_import(
             _FilePlan(
                 file_id=f["id"],
                 src_path=f["src_path"],
-                filename=f["filename"],
+                filename=filename,
                 dst_path=dst_path,
                 file_type=file_type,
                 proposed_vol=proposed_vol,
