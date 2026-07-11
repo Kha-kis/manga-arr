@@ -1059,6 +1059,73 @@ def test_api_v1_source_and_client_lists_support_filters_and_paging(env):
     assert [row["id"] for row in disabled_lists.json()] == [81]
 
 
+def test_api_v1_utility_lists_support_filters_and_paging(env):
+    client = _client()
+    headers = {"X-Api-Key": _api_key(env)}
+
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO quality_definitions"
+            "(quality, title, min_size, max_size, order_num)"
+            " VALUES('cbr', 'Comic Book Rar', 1.0, 400.0, 2)"
+        )
+        c.execute(
+            "INSERT INTO import_list_exclusions"
+            "(id, source, external_id, title, title_normalized, reason, added_at)"
+            " VALUES(91, 'mal', '999', 'Archived Manga',"
+            " 'archived manga', 'Already owned', '2026-01-06T00:00:00+00:00')"
+        )
+        c.execute(
+            "INSERT INTO remote_path_mappings(id, host, remote_path, local_path)"
+            " VALUES(61, 'sabnzbd', '/remote/usenet', '/downloads/usenet')"
+        )
+
+    roots = client.get(
+        "/api/v1/rootfolder",
+        params={"term": "archive"},
+        headers=headers,
+    )
+    assert roots.status_code == 200, roots.text
+    assert roots.headers["X-Total-Count"] == "1"
+    assert [row["label"] for row in roots.json()] == ["Archive"]
+
+    exclusions = client.get(
+        "/api/v1/importlistexclusion",
+        params={"source": "mal", "query": "archived"},
+        headers=headers,
+    )
+    assert exclusions.status_code == 200, exclusions.text
+    assert exclusions.headers["X-Total-Count"] == "1"
+    assert [row["id"] for row in exclusions.json()] == [91]
+
+    definitions = client.get(
+        "/api/v1/qualitydefinition",
+        params={"sortKey": "order", "sortDirection": "desc", "pageSize": 1},
+        headers=headers,
+    )
+    assert definitions.status_code == 200, definitions.text
+    assert definitions.headers["X-Total-Count"] == "2"
+    assert [row["quality"] for row in definitions.json()] == ["cbr"]
+
+    mappings = client.get(
+        "/api/v1/downloadclient/remotepathmapping",
+        params={"query": "usenet"},
+        headers=headers,
+    )
+    assert mappings.status_code == 200, mappings.text
+    assert mappings.headers["X-Total-Count"] == "1"
+    assert [row["id"] for row in mappings.json()] == [61]
+
+    tags = client.get(
+        "/api/v1/tag",
+        params={"term": "fav", "sortKey": "seriesCount", "sortDirection": "desc"},
+        headers=headers,
+    )
+    assert tags.status_code == 200, tags.text
+    assert tags.headers["X-Total-Count"] == "1"
+    assert tags.json()[0]["label"] == "favorite"
+
+
 def test_api_v1_remaining_config_read_contracts(env):
     client = _client()
     headers = {"X-Api-Key": _api_key(env)}

@@ -80,9 +80,10 @@ Series reads support common filters, sorting, and header-based paging. Queue,
 history, wanted, cutoff-unmet, and blocklist reads support common filters and
 paging. Indexer, download-client, import-list, notification, quality-profile,
 language-profile, custom-format, release-profile, and delay-profile reads
-support common filters and header-based paging. Remaining API gaps are deeper
-compatibility, richer filtering on lower-traffic utility resources, and broader
-mutation coverage.
+support common filters and header-based paging. Root-folder, import-list
+exclusion, quality-definition, remote-path-mapping, and tag reads also support
+filtered/paged responses. Remaining API gaps are deeper compatibility and
+broader mutation coverage.
 
 Recommended scope:
 
