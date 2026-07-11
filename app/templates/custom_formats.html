@@ -42,7 +42,8 @@
       {% endif %}
       <div class="ms-auto d-flex gap-2">
         <button class="btn btn-sm btn-secondary"
-                onclick="previewFormat({{ f.id }})" title="Test format">
+                onclick="previewFormat({{ f.id }})" title="Test format"
+                aria-label="Test format {{ f.name }}">
           <i class="bi bi-play-circle"></i>
         </button>
         <button class="btn btn-sm btn-outline-ember" data-bs-toggle="modal"

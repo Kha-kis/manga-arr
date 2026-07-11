@@ -827,6 +827,7 @@
           <tr id="vol-row-uncollected" onclick="toggleChapters('uncollected')" class="series-uncollected-row">
             <td onclick="event.stopPropagation()" class="series-uncollected-toggle-cell">
               <button class="btn p-0 series-icon-button-plain"
+                      aria-label="{% if uc_monitored %}Unmonitor uncollected chapters{% else %}Monitor uncollected chapters{% endif %}"
                       hx-post="/series/{{ s['id'] }}/uncollected/toggle-monitor"
                       hx-swap="none"
                       hx-disabled-elt="this"

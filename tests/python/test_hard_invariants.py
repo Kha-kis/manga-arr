@@ -9,6 +9,7 @@ If a test here fails, READ the failure message. The fix is almost never
 "loosen the test"; it's "use the documented helper instead of the raw
 operation that triggered the failure."
 """
+import ast
 import asyncio
 import pathlib
 import re
@@ -22,6 +23,52 @@ ROUTERS_DIR = APP_DIR / "routers"
 sys.path.insert(0, "tests/python")
 sys.path.insert(0, "app")
 import conftest  # noqa: F401,E402
+
+
+# ───────────────────── source hygiene invariants ─────────────────────
+
+
+def _app_python_files() -> list[pathlib.Path]:
+    return sorted(APP_DIR.rglob("*.py"))
+
+
+def test_app_code_does_not_use_direct_print_calls():
+    """Production code should use structured log_event()/logging paths.
+
+    Direct print() calls disappear in normal container operation and make
+    failures harder to diagnose. This keeps the print-to-log_event migration
+    from drifting backwards.
+    """
+    offenders = []
+    for path in _app_python_files():
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "print"
+            ):
+                rel = path.relative_to(APP_DIR.parent).as_posix()
+                offenders.append(f"{rel}:{node.lineno}")
+
+    assert not offenders, (
+        "direct print() calls found in app code; use log_event() or logging:\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_app_code_has_no_stale_audit_markers():
+    """Keep stale audit breadcrumbs out of production app code."""
+    stale_markers = ("TO" "DO", "FIX" "ME", "HA" "CK")
+    marker_re = re.compile(r"\b(" + "|".join(stale_markers) + r")\b")
+    offenders = []
+    for path in _app_python_files():
+        for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+            if marker_re.search(line):
+                rel = path.relative_to(APP_DIR.parent).as_posix()
+                offenders.append(f"{rel}:{lineno}: {line.strip()}")
+
+    assert not offenders, "stale source markers found:\n" + "\n".join(offenders)
 
 
 # ───────────────────── int(vol_num) silent truncation ─────────────────────

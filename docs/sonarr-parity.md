@@ -42,7 +42,7 @@ not exact TV terminology, exact Sonarr UI, or identical plugin breadth.
 | Delay profiles | `/delay-profiles`, tag targeting, preferred protocol, bypass-if-highest-quality | Covered |
 | Language profiles | `/language-profiles` | Covered |
 | Indexers | `/indexers`, Prowlarr sync, Torznab/Newznab testing, per-sub-indexer toggles, manga categories | Covered |
-| Download clients | `/download-clients`, qBittorrent, SABnzbd, Suwayomi, client options, tests | Mostly covered |
+| Download clients | `/download-clients`, qBittorrent, SABnzbd, Suwayomi, client options, connection tests, circuit resets | Mostly covered |
 | Remote path mappings | `remote_path_mappings` schema/table, download-client UI, create/delete tests | Covered |
 | Import lists | `/import-lists`, sync routes, scheduled import-list task | Covered |
 | Notifications/connect | `/notifications`, Discord, Ntfy, Gotify, Apprise, Pushover, Pushbullet, Slack, email, webhooks, Komga scan | Covered |
@@ -50,7 +50,12 @@ not exact TV terminology, exact Sonarr UI, or identical plugin breadth.
 | Root-folder free-space display | `/system/status` disk-space panel, `/stats` disk usage summary | Covered |
 | Health and maintenance | `/health`, recycle bin, metadata health/reconcile tools, API key regeneration | Covered |
 | API authentication | `/api/*` API-key middleware, CSRF bypass for API-key clients, fail-closed tests | Covered |
-| API v1 seed | `/api/v1/system/status`, `/api/v1/system/update`, `/api/v1/health`, `/api/v1/diskspace`, `/api/v1/config/host`, `/api/v1/config/mediamanagement`, `/api/v1/config/indexer`, `/api/v1/config/downloadclient`, `/api/v1/config/ui`, `/api/v1/config/naming`, `/api/v1/system/task`, `/api/v1/system/backup`, `/api/v1/log`, `/api/v1/series`, `/api/v1/series/lookup`, `/api/v1/series/{id}`, `/api/v1/calendar`, `/api/v1/queue`, `/api/v1/history`, `/api/v1/wanted`, `/api/v1/wanted/cutoff`, `/api/v1/blocklist`, `/api/v1/command`, `/api/v1/rootfolder`, `/api/v1/notification`, `/api/v1/qualityprofile`, `/api/v1/qualitydefinition`, `/api/v1/languageprofile`, `/api/v1/customformat`, `/api/v1/releaseprofile`, `/api/v1/delayprofile`, `/api/v1/indexer`, `/api/v1/downloadclient`, `/api/v1/downloadclient/remotepathmapping`, `/api/v1/importlist`, `/api/v1/importlistexclusion`, `/api/v1/tag`, plus `POST /api/v1/series`, `PATCH /api/v1/series/{id}`, `DELETE /api/v1/series/{id}`, `POST /api/v1/series/{id}/restore`, `POST /api/v1/command`, `POST /api/v1/system/backup`, `POST /api/v1/system/backup/{filename}/validate`, `DELETE /api/v1/system/backup/{filename}`, `POST /api/v1/rootfolder`, `POST /api/v1/rootfolder/{id}/default`, `DELETE /api/v1/rootfolder/{id}`, `POST /api/v1/notification`, `PATCH /api/v1/notification/{id}`, `PUT /api/v1/notification/{id}`, `DELETE /api/v1/notification/{id}`, `POST /api/v1/qualityprofile`, `PATCH /api/v1/qualityprofile/{id}`, `PUT /api/v1/qualityprofile/{id}`, `POST /api/v1/qualityprofile/{id}/default`, `DELETE /api/v1/qualityprofile/{id}`, `POST /api/v1/languageprofile`, `PATCH /api/v1/languageprofile/{id}`, `PUT /api/v1/languageprofile/{id}`, `POST /api/v1/languageprofile/{id}/default`, `DELETE /api/v1/languageprofile/{id}`, `POST /api/v1/customformat`, `PATCH /api/v1/customformat/{id}`, `PUT /api/v1/customformat/{id}`, `DELETE /api/v1/customformat/{id}`, `POST /api/v1/releaseprofile`, `PATCH /api/v1/releaseprofile/{id}`, `PUT /api/v1/releaseprofile/{id}`, `DELETE /api/v1/releaseprofile/{id}`, `POST /api/v1/delayprofile`, `PATCH /api/v1/delayprofile/{id}`, `PUT /api/v1/delayprofile/{id}`, `DELETE /api/v1/delayprofile/{id}`, `POST /api/v1/indexer`, `PATCH /api/v1/indexer/{id}`, `PUT /api/v1/indexer/{id}`, `DELETE /api/v1/indexer/{id}`, `POST /api/v1/downloadclient`, `PATCH /api/v1/downloadclient/{id}`, `PUT /api/v1/downloadclient/{id}`, `DELETE /api/v1/downloadclient/{id}`, `POST /api/v1/downloadclient/remotepathmapping`, `PATCH /api/v1/downloadclient/remotepathmapping/{id}`, `PUT /api/v1/downloadclient/remotepathmapping/{id}`, `DELETE /api/v1/downloadclient/remotepathmapping/{id}`, `POST /api/v1/importlist`, `POST /api/v1/importlist/sync`, `PATCH /api/v1/importlist/{id}`, `PUT /api/v1/importlist/{id}`, `POST /api/v1/importlist/{id}/sync`, `DELETE /api/v1/importlist/{id}`, `POST /api/v1/importlistexclusion`, `PATCH /api/v1/importlistexclusion/{id}`, `PUT /api/v1/importlistexclusion/{id}`, `DELETE /api/v1/importlistexclusion/{id}`, `PATCH /api/v1/tag/{label}`, `PUT /api/v1/tag/{label}`, `DELETE /api/v1/tag/{label}`, `DELETE /api/v1/blocklist`, `DELETE /api/v1/blocklist/{id}`, `POST /api/v1/history/{id}/failed`, `DELETE /api/v1/history/failed`, `DELETE /api/v1/history/{id}`, `POST /api/v1/queue/grabbed/{volume_id}/reset`, `DELETE /api/v1/queue/pending/{pending_id}`, `DELETE /api/v1/queue/import/failed`, `DELETE /api/v1/queue/import/{queue_id}`, `POST /api/v1/queue/import/{queue_id}/skip`, and `POST /api/v1/queue/import/{queue_id}/retry` with response-contract tests | Initial slice covered |
+| Sonarr API version alias | `/api/v3/*` rewrites to the tested `/api/v1/*` surface while preserving API-key authentication and query strings; Sonarr-style `episode` and `episodefile` read aliases map to chapter and media-file inventory, including numeric episodefile detail IDs | Covered |
+| API v1 seed | `/api/v1/system/status`, `/api/v1/system/update`, `/api/v1/health`, `/api/v1/diskspace`, `/api/v1/config/host`, `/api/v1/config/mediamanagement`, `/api/v1/config/indexer`, `/api/v1/config/downloadclient`, `/api/v1/config/ui`, `/api/v1/config/naming`, `/api/v1/config/metadata`, `/api/v1/system/task`, `/api/v1/system/backup`, `/api/v1/system/backup/{filename}/download`, `/api/v1/log`, `/api/v1/series`, `/api/v1/series/lookup`, `/api/v1/series/{id}`, `/api/v1/mediafile`, `/api/v1/mediafile/{id}`, `/api/v1/episodefile`, `/api/v1/episodefile/{id}`, `/api/v1/volume`, `/api/v1/volume/{id}`, `/api/v1/chapter`, `/api/v1/chapter/{id}`, `/api/v1/episode`, `/api/v1/episode/{id}`, `/api/v1/calendar`, `/api/v1/queue`, `/api/v1/queue/status`, `/api/v1/history`, `/api/v1/wanted`, `/api/v1/wanted/cutoff`, `/api/v1/wanted/cutoffunmet`, `/api/v1/blocklist`, `/api/v1/command`, `/api/v1/command/{id}`, `/api/v1/rootfolder`, `/api/v1/notification`, `/api/v1/qualityprofile`, `/api/v1/qualitydefinition`, `/api/v1/language`, `/api/v1/language/{code}`, `/api/v1/languageprofile`, `/api/v1/customformat`, `/api/v1/releaseprofile`, `/api/v1/delayprofile`, `/api/v1/indexer`, `/api/v1/downloadclient`, `/api/v1/downloadclient/remotepathmapping`, `/api/v1/importlist`, `/api/v1/importlistexclusion`, `/api/v1/tag`, plus `POST /api/v1/series`, `PATCH /api/v1/series/{id}`, `DELETE /api/v1/series/{id}`, `POST /api/v1/series/{id}/restore`, `POST /api/v1/command`, `POST /api/v1/system/backup`, `POST /api/v1/system/backup/{filename}/validate`, `DELETE /api/v1/system/backup/{filename}`, `PATCH /api/v1/config/host`, `PATCH /api/v1/config/mediamanagement`, `PATCH /api/v1/config/indexer`, `PATCH /api/v1/config/downloadclient`, `PATCH /api/v1/config/ui`, `PATCH /api/v1/config/naming`, `PATCH /api/v1/config/metadata`, `POST /api/v1/rootfolder`, `POST /api/v1/rootfolder/{id}/default`, `DELETE /api/v1/rootfolder/{id}`, `POST /api/v1/notification`, `PATCH /api/v1/notification/{id}`, `PUT /api/v1/notification/{id}`, `DELETE /api/v1/notification/{id}`, `POST /api/v1/qualityprofile`, `PATCH /api/v1/qualityprofile/{id}`, `PUT /api/v1/qualityprofile/{id}`, `POST /api/v1/qualityprofile/{id}/default`, `DELETE /api/v1/qualityprofile/{id}`, `POST /api/v1/languageprofile`, `PATCH /api/v1/languageprofile/{id}`, `PUT /api/v1/languageprofile/{id}`, `POST /api/v1/languageprofile/{id}/default`, `DELETE /api/v1/languageprofile/{id}`, `POST /api/v1/customformat`, `PATCH /api/v1/customformat/{id}`, `PUT /api/v1/customformat/{id}`, `DELETE /api/v1/customformat/{id}`, `POST /api/v1/releaseprofile`, `PATCH /api/v1/releaseprofile/{id}`, `PUT /api/v1/releaseprofile/{id}`, `DELETE /api/v1/releaseprofile/{id}`, `POST /api/v1/delayprofile`, `PATCH /api/v1/delayprofile/{id}`, `PUT /api/v1/delayprofile/{id}`, `DELETE /api/v1/delayprofile/{id}`, `POST /api/v1/indexer`, `PATCH /api/v1/indexer/{id}`, `PUT /api/v1/indexer/{id}`, `DELETE /api/v1/indexer/{id}`, `POST /api/v1/downloadclient`, `POST /api/v1/downloadclient/{id}/test`, `POST /api/v1/downloadclient/{id}/reset-circuit`, `POST /api/v1/downloadclient/reset-all-circuits`, `PATCH /api/v1/downloadclient/{id}`, `PUT /api/v1/downloadclient/{id}`, `DELETE /api/v1/downloadclient/{id}`, `POST /api/v1/downloadclient/remotepathmapping`, `PATCH /api/v1/downloadclient/remotepathmapping/{id}`, `PUT /api/v1/downloadclient/remotepathmapping/{id}`, `DELETE /api/v1/downloadclient/remotepathmapping/{id}`, `POST /api/v1/importlist`, `POST /api/v1/importlist/sync`, `PATCH /api/v1/importlist/{id}`, `PUT /api/v1/importlist/{id}`, `POST /api/v1/importlist/{id}/sync`, `DELETE /api/v1/importlist/{id}`, `POST /api/v1/importlistexclusion`, `PATCH /api/v1/importlistexclusion/{id}`, `PUT /api/v1/importlistexclusion/{id}`, `DELETE /api/v1/importlistexclusion/{id}`, `PATCH /api/v1/tag/{label}`, `PUT /api/v1/tag/{label}`, `DELETE /api/v1/tag/{label}`, `DELETE /api/v1/blocklist`, `DELETE /api/v1/blocklist/{id}`, `POST /api/v1/history/{id}/failed`, `DELETE /api/v1/history/failed`, `DELETE /api/v1/history/{id}`, `POST /api/v1/queue/grabbed/{volume_id}/reset`, `DELETE /api/v1/queue/pending/{pending_id}`, `DELETE /api/v1/queue/import/failed`, `DELETE /api/v1/queue/import/{queue_id}`, `POST /api/v1/queue/import/{queue_id}/skip`, and `POST /api/v1/queue/import/{queue_id}/retry` with response-contract tests | Initial slice covered |
+| API v1 notification operations | `POST /api/v1/notification/test` tests draft settings and `POST /api/v1/notification/{id}/test` runs the same saved-connection test sender as the notifications UI, including secret decryption and API-key authentication | Covered |
+| API v1 indexer operations | `POST /api/v1/indexer/test` tests draft settings and `POST /api/v1/indexer/{id}/test` runs the same saved-indexer connectivity probe as the settings UI, including stored-secret decryption and API-key authentication | Covered |
+| API v1 download-client operations | `POST /api/v1/downloadclient/test` tests draft settings, while saved connection tests and circuit-breaker resets mirror the Download Clients UI operations | Covered |
+| API v1 custom-format operations | `POST /api/v1/customformat/{id}/preview` evaluates a saved custom format against a proposed release title using the same matcher as the Custom Formats UI | Covered |
 | Rename/organize files | `/organize`, `/api/v1/rename/library/preview`, `POST /api/v1/rename/library`, `/api/v1/rename/series/{id}/preview`, `POST /api/v1/rename/series/{id}`, and the series-page HTMX rename panel preview selected renames, report conflicts, rename safe files, and update import paths | Mostly covered |
 | Existing-library adoption | `/api/v1/rootfolder/{id}/unmappedfolders` reports root-folder child directories not mapped to known series; `/api/v1/rootfolder/{id}/unmappedfolders/matches` proposes metadata matches; `POST /api/v1/rootfolder/{id}/unmappedfolders/adopt` creates a series for a selected folder, selected metadata, and existing files; Settings → Root Folders exposes scan/match/adopt controls | Mostly covered |
 | Import-list exclusions | `import_list_exclusions` table, `/import-lists` management UI, and sync-time skip logic by source/external ID or normalized title | Covered |
@@ -63,14 +68,19 @@ not exact TV terminology, exact Sonarr UI, or identical plugin breadth.
 Mangarr now has an initial `/api/v1/*` surface for external automation
 clients, including series create/list/detail/lookup, manga-native calendar
 buckets, profiles, root folders, queue, history, wanted, cutoff-unmet,
-blocklist, commands, system status, task list, backup list/create/delete,
-series patch/delete/restore, and command execution.
+blocklist, commands, system status, task list, backup list/create/download/
+delete/validate, series patch/delete/restore, and command execution. Sonarr-style `/api/v3/*`
+requests are rewritten to the same tested handlers so clients that hard-code
+Servarr's v3 prefix can reuse the compatibility surface. Sonarr-style
+`episode` and `episodefile` reads are aliased to Mangarr's chapter and media
+file inventory, and episode-file detail reads accept numeric IDs in addition to
+Mangarr's unambiguous `volume-{id}` / `chapter-{id}` identifiers.
 Quality-, language-, custom-format, release-, and delay-profile mutations and profile/configuration read
 coverage includes host, media-management, indexer-config,
-download-client-config, UI, naming, quality, quality-definition, language,
-custom-format, release-profile, delay-profile, notification, indexer,
-download-client, remote-path-mapping, import-list, import-list-exclusion, and
-tag endpoints.
+download-client-config, UI, naming, metadata refresh cadence, quality,
+quality-definition, language, custom-format, release-profile, delay-profile,
+notification, indexer, download-client, remote-path-mapping, import-list,
+import-list-exclusion, and tag endpoints.
 Quality-definition size/title mutations are covered for the fields Mangarr
 already exposes in the UI.
 Root-folder update mutations cover path, label/name, and default selection.
@@ -80,19 +90,32 @@ Indexer and download-client config mutations cover the backed global settings
 for RSS interval, download working folder, and remove-completed behavior.
 UI and naming config mutations cover the backed date display and rename format
 settings.
+Metadata config mutations cover the backed automatic refresh interval.
 Notification, indexer, download-client, remote-path-mapping, import-list,
 import-list-exclusion, and tag rename/delete mutations are also covered.
+Download-client connection tests and circuit-breaker resets are available
+through the v1 API.
 Individual detail reads are covered for root folders, notifications, profiles,
 custom formats, indexers, download clients, remote-path mappings, import lists,
-import-list exclusions, quality definitions, and tags.
-Series reads support common filters, sorting, and header-based paging. Queue,
+import-list exclusions, quality definitions, standalone languages, and tags.
+Series reads support common filters, sorting, and header-based paging. Media
+file, volume, and chapter inventory reads expose the manga-native equivalent of
+Sonarr's episode and episode-file inventory, including series/status/quality
+filters, file detail reads, and header-based paging. Queue,
 history, wanted, cutoff-unmet, and blocklist reads support common filters and
 paging. Indexer, download-client, import-list, notification, quality-profile,
 language-profile, custom-format, release-profile, and delay-profile reads
 support common filters and header-based paging. Root-folder, import-list
-exclusion, quality-definition, remote-path-mapping, and tag reads also support
-filtered/paged responses. Remaining API gaps are deeper compatibility and
-broader mutation coverage.
+exclusion, quality-definition, supported-language, remote-path-mapping, and tag
+reads also support filtered/paged responses. Common Servarr-style read aliases
+such as
+`/api/v1/queue/details`, `/api/v1/wanted/missing`, and
+`/api/v1/wanted/cutoffunmet` map to the canonical Mangarr queue, wanted, and
+cutoff-unmet responses, and `/api/v1/queue/status` exposes queue summary
+counts. Command execution returns trackable command records, command detail
+reads are available at `/api/v1/command/{id}`, and common Servarr command
+aliases such as `RssSync` map to their canonical Mangarr tasks.
+Remaining API gaps are deeper compatibility and broader mutation coverage.
 
 Recommended scope:
 
@@ -136,11 +159,11 @@ Recommended scope:
 
 ### 4. Backup Restore Workflow
 
-Mangarr can create, download, retain, delete, and validate backups. The Backup
-page includes restore readiness guidance and validates that a server-side backup
-ZIP contains a readable `manga_arr.db`. Actual restore remains an offline
-maintenance action because replacing the live SQLite database from the running
-app would be unsafe.
+Mangarr can create, download, retain, delete, and validate backups through both
+the Backup page and `/api/v1/system/backup` endpoints. The Backup page includes
+restore readiness guidance and validates that a server-side backup ZIP contains
+a readable `manga_arr.db`. Actual restore remains an offline maintenance action
+because replacing the live SQLite database from the running app would be unsafe.
 
 Recommended scope:
 
@@ -154,13 +177,15 @@ Recommended scope:
 
 Sonarr exposes advanced import/rename options such as chmod/chown, hardlink/copy
 preferences, extra-file import, and custom import scripts. Mangarr now includes
-hardlink/move/copy import modes and a configurable minimum-free-space guard, and
-otherwise relies mostly on container/user/filesystem setup plus its archive
-staging pipeline.
+hardlink/move/copy import modes, a configurable minimum-free-space guard, and
+deployment documentation for the container UID/GID and writable bind-mount
+ownership model. It otherwise relies mostly on container/user/filesystem setup
+plus its archive staging pipeline.
 
 Recommended scope:
 
-1. Document container UID/GID behavior before adding chmod/chown settings.
+1. Keep the documented container UID/GID ownership model current before adding
+   chmod/chown settings.
 2. Treat custom import scripts as low priority until there is a concrete user
    need.
 3. Keep hardlink/copy behavior scoped to manga archive workflows; do not copy

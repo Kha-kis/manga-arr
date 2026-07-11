@@ -90,6 +90,15 @@ def test_icon_only_buttons_have_accessible_names():
     assert not offenders, "icon-only buttons without accessible names:\n" + "\n".join(offenders)
 
 
+def test_base_template_has_global_htmx_loading_affordances():
+    text = (TEMPLATES / "base.html").read_text()
+    assert "#htmx-progress" in text
+    assert "button.htmx-request::after" in text
+    assert "@keyframes htmx-spinner" in text
+    assert "aria-busy" in text
+    assert "dataset.htmxBusyDisabled" in text
+
+
 def test_static_directory_contains_only_loaded_vendored_assets():
     allowed = {"PROVENANCE.md", "htmx.min.js", "alpine.min.js"}
     found = {

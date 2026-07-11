@@ -10,6 +10,7 @@ import tempfile
 import zipfile
 from datetime import datetime, timezone
 from io import BytesIO
+from itertools import count
 from typing import Optional
 
 from fastapi import APIRouter, Form, Request
@@ -173,9 +174,96 @@ TASKS: list[dict] = [
     },
 ]
 
+COMMAND_ALIASES: dict[str, str] = {
+    # Servarr-compatible names that map cleanly to Mangarr tasks.
+    "RssSync": "RssSyncAll",
+    "DownloadedEpisodesScan": "CheckDownloads",
+    "DownloadedMoviesScan": "CheckDownloads",
+    "RefreshSeries": "RefreshMetadata",
+    "MissingEpisodeSearch": "BacklogSearch",
+    "Backup": "Backup",
+}
+
 TASK_STATE: dict[str, dict] = {
     t["key"]: {"last_run": None, "next_run": None} for t in TASKS
 }
+
+_COMMAND_IDS = count(1)
+_COMMAND_HISTORY_LIMIT = 100
+COMMAND_HISTORY: dict[int, dict] = {}
+
+
+def _iso(dt: datetime | None) -> str | None:
+    return dt.isoformat() if dt else None
+
+
+def _new_command_record(name: str, requested_name: str | None = None) -> dict:
+    command_id = next(_COMMAND_IDS)
+    now = datetime.now(timezone.utc)
+    record = {
+        "id": command_id,
+        "name": name,
+        "commandName": name,
+        "requestedName": requested_name or name,
+        "status": "queued",
+        "state": "queued",
+        "queued": _iso(now),
+        "startedOn": None,
+        "endedOn": None,
+        "message": f"{name} queued",
+        "ok": True,
+    }
+    COMMAND_HISTORY[command_id] = record
+    if len(COMMAND_HISTORY) > _COMMAND_HISTORY_LIMIT:
+        oldest_id = min(COMMAND_HISTORY)
+        COMMAND_HISTORY.pop(oldest_id, None)
+    return record
+
+
+def _command_public(record: dict) -> dict:
+    return dict(record)
+
+
+def get_command_record(command_id: int) -> dict | None:
+    record = COMMAND_HISTORY.get(command_id)
+    if not record:
+        return None
+    return _command_public(record)
+
+
+def _start_command(record: dict) -> None:
+    now = datetime.now(timezone.utc)
+    record["status"] = "started"
+    record["state"] = "running"
+    record["startedOn"] = _iso(now)
+    record["message"] = f"{record['name']} started"
+
+
+def _finish_command(record: dict, *, ok: bool, message: str) -> None:
+    now = datetime.now(timezone.utc)
+    record["ok"] = ok
+    record["status"] = "completed" if ok else "failed"
+    record["state"] = "completed" if ok else "failed"
+    record["endedOn"] = _iso(now)
+    record["message"] = message
+
+
+async def _run_tracked_command(coro, record: dict):
+    _start_command(record)
+    try:
+        await coro
+    except asyncio.CancelledError:
+        _finish_command(record, ok=False, message=f"{record['name']} cancelled")
+        raise
+    except Exception as exc:
+        _finish_command(
+            record,
+            ok=False,
+            message=f"{record['name']} failed: {type(exc).__name__}",
+        )
+        raise
+    else:
+        _finish_command(record, ok=True, message=f"{record['name']} completed")
 
 
 def update_task_state(
@@ -220,6 +308,25 @@ def _fmt_bytes(n: float) -> str:
             return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
         n /= 1024
     return f"{n:.1f} PB"
+
+
+def _create_backup_archive() -> tuple[str, bytes]:
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"mangarr_backup_{ts}.zip"
+    saved_path = os.path.join(BACKUP_DIR, filename)
+
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        if os.path.exists(DB_PATH):
+            zf.write(DB_PATH, arcname="manga_arr.db")
+    buf.seek(0)
+    zip_bytes = buf.read()
+
+    with open(saved_path, "wb") as f:
+        f.write(zip_bytes)
+
+    return filename, zip_bytes
 
 
 def _root_folders_disk(db) -> list[dict]:
@@ -324,43 +431,75 @@ async def system_tasks_page(request: Request):
 @router.post("/api/command")
 async def run_command(request: Request):
     body = await request.json()
-    name = body.get("name", "")
+    requested_name = body.get("name") or body.get("commandName") or ""
+    name = COMMAND_ALIASES.get(requested_name, requested_name)
+    known_commands = {task["key"] for task in TASKS}
 
+    if name not in known_commands:
+        return JSONResponse(
+            {"ok": False, "message": f"Unknown command: {requested_name}"},
+            status_code=400,
+        )
+
+    record = _new_command_record(name, requested_name)
     try:
         import main as main_module  # lazy import to avoid circular deps
     except ImportError:
         main_module = None  # type: ignore[assignment]
 
-    def _create(coro, name: str):
+    def _create(coro, command_name: str):
         """Schedule a coroutine safely regardless of whether we have a running loop."""
+        tracked = _run_tracked_command(coro, record)
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 if main_module and hasattr(main_module, "create_background_task"):
-                    main_module.create_background_task(coro, name=f"command:{name}")
+                    main_module.create_background_task(
+                        tracked, name=f"command:{command_name}"
+                    )
                 else:
-                    loop.create_task(coro)
+                    loop.create_task(tracked)
             else:
-                loop.run_until_complete(coro)
-        except Exception:
-            pass
+                loop.run_until_complete(tracked)
+        except Exception as exc:
+            try:
+                tracked.close()
+            except RuntimeError:
+                pass
+            _finish_command(
+                record,
+                ok=False,
+                message=f"{command_name} failed to schedule: {type(exc).__name__}",
+            )
+
+    def _schedule_main_coroutine(attr_name: str) -> None:
+        func = getattr(main_module, attr_name, None) if main_module else None
+        if not callable(func):
+            _finish_command(
+                record,
+                ok=False,
+                message=f"{name} handler is unavailable",
+            )
+            return
+        _create(func(), name)
 
     if name == "RssSyncAll":
-        if main_module and hasattr(main_module, "poll_rss"):
-            _create(main_module.poll_rss(), name)
+        _schedule_main_coroutine("poll_rss")
     elif name == "CheckDownloads":
-        if main_module and hasattr(main_module, "check_download_status"):
-            _create(main_module.check_download_status(), name)
+        _schedule_main_coroutine("check_download_status")
     elif name == "BacklogSearch":
-        if main_module and hasattr(main_module, "backlog_search"):
-            _create(main_module.backlog_search(), name)
+        _schedule_main_coroutine("backlog_search")
     elif name == "RefreshMetadata":
-        if main_module and hasattr(main_module, "refresh_ongoing_loop"):
-            _create(main_module.refresh_ongoing_loop(), name)
+        _schedule_main_coroutine("refresh_ongoing_loop")
     elif name == "ImportListSync":
-        if main_module and hasattr(main_module, "import_list_sync"):
-            _create(main_module.import_list_sync(), name)
+        _schedule_main_coroutine("import_list_sync")
+    elif name == "Backup":
+        _start_command(record)
+        filename, _zip_bytes = _create_backup_archive()
+        _finish_command(record, ok=True, message=f"Backup created: {filename}")
+        return JSONResponse(_command_public(record))
     elif name == "CleanupSeen":
+        _start_command(record)
         with get_db() as db:
             # Delete seen entries older than 90 days where the volume was never downloaded
             # Keep entries tied to volumes still in grabbed/wanted so dedup still works
@@ -378,10 +517,14 @@ async def run_command(request: Request):
             _m.log_event("info", f"Seen cache cleanup: removed {count} old entries")
         except Exception:
             pass
-        return JSONResponse(
-            {"ok": True, "message": f"Removed {count} stale seen-cache entries"}
+        _finish_command(
+            record,
+            ok=True,
+            message=f"Removed {count} stale seen-cache entries",
         )
+        return JSONResponse(_command_public(record))
     elif name == "ResetStuckGrabs":
+        _start_command(record)
         with get_db() as db:
             result = db.execute(
                 "UPDATE volumes SET status='wanted', grabbed_at=NULL, download_id=NULL,"
@@ -403,15 +546,16 @@ async def run_command(request: Request):
             )
         except Exception:
             pass
-        return JSONResponse(
-            {"ok": True, "message": f"Reset {count} stuck grabbed volume(s) to wanted"}
+        _finish_command(
+            record,
+            ok=True,
+            message=f"Reset {count} stuck grabbed volume(s) to wanted",
         )
-    else:
-        return JSONResponse(
-            {"ok": False, "message": f"Unknown command: {name}"}, status_code=400
-        )
+        return JSONResponse(_command_public(record))
 
-    return JSONResponse({"ok": True, "message": f"{name} started"})
+    if record["status"] == "queued":
+        _start_command(record)
+    return JSONResponse(_command_public(record))
 
 
 # ── Backup ────────────────────────────────────────────────────────────────────
@@ -451,21 +595,7 @@ async def system_backup_page(request: Request):
 
 @router.post("/api/system/backup/create")
 async def create_backup():
-    os.makedirs(BACKUP_DIR, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"mangarr_backup_{ts}.zip"
-    saved_path = os.path.join(BACKUP_DIR, filename)
-
-    buf = BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        if os.path.exists(DB_PATH):
-            zf.write(DB_PATH, arcname="manga_arr.db")
-    buf.seek(0)
-    zip_bytes = buf.read()
-
-    # Save a copy to backup dir
-    with open(saved_path, "wb") as f:
-        f.write(zip_bytes)
+    filename, zip_bytes = _create_backup_archive()
 
     return StreamingResponse(
         BytesIO(zip_bytes),

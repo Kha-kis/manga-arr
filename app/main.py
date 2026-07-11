@@ -604,7 +604,10 @@ templates = Jinja2Templates(directory="/app/templates")
 # constants are re-exported for any external callers (none known, but
 # keeping the surface identical through the split).
 from middleware import (  # noqa: F401
-    ApiKeyMiddleware, CSRFMiddleware, _should_secure_cookie,
+    ApiKeyMiddleware,
+    ApiVersionAliasMiddleware,
+    CSRFMiddleware,
+    _should_secure_cookie,
     _CSRF_COOKIE, _CSRF_HEADER, _CSRF_FIELD, _CSRF_SKIP_PREFIXES,
 )
 
@@ -642,6 +645,7 @@ if os.environ.get("MANGARR_DEBUG_TIMING") == "1":
 
 app.add_middleware(CSRFMiddleware)
 app.add_middleware(ApiKeyMiddleware)
+app.add_middleware(ApiVersionAliasMiddleware)
 
 templates.env.filters['format_bytes']    = format_bytes
 templates.env.filters['format_protocol'] = format_protocol
