@@ -246,6 +246,139 @@ def _series_row_by_title(db_path: str, title: str) -> dict:
         )
 
 
+def test_api_v1_update_host_config_updates_submitted_fields(env):
+    import main
+
+    with sqlite3.connect(env) as c:
+        for key, value in [
+            ("backup_retention", "5"),
+            ("url_base", "/old"),
+        ]:
+            c.execute(
+                "INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
+                (key, value),
+            )
+    main.load_config()
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/config/host",
+        json={
+            "instanceName": "API Mangarr",
+            "urlBase": "mangarr/",
+            "logLevel": "DEBUG",
+            "blocklistTtlDays": -3,
+            "recycleBinRetentionDays": 999,
+            "recycleBinRemoveFiles": True,
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    config = body["hostConfig"]
+    assert config["instanceName"] == "API Mangarr"
+    assert config["urlBase"] == "/mangarr"
+    assert config["logLevel"] == "DEBUG"
+    assert config["backupRetention"] == 5
+    assert config["blocklistTtlDays"] == 0
+    assert config["recycleBinRetentionDays"] == 365
+    assert config["recycleBinRemoveFiles"] is True
+    assert main.CONFIG["url_base"] == "/mangarr"
+    assert main.CONFIG["log_level"] == "DEBUG"
+
+    with sqlite3.connect(env) as c:
+        out = {
+            row[0]: row[1]
+            for row in c.execute(
+                "SELECT key, value FROM settings WHERE key IN ("
+                "'instance_name','url_base','log_level','backup_retention',"
+                "'blocklist_ttl_days','recycle_bin_retention_days',"
+                "'recycle_bin_remove_files')"
+            )
+        }
+    assert out == {
+        "instance_name": "API Mangarr",
+        "url_base": "/mangarr",
+        "log_level": "DEBUG",
+        "backup_retention": "5",
+        "blocklist_ttl_days": "0",
+        "recycle_bin_retention_days": "365",
+        "recycle_bin_remove_files": "1",
+    }
+
+
+def test_api_v1_update_media_management_config_updates_submitted_fields(env):
+    import main
+
+    with sqlite3.connect(env) as c:
+        for key, value in [
+            ("torrent_save_path", "/downloads/old"),
+            ("quality_cutoff", "epub"),
+        ]:
+            c.execute(
+                "INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
+                (key, value),
+            )
+    main.load_config()
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/config/mediamanagement",
+        json={
+            "importMode": "move",
+            "removeCompleted": True,
+            "minimumFreeSpaceMb": 4096,
+            "fileFormat": "{Series Title} v{Volume:02d}",
+            "propersAndRepacks": "do_not_upgrade",
+        },
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    config = body["mediaManagementConfig"]
+    assert config["torrentSavePath"] == "/downloads/old"
+    assert config["importMode"] == "move"
+    assert config["removeCompleted"] is True
+    assert config["minimumFreeSpaceMb"] == 4096
+    assert config["fileFormat"] == "{Series Title} v{Volume:02d}"
+    assert config["qualityCutoff"] == "epub"
+    assert config["propersAndRepacks"] == "do_not_upgrade"
+    assert main.CONFIG["import_mode"] == "move"
+
+    with sqlite3.connect(env) as c:
+        out = {
+            row[0]: row[1]
+            for row in c.execute(
+                "SELECT key, value FROM settings WHERE key IN ("
+                "'torrent_save_path','import_mode','remove_completed',"
+                "'minimum_free_space_mb','file_format','quality_cutoff',"
+                "'propers_and_repacks')"
+            )
+        }
+    assert out == {
+        "torrent_save_path": "/downloads/old",
+        "import_mode": "move",
+        "remove_completed": "true",
+        "minimum_free_space_mb": "4096",
+        "file_format": "{Series Title} v{Volume:02d}",
+        "quality_cutoff": "epub",
+        "propers_and_repacks": "do_not_upgrade",
+    }
+
+
+def test_api_v1_update_config_rejects_unsupported_payload(env):
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/config/host",
+        json={"unknownSetting": "ignored"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "no supported settings submitted"
+
+
 def test_api_v1_patch_series_preserves_unsubmitted_fields(env):
     resp = _client().request(
         "PATCH",
