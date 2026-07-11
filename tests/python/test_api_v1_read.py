@@ -511,6 +511,60 @@ def test_api_v1_media_management_config_contract(env):
     }
 
 
+def test_api_v1_indexer_config_contract(env):
+    import main
+
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT OR REPLACE INTO settings(key,value) VALUES('rss_interval', ?)",
+            ("1800",),
+        )
+    main.load_config()
+
+    resp = _client().get(
+        "/api/v1/config/indexer",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "rssSyncInterval": 1800,
+        "minimumAge": 0,
+        "retention": 0,
+        "maximumSize": 0,
+        "enableRss": True,
+        "enableAutomaticSearch": True,
+        "enableInteractiveSearch": True,
+    }
+
+
+def test_api_v1_download_client_config_contract(env):
+    import main
+
+    with sqlite3.connect(env) as c:
+        for key, value in [
+            ("torrent_save_path", "/downloads/manga"),
+            ("remove_completed", "true"),
+        ]:
+            c.execute(
+                "INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
+                (key, value),
+            )
+    main.load_config()
+
+    resp = _client().get(
+        "/api/v1/config/downloadclient",
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "downloadClientWorkingFolders": "/downloads/manga",
+        "removeCompletedDownloads": True,
+        "removeFailedDownloads": True,
+        "redownloadFailed": False,
+        "enableCompletedDownloadHandling": True,
+    }
+
+
 def test_api_v1_ui_config_contract(env):
     import main
 
@@ -574,6 +628,7 @@ def test_api_v1_config_numeric_fields_have_safe_defaults(env):
             ("blocklist_ttl_days", "not-an-int"),
             ("recycle_bin_retention_days", "not-an-int"),
             ("minimum_free_space_mb", "not-an-int"),
+            ("rss_interval", "not-an-int"),
         ]:
             c.execute(
                 "INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
@@ -592,6 +647,10 @@ def test_api_v1_config_numeric_fields_have_safe_defaults(env):
     media = _client().get("/api/v1/config/mediamanagement", headers=headers)
     assert media.status_code == 200, media.text
     assert media.json()["minimumFreeSpaceMb"] == 0
+
+    indexer = _client().get("/api/v1/config/indexer", headers=headers)
+    assert indexer.status_code == 200, indexer.text
+    assert indexer.json()["rssSyncInterval"] == 900
 
 
 def test_api_v1_system_tasks_include_schedule_state(env, monkeypatch):
