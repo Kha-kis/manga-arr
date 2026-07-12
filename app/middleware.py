@@ -24,7 +24,6 @@ import secrets
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
 import logging
 
 from shared import get_cfg
@@ -57,7 +56,7 @@ class ApiVersionAliasMiddleware:
 # ── API Key middleware ───────────────────────────────────────────────────────
 
 
-class ApiKeyMiddleware(BaseHTTPMiddleware):
+class ApiKeyMiddleware:
     _warned_no_key = False
     """Require an X-Api-Key header (or ?apikey= query param) on /api/
     routes. Exempts the SSE endpoint and health check. In-session
@@ -72,12 +71,22 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
     silently exposes /api/ to requests with no key.
     """
 
-    async def dispatch(self, request: Request, call_next):
-        path = request.url.path
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive)
+        path = scope.get("path", "")
         if not path.startswith("/api/"):
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
         if path in ("/api/queue-events", "/api/health"):
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
         api_key = (get_cfg("api_key", "") or "").strip()
         if not api_key:
             if not getattr(ApiKeyMiddleware, "_warned_no_key", False):
@@ -86,38 +95,42 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
                     "Restart the app to auto-seed, or set one via Settings."
                 )
                 ApiKeyMiddleware._warned_no_key = True
-            return JSONResponse(
+            await JSONResponse(
                 {
                     "message": "Unauthorized",
                     "description": "API key not configured on the server",
                 },
                 status_code=401,
-            )
+            )(scope, receive, send)
+            return
         provided = (
             request.headers.get("X-Api-Key") or request.query_params.get("apikey") or ""
         )
         if provided:
             if provided != api_key:
-                return JSONResponse(
+                await JSONResponse(
                     {
                         "message": "Unauthorized",
                         "description": "Invalid or missing API key",
                     },
                     status_code=401,
-                )
+                )(scope, receive, send)
+                return
             request.scope["mangarr_api_key_authenticated"] = True
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         if request.method in ("POST", "PUT", "DELETE", "PATCH") and request.cookies.get(
             "csrftoken"
         ):
             request.scope["mangarr_api_browser_csrf_required"] = True
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
-        return JSONResponse(
+        await JSONResponse(
             {"message": "Unauthorized", "description": "Invalid or missing API key"},
             status_code=401,
-        )
+        )(scope, receive, send)
 
 
 # ── CSRF middleware ──────────────────────────────────────────────────────────
