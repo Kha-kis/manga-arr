@@ -258,7 +258,14 @@ def build_filename(series_title: str, volume_num: float | None,
     ext = os.path.splitext(original_filename)[1]
 
     if chapter_num is not None:
-        fmt = get_cfg('chapter_format', '').strip() or get_cfg('file_format', '').strip()
+        chapter_fmt = get_cfg('chapter_format', '').strip()
+        file_fmt = get_cfg('file_format', '').strip()
+        if chapter_fmt:
+            fmt = chapter_fmt
+        elif '{Chapter' in file_fmt and '{Volume' not in file_fmt:
+            fmt = file_fmt
+        else:
+            fmt = ''
     else:
         fmt = get_cfg('file_format', '').strip()
 

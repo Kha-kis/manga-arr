@@ -95,6 +95,21 @@ def _mark_downloaded(db, series_id, volume_num, torrent_url) -> bool:
                     pack["vol_range_end"],
                 ),
             )
+        elif pt == "chapter":
+            cur = db.execute(
+                "UPDATE volumes SET status='downloaded', torrent_name=?, indexer=?, protocol=?,"
+                " client=?, release_group=?, size_bytes=?"
+                " WHERE id=? AND status != 'downloaded'",
+                (
+                    m.get("torrent_name"),
+                    m.get("indexer"),
+                    m.get("protocol"),
+                    m.get("client"),
+                    m.get("release_group"),
+                    m.get("size_bytes"),
+                    pack["id"],
+                ),
+            )
         else:
             return False
 
@@ -102,7 +117,11 @@ def _mark_downloaded(db, series_id, volume_num, torrent_url) -> bool:
             label = (
                 "Complete Series"
                 if pt == "complete"
-                else f"Vol {int(pack['vol_range_start'])}–{int(pack['vol_range_end'])}"
+                else (
+                    "Chapter Pack"
+                    if pt == "chapter"
+                    else f"Vol {int(pack['vol_range_start'])}–{int(pack['vol_range_end'])}"
+                )
             )
             log_event(
                 "download_complete",

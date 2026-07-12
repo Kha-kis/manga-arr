@@ -300,7 +300,12 @@ def _queue_import(
         ):
             proposed_vol = volume_num
 
-        dst_fname = build_filename(s["title"], proposed_vol, fname)
+        dst_fname = build_filename(
+            s["title"],
+            proposed_vol,
+            fname,
+            chapter_num=proposed_chap if file_type == "chapter" else None,
+        )
         dst_path = os.path.join(dst_dir, dst_fname)
 
         if _rel_pack_type == "complete":
