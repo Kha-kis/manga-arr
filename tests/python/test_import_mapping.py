@@ -397,6 +397,12 @@ def test_execute_import_mixed_pack_skips_duplicate_and_imports_wanted(env):
             "INSERT INTO volumes(series_id, volume_num, status)"
             " VALUES(7, 2.0, 'wanted')",
         )
+        vol2_id = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+        c.executemany(
+            "INSERT INTO chapters(series_id, volume_id, chapter_num, status, monitored)"
+            " VALUES(7, ?, ?, 'wanted', 1)",
+            [(vol2_id, 11.0), (vol2_id, 12.0)],
+        )
         c.execute(
             "INSERT INTO volumes(series_id, volume_num, status, download_id, pack_type)"
             " VALUES(7, NULL, 'grabbed', 'dl-mixed', 'complete')",
@@ -431,10 +437,15 @@ def test_execute_import_mixed_pack_skips_duplicate_and_imports_wanted(env):
         rows = {
             r["volume_num"]: dict(r)
             for r in c.execute(
-                "SELECT volume_num, status, quality, import_path, download_id"
+                "SELECT id, volume_num, status, quality, import_path, download_id, imported_at"
                 " FROM volumes WHERE series_id=7 AND volume_num IS NOT NULL"
             )
         }
+        chapters = [dict(r) for r in c.execute(
+            "SELECT status, import_path, quality, imported_at FROM chapters"
+            " WHERE series_id=7 AND volume_id=? ORDER BY chapter_num",
+            (rows[2.0]["id"],),
+        )]
         placeholder = c.execute(
             "SELECT 1 FROM volumes WHERE series_id=7 AND download_id='dl-mixed'"
             " AND volume_num IS NULL"
@@ -446,7 +457,11 @@ def test_execute_import_mixed_pack_skips_duplicate_and_imports_wanted(env):
     assert rows[2.0]["status"] == "downloaded"
     assert rows[2.0]["quality"] == "cbr"
     assert rows[2.0]["download_id"] == "dl-mixed"
+    assert rows[2.0]["imported_at"]
     assert os.path.exists(rows[2.0]["import_path"])
+    assert {c["status"] for c in chapters} == {"downloaded"}
+    assert {c["quality"] for c in chapters} == {"cbr"}
+    assert all(c["imported_at"] for c in chapters)
     assert not (series_dir / "Test Series v01.cbr").exists()
     assert placeholder is None
     assert queue is None
@@ -659,10 +674,16 @@ def test_queue_import_expands_zip_wrapped_split_rar_payload(env, monkeypatch):
         zf.writestr("scene.r00", b"rar-tail")
 
     def fake_unrar(args, **kwargs):
-        out_dir = Path(args[-1])
+        out_arg = next((arg for arg in args if str(arg).startswith("-o")), args[-1])
+        out_dir = Path(str(out_arg)[2:] if str(out_arg).startswith("-o") else out_arg)
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "o01nep071.pdf").write_bytes(b"%PDF-1.4\n")
-        return object()
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Result()
 
     monkeypatch.setattr(import_queue.subprocess, "run", fake_unrar)
 
@@ -685,6 +706,43 @@ def test_queue_import_expands_zip_wrapped_split_rar_payload(env, monkeypatch):
     assert row["file_type"] == "volume"
     assert row["proposed_volume"] == 109.0
     assert row["proposed_chapter"] is None
+
+
+def test_queue_import_rejects_empty_split_rar_extract(env, monkeypatch):
+    """A successful extractor exit with no manga payload should not queue junk."""
+    import main
+    import import_queue
+    import import_pipeline
+
+    _seed_series(env["db_path"], title="One Piece", total_volumes=120)
+    main.load_config()
+    monkeypatch.setattr(
+        import_pipeline,
+        "PACK_STAGING_ROOT",
+        str(env["src_root"] / "pack-staging-empty"),
+    )
+    src_dir = env["src_root"] / "empty-zip-split-rar"
+    src_dir.mkdir()
+    with zipfile.ZipFile(src_dir / "part-a.zip", "w") as zf:
+        zf.writestr("scene.rar", b"rar-head")
+    with zipfile.ZipFile(src_dir / "part-b.zip", "w") as zf:
+        zf.writestr("scene.r00", b"rar-tail")
+
+    class Result:
+        returncode = 0
+        stdout = "All OK"
+        stderr = ""
+
+    monkeypatch.setattr(import_queue.subprocess, "run", lambda *args, **kwargs: Result())
+
+    qid = _run_queue_import(
+        env["db_path"], series_id=7,
+        torrent_name="VIZ Media - One Piece Vol 109 2025 HYBRID MANGA eBook-21A1",
+        content_path=str(src_dir),
+        volume_num=109.0,
+    )
+
+    assert qid is None
 
 
 # ─────────────── 6. complete pack ───────────────────────────────────
