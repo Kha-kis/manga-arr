@@ -2,6 +2,10 @@
 
 import json
 import os
+import re
+import shutil
+import subprocess
+import zipfile
 
 from files import (
     MANGA_EXTENSIONS,
@@ -25,6 +29,9 @@ from shared import get_cfg, get_db
 from comicinfo import read_comic_info
 from events import add_history, log_event
 from rescan import _series_library_dir
+
+
+_SPLIT_RAR_PART_RE = re.compile(r"^(?P<stem>.+)\.(?:rar|r\d{2})$", re.IGNORECASE)
 
 
 def _queue_import(
@@ -129,6 +136,14 @@ def _queue_import(
                     f"into CBZs: {torrent_name}",
                 )
                 scan_paths = packed_paths
+        if scan_paths is None:
+            split_payloads = _extract_zip_wrapped_split_rars(
+                content_path,
+                download_id,
+                _defer_scan_event,
+            )
+            if split_payloads is not None:
+                scan_paths = split_payloads
     elif os.path.isfile(content_path):
         src_dir = os.path.dirname(content_path)
         scan_paths = [content_path]
@@ -275,6 +290,20 @@ def _queue_import(
             except Exception:
                 pass
 
+        if (
+            volume_num is not None
+            and _rel_pack_type == "volume"
+            and not _is_chapter_grab
+            and len(scan_paths) == 1
+        ):
+            proposed_vol = volume_num
+            proposed_chap = None
+            file_vol_range = None
+            file_chap_range = None
+            proposed_vol_rs = None
+            proposed_vol_re = None
+            proposed_chap_re = None
+
         has_chap_signal = proposed_chap is not None or proposed_chap_re is not None
         has_vol_signal = proposed_vol is not None or proposed_vol_re is not None
 
@@ -413,6 +442,112 @@ def _find_image_only_chapter_dirs(content_path: str) -> list[str]:
             result.append(root)
 
     return result
+
+
+def _extract_zip_wrapped_split_rars(content_path: str, download_id: str, defer_event) -> list[str] | None:
+    """Extract scene-style ZIP wrapped split RAR payloads.
+
+    Some DDL/tracker releases contain files like ``abc1.zip``/``abc2.zip``.
+    Each outer ZIP contains one split RAR part (``abc.rar``, ``abc.r00``...),
+    and the real manga payload is inside the reconstructed RAR. Treating the
+    outer ZIPs as manga archives misclassifies opaque scene filenames as
+    chapters, so queue the extracted payload instead.
+    """
+    zip_paths = [
+        os.path.join(content_path, name)
+        for name in sorted(os.listdir(content_path))
+        if name.lower().endswith(".zip")
+    ]
+    if len(zip_paths) < 2:
+        return None
+
+    groups: dict[str, list[tuple[str, str]]] = {}
+    for zip_path in zip_paths:
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                for info in zf.infolist():
+                    if info.is_dir():
+                        continue
+                    member_name = os.path.basename(info.filename)
+                    m = _SPLIT_RAR_PART_RE.match(member_name)
+                    if not m:
+                        continue
+                    groups.setdefault(m.group("stem").lower(), []).append(
+                        (zip_path, member_name)
+                    )
+        except zipfile.BadZipFile:
+            continue
+
+    selected = [
+        parts for parts in groups.values()
+        if any(name.lower().endswith(".rar") for _, name in parts)
+        and any(re.search(r"\.r\d{2}$", name, re.IGNORECASE) for _, name in parts)
+    ]
+    if not selected:
+        return None
+
+    pack_dir = safe_join_under(_get_pack_staging_root(), f"queue-{download_id}")
+    split_root = os.path.join(pack_dir, "split-rar")
+    shutil.rmtree(split_root, ignore_errors=True)
+    os.makedirs(split_root, exist_ok=True)
+
+    payloads: list[str] = []
+    for idx, parts in enumerate(selected, start=1):
+        group_dir = os.path.join(split_root, f"group-{idx}")
+        out_dir = os.path.join(group_dir, "out")
+        os.makedirs(group_dir, exist_ok=True)
+        rar_path = None
+        for zip_path, member_name in parts:
+            try:
+                with zipfile.ZipFile(zip_path) as zf:
+                    source_member = next(
+                        info for info in zf.infolist()
+                        if os.path.basename(info.filename) == member_name
+                    )
+                    target = os.path.join(group_dir, member_name)
+                    with zf.open(source_member) as src, open(target, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    if member_name.lower().endswith(".rar"):
+                        rar_path = target
+            except Exception as exc:
+                defer_event(
+                    "error",
+                    f"Split archive extract failed for {os.path.basename(zip_path)}: {exc}",
+                    dedup=True,
+                )
+                return []
+
+        if not rar_path:
+            continue
+        try:
+            subprocess.run(
+                ["unrar", "x", "-o+", rar_path, out_dir + os.sep],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except Exception as exc:
+            defer_event(
+                "error",
+                f"Split RAR unpack failed for {os.path.basename(rar_path)}: {exc}",
+                dedup=True,
+            )
+            return []
+
+        for root, dirs, files in os.walk(out_dir):
+            dirs.sort()
+            for fname in sorted(files):
+                ext = os.path.splitext(fname)[1].lower()
+                if ext in MANGA_EXTENSIONS:
+                    payloads.append(os.path.join(root, fname))
+
+    if payloads:
+        defer_event(
+            "import",
+            f"Unpacked {len(payloads)} ZIP-wrapped split RAR payload(s)",
+        )
+    return payloads
 
 
 def _get_pack_staging_root() -> str:

@@ -309,10 +309,6 @@ def execute_series_rename(
                         raise RuntimeError("volume row no longer exists")
                     if _norm(row["import_path"]) != _norm(old_path):
                         raise RuntimeError("volume import path changed")
-                    db.execute(
-                        "UPDATE volumes SET import_path=? WHERE id=? AND series_id=?",
-                        (new_path, item["id"], series_id),
-                    )
                 else:
                     row = db.execute(
                         "SELECT import_path FROM chapters WHERE id=? AND series_id=?",
@@ -322,10 +318,14 @@ def execute_series_rename(
                         raise RuntimeError("chapter row no longer exists")
                     if _norm(row["import_path"]) != _norm(old_path):
                         raise RuntimeError("chapter import path changed")
-                    db.execute(
-                        "UPDATE chapters SET import_path=? WHERE id=? AND series_id=?",
-                        (new_path, item["id"], series_id),
-                    )
+                db.execute(
+                    "UPDATE volumes SET import_path=? WHERE series_id=? AND import_path=?",
+                    (new_path, series_id, old_path),
+                )
+                db.execute(
+                    "UPDATE chapters SET import_path=? WHERE series_id=? AND import_path=?",
+                    (new_path, series_id, old_path),
+                )
                 add_history(
                     db,
                     "file_renamed",
