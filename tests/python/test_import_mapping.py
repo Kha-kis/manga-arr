@@ -399,7 +399,7 @@ def test_execute_import_mixed_pack_skips_duplicate_and_imports_wanted(env):
         )
         c.execute(
             "INSERT INTO volumes(series_id, volume_num, status, download_id, pack_type)"
-            " VALUES(7, NULL, 'grabbed', 'dl-mixed', 'volume')",
+            " VALUES(7, NULL, 'grabbed', 'dl-mixed', 'complete')",
         )
         c.execute(
             "INSERT INTO import_queue(series_id, download_id, torrent_name,"
