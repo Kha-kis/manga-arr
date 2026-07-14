@@ -132,6 +132,21 @@ def test_quality_cutoff_invalid_enum_falls_back(env):
     assert main.CONFIG['quality_cutoff'] == ''
 
 
+@pytest.mark.parametrize("mode", ["fallback", "prefer", "only", "off"])
+def test_ddl_grab_mode_valid_values_pass_through(env, mode):
+    import main
+    _set(env, 'ddl_grab_mode', mode)
+    main.load_config()
+    assert main.CONFIG['ddl_grab_mode'] == mode
+
+
+def test_ddl_grab_mode_invalid_value_falls_back(env):
+    import main
+    _set(env, 'ddl_grab_mode', 'trackers-maybe')
+    main.load_config()
+    assert main.CONFIG['ddl_grab_mode'] == 'fallback'
+
+
 # ── bool validation ──────────────────────────────────────────────────────────
 
 def test_valid_bool_true_passes(env):

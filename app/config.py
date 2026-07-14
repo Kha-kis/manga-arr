@@ -164,7 +164,7 @@ SETTINGS_VALIDATORS: dict = {
     'url_base':                ('url_base',),
     'komga_scan_enabled':      ('bool',),
     'remove_completed':        ('bool',),
-    'ddl_grab_mode':           ('enum', frozenset({'fallback', 'only'})),
+    'ddl_grab_mode':           ('enum', frozenset({'fallback', 'prefer', 'only', 'off'})),
     'quality_cutoff':          ('enum', frozenset({'', 'pdf', 'epub', 'cbr', 'cbz', 'rar', 'zip', 'mobi'})),
 }
 
