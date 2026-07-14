@@ -109,6 +109,13 @@ def _run_queue_import(db_path: str, *, series_id: int, torrent_name: str,
     return qid
 
 
+def _make_rar_stub(path: str) -> str:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(b"Rar!\x1a\x07\x00mangarr-test")
+    return path
+
+
 def _post_review(client, qid: int, data: dict) -> "object":
     """POST the review form with a CSRF handshake so the middleware lets
     us through on non-/api/ routes. Returns the response."""
@@ -301,6 +308,148 @@ def test_import_plan_repairs_legacy_chapter_filename_tokens(env):
             "SELECT filename FROM import_queue_files WHERE queue_id=?", (qid,)
         ).fetchone()[0]
     assert filename == "Series - c001.cbz"
+
+
+def test_execute_import_skips_lower_quality_existing_volume(env):
+    """A retry must not downgrade an already-downloaded volume."""
+    import main
+
+    _seed_series(env["db_path"])
+    existing = env["lib_root"] / "Test Series" / "Test Series v01.cbz"
+    _make_zip(str(existing))
+    src_dir = env["src_root"] / "lower-quality-dup"
+    src_dir.mkdir()
+    src_path = _make_rar_stub(str(src_dir / "Test Series v01.cbr"))
+
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, quality, import_path)"
+            " VALUES(7, 1.0, 'downloaded', 'cbz', ?)",
+            (str(existing),),
+        )
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, download_id, pack_type)"
+            " VALUES(7, NULL, 'grabbed', 'dl-lower', 'volume')",
+        )
+        c.execute(
+            "INSERT INTO import_queue(series_id, download_id, torrent_name,"
+            " torrent_url, src_dir, status)"
+            " VALUES(7, 'dl-lower', 'Test Series v01', 'magnet:lower', ?, 'pending')",
+            (str(src_dir),),
+        )
+        qid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+        c.execute(
+            "INSERT INTO import_queue_files(queue_id, filename, src_path, dst_path,"
+            " proposed_volume, file_type, status)"
+            " VALUES(?,?,?,?,1.0,'volume','pending')",
+            (
+                qid,
+                "Test Series v01.cbr",
+                src_path,
+                str(env["lib_root"] / "Test Series" / "Test Series v01.cbr"),
+            ),
+        )
+
+    assert asyncio.run(main._guarded_execute_import(qid))
+    downgraded = env["lib_root"] / "Test Series" / "Test Series v01.cbr"
+    converted = env["lib_root"] / "Test Series" / "Test Series v01.cbz"
+    with sqlite3.connect(env["db_path"]) as c:
+        c.row_factory = sqlite3.Row
+        vol = c.execute(
+            "SELECT status, quality, import_path FROM volumes"
+            " WHERE series_id=7 AND volume_num=1.0"
+        ).fetchone()
+        placeholder = c.execute(
+            "SELECT 1 FROM volumes WHERE series_id=7 AND download_id='dl-lower'"
+            " AND volume_num IS NULL"
+        ).fetchone()
+        queue = c.execute("SELECT 1 FROM import_queue WHERE id=?", (qid,)).fetchone()
+    assert vol["status"] == "downloaded"
+    assert vol["quality"] == "cbz"
+    assert vol["import_path"] == str(existing)
+    assert not downgraded.exists()
+    assert converted.exists()  # the original existing CBZ is still present
+    assert placeholder is None
+    assert queue is None
+
+
+def test_execute_import_mixed_pack_skips_duplicate_and_imports_wanted(env):
+    """When a pack contains one duplicate and one wanted volume, import only
+    the wanted file and remove the transient grabbed pack placeholder."""
+    import main
+
+    _seed_series(env["db_path"])
+    series_dir = env["lib_root"] / "Test Series"
+    existing = series_dir / "Test Series v01.cbz"
+    _make_zip(str(existing))
+    src_dir = env["src_root"] / "mixed-pack"
+    src_dir.mkdir()
+    v1_src = _make_rar_stub(str(src_dir / "Test Series v01.cbr"))
+    v2_src = _make_rar_stub(str(src_dir / "Test Series v02.cbr"))
+
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, quality, import_path)"
+            " VALUES(7, 1.0, 'downloaded', 'cbz', ?)",
+            (str(existing),),
+        )
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status)"
+            " VALUES(7, 2.0, 'wanted')",
+        )
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, download_id, pack_type)"
+            " VALUES(7, NULL, 'grabbed', 'dl-mixed', 'volume')",
+        )
+        c.execute(
+            "INSERT INTO import_queue(series_id, download_id, torrent_name,"
+            " torrent_url, src_dir, status)"
+            " VALUES(7, 'dl-mixed', 'Test Series pack', 'magnet:mixed', ?, 'pending')",
+            (str(src_dir),),
+        )
+        qid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+        for fname, src, vol in (
+            ("Test Series v01.cbr", v1_src, 1.0),
+            ("Test Series v02.cbr", v2_src, 2.0),
+        ):
+            c.execute(
+                "INSERT INTO import_queue_files(queue_id, filename, src_path,"
+                " dst_path, proposed_volume, file_type, status)"
+                " VALUES(?,?,?,?,?,'volume','pending')",
+                (
+                    qid,
+                    fname,
+                    src,
+                    str(series_dir / fname),
+                    vol,
+                ),
+            )
+
+    assert asyncio.run(main._guarded_execute_import(qid))
+    with sqlite3.connect(env["db_path"]) as c:
+        c.row_factory = sqlite3.Row
+        rows = {
+            r["volume_num"]: dict(r)
+            for r in c.execute(
+                "SELECT volume_num, status, quality, import_path, download_id"
+                " FROM volumes WHERE series_id=7 AND volume_num IS NOT NULL"
+            )
+        }
+        placeholder = c.execute(
+            "SELECT 1 FROM volumes WHERE series_id=7 AND download_id='dl-mixed'"
+            " AND volume_num IS NULL"
+        ).fetchone()
+        queue = c.execute("SELECT 1 FROM import_queue WHERE id=?", (qid,)).fetchone()
+
+    assert rows[1.0]["quality"] == "cbz"
+    assert rows[1.0]["import_path"] == str(existing)
+    assert rows[2.0]["status"] == "downloaded"
+    assert rows[2.0]["quality"] == "cbr"
+    assert rows[2.0]["download_id"] == "dl-mixed"
+    assert os.path.exists(rows[2.0]["import_path"])
+    assert not (series_dir / "Test Series v01.cbr").exists()
+    assert placeholder is None
+    assert queue is None
 
 
 # ─────────────── 3. review round-trip overrides chapter range ─────────
