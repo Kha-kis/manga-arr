@@ -315,6 +315,7 @@ def _process_chapter_import(
             _pv_meta = dict(_pv_row)
     _ch_quality = quality_from_filename(dst)
     _ch_torrent_name = _pv_meta.get("torrent_name") or queue["torrent_name"]
+    imported_at = datetime.utcnow().isoformat()
 
     chap_row = db.execute(
         "SELECT id FROM chapters WHERE series_id=? AND chapter_num=?",
@@ -327,6 +328,7 @@ def _process_chapter_import(
             " protocol=COALESCE(protocol,?), client=COALESCE(client,?),"
             " release_group=COALESCE(release_group,?), size_bytes=COALESCE(NULLIF(size_bytes,0),?),"
             " volume_id=COALESCE(volume_id,?), download_id=COALESCE(download_id,?),"
+            " imported_at=COALESCE(imported_at,?),"
             " chapter_range_end=COALESCE(?, chapter_range_end)"
             " WHERE id=?",
             (
@@ -340,6 +342,7 @@ def _process_chapter_import(
                 _pv_meta.get("size_bytes"),
                 vol_id,
                 queue["download_id"],
+                imported_at,
                 fp.chap_range_end,
                 chap_row["id"],
             ),
@@ -348,8 +351,8 @@ def _process_chapter_import(
         db.execute(
             "INSERT INTO chapters(series_id, volume_id, chapter_num, status, import_path,"
             " download_id, torrent_name, indexer, protocol, client, release_group, size_bytes,"
-            " quality, chapter_range_end)"
-            " VALUES(?,?,?,'downloaded',?,?,?,?,?,?,?,?,?,?)",
+            " quality, imported_at, chapter_range_end)"
+            " VALUES(?,?,?,'downloaded',?,?,?,?,?,?,?,?,?,?,?)",
             (
                 series_id,
                 vol_id,
@@ -363,6 +366,7 @@ def _process_chapter_import(
                 _pv_meta.get("release_group"),
                 _pv_meta.get("size_bytes"),
                 _ch_quality,
+                imported_at,
                 fp.chap_range_end,
             ),
         )
@@ -375,6 +379,7 @@ def _process_chapter_import(
 
 def _process_volume_import(db, fp, dst, plan, queue, series_id, imported_vols):
     """Process volume import during Phase 3."""
+    imported_at = datetime.utcnow().isoformat()
     db.execute(
         "UPDATE import_queue_files SET status='imported', dst_path=? WHERE id=?",
         (dst, fp.file_id),
@@ -390,8 +395,9 @@ def _process_volume_import(db, fp, dst, plan, queue, series_id, imported_vols):
         ).fetchone()
         if _stub:
             db.execute(
-                "UPDATE volumes SET status='downloaded', import_path=? WHERE id=?",
-                (dst, _stub["id"]),
+                "UPDATE volumes SET status='downloaded', import_path=?,"
+                " imported_at=COALESCE(imported_at,?) WHERE id=?",
+                (dst, imported_at, _stub["id"]),
             )
 
     if fp.has_volume_range and fp.proposed_vol is None:
@@ -425,7 +431,7 @@ def _process_volume_import(db, fp, dst, plan, queue, series_id, imported_vols):
                 meta.get("release_group"),
                 meta.get("size_bytes"),
                 file_quality,
-                datetime.utcnow().isoformat(),
+                imported_at,
                 fp.vol_range_start,
                 fp.vol_range_end,
                 _rpt,
@@ -454,6 +460,7 @@ def _process_volume_import(db, fp, dst, plan, queue, series_id, imported_vols):
             db.execute(
                 "UPDATE volumes SET status='downloaded', import_path=?, torrent_name=?,"
                 " indexer=?, protocol=?, client=?, release_group=?, size_bytes=?, quality=?,"
+                " imported_at=COALESCE(imported_at,?),"
                 " download_id=COALESCE(download_id,?) WHERE id=?",
                 (
                     dst,
@@ -464,6 +471,7 @@ def _process_volume_import(db, fp, dst, plan, queue, series_id, imported_vols):
                     meta.get("release_group"),
                     meta.get("size_bytes"),
                     file_quality,
+                    imported_at,
                     queue["download_id"],
                     vol_row["id"],
                 ),
@@ -483,6 +491,7 @@ def _process_volume_import(db, fp, dst, plan, queue, series_id, imported_vols):
                 client=meta.get("client"),
                 release_group=meta.get("release_group"),
                 size_bytes=meta.get("size_bytes"),
+                imported_at=imported_at,
             )
         else:
             db.execute(
@@ -503,7 +512,7 @@ def _process_volume_import(db, fp, dst, plan, queue, series_id, imported_vols):
                     meta.get("release_group"),
                     meta.get("size_bytes"),
                     file_quality,
-                    datetime.utcnow().isoformat(),
+                    imported_at,
                     fp.pack_type if fp.pack_type in ("volume", "complete") else None,
                     0,
                 ),
@@ -523,4 +532,5 @@ def _process_volume_import(db, fp, dst, plan, queue, series_id, imported_vols):
                 client=meta.get("client"),
                 release_group=meta.get("release_group"),
                 size_bytes=meta.get("size_bytes"),
+                imported_at=imported_at,
             )

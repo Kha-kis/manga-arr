@@ -632,7 +632,7 @@ async def suwayomi_grab(series_id: int, volume_num: float) -> bool:
         with get_db() as db:
             db.execute(
                 "UPDATE volumes SET status='grabbed', grabbed_at=CURRENT_TIMESTAMP,"
-                " client='suwayomi'"
+                " indexer='Suwayomi', protocol='ddl', client='suwayomi'"
                 " WHERE series_id=? AND volume_num=? AND status='wanted'",
                 (series_id, volume_num),
             )
@@ -759,7 +759,7 @@ async def suwayomi_chapter_grab(series_id: int, chapter_num: float) -> bool:
         with get_db() as db:
             db.execute(
                 "UPDATE chapters SET status='grabbed', grabbed_at=CURRENT_TIMESTAMP,"
-                " client='suwayomi'"
+                " indexer='Suwayomi', protocol='ddl', client='suwayomi'"
                 " WHERE series_id=? AND chapter_num=? AND status='wanted'",
                 (series_id, chapter_num),
             )
@@ -1446,13 +1446,17 @@ async def retry_suwayomi_job(job_id: int):
         # Reset volume/chapter back to grabbed so the completion UPDATE will match
         if job["volume_num"] is not None:
             db.execute(
-                "UPDATE volumes SET status='grabbed' WHERE series_id=? AND volume_num=?"
+                "UPDATE volumes SET status='grabbed', indexer=COALESCE(indexer,'Suwayomi'),"
+                " protocol=COALESCE(protocol,'ddl'), client='suwayomi'"
+                " WHERE series_id=? AND volume_num=?"
                 " AND status NOT IN ('downloaded','grabbed')",
                 (job["series_id"], job["volume_num"]),
             )
         elif job["chapter_num"] is not None:
             db.execute(
-                "UPDATE chapters SET status='grabbed' WHERE series_id=? AND chapter_num=?"
+                "UPDATE chapters SET status='grabbed', indexer=COALESCE(indexer,'Suwayomi'),"
+                " protocol=COALESCE(protocol,'ddl'), client='suwayomi'"
+                " WHERE series_id=? AND chapter_num=?"
                 " AND status NOT IN ('downloaded','grabbed')",
                 (job["series_id"], job["chapter_num"]),
             )

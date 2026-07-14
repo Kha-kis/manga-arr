@@ -3,7 +3,7 @@ FROM python:3.14-slim
 WORKDIR /app
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends unrar-free \
+ && apt-get install -y --no-install-recommends 7zip \
  && rm -rf /var/lib/apt/lists/*
 
 # Pinned Python deps. Copied before the app source so layer caching

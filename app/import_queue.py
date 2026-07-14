@@ -519,11 +519,17 @@ def _extract_zip_wrapped_split_rars(content_path: str, download_id: str, defer_e
 
         if not rar_path:
             continue
+        extractor = shutil.which("7zz") or shutil.which("7z") or shutil.which("7za")
+        if extractor:
+            archive_cmd = [extractor, "x", "-y", f"-o{out_dir}", rar_path]
+        else:
+            archive_cmd = ["unrar", "x", "-o+", rar_path, out_dir + os.sep]
+
         try:
-            subprocess.run(
-                ["unrar", "x", "-o+", rar_path, out_dir + os.sep],
-                check=True,
-                stdout=subprocess.DEVNULL,
+            result = subprocess.run(
+                archive_cmd,
+                check=False,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
             )
@@ -534,13 +540,34 @@ def _extract_zip_wrapped_split_rars(content_path: str, download_id: str, defer_e
                 dedup=True,
             )
             return []
+        if getattr(result, "returncode", 0) != 0:
+            detail = ((result.stderr or result.stdout or "").strip())[:500]
+            suffix = f": {detail}" if detail else ""
+            defer_event(
+                "error",
+                f"Split RAR unpack failed for {os.path.basename(rar_path)}{suffix}",
+                dedup=True,
+            )
+            return []
 
+        group_payloads: list[str] = []
         for root, dirs, files in os.walk(out_dir):
             dirs.sort()
             for fname in sorted(files):
                 ext = os.path.splitext(fname)[1].lower()
                 if ext in MANGA_EXTENSIONS:
-                    payloads.append(os.path.join(root, fname))
+                    group_payloads.append(os.path.join(root, fname))
+        if not group_payloads:
+            detail = ((result.stderr or result.stdout or "").strip())[:500]
+            suffix = f": {detail}" if detail else ""
+            defer_event(
+                "error",
+                f"Split RAR unpack produced no manga payloads for "
+                f"{os.path.basename(rar_path)}{suffix}",
+                dedup=True,
+            )
+            return []
+        payloads.extend(group_payloads)
 
     if payloads:
         defer_event(
