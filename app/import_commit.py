@@ -191,7 +191,7 @@ def _commit_import(
             db.execute(
                 "DELETE FROM volumes"
                 " WHERE series_id=? AND download_id=? AND volume_num IS NULL"
-                " AND status='grabbed' AND COALESCE(pack_type,'')='volume'",
+                " AND status='grabbed' AND COALESCE(pack_type,'')!='chapter'",
                 (series_id, queue["download_id"]),
             )
         db.execute("DELETE FROM import_queue_files WHERE queue_id=?", (queue_id,))
