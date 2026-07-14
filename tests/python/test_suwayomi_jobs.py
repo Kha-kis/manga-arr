@@ -155,7 +155,10 @@ def test_chapter_job_completes_without_attribute_error(env):
     with sqlite3.connect(env["db_path"]) as c:
         c.row_factory = sqlite3.Row
         job = c.execute("SELECT status, error FROM suwayomi_downloads WHERE chapter_num=200.0").fetchone()
-        ch  = c.execute("SELECT status, import_path FROM chapters WHERE chapter_num=200.0").fetchone()
+        ch = c.execute(
+            "SELECT status, import_path, quality, imported_at, indexer, protocol,"
+            " client, torrent_name FROM chapters WHERE chapter_num=200.0"
+        ).fetchone()
 
     # The bug: status would be 'error' with AttributeError in `error`.
     assert job["status"] == "completed", (
@@ -164,6 +167,12 @@ def test_chapter_job_completes_without_attribute_error(env):
     # And the file actually got imported.
     assert ch["status"] == "downloaded"
     assert ch["import_path"] and ch["import_path"].endswith(".cbz")
+    assert ch["quality"] == "cbz"
+    assert ch["imported_at"]
+    assert ch["indexer"] == "Suwayomi"
+    assert ch["protocol"] == "ddl"
+    assert ch["client"] == "suwayomi"
+    assert ch["torrent_name"]
 
 
 def test_chapter_job_does_not_record_attribute_error(env):
@@ -234,13 +243,22 @@ def test_volume_job_completes_without_attribute_error(env):
     with sqlite3.connect(env["db_path"]) as c:
         c.row_factory = sqlite3.Row
         job = c.execute("SELECT status, error FROM suwayomi_downloads WHERE volume_num=17.0").fetchone()
-        vol = c.execute("SELECT status, import_path FROM volumes WHERE volume_num=17.0").fetchone()
+        vol = c.execute(
+            "SELECT status, import_path, quality, imported_at, indexer, protocol,"
+            " client, torrent_name FROM volumes WHERE volume_num=17.0"
+        ).fetchone()
 
     assert job["status"] == "completed", (
         f"volume job left in {job['status']!r} with error={job['error']!r}"
     )
     assert vol["status"] == "downloaded"
     assert vol["import_path"]
+    assert vol["quality"] == "cbz"
+    assert vol["imported_at"]
+    assert vol["indexer"] == "Suwayomi"
+    assert vol["protocol"] == "ddl"
+    assert vol["client"] == "suwayomi"
+    assert vol["torrent_name"]
 
 
 # ─────────────────── degenerate paths (ensure no regression) ─────────────────

@@ -630,11 +630,18 @@ async def suwayomi_grab(series_id: int, volume_num: float) -> bool:
         await _gql(c, "mutation { startDownloader(input: {}) { clientMutationId } }")
 
         with get_db() as db:
+            source_url = (
+                source_info.get("source_manga_url")
+                if source_info and source_info.get("source_manga_url")
+                else f"suwayomi:{manga_id}"
+            )
+            torrent_name = f"Suwayomi DDL: {sd['title']} vol {volume_num:g}"
             db.execute(
                 "UPDATE volumes SET status='grabbed', grabbed_at=CURRENT_TIMESTAMP,"
+                " source_url=?, torrent_name=?,"
                 " indexer='Suwayomi', protocol='ddl', client='suwayomi'"
                 " WHERE series_id=? AND volume_num=? AND status='wanted'",
-                (series_id, volume_num),
+                (source_url, torrent_name, series_id, volume_num),
             )
             cur = db.execute(
                 "INSERT INTO suwayomi_downloads"
@@ -757,11 +764,13 @@ async def suwayomi_chapter_grab(series_id: int, chapter_num: float) -> bool:
         await _gql(c, "mutation { startDownloader(input: {}) { clientMutationId } }")
 
         with get_db() as db:
+            torrent_name = f"Suwayomi DDL: {sd['title']} ch {chapter_num:g}"
             db.execute(
                 "UPDATE chapters SET status='grabbed', grabbed_at=CURRENT_TIMESTAMP,"
+                " torrent_name=?, torrent_url=?,"
                 " indexer='Suwayomi', protocol='ddl', client='suwayomi'"
                 " WHERE series_id=? AND chapter_num=? AND status='wanted'",
-                (series_id, chapter_num),
+                (torrent_name, f"suwayomi:{manga_id}", series_id, chapter_num),
             )
             db.execute(
                 "INSERT INTO suwayomi_downloads"
@@ -1088,7 +1097,7 @@ async def _process_suwayomi_job(c: dict, job) -> None:
                 " imported_at=CURRENT_TIMESTAMP, client='suwayomi',"
                 " import_path=?, quality=COALESCE(quality,?),"
                 " size_bytes=COALESCE(NULLIF(size_bytes,0),?),"
-                " indexer=NULL, protocol=NULL, torrent_name=NULL,"
+                " indexer='Suwayomi', protocol='ddl', torrent_name=COALESCE(torrent_name,?),"
                 " torrent_url=NULL, download_id=NULL, release_group=NULL"
                 " WHERE series_id=? AND chapter_num=?"
                 " AND status IN ('grabbed','wanted','downloaded')",
@@ -1096,6 +1105,7 @@ async def _process_suwayomi_job(c: dict, job) -> None:
                     import_path,
                     _m.quality_from_filename(import_path),
                     file_bytes or None,
+                    f"Suwayomi DDL: ch {float(job['chapter_num']):g}",
                     job["series_id"],
                     job["chapter_num"],
                 ),
@@ -1156,7 +1166,7 @@ async def _process_suwayomi_job(c: dict, job) -> None:
                 " client='suwayomi', import_path=?,"
                 " quality=COALESCE(quality,?),"
                 " size_bytes=COALESCE(NULLIF(size_bytes,0),?),"
-                " indexer=NULL, protocol=NULL, torrent_name=NULL,"
+                " indexer='Suwayomi', protocol='ddl', torrent_name=COALESCE(torrent_name,?),"
                 " download_id=NULL, release_group=NULL"
                 " WHERE series_id=? AND volume_num=?"
                 " AND status IN ('grabbed','wanted','downloaded')",
@@ -1164,6 +1174,7 @@ async def _process_suwayomi_job(c: dict, job) -> None:
                     import_path,
                     _m.quality_from_filename(import_path),
                     file_bytes or None,
+                    f"Suwayomi DDL: vol {float(job['volume_num']):g}",
                     job["series_id"],
                     job["volume_num"],
                 ),
@@ -1446,19 +1457,37 @@ async def retry_suwayomi_job(job_id: int):
         # Reset volume/chapter back to grabbed so the completion UPDATE will match
         if job["volume_num"] is not None:
             db.execute(
-                "UPDATE volumes SET status='grabbed', indexer=COALESCE(indexer,'Suwayomi'),"
+                "UPDATE volumes SET status='grabbed',"
+                " grabbed_at=COALESCE(grabbed_at,CURRENT_TIMESTAMP),"
+                " source_url=COALESCE(source_url,?),"
+                " torrent_name=COALESCE(torrent_name,?),"
+                " indexer=COALESCE(indexer,'Suwayomi'),"
                 " protocol=COALESCE(protocol,'ddl'), client='suwayomi'"
                 " WHERE series_id=? AND volume_num=?"
-                " AND status NOT IN ('downloaded','grabbed')",
-                (job["series_id"], job["volume_num"]),
+                " AND status!='downloaded'",
+                (
+                    f"suwayomi:{job['suwayomi_manga_id']}",
+                    f"Suwayomi DDL: vol {float(job['volume_num']):g}",
+                    job["series_id"],
+                    job["volume_num"],
+                ),
             )
         elif job["chapter_num"] is not None:
             db.execute(
-                "UPDATE chapters SET status='grabbed', indexer=COALESCE(indexer,'Suwayomi'),"
+                "UPDATE chapters SET status='grabbed',"
+                " grabbed_at=COALESCE(grabbed_at,CURRENT_TIMESTAMP),"
+                " torrent_url=COALESCE(torrent_url,?),"
+                " torrent_name=COALESCE(torrent_name,?),"
+                " indexer=COALESCE(indexer,'Suwayomi'),"
                 " protocol=COALESCE(protocol,'ddl'), client='suwayomi'"
                 " WHERE series_id=? AND chapter_num=?"
-                " AND status NOT IN ('downloaded','grabbed')",
-                (job["series_id"], job["chapter_num"]),
+                " AND status!='downloaded'",
+                (
+                    f"suwayomi:{job['suwayomi_manga_id']}",
+                    f"Suwayomi DDL: ch {float(job['chapter_num']):g}",
+                    job["series_id"],
+                    job["chapter_num"],
+                ),
             )
 
     # Re-enqueue the chapter downloads in Suwayomi so they actually retry
@@ -1502,13 +1531,15 @@ async def cancel_suwayomi_job(job_id: int):
         db.execute("DELETE FROM suwayomi_downloads WHERE id=?", (job_id,))
         if job["volume_num"] is not None:
             db.execute(
-                "UPDATE volumes SET status='wanted', client=NULL, grabbed_at=NULL"
+                "UPDATE volumes SET status='wanted', client=NULL, grabbed_at=NULL,"
+                " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL"
                 " WHERE series_id=? AND volume_num=? AND status='grabbed' AND client='suwayomi'",
                 (job["series_id"], job["volume_num"]),
             )
         elif job["chapter_num"] is not None:
             db.execute(
-                "UPDATE chapters SET status='wanted', client=NULL, grabbed_at=NULL"
+                "UPDATE chapters SET status='wanted', client=NULL, grabbed_at=NULL,"
+                " torrent_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL"
                 " WHERE series_id=? AND chapter_num=? AND status='grabbed' AND client='suwayomi'",
                 (job["series_id"], job["chapter_num"]),
             )

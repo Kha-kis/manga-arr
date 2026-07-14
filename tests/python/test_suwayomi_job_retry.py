@@ -118,3 +118,92 @@ def test_exhausted_retries_mark_error(env):
     status, err = _job_status(env)
     assert status == 'error'
     assert err is not None and 'boom' in err
+
+
+def test_retry_failed_volume_restores_grabbed_metadata(env):
+    """Manual retry should leave a volume in verifier-clean grabbed state."""
+    from routers import suwayomi_ as s
+
+    async def _fake_gql(*a, **kw):
+        return {"ok": True}
+
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "UPDATE suwayomi_downloads SET status='error', error='old', progress=1"
+            " WHERE id=1"
+        )
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status)"
+            " VALUES(88, 1.0, 'wanted')"
+        )
+
+    with patch.object(s, '_gql', _fake_gql), \
+         patch.object(s, 'get_suwayomi_client', lambda db: {'base': 'http://x'}):
+        resp = asyncio.run(s.retry_suwayomi_job(1))
+
+    assert resp.status_code == 200
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        job = c.execute(
+            "SELECT status, error, progress FROM suwayomi_downloads WHERE id=1"
+        ).fetchone()
+        vol = c.execute(
+            "SELECT status, grabbed_at, source_url, torrent_name, indexer,"
+            " protocol, client FROM volumes WHERE series_id=88 AND volume_num=1.0"
+        ).fetchone()
+
+    assert job["status"] == "queued"
+    assert job["error"] is None
+    assert job["progress"] == 0
+    assert vol["status"] == "grabbed"
+    assert vol["grabbed_at"]
+    assert vol["source_url"] == "suwayomi:101"
+    assert vol["torrent_name"] == "Suwayomi DDL: vol 1"
+    assert vol["indexer"] == "Suwayomi"
+    assert vol["protocol"] == "ddl"
+    assert vol["client"] == "suwayomi"
+
+
+def test_retry_failed_chapter_restores_grabbed_metadata(env):
+    """Manual retry should leave a chapter in verifier-clean grabbed state."""
+    from routers import suwayomi_ as s
+
+    async def _fake_gql(*a, **kw):
+        return {"ok": True}
+
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "UPDATE suwayomi_downloads"
+            " SET volume_num=NULL, chapter_num=5.0, status='error',"
+            " error='old', progress=1 WHERE id=1"
+        )
+        c.execute(
+            "INSERT INTO chapters(series_id, chapter_num, status)"
+            " VALUES(88, 5.0, 'grabbed')"
+        )
+
+    with patch.object(s, '_gql', _fake_gql), \
+         patch.object(s, 'get_suwayomi_client', lambda db: {'base': 'http://x'}):
+        resp = asyncio.run(s.retry_suwayomi_job(1))
+
+    assert resp.status_code == 200
+    with sqlite3.connect(env) as c:
+        c.row_factory = sqlite3.Row
+        job = c.execute(
+            "SELECT status, error, progress FROM suwayomi_downloads WHERE id=1"
+        ).fetchone()
+        ch = c.execute(
+            "SELECT status, grabbed_at, torrent_url, torrent_name, indexer,"
+            " protocol, client FROM chapters WHERE series_id=88 AND chapter_num=5.0"
+        ).fetchone()
+
+    assert job["status"] == "queued"
+    assert job["error"] is None
+    assert job["progress"] == 0
+    assert ch["status"] == "grabbed"
+    assert ch["grabbed_at"]
+    assert ch["torrent_url"] == "suwayomi:101"
+    assert ch["torrent_name"] == "Suwayomi DDL: ch 5"
+    assert ch["indexer"] == "Suwayomi"
+    assert ch["protocol"] == "ddl"
+    assert ch["client"] == "suwayomi"
