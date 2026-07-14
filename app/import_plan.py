@@ -5,7 +5,7 @@ import os
 
 from events import log_event
 from parsing import extract_chapter_num
-from files import build_filename, safe_join_under
+from files import build_filename, quality_from_filename, quality_rank, safe_join_under
 from rescan import _series_library_dir
 
 log = logging.getLogger(__name__)
@@ -299,6 +299,30 @@ def _plan_import(
                 "UPDATE import_queue_files SET filename=? WHERE id=?",
                 (filename, f["id"]),
             )
+
+        if (
+            plan_status == "ready"
+            and file_type == "volume"
+            and proposed_vol is not None
+        ):
+            existing = db.execute(
+                "SELECT status, quality FROM volumes"
+                " WHERE series_id=? AND volume_num=?",
+                (queue["series_id"], proposed_vol),
+            ).fetchone()
+            new_quality = quality_from_filename(f["src_path"] or filename)
+            if (
+                existing
+                and existing["status"] == "downloaded"
+                and existing["quality"]
+                and new_quality
+                and quality_rank(existing["quality"]) >= quality_rank(new_quality)
+            ):
+                db.execute(
+                    "UPDATE import_queue_files SET status='skipped' WHERE id=?",
+                    (f["id"],),
+                )
+                plan_status = "skip"
 
         dst_path = ""
         if plan_status == "ready":
