@@ -598,6 +598,95 @@ def test_single_vol_1_imports_one_volume_row_no_chapter_row(env):
     assert chaps == [], f"Vol. 1 leaked a chapter row: {[dict(c) for c in chaps]}"
 
 
+def test_single_volume_release_overrides_opaque_payload_chapter_number(env):
+    """Scene payload names like o01nep071.pdf must not override the grabbed volume."""
+    import main
+
+    _seed_series(env["db_path"], title="One Piece", total_volumes=120)
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute(
+            "INSERT OR REPLACE INTO settings(key, value)"
+            " VALUES('file_format', '{Series Title} v{Volume:02d}')"
+        )
+    main.load_config()
+    src_dir = env["src_root"] / "opaque-single-volume"
+    src_dir.mkdir()
+    (src_dir / "o01nep071.pdf").write_bytes(b"%PDF-1.4\n")
+
+    qid = _run_queue_import(
+        env["db_path"], series_id=7,
+        torrent_name="VIZ Media - One Piece Vol 109 2025 HYBRID MANGA eBook-21A1",
+        content_path=str(src_dir),
+        volume_num=109.0,
+    )
+
+    with sqlite3.connect(env["db_path"]) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT filename, proposed_volume, proposed_chapter, file_type"
+            " FROM import_queue_files WHERE queue_id=?",
+            (qid,),
+        ).fetchone()
+    assert row["file_type"] == "volume"
+    assert row["proposed_volume"] == 109.0
+    assert row["proposed_chapter"] is None
+    assert row["filename"] == "One Piece v109.pdf"
+
+
+def test_queue_import_expands_zip_wrapped_split_rar_payload(env, monkeypatch):
+    """Outer ZIP split-RAR parts should queue the unpacked manga payload."""
+    import main
+    import import_queue
+    import import_pipeline
+
+    _seed_series(env["db_path"], title="One Piece", total_volumes=120)
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute(
+            "INSERT OR REPLACE INTO settings(key, value)"
+            " VALUES('file_format', '{Series Title} v{Volume:02d}')"
+        )
+    main.load_config()
+    monkeypatch.setattr(
+        import_pipeline,
+        "PACK_STAGING_ROOT",
+        str(env["src_root"] / "pack-staging"),
+    )
+    src_dir = env["src_root"] / "zip-split-rar"
+    src_dir.mkdir()
+    with zipfile.ZipFile(src_dir / "part-a.zip", "w") as zf:
+        zf.writestr("scene.rar", b"rar-head")
+    with zipfile.ZipFile(src_dir / "part-b.zip", "w") as zf:
+        zf.writestr("scene.r00", b"rar-tail")
+
+    def fake_unrar(args, **kwargs):
+        out_dir = Path(args[-1])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "o01nep071.pdf").write_bytes(b"%PDF-1.4\n")
+        return object()
+
+    monkeypatch.setattr(import_queue.subprocess, "run", fake_unrar)
+
+    qid = _run_queue_import(
+        env["db_path"], series_id=7,
+        torrent_name="VIZ Media - One Piece Vol 109 2025 HYBRID MANGA eBook-21A1",
+        content_path=str(src_dir),
+        volume_num=109.0,
+    )
+
+    with sqlite3.connect(env["db_path"]) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT src_path, filename, proposed_volume, proposed_chapter, file_type"
+            " FROM import_queue_files WHERE queue_id=?",
+            (qid,),
+        ).fetchone()
+    assert row["src_path"].endswith("o01nep071.pdf")
+    assert row["filename"] == "One Piece v109.pdf"
+    assert row["file_type"] == "volume"
+    assert row["proposed_volume"] == 109.0
+    assert row["proposed_chapter"] is None
+
+
 # ─────────────── 6. complete pack ───────────────────────────────────
 
 def test_complete_pack_persists_pack_type(env):

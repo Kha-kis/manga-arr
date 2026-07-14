@@ -349,6 +349,14 @@ def test_rename_execute_moves_all_renameable_items(env):
 def test_rename_execute_can_limit_to_selected_ids(env):
     new_v1 = os.path.join(env["series_dir"], "Plan Manga v01.cbz")
     new_ch5 = os.path.join(env["series_dir"], "Plan Manga c005.cbz")
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute(
+            "INSERT INTO chapters"
+            "(id, series_id, volume_id, chapter_num, status, import_path)"
+            " VALUES(202, 7, 101, 6.0, 'downloaded', ?)",
+            (env["old_v1"],),
+        )
+
     resp = _client().post(
         "/api/v1/rename/series/7",
         json={"volumeIds": [101]},
@@ -367,6 +375,7 @@ def test_rename_execute_can_limit_to_selected_ids(env):
     assert not os.path.exists(new_ch5)
     assert _volume_paths(env["db_path"])[101] == new_v1
     assert _chapter_paths(env["db_path"])[201] == env["old_ch5"]
+    assert _chapter_paths(env["db_path"])[202] == new_v1
 
 
 def test_rename_execute_reports_selected_conflicts_without_moving(env):
