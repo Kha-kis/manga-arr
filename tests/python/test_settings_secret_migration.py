@@ -267,6 +267,24 @@ def test_settings_general_form_encrypts_api_key(fresh_env):
     assert main.get_cfg("api_key") == NEW_KEY
 
 
+def test_settings_general_page_decrypts_api_key(fresh_env):
+    """The settings page must never render the encrypted DB wire value."""
+    import main
+    from fastapi.testclient import TestClient
+
+    plain_api_key = "VISIBLE-PLAINTEXT-API-KEY"
+    _seed_plaintext(fresh_env["db_path"], api_key=plain_api_key)
+    main.migrate_encrypt_settings_secrets()
+    stored_api_key = _row(fresh_env["db_path"], "api_key")
+    assert stored_api_key.startswith("enc:v1:")
+
+    response = TestClient(main.app).get("/settings/general")
+
+    assert response.status_code == 200
+    assert f'value="{plain_api_key}"' in response.text
+    assert stored_api_key not in response.text
+
+
 # ───────────────────── wrong-key safety ─────────────────────
 
 def test_wrong_key_treats_secret_as_unavailable_with_safe_log(
@@ -304,8 +322,9 @@ def test_settings_general_page_shows_wrong_key_recovery_banner(fresh_env, monkey
     from cryptography.fernet import Fernet
     from fastapi.testclient import TestClient
 
-    _seed_plaintext(fresh_env["db_path"], komga_pass="CANARY-banner")
+    _seed_plaintext(fresh_env["db_path"], api_key="CANARY-banner-api-key")
     main.migrate_encrypt_settings_secrets()
+    stored_api_key = _row(fresh_env["db_path"], "api_key")
     monkeypatch.setattr(security, "_SECRET_CIPHER", Fernet(Fernet.generate_key()))
 
     client = TestClient(main.app)
@@ -314,6 +333,7 @@ def test_settings_general_page_shows_wrong_key_recovery_banner(fresh_env, monkey
     assert "Encrypted credentials need recovery" in r.text
     assert "re-enter the affected credentials" in r.text
     assert "/config/.mangarr-secret-key" in r.text
+    assert stored_api_key not in r.text
 
 
 def test_settings_general_page_shows_first_run_backup_callout(fresh_env):
