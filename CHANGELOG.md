@@ -3,6 +3,76 @@
 All notable changes to this project. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 1.0.0-rc.1 - 2026-07-15
+
+First public release candidate. This entry summarizes the application state
+since `v0.1.5-mapping-correctness`; the detailed implementation history remains
+available in the merged pull requests.
+
+### Added
+
+- Single-administrator browser authentication with Argon2id password hashing,
+  revocable server-side sessions, one-time first-run setup tokens, login
+  throttling, and offline administrator recovery.
+- Broad Sonarr-style `/api/v1` and `/api/v3` compatibility surfaces for
+  library, queue, history, wanted, profiles, clients, indexers, settings,
+  commands, backups, rename, and existing-library adoption workflows.
+- Suwayomi direct-download support with metadata confidence, retry state,
+  cancellation safety, and chapter-aware import handling.
+- Existing-library scan, match, adopt, rescan, rename preview, and organize
+  workflows.
+- Unified metadata lifecycle, readiness diagnostics, reconciliation, and
+  repair paths across AniList, MangaDex, MangaUpdates, and Kitsu data.
+- Public non-root container packaging, host-neutral Docker Compose defaults,
+  a database-backed health endpoint, and first-run deployment documentation.
+
+### Changed
+
+- Import execution now claims, stages, and commits in separate phases so file
+  I/O does not hold a long SQLite write transaction.
+- Metadata, import, grab, series, and router responsibilities were split into
+  focused modules while preserving compatibility re-exports.
+- UI controls, loading states, icons, type scale, touch targets, color tokens,
+  z-indexes, and accessibility labels were standardized across the interface.
+- Stored integration secrets are encrypted at rest and secret settings render
+  decrypted only in the authenticated settings view.
+- Runtime versioning now uses `app/VERSION` as the canonical source for the UI,
+  API, update status, and OpenAPI metadata.
+
+### Fixed
+
+- SQLite lock contention during long imports and event writes.
+- Split-RAR extraction, shared rename paths, chapter import state, pack
+  placeholder cleanup, and duplicate lower-quality import handling.
+- Metadata-source drift, stale refresh state, DDL grab-mode persistence, and
+  MangaDex/Suwayomi retry edge cases.
+- Browser setup username validation under modern HTML regular-expression
+  parsing.
+
+### Security
+
+- Request body and multipart limits, current Starlette request parsing, CSRF
+  enforcement, API-key fail-closed behavior, SSRF controls, XXE-safe parsing,
+  regular-expression safety, and import path confinement are release-gated.
+- The runtime image drops Linux capabilities, enables
+  `no-new-privileges`, runs as a configurable non-root UID/GID, and defaults to
+  host-loopback publication.
+- Dependency, secret, and container configuration scans are part of release
+  validation.
+
+### Upgrade Notes
+
+- Back up `/config/manga_arr.db` and `/config/.mangarr-secret-key` together
+  before upgrading.
+- Existing installations without a browser administrator are redirected to
+  first-run setup. Retrieve the one-time token from
+  `/config/.mangarr-setup-token` after the upgraded container starts.
+- The image runs as UID/GID 1000 by default. Existing bind mounts must be
+  writable by that identity or overridden with `MANGARR_UID` and
+  `MANGARR_GID`.
+- Pin `MANGARR_VERSION=1.0.0-rc.1` while evaluating this candidate. See
+  `docs/deployment.md` for the tested upgrade and rollback procedure.
+
 ## 2026-05-05 — Graceful shutdown, configurability, and resource management
 
 This release adds production-grade improvements for reliability, configurability,

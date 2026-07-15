@@ -111,6 +111,30 @@ def test_public_install_docs_cover_browser_auth_setup_and_recovery():
     assert "python /app/auth_cli.py reset-admin --yes" in deployment
 
 
+def test_public_docs_cover_versioned_upgrade_and_rollback():
+    readme = _read("README.md")
+    deployment = _read("docs/deployment.md")
+    releases = _read("docs/releases.md")
+    for marker in (
+        "MANGARR_VERSION",
+        "docker compose pull mangarr",
+        "docker compose up -d --no-deps mangarr",
+    ):
+        assert marker in readme
+        assert marker in deployment
+    for marker in ("app/VERSION", "Semantic Versioning", "latest"):
+        assert marker in releases
+    assert "/config/.mangarr-secret-key" in deployment
+    assert "Do not point an older image" in deployment
+
+
+def test_security_policy_uses_private_reporting_and_documents_boundary():
+    policy = _read("SECURITY.md")
+    assert "/security/advisories/new" in policy
+    assert "Do not open a public issue" in policy
+    assert "/config" in policy
+
+
 def test_deployment_doc_exists_and_covers_three_patterns():
     doc = _read("docs/deployment.md")
     # Pattern markers — if someone restructures the doc these must remain

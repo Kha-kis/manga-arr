@@ -23,12 +23,12 @@ from fastapi.responses import (
 
 from routers._templates import templates
 from shared import DB_PATH, get_cfg, get_db
+from version import APP_VERSION
 
 router = APIRouter()
 
 # ── Module-level startup time ─────────────────────────────────────────────────
 _STARTUP_TIME: datetime = datetime.now(timezone.utc)
-APP_VERSION = "1.0.0"
 LATEST_RELEASE_URL = "https://github.com/Kha-kis/manga-arr/releases/latest"
 RELEASES_URL = "https://github.com/Kha-kis/manga-arr/releases"
 

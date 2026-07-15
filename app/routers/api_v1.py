@@ -79,7 +79,7 @@ from routers.settings_ import (
 )
 from routers.series_ import patch_series as _patch_series
 import routers.system as system_router
-from routers.system import APP_VERSION, TASKS, TASK_STATE, run_command as _run_command
+from routers.system import TASKS, TASK_STATE, run_command as _run_command
 from shared import (
     build_volume_label,
     from_json,
@@ -88,6 +88,7 @@ from shared import (
     quality_rank,
 )
 from security import encrypt_if_cipher_available
+from version import APP_VERSION
 from volumes import create_volume_stubs
 
 router = APIRouter()

@@ -33,6 +33,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 # Under contention that produced 15–60s event-loop stalls visible to
 # unrelated HTTP requests (issue #31).
 from shared import is_htmx, is_boosted, get_db as _shared_get_db
+from version import APP_VERSION
 
 # ── Sonarr-parity routers ─────────────────────────────────────────────────────
 import shared as _shared
@@ -604,7 +605,7 @@ from helpers import (  # noqa: F401
 from cover_images import download_cover, extract_cbz_cover  # noqa: F401
 
 # ── App ───────────────────────────────────────────────────────────────────────
-app       = FastAPI(lifespan=lifespan)
+app       = FastAPI(title="Mangarr", version=APP_VERSION, lifespan=lifespan)
 app.mount("/covers", StaticFiles(directory="/config/covers"), name="covers")
 app.mount("/static", StaticFiles(directory="/app/static"),   name="static")
 templates = Jinja2Templates(directory="/app/templates")
