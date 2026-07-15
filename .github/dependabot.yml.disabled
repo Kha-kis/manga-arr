@@ -12,7 +12,7 @@
 #
 # Three ecosystems:
 #   - pip            (requirements.txt + requirements-test.txt)
-#   - docker         (the python:3.12-slim base in Dockerfile)
+#   - docker         (the python:3.14-slim base in Dockerfile)
 #   - github-actions (action SHAs/tags in .github/workflows/*.yml)
 #
 # Schedule: weekly on Mondays. Security updates always open immediately

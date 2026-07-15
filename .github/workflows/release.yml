@@ -1,0 +1,114 @@
+name: Release Image
+
+# This is the only automatically triggered workflow. It runs solely when the
+# maintainer deliberately pushes an immutable release tag, keeping ordinary PR
+# development local-first and avoiding per-commit Actions billing.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Validate, scan, and publish
+    if: github.repository == 'Kha-kis/manga-arr'
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ghcr.io/kha-kis/manga-arr
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag and release metadata
+        id: release
+        run: |
+          python scripts/release_metadata.py \
+            --tag "${GITHUB_REF_NAME}" \
+            --image "${IMAGE}" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Audit pinned Python dependencies
+        run: |
+          python -m pip install --user pip-audit==2.10.0
+          python -m pip_audit -r requirements.txt --strict
+
+      - name: Build scan candidate
+        run: |
+          docker build \
+            --build-arg MANGARR_VERSION="${{ steps.release.outputs.version }}" \
+            --build-arg VCS_REF="${GITHUB_SHA}" \
+            --build-arg BUILD_DATE="${{ steps.release.outputs.build_date }}" \
+            --tag "mangarr-release-scan:${{ steps.release.outputs.version }}" \
+            .
+
+      - name: Verify image identity and contents
+        run: |
+          python scripts/verify_release_image.py \
+            --image "mangarr-release-scan:${{ steps.release.outputs.version }}" \
+            --version "${{ steps.release.outputs.version }}" \
+            --revision "${GITHUB_SHA}"
+
+      - name: Gate on fixed high and critical image vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: mangarr-release-scan:${{ steps.release.outputs.version }}
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          format: table
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refuse to replace an existing release tag
+        run: |
+          exact_tag="${IMAGE}:${{ steps.release.outputs.version }}"
+          if docker buildx imagetools inspect "$exact_tag" >/dev/null 2>&1; then
+            echo "Refusing to replace published image tag: $exact_tag" >&2
+            exit 1
+          fi
+
+      - name: Build and publish multi-architecture image
+        id: image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.release.outputs.tags }}
+          build-args: |
+            MANGARR_VERSION=${{ steps.release.outputs.version }}
+            VCS_REF=${{ github.sha }}
+            BUILD_DATE=${{ steps.release.outputs.build_date }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Record published digest
+        run: |
+          echo "## Mangarr ${{ steps.release.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.image.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

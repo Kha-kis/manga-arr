@@ -13,10 +13,19 @@
         test-browser-smoke test-browser-integration test-browser-e2e \
         test-browser-isolated test-browser-isolated-smoke \
         test-browser-isolated-integration test-browser-isolated-e2e \
-        test-verify-e2e
+        test-verify-e2e release-validate security-deps security-secrets \
+        security-config security-local image-build image-scan \
+        image-verify release-local release-push
 
 PYTHON ?= python3
 PYTEST ?= $(PYTHON) -m pytest
+VERSION := $(shell tr -d '\n' < app/VERSION)
+RELEASE_IMAGE ?= ghcr.io/kha-kis/manga-arr
+LOCAL_RELEASE_IMAGE ?= mangarr-release
+RELEASE_PLATFORMS ?= linux/amd64,linux/arm64
+GIT_SHA := $(shell git rev-parse HEAD)
+BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+RELEASE_TAG_ARGS = $(shell $(PYTHON) scripts/release_metadata.py --image "$(RELEASE_IMAGE)" --format docker-args)
 
 help:
 	@echo "Hermetic targets (no running app required):"
@@ -33,6 +42,13 @@ help:
 	@echo "Aggregates:"
 	@echo "  test          Safe PR gate: python + confirm-flow + route-sweep"
 	@echo "  test-release  Pre-release: test + browser-smoke/integration/e2e + verify-e2e"
+	@echo ""
+	@echo "Release targets (local-first; no GitHub runner required):"
+	@echo "  release-validate  Check SemVer, docs, and v<version> tag identity"
+	@echo "  security-local    pip-audit + gitleaks + Trivy config gate"
+	@echo "  image-scan        Build, verify, and Trivy-scan the release image"
+	@echo "  release-local     Full release-safe, security, and image gate"
+	@echo "  release-push      Publish multi-arch tags after explicit confirmation"
 
 # ── Hermetic targets ──────────────────────────────────────────────────────────
 
@@ -92,3 +108,60 @@ test-release-safe: test test-browser-isolated
 # Pre-release including the live-DB browser suite. Only run manually with
 # the operator's container up.
 test-release: test test-browser-smoke test-browser-integration test-browser-e2e test-verify-e2e
+
+# ── Public release gates ──────────────────────────────────────────────────────
+
+release-validate:
+	$(PYTHON) scripts/release_metadata.py --tag "v$(VERSION)" --image "$(RELEASE_IMAGE)"
+
+security-deps:
+	pip-audit -r requirements.txt --strict
+
+security-secrets:
+	gitleaks git --no-banner
+
+security-config:
+	trivy config --severity HIGH,CRITICAL --exit-code 1 .
+
+security-local: security-deps security-secrets security-config
+
+image-build: release-validate
+	docker build \
+	  --build-arg MANGARR_VERSION="$(VERSION)" \
+	  --build-arg VCS_REF="$(GIT_SHA)" \
+	  --build-arg BUILD_DATE="$(BUILD_DATE)" \
+	  --tag "$(LOCAL_RELEASE_IMAGE):$(VERSION)" .
+
+image-verify: image-build
+	$(PYTHON) scripts/verify_release_image.py \
+	  --image "$(LOCAL_RELEASE_IMAGE):$(VERSION)" \
+	  --version "$(VERSION)" \
+	  --revision "$(GIT_SHA)"
+
+image-scan: image-verify
+	trivy image --scanners vuln --ignore-unfixed \
+	  --severity HIGH,CRITICAL --exit-code 1 \
+	  "$(LOCAL_RELEASE_IMAGE):$(VERSION)"
+
+release-local: release-validate test-release-safe security-local image-scan
+
+# Emergency/local publishing fallback for Actions billing or availability
+# failures. The operator must already be authenticated to ghcr.io with
+# package-write permission and must type the exact version as confirmation.
+release-push: release-local
+	@test "$(CONFIRM_RELEASE)" = "$(VERSION)" || \
+	  (echo "Set CONFIRM_RELEASE=$(VERSION) to publish" >&2; exit 1)
+	@test -z "$$(git status --porcelain)" || \
+	  (echo "Refusing to publish from a dirty worktree" >&2; exit 1)
+	@git tag --points-at HEAD | grep -Fxq "v$(VERSION)" || \
+	  (echo "HEAD must have tag v$(VERSION) before publishing" >&2; exit 1)
+	@if docker buildx imagetools inspect "$(RELEASE_IMAGE):$(VERSION)" >/dev/null 2>&1; then \
+	  echo "Refusing to replace published image tag: $(RELEASE_IMAGE):$(VERSION)" >&2; \
+	  exit 1; \
+	fi
+	docker buildx build \
+	  --platform "$(RELEASE_PLATFORMS)" \
+	  --build-arg MANGARR_VERSION="$(VERSION)" \
+	  --build-arg VCS_REF="$(GIT_SHA)" \
+	  --build-arg BUILD_DATE="$(BUILD_DATE)" \
+	  $(RELEASE_TAG_ARGS) --provenance=mode=max --sbom=true --push .
