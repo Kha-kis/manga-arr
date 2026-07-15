@@ -45,6 +45,8 @@ available in the merged pull requests.
 
 ### Fixed
 
+- Public Compose and `.env.example` defaults pin the current RC instead of the
+  intentionally unpublished stable-only `latest` tag.
 - SQLite lock contention during long imports and event writes.
 - Split-RAR extraction, shared rename paths, chapter import state, pack
   placeholder cleanup, and duplicate lower-quality import handling.

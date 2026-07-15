@@ -36,6 +36,7 @@ are writable by UID/GID 1000, or the UID/GID configured in `.env`.
 ```bash
 git clone https://github.com/Kha-kis/manga-arr.git
 cd manga-arr
+cp .env.example .env
 mkdir -p config data/media/manga data/torrents/manga
 chmod 700 config
 docker compose up -d
@@ -47,13 +48,14 @@ one-time setup token. The token file is mode `0600` and is removed after setup.
 
 The public Compose file:
 
-- pulls `ghcr.io/kha-kis/manga-arr:${MANGARR_VERSION:-latest}`;
+- pulls the exact current RC, `ghcr.io/kha-kis/manga-arr:1.0.0-rc.1`;
 - publishes only on host loopback by default;
 - runs the container without root privileges;
 - stores persistent state in `./config` and media/download data in `./data`.
 
-Copy [`.env.example`](.env.example) to `.env` to pin a release or change the
-bind address, port, runtime UID/GID, paths, timezone, or initial settings.
+The copied [`.env.example`](.env.example) pins the current release. Edit `.env`
+to change the bind address, port, runtime UID/GID, paths, timezone, or initial
+settings.
 Configure indexers, download clients, metadata providers, and notifications in
 the Mangarr UI.
 

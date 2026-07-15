@@ -56,11 +56,7 @@ test-python:
 	$(PYTEST) tests/python/ -q
 
 test-confirm-flow:
-	@if docker ps --format '{{.Names}}' | grep -q '^mangarr$$'; then \
-	  docker exec mangarr $(PYTHON) /app/test_confirm_flow.py; \
-	else \
-	  cd app && $(PYTHON) test_confirm_flow.py; \
-	fi
+	cd app && $(PYTHON) test_confirm_flow.py
 
 test-route-sweep:
 	$(PYTEST) tests/python/test_route_sweep.py -v
@@ -79,7 +75,7 @@ test-browser-e2e:
 
 # Read-only against live DB. Safe to run any time the container is up.
 test-verify-e2e:
-	docker exec mangarr $(PYTHON) /app/verify_e2e.py
+	docker exec -i mangarr $(PYTHON) - /config/manga_arr.db < app/verify_e2e.py
 
 # ── Isolated browser targets ──────────────────────────────────────────────────
 # These boot a separate mangarr-test container against a tmp /config mount
