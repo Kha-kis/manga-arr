@@ -118,6 +118,12 @@ credentials. Back up the entire `/config` directory before upgrades.
 Back up `/config`, then pull the current stable image and recreate the
 container. Persistent settings and library state remain in the mounted paths.
 
+If the installation uses Mangarr's public 1.0.x Compose file, replace its
+interpolated `image:` line with `ghcr.io/kha-kis/manga-arr:latest` before this
+first upgrade. That older file remains pinned by `MANGARR_VERSION` otherwise.
+After the Compose file contains direct values and no `${...}` references, its
+Mangarr `.env` file is no longer required.
+
 ```bash
 docker compose pull
 docker compose up -d

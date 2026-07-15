@@ -273,6 +273,26 @@ the failed directory.
 The `latest` tag follows the newest stable Mangarr release. Upgrade by pulling
 the image and recreating the container:
 
+### Migrating the public 1.0.x Compose file
+
+Mangarr's public 1.0.x example selected its image through `MANGARR_VERSION` in
+an `.env` file. Running `docker compose pull` against that unchanged file keeps
+the installation on its old version. Before the first 1.1-or-newer upgrade,
+replace the interpolated `image:` line with the stable channel used by the
+current example:
+
+```yaml
+image: ghcr.io/kha-kis/manga-arr:latest
+```
+
+The remaining interpolated user, path, port, and application values can be
+replaced with the direct values appropriate for the host. Once no `${...}`
+references remain in the Compose file, Mangarr no longer needs its old `.env`
+file. Review that file before removing it in case other Compose services still
+use it.
+
+### Standard upgrade
+
 ```bash
 docker compose pull
 docker compose up -d
