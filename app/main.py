@@ -606,7 +606,8 @@ app.mount("/static", StaticFiles(directory="/app/static"),   name="static")
 templates = Jinja2Templates(directory="/app/templates")
 
 # ── Middleware moved to middleware.py ────────────────────────────────────────
-# ApiKeyMiddleware + CSRFMiddleware live in middleware.py. Re-exported
+# RequestBodyLimitMiddleware + ApiKeyMiddleware + CSRFMiddleware live in
+# middleware.py. Re-exported
 # here so `app.add_middleware(...)` below can reference them by bare
 # name (FastAPI looks them up in this module's globals). The _CSRF_*
 # constants are re-exported for any external callers (none known, but
@@ -615,6 +616,7 @@ from middleware import (  # noqa: F401
     ApiKeyMiddleware,
     ApiVersionAliasMiddleware,
     CSRFMiddleware,
+    RequestBodyLimitMiddleware,
     _should_secure_cookie,
     _CSRF_COOKIE, _CSRF_HEADER, _CSRF_FIELD, _CSRF_SKIP_PREFIXES,
 )
@@ -654,6 +656,7 @@ if os.environ.get("MANGARR_DEBUG_TIMING") == "1":
 app.add_middleware(CSRFMiddleware)
 app.add_middleware(ApiKeyMiddleware)
 app.add_middleware(ApiVersionAliasMiddleware)
+app.add_middleware(RequestBodyLimitMiddleware)
 
 templates.env.filters['format_bytes']    = format_bytes
 templates.env.filters['format_protocol'] = format_protocol

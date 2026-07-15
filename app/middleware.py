@@ -1,20 +1,20 @@
-"""ASGI middleware: API-key gate and CSRF double-submit.
+"""ASGI middleware: request-size guard, API-key gate, and CSRF double-submit.
 
-Fourth module extracted from main.py. Both middleware classes are
-pure — no DB writes, no CONFIG mutation. They consult settings via
-`get_cfg` (API key read) but that's a read-only path.
+The middleware classes perform no DB writes or CONFIG mutation. The API-key
+gate consults settings via `get_cfg`, but that remains a read-only path.
 
 Loading order in main.py (bottom-up because Starlette wraps in
 reverse):
 
-  app.add_middleware(CSRFMiddleware)      # outer
-  app.add_middleware(ApiKeyMiddleware)    # inner — runs first on request
+  app.add_middleware(CSRFMiddleware)
+  app.add_middleware(ApiKeyMiddleware)
+  app.add_middleware(ApiVersionAliasMiddleware)
+  app.add_middleware(RequestBodyLimitMiddleware)  # outermost request guard
 
-So: ApiKeyMiddleware decides 401 vs continue for API clients, then
-CSRFMiddleware validates browser-delegated mutating API requests that
-carry only the in-session CSRF cookie.
-
-Pure move — no behaviour changes.
+So: RequestBodyLimitMiddleware rejects oversized bodies before buffering,
+ApiKeyMiddleware decides 401 vs continue for API clients, then CSRFMiddleware
+validates browser-delegated mutating API requests that carry only the
+in-session CSRF cookie.
 """
 
 from __future__ import annotations
@@ -27,6 +27,72 @@ from fastapi.responses import JSONResponse
 import logging
 
 from shared import get_cfg
+
+
+DEFAULT_MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024
+
+
+class _RequestBodyTooLarge(Exception):
+    pass
+
+
+class RequestBodyLimitMiddleware:
+    """Reject request bodies that exceed the configured byte limit.
+
+    ``Content-Length`` lets us reject before reading. The receive wrapper is
+    still required because clients may omit the header or stream more bytes
+    than they declared. This middleware must remain outside CSRF middleware so
+    oversized forms are stopped before CSRF buffers them.
+    """
+
+    def __init__(self, app, max_bytes: int = DEFAULT_MAX_REQUEST_BODY_BYTES):
+        if max_bytes <= 0:
+            raise ValueError("max_bytes must be positive")
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        for name, value in scope.get("headers", []):
+            if name.lower() != b"content-length":
+                continue
+            try:
+                declared_size = int(value)
+            except (TypeError, ValueError):
+                break
+            if declared_size > self.max_bytes:
+                await self._reject(scope, receive, send)
+                return
+            break
+
+        received_size = 0
+
+        async def limited_receive():
+            nonlocal received_size
+            message = await receive()
+            if message.get("type") == "http.request":
+                received_size += len(message.get("body", b""))
+                if received_size > self.max_bytes:
+                    raise _RequestBodyTooLarge
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except _RequestBodyTooLarge:
+            await self._reject(scope, receive, send)
+
+    async def _reject(self, scope, receive, send):
+        response = JSONResponse(
+            {
+                "detail": "Request body too large.",
+                "maxBytes": self.max_bytes,
+            },
+            status_code=413,
+        )
+        await response(scope, receive, send)
 
 
 # ── API version compatibility ────────────────────────────────────────────────
