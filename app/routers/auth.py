@@ -19,7 +19,6 @@ from auth import (
     delete_other_sessions,
     delete_session,
     get_admin,
-    get_or_create_setup_token,
     hash_password,
     is_admin_configured,
     update_admin_password,
@@ -27,7 +26,6 @@ from auth import (
     validate_session,
     validate_username,
     verify_admin_credentials,
-    verify_setup_token,
 )
 from middleware import _should_secure_cookie
 from routers._templates import templates
@@ -107,14 +105,12 @@ async def setup_page(request: Request, next: str = "/"):
         return RedirectResponse(
             _next_location("/login", _safe_next(next)), status_code=303
         )
-    get_or_create_setup_token()
     return _render_auth(request, "auth_setup.html", next=_safe_next(next))
 
 
 @router.post("/setup", response_class=HTMLResponse)
 async def setup_admin(
     request: Request,
-    setup_token: str = Form(""),
     username: str = Form(""),
     password: str = Form(""),
     password_confirm: str = Form(""),
@@ -125,9 +121,7 @@ async def setup_admin(
         return RedirectResponse(_next_location("/login", destination), status_code=303)
     normalized_username = validate_username(username)
     error = None
-    if not verify_setup_token(setup_token):
-        error = "The setup token is invalid."
-    elif normalized_username is None:
+    if normalized_username is None:
         error = "Username must be 3-32 letters, numbers, dots, dashes, or underscores."
     elif password != password_confirm:
         error = "Passwords do not match."

@@ -26,9 +26,9 @@ documentation consistency.
 - `latest` points only to the newest stable release, never to a release
   candidate.
 
-The public Compose file accepts any published image tag through
-`MANGARR_VERSION`. Operators evaluating a candidate should pin the full
-candidate version instead of using a moving channel.
+The public Compose file follows `latest` for the normal stable channel.
+Operators evaluating a candidate or requiring reproducible deployments should
+replace `latest` on the `image:` line with the full candidate or stable version.
 
 ## Container Tags
 
@@ -36,6 +36,7 @@ The release workflow publishes `ghcr.io/kha-kis/manga-arr` with these tags:
 
 | Release | Image tags |
 | --- | --- |
+| `1.1.0` | `1.1.0`, `1.1`, `1`, `latest` |
 | `1.0.1` | `1.0.1`, `1.0`, `1`, `latest` |
 | `1.0.0` | `1.0.0`, `1.0`, `1`, `latest` |
 | `1.0.0-rc.2` | `1.0.0-rc.2` |
@@ -105,7 +106,7 @@ If hosted Actions cannot run, an authenticated maintainer can use the local
 fallback after the full gate passes:
 
 ```bash
-make release-push CONFIRM_RELEASE=1.0.1
+make release-push CONFIRM_RELEASE=1.1.0
 ```
 
 The confirmation must exactly match `app/VERSION`. The Docker client must

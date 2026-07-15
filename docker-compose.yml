@@ -1,25 +1,21 @@
 services:
   mangarr:
-    image: "ghcr.io/kha-kis/manga-arr:${MANGARR_VERSION:-1.0.1}"
+    image: ghcr.io/kha-kis/manga-arr:latest
     container_name: mangarr
-    user: "${MANGARR_UID:-1000}:${MANGARR_GID:-1000}"
+
+    # Match this UID:GID to the owner of ./config and ./data on the host.
+    user: "1000:1000"
     environment:
-      TZ: "${TZ:-UTC}"
-      MANGARR_INSTANCE_NAME: "${MANGARR_INSTANCE_NAME:-Mangarr}"
-      MANGARR_LOG_LEVEL: "${MANGARR_LOG_LEVEL:-INFO}"
-      MANGARR_URL_BASE: "${MANGARR_URL_BASE:-}"
-      MANGA_SAVE_PATH: "${MANGA_SAVE_PATH:-/data/media/manga}"
-      MANGA_TORRENT_PATH: "${MANGA_TORRENT_PATH:-/data/torrents/manga}"
-      MANGA_CATEGORY: "${MANGA_CATEGORY:-manga}"
-      RSS_INTERVAL: "${RSS_INTERVAL:-900}"
-      HTTP_PROXY: "${HTTP_PROXY:-}"
-      HTTPS_PROXY: "${HTTPS_PROXY:-}"
-      NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1}"
+      TZ: Etc/UTC
+      MANGA_SAVE_PATH: /data/media/manga
+      MANGA_TORRENT_PATH: /data/torrents/manga
+      MANGA_CATEGORY: manga
+      RSS_INTERVAL: "900"
     volumes:
-      - "${MANGARR_CONFIG_PATH:-./config}:/config"
-      - "${MANGARR_DATA_PATH:-./data}:/data"
+      - ./config:/config
+      - ./data:/data
     ports:
-      - "${MANGARR_BIND_ADDRESS:-127.0.0.1}:${MANGARR_PORT:-6789}:8000"
+      - "6789:8000"
     restart: unless-stopped
     init: true
     security_opt:

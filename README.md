@@ -21,7 +21,7 @@ files into an organized library. It understands volumes, chapters, editions,
 omnibuses, specials, and multi-volume packs instead of treating manga like a
 generic TV or book collection.
 
-The current stable release is **1.0.1**. Mangarr is self-hosted, designed for a
+The current stable release is **1.1.0**. Mangarr is self-hosted, designed for a
 single administrator, and distributed as a multi-platform container image.
 
 ## Features
@@ -61,30 +61,45 @@ compatibility scope and intentional non-goals.
 
 ## Quick Start
 
-Requirements: Docker Engine with the Compose plugin and host directories that
-are writable by UID/GID `1000`, or the UID/GID configured in `.env`.
+Requirements: Docker Engine with the Compose plugin. Create a directory for
+Mangarr and add this `compose.yaml`:
+
+```yaml
+services:
+  mangarr:
+    image: ghcr.io/kha-kis/manga-arr:latest
+    container_name: mangarr
+    user: "1000:1000"
+    environment:
+      TZ: Etc/UTC
+      MANGA_SAVE_PATH: /data/media/manga
+      MANGA_TORRENT_PATH: /data/torrents/manga
+      MANGA_CATEGORY: manga
+    volumes:
+      - ./config:/config
+      - ./data:/data
+    ports:
+      - "6789:8000"
+    restart: unless-stopped
+```
+
+Change `user`, `TZ`, and the host sides of the volume mappings directly in the
+Compose file when needed. Then start Mangarr:
 
 ```bash
-git clone https://github.com/Kha-kis/manga-arr.git
-cd manga-arr
-cp .env.example .env
 mkdir -p config data/media/manga data/torrents/manga
 chmod 700 config
 docker compose up -d
-docker compose exec mangarr cat /config/.mangarr-setup-token
 ```
 
-Open <http://127.0.0.1:6789> and create the administrator account with the
-one-time setup token. The default Compose configuration binds to host loopback,
-runs as a non-root user, and pins the stable image:
-
-```text
-ghcr.io/kha-kis/manga-arr:1.0.1
-```
+Open `http://<server-ip>:6789`. The first browser visit redirects to
+**Create administrator**; submitting that form creates the local account and
+signs in immediately. Complete this step before publishing Mangarr through a
+reverse proxy or exposing it outside a trusted network.
 
 Configure indexers, download clients, metadata providers, root folders, and
-notifications from the Mangarr settings UI. Keep the loopback bind for initial
-setup; use an HTTPS reverse proxy before exposing Mangarr beyond a trusted LAN.
+notifications from the Mangarr settings UI. The example is reachable on the
+trusted LAN; use an HTTPS reverse proxy before exposing Mangarr beyond it.
 
 ### Persistent Paths
 
@@ -100,27 +115,29 @@ credentials. Back up the entire `/config` directory before upgrades.
 
 ## Upgrading
 
-Set `MANGARR_VERSION` in `.env` to the release you want, back up `/config`, then
-pull and recreate only Mangarr:
+Back up `/config`, then pull the current stable image and recreate the
+container. Persistent settings and library state remain in the mounted paths.
 
 ```bash
-docker compose pull mangarr
-docker compose up -d --no-deps mangarr
+docker compose pull
+docker compose up -d
 docker compose ps mangarr
 ```
 
 Verify `/healthz`, System Status, and a representative search/import workflow.
-Do not run an older image against a database migrated by a newer release; use
-the matching pre-upgrade `/config` backup for rollback. The complete procedure
-is in [Deployment and recovery](docs/deployment.md#upgrading-and-rollback).
+For a version pin or rollback, replace `latest` on the `image:` line with an
+exact tag such as `1.0.1`, restore the matching `/config` backup, and run the
+same pull and up commands. Do not run an older image against a database migrated
+by a newer release. The complete procedure is in
+[Deployment and recovery](docs/deployment.md#upgrading-and-rollback).
 
 ## Security
 
 - Browser sessions use the local administrator account; integrations use the
   separate API key from **Settings > General**.
 - Stored integration credentials are encrypted with the key under `/config`.
-- The public Compose file binds to `127.0.0.1` by default and runs without root
-  privileges.
+- The public Compose file runs without root privileges; browser authentication
+  is mandatory after first-run setup.
 - Administrator recovery is an offline operation that revokes existing browser
   sessions.
 
@@ -129,8 +146,7 @@ docker compose exec mangarr python /app/auth_cli.py reset-admin --yes
 ```
 
 Report vulnerabilities privately through the process in [SECURITY.md](SECURITY.md).
-Never publish API keys, setup tokens, passwords, private tracker URLs, or
-encryption keys.
+Never publish API keys, passwords, private tracker URLs, or encryption keys.
 
 ## Documentation
 

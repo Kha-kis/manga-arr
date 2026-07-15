@@ -9,29 +9,13 @@
       <span>{{ get_instance_name() }}</span>
     </div>
     <h1 class="auth-heading" id="setup-heading">Create administrator</h1>
-    <p class="auth-copy">Claim this installation with its one-time setup token.</p>
+    <p class="auth-copy">Create the local account that will manage this installation.</p>
     {% if error %}
     <div class="auth-error" role="alert">{{ error }}</div>
     {% endif %}
     <form method="post" action="/setup">
       <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}" />
       <input type="hidden" name="next" value="{{ next }}" />
-      <div class="mb-3">
-        <label class="form-label" for="setup-token">Setup token</label>
-        <input
-          class="form-control font-monospace"
-          id="setup-token"
-          name="setup_token"
-          type="password"
-          autocomplete="one-time-code"
-          required
-          autofocus
-        />
-        <div class="auth-token-help">
-          Read <code>/config/.mangarr-setup-token</code> from the host or
-          container.
-        </div>
-      </div>
       <div class="mb-3">
         <label class="form-label" for="setup-username">Username</label>
         <input
@@ -45,6 +29,7 @@
           maxlength="32"
           pattern="[A-Za-z0-9][A-Za-z0-9._\-]{2,31}"
           required
+          autofocus
         />
       </div>
       <div class="mb-3">
