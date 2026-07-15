@@ -15,9 +15,10 @@ from shared import get_cfg, get_db, get_secret_health_summary, is_htmx
 from security import (
     validate_outbound_url,
     UnsafeURLError,
+    decrypt_secret_safe,
     encrypt_if_cipher_available,
 )
-from config import normalize_url_base
+from config import SETTINGS_SECRET_KEYS, normalize_url_base
 
 
 def _encrypt_settings_secrets_in_place(fields: dict) -> dict:
@@ -325,10 +326,17 @@ async def save_settings(
 @router.get("/settings/general", response_class=HTMLResponse)
 async def settings_general_page(request: Request, saved: str = ""):
     with get_db() as db:
-        cfg = {
-            row["key"]: row["value"]
-            for row in db.execute("SELECT key, value FROM settings")
-        }
+        cfg = {}
+        for row in db.execute("SELECT key, value FROM settings"):
+            key = row["key"]
+            value = row["value"]
+            if key in SETTINGS_SECRET_KEYS:
+                value = decrypt_secret_safe(
+                    value,
+                    field_name=f"settings.{key}",
+                    context="General Settings",
+                )
+            cfg[key] = value
         secret_health = get_secret_health_summary(db)
         first_run = _is_first_run(db)
     return templates.TemplateResponse(
