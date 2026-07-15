@@ -1,40 +1,34 @@
 services:
   mangarr:
-    build: .
+    image: "ghcr.io/kha-kis/manga-arr:${MANGARR_VERSION:-latest}"
     container_name: mangarr
-    # Image default is uid/gid 1000 (matches the typical single-user
-    # Linux host). Uncomment and set to match your host user if /config
-    # is owned by a different uid. See docs/deployment.md for details.
-    # user: "${UID:-1000}:${GID:-1000}"
-    env_file:
-      - /opt/manga-arr/.env
+    user: "${MANGARR_UID:-1000}:${MANGARR_GID:-1000}"
     environment:
-      - TZ=America/Chicago
-      - QBIT_HOST=http://10.200.200.2:10048
-      - QBIT_USER=khak1s
-      - SAB_HOST=http://sabnzbd:65080/sabnzbd
-      - PROWLARR_URL=http://prowlarr:9696/prowlarr
-      - MANGA_SAVE_PATH=/data/media/manga
-      - MANGA_CATEGORY=manga
-      - RSS_INTERVAL=900
+      TZ: "${TZ:-UTC}"
+      MANGARR_INSTANCE_NAME: "${MANGARR_INSTANCE_NAME:-Mangarr}"
+      MANGARR_LOG_LEVEL: "${MANGARR_LOG_LEVEL:-INFO}"
+      MANGARR_URL_BASE: "${MANGARR_URL_BASE:-}"
+      MANGA_SAVE_PATH: "${MANGA_SAVE_PATH:-/data/media/manga}"
+      MANGA_TORRENT_PATH: "${MANGA_TORRENT_PATH:-/data/torrents/manga}"
+      MANGA_CATEGORY: "${MANGA_CATEGORY:-manga}"
+      RSS_INTERVAL: "${RSS_INTERVAL:-900}"
+      HTTP_PROXY: "${HTTP_PROXY:-}"
+      HTTPS_PROXY: "${HTTPS_PROXY:-}"
+      NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1}"
     volumes:
-      - /home/khak1s/.config/mangarr:/config
-      - /opt/manga-arr/app:/app
-      - /data:/data
+      - "${MANGARR_CONFIG_PATH:-./config}:/config"
+      - "${MANGARR_DATA_PATH:-./data}:/data"
     ports:
-      - "127.0.0.1:6789:8000"
+      - "${MANGARR_BIND_ADDRESS:-127.0.0.1}:${MANGARR_PORT:-6789}:8000"
     restart: unless-stopped
+    init: true
     security_opt:
       - no-new-privileges=true
+    cap_drop:
+      - ALL
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 15s
-    networks:
-      - media-net
-
-networks:
-  media-net:
-    external: true
