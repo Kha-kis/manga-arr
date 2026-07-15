@@ -104,6 +104,28 @@ def _get_status(db_path, queue_id):
 # ───────────────────── claim_import_queue_row ─────────────────────
 
 
+def test_qbit_completed_aliases_schedule_one_canonical_download():
+    from import_discovery import _deduplicate_qbit_matches
+
+    torrent = {"hash": "ABC123", "name": "Completed Release"}
+    rows = [
+        {"series_id": 7, "download_id": "abc123", "torrent_name": "Alias A"},
+        {"series_id": 7, "download_id": "ABC123", "torrent_name": "Alias B"},
+        {"series_id": 8, "download_id": "", "torrent_name": "Completed Release"},
+    ]
+
+    matched = _deduplicate_qbit_matches(
+        rows,
+        {"abc123": torrent},
+        {"completed release": torrent},
+    )
+
+    assert [(row["series_id"], download_id) for row, _, download_id in matched] == [
+        (7, "abc123"),
+        (8, "abc123"),
+    ]
+
+
 def test_claim_succeeds_on_pending(fresh_db):
     import main
 

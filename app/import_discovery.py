@@ -136,19 +136,12 @@ async def _check_download_status_impl():
                                 "FROM seen WHERE client='qbittorrent' AND protocol='torrent'"
                             ).fetchall()
 
-                        matched = []
-                        for row in rows:
-                            dl_id = (row["download_id"] or "").lower()
-                            name_norm = normalize(row["torrent_name"] or "")
-                            torrent = torrent_by_hash.get(dl_id) or completed_names.get(
-                                name_norm
-                            )
-                            if torrent:
-                                matched.append((row, torrent))
+                        matched = _deduplicate_qbit_matches(
+                            rows, torrent_by_hash, completed_names
+                        )
 
                         _new_imports = []
-                        for row, torrent in matched:
-                            dl_id = (row["download_id"] or "").lower()
+                        for row, torrent, dl_id in matched:
                             content_path = torrent.get("content_path") or torrent.get(
                                 "save_path", ""
                             )
@@ -547,3 +540,25 @@ async def _process_auto_import(queue_id: int):
 def normalize(text: str) -> str:
     """Normalize text for comparison (lowercase, strip)."""
     return (text or "").lower().strip()
+
+
+def _deduplicate_qbit_matches(rows, torrent_by_hash, completed_names):
+    """Match seen rows to completed torrents once per series and hash."""
+    matched = []
+    matched_keys = set()
+    for row in rows:
+        seen_download_id = (row["download_id"] or "").lower()
+        name_norm = normalize(row["torrent_name"] or "")
+        torrent = torrent_by_hash.get(seen_download_id) or completed_names.get(
+            name_norm
+        )
+        if not torrent:
+            continue
+        download_id = str(torrent.get("hash") or seen_download_id).lower()
+        identity = download_id or normalize(torrent.get("name") or "")
+        key = (row["series_id"], identity)
+        if key in matched_keys:
+            continue
+        matched_keys.add(key)
+        matched.append((row, torrent, download_id))
+    return matched

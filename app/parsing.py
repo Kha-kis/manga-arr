@@ -434,6 +434,7 @@ _SPECIAL_RELEASE_PATTERNS = (
     r'\bgaiden\b',
     r'\bside[-\s]?stor(?:y|ies)\b',
     r'\bsidestory\b',
+    r'\bshort[-\s]+stor(?:y|ies)\b',
     r'\bbonus\b',
     r'\bomake\b',
 )

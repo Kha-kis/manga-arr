@@ -84,15 +84,36 @@ def _queue_import(
     _rel_is_special = is_special_release(torrent_name or "")
     _rel_pack_type = detect_pack_type(torrent_name or "", _rel_vol_range, _total_vols)
 
-    # Check early: if this download is already fully imported, skip silently
-    already_done = db.execute(
-        "SELECT 1 FROM volumes WHERE series_id=? AND download_id=? AND status='downloaded' LIMIT 1",
-        (series_id, download_id),
-    ).fetchone()
+    # A successful import must remain terminal even when it updated an existing
+    # chapter/volume or imported a special file without creating a new volume.
+    # The history row is the durable receipt after completed queue rows are
+    # removed. Ignore empty IDs: they are not unique download identities.
+    already_done = None
+    if download_id:
+        already_done = db.execute(
+            "SELECT 1 WHERE EXISTS ("
+            " SELECT 1 FROM volumes"
+            " WHERE series_id=? AND download_id=? AND status='downloaded'"
+            ") OR EXISTS ("
+            " SELECT 1 FROM chapters"
+            " WHERE series_id=? AND download_id=? AND status='downloaded'"
+            ") OR EXISTS ("
+            " SELECT 1 FROM history"
+            " WHERE series_id=? AND download_id=? AND event_type='imported'"
+            ")",
+            (
+                series_id,
+                download_id,
+                series_id,
+                download_id,
+                series_id,
+                download_id,
+            ),
+        ).fetchone()
     if already_done:
         db.execute(
             "UPDATE import_queue SET status='imported' WHERE series_id=? AND download_id=?"
-            " AND status IN ('partial','failed')",
+            " AND status IN ('pending','partial','failed')",
             (series_id, download_id),
         )
         return None, False
@@ -195,7 +216,7 @@ def _queue_import(
             for fname in sorted(files):
                 scan_paths.append(os.path.join(root, fname))
 
-    mapped = unmapped = 0
+    mapped = unmapped = special = 0
     file_rows = []
     for src_path in scan_paths:
         fname = os.path.basename(src_path)
@@ -222,6 +243,7 @@ def _queue_import(
         if file_chap_range is not None:
             proposed_chap, proposed_chap_re = file_chap_range
         proposed_is_special = int(_rel_is_special or is_special_release(fname))
+        special += proposed_is_special
 
         ext_lower = os.path.splitext(fname)[1].lower()
         if ext_lower in (".cbz", ".zip"):
@@ -348,16 +370,20 @@ def _queue_import(
         else:
             proposed_pack_type = None
 
-        if (
+        is_unmapped = (
             proposed_vol is None
             and proposed_chap is None
             and proposed_vol_rs is None
             and proposed_chap_re is None
             and not _is_chapter_grab
-        ):
+        )
+        if is_unmapped:
             unmapped += 1
         else:
             mapped += 1
+        file_status = (
+            "needs_review" if is_unmapped or proposed_is_special else "pending"
+        )
         file_rows.append(
             (
                 dst_fname,
@@ -371,6 +397,7 @@ def _queue_import(
                 proposed_pack_type,
                 proposed_is_special,
                 file_type,
+                file_status,
             )
         )
 
@@ -396,15 +423,20 @@ def _queue_import(
         " proposed_volume_range_start, proposed_volume_range_end,"
         " proposed_chapter_range_end, proposed_pack_type, proposed_is_special,"
         " file_type, status)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'pending')",
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [(queue_id, *row) for row in file_rows],
     )
 
-    needs_review = unmapped > 0
-    if unmapped > 0:
+    needs_review = unmapped > 0 or special > 0
+    if needs_review:
+        reasons = []
+        if unmapped:
+            reasons.append(f"{unmapped} unmapped file(s)")
+        if special:
+            reasons.append(f"{special} special file(s)")
         log_event(
             "import",
-            f"Queued for review ({unmapped} unmapped file(s)): {torrent_name}",
+            f"Queued for review ({', '.join(reasons)}): {torrent_name}",
             series_id,
             db=db,
         )
