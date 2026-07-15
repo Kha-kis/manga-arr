@@ -1,5 +1,6 @@
 """Public release automation invariants."""
 
+import hashlib
 import re
 import subprocess
 from pathlib import Path
@@ -12,6 +13,15 @@ from version import APP_VERSION
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+AGPL_SHA256 = "d8a6cc31abc16b6748c7a21f21611f5a1ec33f67d22ca23d7da1c19b95496bee"
+
+
+def test_public_release_uses_canonical_agpl_only_license():
+    license_bytes = (REPO_ROOT / "LICENSE").read_bytes()
+    assert hashlib.sha256(license_bytes).hexdigest() == AGPL_SHA256
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "AGPL-3.0-only" in readme
+    assert "[GNU Affero General Public License v3.0 only](LICENSE)" in readme
 
 
 def test_current_release_metadata_is_consistent():
@@ -62,6 +72,7 @@ def test_release_workflow_is_tag_only_and_pins_actions():
 def test_docker_context_is_allowlisted():
     dockerignore = (REPO_ROOT / ".dockerignore").read_text().splitlines()
     assert dockerignore[0] == "**"
+    assert "!LICENSE" in dockerignore
     assert "!requirements.txt" in dockerignore
     assert "app/*" in dockerignore
     assert "!app/*.py" in dockerignore
@@ -143,6 +154,8 @@ def test_dockerfile_has_release_identity_labels():
     assert re.fullmatch(r"FROM python:3\.14-slim@sha256:[0-9a-f]{64}", first_line)
     for marker in (
         "ARG MANGARR_VERSION=dev",
+        "COPY LICENSE /app/LICENSE",
+        'org.opencontainers.image.licenses="AGPL-3.0-only"',
         "org.opencontainers.image.version",
         "org.opencontainers.image.revision",
         "org.opencontainers.image.created",

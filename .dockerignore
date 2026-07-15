@@ -1,6 +1,7 @@
 **
 !.dockerignore
 !Dockerfile
+!LICENSE
 !requirements.txt
 
 !app/

@@ -142,6 +142,15 @@ def test_release_docs_cover_local_billing_safe_gate():
     assert "only tag-triggered workflow" in releases
 
 
+def test_system_status_exposes_source_and_license_links():
+    status = _read("app/templates/system_status.html")
+    assert "https://github.com/Kha-kis/manga-arr" in status
+    assert "https://github.com/Kha-kis/manga-arr/blob/master/LICENSE" in status
+    assert "AGPL-3.0" in status
+    assert "Copyright (C) 2026 Kha-kis" in status
+    assert "provided without warranty" in status
+
+
 def test_deployment_doc_exists_and_covers_three_patterns():
     doc = _read("docs/deployment.md")
     # Pattern markers — if someone restructures the doc these must remain
