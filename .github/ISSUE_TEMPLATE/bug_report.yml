@@ -1,0 +1,70 @@
+name: Bug report
+description: Report a reproducible Mangarr defect or regression.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include passwords, API keys, cookies, private tracker URLs, or unredacted logs. Security vulnerabilities must use private reporting.
+  - type: input
+    id: version
+    attributes:
+      label: Mangarr version
+      description: Provide the System Status version and image tag or digest.
+      placeholder: 1.0.0-rc.2 / ghcr.io/kha-kis/manga-arr@sha256:...
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Docker Compose
+        - Docker CLI
+        - Source checkout
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe what happened and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Open ...
+        2. Configure ...
+        3. Run ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and integrations
+      description: Include host OS, architecture, archive format, metadata provider, indexer, and download client when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      description: Remove secrets, cookies, tracker URLs, and private paths before posting.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I removed credentials and private information from this report.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

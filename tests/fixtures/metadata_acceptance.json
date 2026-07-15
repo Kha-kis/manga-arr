@@ -1,0 +1,212 @@
+{
+  "catalogue_cases": [
+    {
+      "name": "finished_standard_manga",
+      "series": {
+        "title": "Fullmetal Alchemist",
+        "edition_type": "standard",
+        "status": "RELEASING",
+        "update_strategy": "always",
+        "total_volumes": 10,
+        "total_chapters": 100,
+        "vol_count_source": "anilist",
+        "chapter_count_source": "anilist"
+      },
+      "record": {
+        "anilist_id": 5114,
+        "mal_id": 25,
+        "cover_url": "https://images.example/fma.jpg",
+        "status": "FINISHED",
+        "description": "Two brothers search for the Philosopher's Stone.",
+        "pub_year": 2001,
+        "volumes": 27,
+        "chapters": 116
+      },
+      "expected": {
+        "total_volumes": 27,
+        "total_chapters": 116,
+        "vol_count_source": "anilist",
+        "chapter_count_source": "anilist",
+        "status": "FINISHED",
+        "update_strategy": "once",
+        "integer_volume_rows": 27
+      }
+    },
+    {
+      "name": "ongoing_series_preserves_observed_progress",
+      "series": {
+        "title": "Ongoing Adventure",
+        "edition_type": "standard",
+        "status": "RELEASING",
+        "update_strategy": "always",
+        "total_volumes": 12,
+        "total_chapters": 120,
+        "vol_count_source": "anilist",
+        "chapter_count_source": "anilist"
+      },
+      "downloaded_volumes": [13.5],
+      "downloaded_chapters": [128.5],
+      "record": {
+        "anilist_id": 7002,
+        "mal_id": 7003,
+        "cover_url": "https://images.example/ongoing.jpg",
+        "status": "RELEASING",
+        "description": "An unfinished serial.",
+        "pub_year": 2018,
+        "volumes": 12,
+        "chapters": 120
+      },
+      "expected": {
+        "total_volumes": 14,
+        "total_chapters": 129,
+        "vol_count_source": "anilist",
+        "chapter_count_source": "local",
+        "status": "RELEASING",
+        "update_strategy": "always",
+        "integer_volume_rows": 14
+      }
+    },
+    {
+      "name": "one_shot_creates_single_volume",
+      "series": {
+        "title": "Look Back",
+        "edition_type": "standard",
+        "status": "RELEASING",
+        "update_strategy": "always",
+        "total_volumes": null,
+        "total_chapters": null,
+        "vol_count_source": "anilist",
+        "chapter_count_source": "anilist"
+      },
+      "record": {
+        "anilist_id": 130059,
+        "mal_id": 141104,
+        "cover_url": "https://images.example/look-back.jpg",
+        "status": "FINISHED",
+        "description": "A complete one-shot story.",
+        "pub_year": 2021,
+        "volumes": 1,
+        "chapters": 1
+      },
+      "expected": {
+        "total_volumes": 1,
+        "total_chapters": 1,
+        "vol_count_source": "anilist",
+        "chapter_count_source": "anilist",
+        "status": "FINISHED",
+        "update_strategy": "once",
+        "integer_volume_rows": 1
+      }
+    },
+    {
+      "name": "omnibus_preserves_manual_edition_count",
+      "series": {
+        "title": "Akira Omnibus",
+        "edition_type": "omnibus",
+        "status": "RELEASING",
+        "update_strategy": "always",
+        "total_volumes": 6,
+        "total_chapters": 120,
+        "vol_count_source": "manual",
+        "chapter_count_source": "manual"
+      },
+      "record": {
+        "anilist_id": 3001,
+        "mal_id": 2,
+        "cover_url": "https://images.example/akira.jpg",
+        "status": "FINISHED",
+        "description": "Collected edition metadata.",
+        "pub_year": 1982,
+        "volumes": 12,
+        "chapters": 150
+      },
+      "expected": {
+        "total_volumes": 6,
+        "total_chapters": 120,
+        "vol_count_source": "manual",
+        "chapter_count_source": "manual",
+        "status": "FINISHED",
+        "update_strategy": "once",
+        "integer_volume_rows": 0
+      }
+    },
+    {
+      "name": "light_novel_preserves_curated_counts",
+      "series": {
+        "title": "Spice and Wolf Light Novel",
+        "edition_type": "standard",
+        "status": "RELEASING",
+        "update_strategy": "always",
+        "total_volumes": 24,
+        "total_chapters": 96,
+        "vol_count_source": "manual",
+        "chapter_count_source": "manual"
+      },
+      "record": {
+        "anilist_id": 3002,
+        "mal_id": 1530,
+        "cover_url": "https://images.example/spice-and-wolf.jpg",
+        "status": "FINISHED",
+        "description": "A merchant travels with a wolf deity.",
+        "pub_year": 2006,
+        "volumes": 17,
+        "chapters": 80
+      },
+      "expected": {
+        "total_volumes": 24,
+        "total_chapters": 96,
+        "vol_count_source": "manual",
+        "chapter_count_source": "manual",
+        "status": "FINISHED",
+        "update_strategy": "once",
+        "integer_volume_rows": 24
+      }
+    }
+  ],
+  "alias_case": {
+    "main_title": "Frieren: Beyond Journey's End",
+    "record": {
+      "romaji_title": "Sousou no Frieren",
+      "aliases": [
+        "Frieren at the Funeral",
+        "Frieren: Beyond Journey's End",
+        "TV"
+      ],
+      "genres": ["Adventure", "Fantasy", "adventure", "Drama"]
+    },
+    "expected_aliases": ["Frieren at the Funeral", "Sousou no Frieren"],
+    "expected_genres": ["adventure", "drama", "fantasy"]
+  },
+  "mangaupdates_cases": [
+    {
+      "name": "standard_higher_count_wins",
+      "edition_type": "standard",
+      "current_volumes": 10,
+      "current_source": "anilist",
+      "incoming_volumes": 12,
+      "expected_volumes": 12,
+      "expected_source": "mangaupdates",
+      "expected_updated": true
+    },
+    {
+      "name": "standard_lower_count_never_shrinks",
+      "edition_type": "standard",
+      "current_volumes": 12,
+      "current_source": "anilist",
+      "incoming_volumes": 10,
+      "expected_volumes": 12,
+      "expected_source": "anilist",
+      "expected_updated": false
+    },
+    {
+      "name": "omnibus_ignores_standard_provider_count",
+      "edition_type": "omnibus",
+      "current_volumes": 6,
+      "current_source": "anilist",
+      "incoming_volumes": 12,
+      "expected_volumes": 6,
+      "expected_source": "anilist",
+      "expected_updated": false
+    }
+  ]
+}

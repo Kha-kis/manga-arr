@@ -19,9 +19,9 @@ documentation consistency.
 
 - Stable releases use `MAJOR.MINOR.PATCH`, for example `1.2.0`.
 - Release candidates use `MAJOR.MINOR.PATCH-rc.N`, for example
-  `1.0.0-rc.1`.
+  `1.0.0-rc.2`.
 - Every Git tag is `v` followed by the exact application version, for example
-  `v1.0.0-rc.1`.
+  `v1.0.0-rc.2`.
 - Release and image tags are immutable. Never move or replace a published tag.
 - `latest` points only to the newest stable release, never to a release
   candidate.
@@ -36,6 +36,7 @@ The release workflow publishes `ghcr.io/kha-kis/manga-arr` with these tags:
 
 | Release | Image tags |
 | --- | --- |
+| `1.0.0-rc.2` | `1.0.0-rc.2` |
 | `1.0.0-rc.1` | `1.0.0-rc.1` |
 | `1.2.3` | `1.2.3`, `1.2`, `1`, `latest` |
 
@@ -56,6 +57,8 @@ also protects against registry-side tag changes.
 9. Publish the GitHub release with upgrade notes, known limitations, and the
    image digest.
 10. For a stable release, verify that `latest` resolves to the same digest.
+
+The stable-release evidence is tracked in `docs/release-qualification.md`.
 
 Release candidates are promoted by creating a new stable release from a tested
 commit. An RC tag itself is never renamed or converted into a stable tag.
@@ -100,7 +103,7 @@ If hosted Actions cannot run, an authenticated maintainer can use the local
 fallback after the full gate passes:
 
 ```bash
-make release-push CONFIRM_RELEASE=1.0.0-rc.1
+make release-push CONFIRM_RELEASE=1.0.0-rc.2
 ```
 
 The confirmation must exactly match `app/VERSION`. The Docker client must

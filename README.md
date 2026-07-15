@@ -5,7 +5,7 @@ Mangarr is a self-hosted manga and light-novel library manager. It applies the
 a series, search indexers, send a release to a download client, import the
 completed files, and notify the rest of your media stack.
 
-**Current release:** `1.0.0-rc.1`. This is a release candidate. Back up
+**Current release:** `1.0.0-rc.2`. This is a release candidate. Back up
 `/config` before upgrading and pin the image version while evaluating it.
 
 ## Features
@@ -48,7 +48,7 @@ one-time setup token. The token file is mode `0600` and is removed after setup.
 
 The public Compose file:
 
-- pulls the exact current RC, `ghcr.io/kha-kis/manga-arr:1.0.0-rc.1`;
+- pulls the exact current RC, `ghcr.io/kha-kis/manga-arr:1.0.0-rc.2`;
 - publishes only on host loopback by default;
 - runs the container without root privileges;
 - stores persistent state in `./config` and media/download data in `./data`.
@@ -138,10 +138,12 @@ Additional project references:
 
 - [`docs/deployment.md`](docs/deployment.md): deployment and recovery
 - [`docs/releases.md`](docs/releases.md): versioning and release process
+- [`docs/release-qualification.md`](docs/release-qualification.md): stable
+  release acceptance evidence
 - [`docs/sonarr-parity.md`](docs/sonarr-parity.md): compatibility scope
 - [`CHANGELOG.md`](CHANGELOG.md): release notes
 - [`tests/README.md`](tests/README.md): test architecture
-- [`CLAUDE.md`](CLAUDE.md): codebase invariants and contributor guidance
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): development and pull-request guidance
 
 ## License
 
@@ -154,8 +156,9 @@ those users the corresponding source code under the same license.
 
 ## Support
 
-Use [GitHub Issues](https://github.com/Kha-kis/manga-arr/issues) for reproducible
-bugs and focused feature requests. Include the Mangarr version shown on
-**System > Status**, deployment method, relevant sanitized logs, and exact
-reproduction steps. Do not post API keys, setup tokens, passwords, private
-tracker URLs, or encrypted-secret keys.
+Use [GitHub Discussions](https://github.com/Kha-kis/manga-arr/discussions) for
+setup and workflow help, and the structured
+[GitHub issue forms](https://github.com/Kha-kis/manga-arr/issues/new/choose) for
+bugs and feature proposals. See [`SUPPORT.md`](SUPPORT.md) and
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) before participating. Do not post API
+keys, setup tokens, passwords, private tracker URLs, or encryption keys.

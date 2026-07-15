@@ -1,0 +1,39 @@
+name: Feature request
+description: Propose a scoped improvement to Mangarr.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Describe the workflow limitation, not only the proposed control or endpoint.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Explain the expected user-visible behavior and failure handling.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include existing workarounds or relevant Sonarr/Readarr behavior.
+  - type: textarea
+    id: impact
+    attributes:
+      label: Data and compatibility impact
+      description: Note migrations, file moves, API contracts, provider calls, or client requirements.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Scope checks
+      options:
+        - label: I searched existing issues and discussions for this request.
+          required: true
+        - label: This proposal maps cleanly to manga or light-novel workflows.
+          required: true
