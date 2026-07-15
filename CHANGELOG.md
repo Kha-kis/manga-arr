@@ -3,6 +3,35 @@
 All notable changes to this project. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 1.0.0-rc.2 - 2026-07-15
+
+Second public release candidate. Runtime behavior is unchanged from `rc.1`;
+this candidate completes the public release-qualification and project-support
+surface discovered during the first candidate deployment.
+
+### Added
+
+- Fixture-driven metadata acceptance coverage for standard manga, ongoing
+  series, one-shots, omnibuses, light novels, alternate titles, and conflicting
+  provider counts.
+- Public contribution, support, conduct, issue, and pull-request guidance.
+- A stable-release qualification record covering production, metadata,
+  downloader/import, installation, recovery, and repository gates.
+
+### Changed
+
+- Public Compose and deployment examples now pin `1.0.0-rc.2`.
+- Release workflow Docker actions use immutable Node 24-capable revisions.
+- Local verification no longer expects development-only scripts inside the
+  hardened production image.
+
+### Validation
+
+- Real qBittorrent, SABnzbd, and Suwayomi connection probes passed.
+- An anonymous Compose installation completed setup and authenticated startup.
+- A real 2.3 GB backup restored with all 30 series, administrator access, and
+  17 encrypted credentials intact.
+
 ## 1.0.0-rc.1 - 2026-07-15
 
 First public release candidate. This entry summarizes the application state

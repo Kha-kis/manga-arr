@@ -41,7 +41,7 @@ or the internet can, period.
 ```yaml
 services:
   mangarr:
-    image: ghcr.io/kha-kis/manga-arr:1.0.0-rc.1
+    image: ghcr.io/kha-kis/manga-arr:1.0.0-rc.2
     ports:
       - "127.0.0.1:6789:8000"   # host_ip:host_port:container_port
 ```
@@ -90,7 +90,7 @@ services:
       - public
       - internal
   mangarr:
-    image: ghcr.io/kha-kis/manga-arr:1.0.0-rc.1
+    image: ghcr.io/kha-kis/manga-arr:1.0.0-rc.2
     # NO ports: block — only reachable from the `internal` network
     networks:
       - internal
@@ -386,7 +386,7 @@ Use immutable version tags for normal deployments. Set the target version in
 `.env` before pulling:
 
 ```env
-MANGARR_VERSION=1.0.0-rc.1
+MANGARR_VERSION=1.0.0-rc.2
 ```
 
 ### Before an upgrade
@@ -450,7 +450,7 @@ docker compose exec mangarr cat /config/.mangarr-setup-token
 ```
 
 The public Compose file defaults to the exact current release candidate,
-`ghcr.io/kha-kis/manga-arr:1.0.0-rc.1`. Keep `MANGARR_VERSION` pinned in
+`ghcr.io/kha-kis/manga-arr:1.0.0-rc.2`. Keep `MANGARR_VERSION` pinned in
 `.env`; `latest` is reserved for stable releases. The remaining defaults are:
 
 ```yaml

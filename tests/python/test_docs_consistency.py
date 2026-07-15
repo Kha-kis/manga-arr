@@ -26,7 +26,7 @@ def test_dockerfile_still_binds_0000_inside_container():
     df = _read("Dockerfile")
     assert "--host" in df
     assert re.search(r'--host["\s,]+["]?0\.0\.0\.0', df), \
-        f"Dockerfile CMD no longer binds 0.0.0.0 — update docs/deployment.md"
+        "Dockerfile CMD no longer binds 0.0.0.0 — update docs/deployment.md"
 
 
 def test_compose_publishes_on_loopback_only():
@@ -95,6 +95,25 @@ def test_public_compose_is_host_neutral_and_uses_release_image():
     ):
         assert private_value not in compose, \
             f"public docker-compose.yml contains host-specific value {private_value!r}"
+
+
+def test_public_community_and_release_qualification_files_exist():
+    required = (
+        "CONTRIBUTING.md",
+        "CODE_OF_CONDUCT.md",
+        "SUPPORT.md",
+        ".github/ISSUE_TEMPLATE/config.yml",
+        ".github/ISSUE_TEMPLATE/bug_report.yml",
+        ".github/ISSUE_TEMPLATE/feature_request.yml",
+        ".github/PULL_REQUEST_TEMPLATE.md",
+        "docs/release-qualification.md",
+    )
+    for path in required:
+        assert (REPO_ROOT / path).is_file(), path
+
+    readme = _read("README.md")
+    for path in ("CONTRIBUTING.md", "SUPPORT.md", "CODE_OF_CONDUCT.md"):
+        assert f"]({path})" in readme
 
 
 def test_public_install_instructions_protect_config_directory():
