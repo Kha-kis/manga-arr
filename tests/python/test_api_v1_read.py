@@ -1752,6 +1752,9 @@ def test_api_v1_volume_and_chapter_inventory_contract(env):
             "chapterRangeEnd": None,
             "label": "Ch.001",
             "title": "Somewhere Not Here",
+            "pages": None,
+            "metadataSource": None,
+            "metadataUpdatedAt": None,
             "status": "downloaded",
             "monitored": True,
             "quality": "cbz",
@@ -1929,9 +1932,28 @@ def test_api_v1_calendar_contract(env):
 def test_api_v1_series_detail_blocklist_commands_and_cutoff(env):
     client = _client()
     headers = {"X-Api-Key": _api_key(env)}
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO series_metadata_sources"
+            " (series_id,source,status,last_attempt_at,last_success_at,details)"
+            " VALUES(5,'anilist','healthy','2026-01-06','2026-01-06',"
+            " '{\"anilist_id\":123}')"
+        )
 
     detail = client.get("/api/v1/series/5", headers=headers).json()
     assert detail["id"] == 5
+    assert detail["metadataSources"] == [
+        {
+            "source": "anilist",
+            "status": "healthy",
+            "lastAttempt": "2026-01-06",
+            "lastSuccess": "2026-01-06",
+            "nextRetry": None,
+            "failureCount": 0,
+            "error": None,
+            "details": {"anilist_id": 123},
+        }
+    ]
     assert [v["id"] for v in detail["volumes"]] == [101, 102, 103, 104]
     assert detail["volumes"][0]["label"] == "Vol 1"
     assert detail["volumes"][0]["quality"] == "cbz"
@@ -1944,6 +1966,9 @@ def test_api_v1_series_detail_blocklist_commands_and_cutoff(env):
             "chapterRangeEnd": None,
             "label": "Ch.001",
             "title": "Somewhere Not Here",
+            "pages": None,
+            "metadataSource": None,
+            "metadataUpdatedAt": None,
             "status": "downloaded",
             "monitored": True,
             "quality": "cbz",

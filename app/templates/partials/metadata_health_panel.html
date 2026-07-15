@@ -14,15 +14,15 @@
     - drift_detected
     - needs_review
 
-  The panel is strictly read-only. No buttons mutate state; the
-  reconciliation / stub-creation actions live in their existing
-  supported paths (series editor save, MangaDex refresh) and are
-  intentionally NOT wired up here — this PR is visibility only.
+  Provider status is read-only. Existing reconciliation actions remain
+  available when the mapping classifier reports actionable drift.
 #}
 {% if metadata_health %}
 {% set mh    = metadata_health %}
-{% set state = mh['state'] %}
+{% set mapping_state = mh['state'] %}
+{% set state = mh.get('overall_state', mapping_state) %}
 {% set rec   = mh['reconcile'] %}
+{% set catalog = mh.get('catalog', {}) %}
 
 {# Per-state colour + headline copy. Jade = good; ember = drift that's
    actionable; gold = review required; ruby = hard blocker. #}
@@ -33,6 +33,10 @@
   'blocked_by_missing_volumes':  {'tone': 'ruby',  'label': 'Blocked: missing volumes',  'icon': 'x-circle-fill'},
   'missing_metadata':            {'tone': 'ruby',  'label': 'Missing metadata',          'icon': 'x-circle-fill'},
   'no_mapping':                  {'tone': 'ruby',  'label': 'No chapter map',            'icon': 'x-circle-fill'},
+  'degraded':                    {'tone': 'gold',  'label': 'Provider warning',           'icon': 'exclamation-triangle-fill'},
+  'failed':                      {'tone': 'ruby',  'label': 'Refresh failed',             'icon': 'x-circle-fill'},
+  'refreshing':                  {'tone': 'ember', 'label': 'Refreshing',                 'icon': 'arrow-repeat'},
+  'pending':                     {'tone': 'muted', 'label': 'Refresh pending',            'icon': 'clock'},
 }.get(state, {'tone': 'muted', 'label': state or 'unknown', 'icon': 'question-circle'}) %}
 
 <section id="metadata-health-panel" class="panel mb-4"{% if oob_swap %} hx-swap-oob="true"{% endif %}>
@@ -51,7 +55,7 @@
         For a "healthy" series it would just report zero safe moves, so
         hide it to keep the panel uncluttered.
       #}
-      {% if state in ('drift_detected', 'needs_review', 'blocked_by_missing_volumes') %}
+      {% if mapping_state in ('drift_detected', 'needs_review', 'blocked_by_missing_volumes') %}
       {#
         "Refresh map + preview" — the safer default for old / stale series.
         Refreshes chapter_vol_map from MangaDex first so the preview below
@@ -107,6 +111,9 @@
         <div class="fw-semibold">
           {% if mh['chapter_vol_map_size'] > 0 %}{{ mh['chapter_vol_map_size'] }} entries{% else %}<span class="text-ruby">absent</span>{% endif %}
         </div>
+        {% if catalog.get('chapter_map', {}).get('source') %}
+        <div class="text-2xs text-muted-3">{{ catalog['chapter_map']['source']|replace('_',' ')|title }}</div>
+        {% endif %}
       </div>
       <div>
         <div class="text-xs text-muted-3">Mainline stubs</div>
@@ -126,7 +133,52 @@
           {{ mh['unlinked_chapters'] }}
         </div>
       </div>
+      <div>
+        <div class="text-xs text-muted-3">Local cover</div>
+        <div class="fw-semibold {% if not catalog.get('cover', {}).get('available') %}text-ruby{% else %}text-jade{% endif %}">
+          {{ 'Cached' if catalog.get('cover', {}).get('available') else 'Missing' }}
+        </div>
+      </div>
     </div>
+
+    {% if catalog.get('sources') %}
+    <hr class="metadata-health-divider">
+    {% set source_labels = {
+      'anilist': 'AniList',
+      'anilist_aliases': 'Aliases & genres',
+      'mangaupdates': 'MangaUpdates',
+      'chapter_map': 'Chapter map',
+      'mangadex_manifest': 'Chapter manifest',
+      'cover': 'Cover cache'
+    } %}
+    <div class="d-flex gap-3 flex-wrap text-xs" aria-label="Metadata provider status">
+      {% for src in catalog['sources'] %}
+      {% set src_tone = 'jade' if src['status'] == 'healthy' else 'gold' if src['status'] == 'degraded' else 'ember' if src['status'] == 'refreshing' else 'ruby' if src['status'] == 'failed' else 'muted' %}
+      <span class="metadata-health-badge is-{{ src_tone }} badge-status"
+            {% if src['error'] %}title="{{ src['error'] }}"{% elif src['last_success_at'] %}title="Last successful refresh: {{ src['last_success_at']|format_date }}"{% endif %}>
+        <i class="bi bi-{{ 'check2' if src['status'] == 'healthy' else 'exclamation-triangle' if src['status'] == 'degraded' else 'arrow-repeat' if src['status'] == 'refreshing' else 'x' if src['status'] == 'failed' else 'clock' }} me-1"></i>
+        {{ source_labels.get(src['source'], src['source']|replace('_',' ')|title) }}
+      </span>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if catalog.get('issues') %}
+    {% set issue_labels = {
+      'missing_anilist_id': 'AniList identity missing',
+      'missing_mangadex_id': 'MangaDex identity missing',
+      'missing_description': 'Description missing',
+      'missing_cover_url': 'Cover source missing',
+      'missing_chapter_map': 'Chapter map missing',
+      'missing_local_cover': 'Local cover missing',
+      'stale_metadata': 'Metadata refresh overdue',
+      'provider_failures': 'Provider refresh needs attention'
+    } %}
+    <div class="text-xs mt-3 text-muted-3">
+      Source notes:
+      {% for issue in catalog['issues'] %}{{ issue_labels.get(issue, issue|replace('_',' ')|title) }}{% if not loop.last %}, {% endif %}{% endfor %}
+    </div>
+    {% endif %}
 
     {% if rec and rec['total_rows'] > 0 %}
     <hr class="metadata-health-divider">

@@ -133,7 +133,8 @@ async def series_editor_save(request: Request):
         for sid in series_ids:
             for tag in tags_add:
                 db.execute(
-                    "INSERT OR IGNORE INTO series_tags(series_id,tag) VALUES(?,?)",
+                    "INSERT INTO series_tags(series_id,tag,source) VALUES(?,?,'manual')"
+                    " ON CONFLICT(series_id,tag) DO UPDATE SET source='manual'",
                     (sid, tag),
                 )
             for tag in tags_remove:

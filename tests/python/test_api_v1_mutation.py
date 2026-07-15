@@ -585,6 +585,33 @@ def test_api_v1_patch_series_sets_manual_volume_count_source(env):
     assert row["vol_count_source"] == "manual"
 
 
+def test_api_v1_patch_series_count_ownership_can_return_to_provider(env):
+    headers = {"X-Api-Key": _api_key(env)}
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/series/5",
+        json={"total_volumes": 50, "total_chapters": 500},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    row = _series_row(env)
+    assert row["vol_count_source"] == "manual"
+    assert row["chapter_count_source"] == "manual"
+
+    resp = _client().request(
+        "PATCH",
+        "/api/v1/series/5",
+        json={"total_volumes": None, "total_chapters": None},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    row = _series_row(env)
+    assert row["total_volumes"] is None
+    assert row["total_chapters"] is None
+    assert row["vol_count_source"] == "anilist"
+    assert row["chapter_count_source"] == "anilist"
+
+
 def test_api_v1_patch_series_stores_group_lists_as_json(env):
     resp = _client().request(
         "PATCH",
@@ -4391,6 +4418,81 @@ def test_api_v1_command_accepts_servarr_alias(env, monkeypatch):
     assert body["requestedName"] == "RssSync"
     assert body["status"] in {"started", "completed"}
     assert scheduled["name"] == "command:RssSyncAll"
+
+
+def test_api_v1_refresh_series_command_runs_one_metadata_refresh(env, monkeypatch):
+    import asyncio
+    import main
+
+    scheduled = {}
+
+    def fake_refresh_library_metadata(**kwargs):
+        scheduled["kwargs"] = kwargs
+
+        async def _done():
+            return {"total": 0, "healthy": 0, "degraded": 0, "failed": 0}
+
+        return _done()
+
+    def fake_create_background_task(coro, name: str):
+        scheduled["name"] = name
+        task = asyncio.get_running_loop().create_task(coro)
+        scheduled["task"] = task
+        return task
+
+    monkeypatch.setattr(
+        main, "refresh_library_metadata", fake_refresh_library_metadata
+    )
+    monkeypatch.setattr(main, "create_background_task", fake_create_background_task)
+
+    resp = _client().post(
+        "/api/v1/command",
+        json={"name": "RefreshSeries"},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["name"] == "RefreshMetadata"
+    assert body["requestedName"] == "RefreshSeries"
+    assert scheduled["name"] == "command:RefreshMetadata"
+    assert scheduled["kwargs"] == {
+        "force": True,
+        "include_manifest": True,
+        "reason": "command",
+    }
+
+
+def test_api_v1_refresh_series_command_targets_one_series(env, monkeypatch):
+    import asyncio
+    import main
+
+    scheduled = {}
+
+    def fake_refresh_series_metadata(series_id, **kwargs):
+        scheduled["series_id"] = series_id
+        scheduled["kwargs"] = kwargs
+
+        async def _done():
+            return {"ok": True, "series_id": series_id, "status": "healthy"}
+
+        return _done()
+
+    def fake_create_background_task(coro, name: str):
+        scheduled["name"] = name
+        return asyncio.get_running_loop().create_task(coro)
+
+    monkeypatch.setattr(main, "refresh_series_metadata", fake_refresh_series_metadata)
+    monkeypatch.setattr(main, "create_background_task", fake_create_background_task)
+
+    resp = _client().post(
+        "/api/v1/command",
+        json={"name": "RefreshSeries", "seriesId": 5},
+        headers={"X-Api-Key": _api_key(env)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert scheduled["series_id"] == 5
+    assert scheduled["name"] == "command:RefreshMetadata"
+    assert scheduled["kwargs"]["reason"] == "command"
 
 
 def test_api_v1_command_backup_creates_archive(env, tmp_path, monkeypatch):

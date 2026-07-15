@@ -124,6 +124,12 @@ def test_editor_creates_missing_stubs_on_cvm_update_without_tvol_change(env):
 
     # Bug-#3 fix: stubs should now cover all 10 vols.
     assert _mainline_vol_count(env, 42) == 10
+    with sqlite3.connect(env) as db:
+        source, updated_at = db.execute(
+            "SELECT chapter_map_source,chapter_map_updated_at FROM series WHERE id=42"
+        ).fetchone()
+    assert source == "manual"
+    assert updated_at
 
 
 def test_editor_still_creates_stubs_when_total_volumes_increases(env):

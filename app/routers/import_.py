@@ -623,14 +623,13 @@ async def manual_import_auto(request: Request):
         series_list.append(new_s_row)
         newly_added.append({"id": sid, "title": best["title"]})
 
-        if best.get("anilist_id"):
-            _m.create_background_task(
-                _m.fetch_anilist_aliases(sid, best["anilist_id"], best["title"]),
-                name=f"manual_import:{sid}:fetch_aliases",
-            )
+        from metadata_service import refresh_series_metadata
+
         _m.create_background_task(
-            _m.refresh_mangadex_map(sid),
-            name=f"manual_import:{sid}:refresh_mangadex",
+            refresh_series_metadata(
+                sid, force=True, include_manifest=True, reason="manual_import"
+            ),
+            name=f"manual_import:{sid}:metadata",
         )
 
     if newly_added:

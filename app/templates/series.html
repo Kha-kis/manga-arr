@@ -465,8 +465,7 @@
       <button class="action-btn"
               hx-post="/series/{{ s['id'] }}/refresh"
               hx-swap="none"
-              hx-disabled-elt="this"
-              hx-on::after-request="showToast(event.detail.successful ? 'Refreshed' : 'Failed', event.detail.successful ? 'success' : 'error')">
+              hx-disabled-elt="this">
         <i class="bi bi-arrow-clockwise"></i>Refresh
       </button>
       <button class="action-btn"
@@ -622,7 +621,10 @@
         {% endif %}
 
         {% if s['total_chapters'] %}
-        <div class="meta-row"><i class="bi bi-file-text"></i>{{ s['total_chapters'] }} chapters</div>
+        {% set _chsrc = s['chapter_count_source'] or 'anilist' %}
+        <div class="meta-row"><i class="bi bi-file-text"></i>{{ s['total_chapters'] }} chapters
+          <span class="badge-status badge-src-{{ _chsrc }}" title="Chapter count source: {{ _chsrc|replace('_',' ')|title }}">{{ _chsrc|replace('_',' ')|title }}</span>
+        </div>
         {% endif %}
 
         <div class="meta-row">

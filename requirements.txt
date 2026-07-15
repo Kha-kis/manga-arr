@@ -21,6 +21,9 @@ anyio==4.13.0
 # Templating
 jinja2==3.1.6
 
+# Cover validation and format normalization
+Pillow==12.3.0
+
 # multipart/form-data parser — required for any FastAPI Form() endpoint
 python-multipart==0.0.32
 

@@ -1391,32 +1391,20 @@ async def add_series(
             source_title=title,
             data={"total_volumes": total_volumes, "status": status},
         )
-    # Fire all post-add tasks in background — don't block the response
+    # One lifecycle task owns identity, aliases, counts, chapter metadata,
+    # provider state, and the local cover cache.
+    from metadata_service import refresh_series_metadata
+
     _m.create_background_task(
-        _m.refresh_mangadex_map(series_id), name=f"series:{series_id}:refresh_mangadex"
-    )
-    if anilist_id:
-        _m.create_background_task(
-            _m.fetch_anilist_aliases(series_id, anilist_id, title),
-            name=f"series:{series_id}:fetch_aliases",
-        )
-    if cover_url:
-        _m.create_background_task(
-            _m.download_cover(series_id, cover_url),
-            name=f"series:{series_id}:download_cover",
-        )
-    _m.create_background_task(
-        _m.fetch_mu_metadata(series_id, title), name=f"series:{series_id}:fetch_mu"
+        refresh_series_metadata(
+            series_id, force=True, include_manifest=True, reason="series_added"
+        ),
+        name=f"series:{series_id}:metadata",
     )
     if _search_now:
         _m.create_background_task(
             _m.grab_existing(series_id, title, search_pattern),
             name=f"series:{series_id}:grab_existing",
-        )
-    if edition_type in _m._NON_STANDARD_STUB_EDITIONS:
-        _m.create_background_task(
-            _m.fetch_edition_volume_count(series_id, title, edition_type),
-            name=f"series:{series_id}:fetch_edition_count",
         )
     _m.create_background_task(
         _m.notify_discord(
@@ -1441,24 +1429,16 @@ async def add_series(
 
 @router.get("/api/series/{series_id}/cover-refresh")
 async def api_cover_refresh(series_id: int):
-    import main as _m
+    from metadata_service import refresh_series_cover
 
     with get_db() as db:
-        s = db.execute(
-            "SELECT id, cover_url FROM series WHERE id=?", (series_id,)
-        ).fetchone()
-    if not s:
+        exists = db.execute("SELECT 1 FROM series WHERE id=?", (series_id,)).fetchone()
+    if not exists:
         return JSONResponse({"error": "Series not found"}, status_code=404)
-    dest = f"/config/covers/{series_id}.jpg"
-    try:
-        if os.path.exists(dest):
-            os.remove(dest)
-    except Exception:
-        pass
-    if s["cover_url"]:
-        await _m.download_cover(series_id, s["cover_url"])
+    ok, error = await refresh_series_cover(series_id, force=True)
+    if ok:
         return JSONResponse({"ok": True, "cover_url": f"/covers/{series_id}.jpg"})
-    return JSONResponse({"ok": False, "error": "No cover_url stored for this series"})
+    return JSONResponse({"ok": False, "error": error or "Cover refresh failed"})
 
 
 def _hard_delete_series(
@@ -1938,129 +1918,24 @@ async def toggle_monitored(request: Request, series_id: int):
 
 @router.post("/series/{series_id}/refresh")
 async def refresh_series(request: Request, series_id: int):
-    """Refresh metadata from AniList and create any new volume stubs."""
-    import main as _m
+    """Run the unified, exact-ID metadata lifecycle for one series."""
+    from metadata_service import refresh_series_metadata
 
-    with get_db() as db:
-        s = db.execute("SELECT * FROM series WHERE id=?", (series_id,)).fetchone()
-    if not s:
-        return RedirectResponse(f"/series/{series_id}", status_code=303)
-    results = await _m.anilist_search(s["title"])
-    if results:
-        stored_words = set(_m.normalize(s["title"]).split())
+    result = await refresh_series_metadata(
+        series_id, force=True, include_manifest=True, reason="manual"
+    )
+    if result.get("ok"):
+        import main as _m
 
-        def _title_f1(r) -> float:
-            r_words = set(_m.normalize(r["title"]).split())
-            if not r_words or not stored_words:
-                return 0.0
-            inter = stored_words & r_words
-            recall = len(inter) / len(stored_words)
-            precision = len(inter) / len(r_words)
-            return (
-                2 * recall * precision / (recall + precision)
-                if (recall + precision)
-                else 0.0
-            )
-
-        with get_db() as db:
-            max_stub_row = db.execute(
-                "SELECT MAX(volume_num) as m FROM volumes WHERE series_id=? AND volume_num IS NOT NULL",
-                (series_id,),
-            ).fetchone()
-        min_vols = int(max_stub_row["m"]) if max_stub_row and max_stub_row["m"] else 0
-        plausible = [
-            r
-            for r in results
-            if not r.get("volumes") or r.get("volumes", 0) >= min_vols
-        ]
-        candidates = plausible if plausible else results
-        best_by_title = max(
-            candidates, key=lambda r: (_title_f1(r), r.get("volumes") or 0)
-        )
-        match = None
-        if stored_words and _title_f1(best_by_title) >= 0.5:
-            match = best_by_title
-        elif s["anilist_id"]:
-            match = next(
-                (r for r in candidates if r["anilist_id"] == s["anilist_id"]), None
-            )
-        if not match:
-            match = results[0]
-        with get_db() as db:
-            existing = db.execute(
-                "SELECT total_volumes, total_chapters FROM series WHERE id=?",
-                (series_id,),
-            ).fetchone()
-            new_total_vols = match["volumes"] or (
-                existing["total_volumes"] if existing else None
-            )
-            new_total_chs = match["chapters"] or (
-                existing["total_chapters"] if existing else None
-            )
-            _new_status = match["status"]
-            db.execute(
-                "UPDATE series SET status=?, cover_url=?, total_volumes=?, total_chapters=?,"
-                " description=?, anilist_id=?, last_metadata_refresh=?,"
-                " vol_count_source=CASE WHEN COALESCE(vol_count_source,'anilist')"
-                " IN ('google_books','wikipedia','manual') THEN vol_count_source ELSE 'anilist' END"
-                " WHERE id=?",
-                (
-                    _new_status,
-                    match["cover_url"],
-                    new_total_vols,
-                    new_total_chs,
-                    match["description"],
-                    match["anilist_id"],
-                    datetime.utcnow().isoformat(),
-                    series_id,
-                ),
-            )
-            if _new_status in ("FINISHED", "CANCELLED"):
-                _cur_strategy = db.execute(
-                    "SELECT update_strategy FROM series WHERE id=?", (series_id,)
-                ).fetchone()
-                if (
-                    _cur_strategy
-                    and (_cur_strategy["update_strategy"] or "always") == "always"
-                ):
-                    db.execute(
-                        "UPDATE series SET update_strategy='once' WHERE id=?",
-                        (series_id,),
-                    )
-            if (
-                match["volumes"]
-                and int(match["volumes"]) > 0
-                and (s["edition_type"] or "standard")
-                not in _m._NON_STANDARD_STUB_EDITIONS
-            ):
-                _m.create_volume_stubs(db, series_id, int(match["volumes"]))
-                has_complete = db.execute(
-                    "SELECT 1 FROM volumes WHERE series_id=? AND pack_type='complete' AND status='grabbed'",
-                    (series_id,),
-                ).fetchone()
-                if has_complete:
-                    db.execute(
-                        "UPDATE volumes SET status='grabbed' WHERE series_id=? "
-                        "AND status='wanted' AND volume_num IS NOT NULL",
-                        (series_id,),
-                    )
-        _m.log_event(
-            "refresh",
-            f"Refreshed from AniList: status={match['status']}, "
-            f"{match['volumes'] or '?'} vols",
-            series_id,
-        )
-        await _m.refresh_mangadex_map(series_id)
         _m.backfill_pack_ranges()
-        if match.get("anilist_id"):
-            _m.create_background_task(
-                _m.fetch_anilist_aliases(series_id, match["anilist_id"], s["title"]),
-                name=f"series:{series_id}:refresh_aliases",
-            )
-        _m.create_background_task(
-            _m.fetch_mu_metadata(series_id, s["title"]),
-            name=f"series:{series_id}:refresh_mu",
-        )
+    message = (
+        "Metadata refreshed"
+        if result.get("status") == "healthy"
+        else "Metadata refreshed with provider warnings"
+        if result.get("ok")
+        else (result.get("errors") or ["Metadata refresh failed"])[0]
+    )
+    tone = "success" if result.get("status") == "healthy" else "warning" if result.get("ok") else "error"
     if request.headers.get("HX-Request") == "true":
         import json
         from fastapi.responses import Response as _Resp
@@ -2068,105 +1943,31 @@ async def refresh_series(request: Request, series_id: int):
         return _Resp(
             headers={
                 "HX-Trigger": json.dumps(
-                    {"showToast": {"msg": "Refreshed", "type": "success"}}
+                    {"showToast": {"msg": message, "type": tone}}
                 )
             }
         )
-    return RedirectResponse(f"/series/{series_id}", status_code=303)
+    return RedirectResponse(
+        with_flash(f"/series/{series_id}", message, tone), status_code=303
+    )
 
 
 @router.post("/library/refresh-all")
 async def refresh_all_series(request: Request):
-    """Refresh metadata from AniList for all monitored series (background task)."""
+    """Refresh all monitored series through the unified lifecycle."""
     import main as _m
 
     async def _run():
-        with get_db() as db:
-            series = db.execute(
-                "SELECT id, title, edition_type FROM series WHERE monitored=1 ORDER BY title"
-            ).fetchall()
-        refreshed = 0
-        for s in series:
-            try:
-                results = await _m.anilist_search(s["title"])
-                if results:
-                    stored_words = set(_m.normalize(s["title"]).split())
+        from metadata_service import refresh_library_metadata
 
-                    def _f1(r) -> float:
-                        r_words = set(_m.normalize(r["title"]).split())
-                        if not r_words or not stored_words:
-                            return 0.0
-                        inter = stored_words & r_words
-                        rec = len(inter) / len(stored_words)
-                        prec = len(inter) / len(r_words)
-                        return 2 * rec * prec / (rec + prec) if (rec + prec) else 0.0
-
-                    with get_db() as db2:
-                        max_row = db2.execute(
-                            "SELECT MAX(volume_num) as m FROM volumes"
-                            " WHERE series_id=? AND volume_num IS NOT NULL",
-                            (s["id"],),
-                        ).fetchone()
-                        s_row = db2.execute(
-                            "SELECT anilist_id FROM series WHERE id=?", (s["id"],)
-                        ).fetchone()
-                    min_vols = int(max_row["m"]) if max_row and max_row["m"] else 0
-                    plausible = [
-                        r
-                        for r in results
-                        if not r.get("volumes") or r.get("volumes", 0) >= min_vols
-                    ]
-                    candidates = plausible if plausible else results
-                    best = max(
-                        candidates, key=lambda r: (_f1(r), r.get("volumes") or 0)
-                    )
-                    match = None
-                    if stored_words and _f1(best) >= 0.5:
-                        match = best
-                    elif s_row and s_row["anilist_id"]:
-                        match = next(
-                            (
-                                r
-                                for r in candidates
-                                if r["anilist_id"] == s_row["anilist_id"]
-                            ),
-                            None,
-                        )
-                    if not match:
-                        match = results[0]
-                    with get_db() as db2:
-                        db2.execute(
-                            "UPDATE series SET status=?, cover_url=?, total_volumes=?, total_chapters=?,"
-                            " description=?,"
-                            " vol_count_source=CASE WHEN COALESCE(vol_count_source,'anilist')"
-                            " IN ('google_books','wikipedia','manual') THEN vol_count_source ELSE 'anilist' END"
-                            " WHERE id=?",
-                            (
-                                match["status"],
-                                match["cover_url"],
-                                match["volumes"] or None,
-                                match["chapters"] or None,
-                                match["description"],
-                                s["id"],
-                            ),
-                        )
-                        if (
-                            match["volumes"]
-                            and int(match["volumes"]) > 0
-                            and (s["edition_type"] or "standard")
-                            not in _m._NON_STANDARD_STUB_EDITIONS
-                        ):
-                            _m.create_volume_stubs(db2, s["id"], int(match["volumes"]))
-                    refreshed += 1
-            except Exception as e:
-                _m.log_event(
-                    "error",
-                    f"[RefreshAll] Error refreshing {s['title']}: {e}",
-                    s["id"],
-                )
-            await asyncio.sleep(1.5)
+        summary = await refresh_library_metadata(
+            force=True, include_manifest=True, reason="bulk"
+        )
+        _m.backfill_pack_ranges()
         _m.log_event(
-            "refresh", f"Refresh all: {refreshed}/{len(series)} series updated"
+            "refresh",
+            f"Refresh all: {summary['healthy']} healthy, "
+            f"{summary['degraded']} degraded, {summary['failed']} failed",
         )
 
     _m.create_background_task(_run(), name="series:refresh_all")
@@ -2383,8 +2184,12 @@ async def edit_series(request: Request, series_id: int):
         if chapter_map_text:
             new_map = _parse_chapter_ranges(chapter_map_text)
             if new_map:
+                from metadata_state import utc_now_iso
+
                 updates.append("chapter_vol_map=?")
                 params.append(json.dumps(new_map))
+                updates.extend(("chapter_map_source=?", "chapter_map_updated_at=?"))
+                params.extend(("manual", utc_now_iso()))
                 map_updated = True
 
         # total_volumes
@@ -2480,6 +2285,7 @@ _PATCHABLE_FIELDS = {
     "source_type",
     "edition_type",
     "total_volumes",
+    "total_chapters",
     "ddl_language",
     "monitor_mode",
     "monitored",
@@ -2528,6 +2334,15 @@ async def patch_series(request: Request, series_id: int):
                     status_code=400,
                 )
 
+    if "total_chapters" in payload:
+        tc = payload["total_chapters"]
+        if tc is not None:
+            if not isinstance(tc, int) or isinstance(tc, bool) or tc <= 0:
+                return JSONResponse(
+                    {"error": "total_chapters must be null or a positive integer"},
+                    status_code=400,
+                )
+
     try:
         with get_db() as db:
             exists = db.execute(
@@ -2545,14 +2360,23 @@ async def patch_series(request: Request, series_id: int):
             params.append(series_id)
             db.execute(f"UPDATE series SET {', '.join(sets)} WHERE id=?", params)
 
-            # Keep vol_count_source honest: an explicit positive total_volumes
-            # patch marks the series as operator-curated. Clearing total_volumes
-            # (null) leaves vol_count_source alone — the operator is un-setting
-            # the value, not declaring a source.
-            if "total_volumes" in payload and payload["total_volumes"] is not None:
+            # Positive counts are operator-owned. Clearing a count explicitly
+            # hands ownership back to the canonical provider on the next refresh.
+            if "total_volumes" in payload:
                 db.execute(
-                    "UPDATE series SET vol_count_source='manual' WHERE id=?",
-                    (series_id,),
+                    "UPDATE series SET vol_count_source=? WHERE id=?",
+                    (
+                        "manual" if payload["total_volumes"] is not None else "anilist",
+                        series_id,
+                    ),
+                )
+            if "total_chapters" in payload:
+                db.execute(
+                    "UPDATE series SET chapter_count_source=? WHERE id=?",
+                    (
+                        "manual" if payload["total_chapters"] is not None else "anilist",
+                        series_id,
+                    ),
                 )
     except _sql.OperationalError as e:
         # The DB was locked or otherwise unable to service our write within
@@ -3093,42 +2917,61 @@ async def reinject_metadata(series_id: int):
     import main as _m
 
     with get_db() as db:
-        s = db.execute("SELECT * FROM series WHERE id=?", (series_id,)).fetchone()
-        if not s:
+        series_row = db.execute(
+            "SELECT * FROM series WHERE id=?", (series_id,)
+        ).fetchone()
+        if not series_row:
             return JSONResponse({"ok": False, "message": "Series not found"})
+        series = dict(series_row)
         tags = [
             r["tag"]
             for r in db.execute(
                 "SELECT tag FROM series_tags WHERE series_id=?", (series_id,)
             ).fetchall()
         ]
-        vols = db.execute(
-            "SELECT volume_num, import_path FROM volumes"
-            " WHERE series_id=? AND status='downloaded' AND import_path IS NOT NULL",
-            (series_id,),
-        ).fetchall()
-        chaps = db.execute(
-            "SELECT chapter_num, import_path FROM chapters"
-            " WHERE series_id=? AND status='downloaded' AND import_path IS NOT NULL",
-            (series_id,),
-        ).fetchall()
+        volumes = [
+            dict(row)
+            for row in db.execute(
+                "SELECT volume_num,import_path FROM volumes"
+                " WHERE series_id=? AND status='downloaded'"
+                " AND import_path IS NOT NULL ORDER BY id",
+                (series_id,),
+            ).fetchall()
+        ]
+        chapters = [
+            dict(row)
+            for row in db.execute(
+                "SELECT chapter_num,import_path FROM chapters"
+                " WHERE series_id=? AND status='downloaded'"
+                " AND import_path IS NOT NULL ORDER BY id",
+                (series_id,),
+            ).fetchall()
+        ]
 
     ok_count = skip_count = fail_count = 0
-    for v in vols:
-        if not os.path.isfile(v["import_path"]):
+    targets: list[tuple[str, str, float]] = []
+    seen_paths: set[str] = set()
+    for items, kind, number_key in (
+        (volumes, "volume", "volume_num"),
+        (chapters, "chapter", "chapter_num"),
+    ):
+        for item in items:
+            path = item["import_path"]
+            normalized_path = os.path.realpath(path)
+            if normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
+            targets.append((path, kind, item[number_key]))
+
+    for path, kind, number in targets:
+        if not os.path.isfile(path):
             skip_count += 1
             continue
-        xml = _m.build_comicinfo_xml(dict(s), volume_num=v["volume_num"], tags=tags)
-        if _m.inject_comicinfo(v["import_path"], xml):
-            ok_count += 1
+        if kind == "volume":
+            xml = _m.build_comicinfo_xml(series, volume_num=number, tags=tags)
         else:
-            fail_count += 1
-    for c in chaps:
-        if not os.path.isfile(c["import_path"]):
-            skip_count += 1
-            continue
-        xml = _m.build_comicinfo_xml(dict(s), chapter_num=c["chapter_num"], tags=tags)
-        if _m.inject_comicinfo(c["import_path"], xml):
+            xml = _m.build_comicinfo_xml(series, chapter_num=number, tags=tags)
+        if await asyncio.to_thread(_m.inject_comicinfo, path, xml):
             ok_count += 1
         else:
             fail_count += 1
@@ -3205,7 +3048,8 @@ async def add_series_alias(request: Request, series_id: int, alias: str = Form("
     if alias:
         with get_db() as db:
             db.execute(
-                "INSERT OR IGNORE INTO series_aliases(series_id, alias) VALUES(?,?)",
+                "INSERT INTO series_aliases(series_id,alias,source) VALUES(?,?,'manual')"
+                " ON CONFLICT(series_id,alias) DO UPDATE SET source='manual'",
                 (series_id, alias),
             )
     if request.headers.get("HX-Request") == "true":

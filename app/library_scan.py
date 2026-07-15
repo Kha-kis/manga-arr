@@ -223,8 +223,9 @@ def adopt_unmapped_folder(
             "INSERT INTO series(title, search_pattern, anilist_id, mal_id, mu_id,"
             " cover_url, status, description, total_volumes, total_chapters,"
             " root_folder_id, folder_name, pub_year, enabled, monitored, monitor_mode,"
-            " quality_profile_id, language_profile_id, vol_count_source)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " quality_profile_id, language_profile_id, vol_count_source,"
+            " chapter_count_source)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 series_title,
                 search_pattern,
@@ -245,6 +246,7 @@ def adopt_unmapped_folder(
                 quality_profile_id,
                 language_profile_id,
                 vol_count_source,
+                "anilist" if anilist_id else "manual",
             ),
         )
         series_id = cur.lastrowid
@@ -265,7 +267,8 @@ def adopt_unmapped_folder(
             "SELECT id, title, search_pattern, root_folder_id, monitored,"
             " monitor_mode, quality_profile_id, language_profile_id,"
             " anilist_id, mal_id, mu_id, cover_url, status, description,"
-            " total_volumes, total_chapters, pub_year, vol_count_source, folder_name"
+            " total_volumes,total_chapters,pub_year,vol_count_source,"
+            " chapter_count_source,folder_name"
             " FROM series WHERE id=?",
             (series_id,),
         ).fetchone()
@@ -297,6 +300,7 @@ def adopt_unmapped_folder(
                     "totalChapters": series_row["total_chapters"],
                     "year": series_row["pub_year"],
                     "volumeCountSource": series_row["vol_count_source"],
+                    "chapterCountSource": series_row["chapter_count_source"],
                 },
                 "rescan": rescan,
             },

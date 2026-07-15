@@ -386,12 +386,19 @@ from import_pipeline import (  # noqa: F401
 # validation. Re-exported so all existing call sites keep working unchanged.
 from metadata import (  # noqa: F401
     mu_slug_to_id, mu_id_to_slug, _norm_status,
-    ANILIST_QUERY, ANILIST_ALIASES_QUERY,
+    ANILIST_QUERY, ANILIST_ALIASES_QUERY, ANILIST_BY_ID_QUERY,
+    MetadataProviderError, fetch_anilist_by_id,
     fetch_anilist_aliases, anilist_search,
     mu_search, search_series,
     fetch_mangadex_id, fetch_chapter_volume_map, fetch_kitsu_chapter_map,
     _trim_cvm_to_vol_range, _validate_chapter_map,
     _WIKI_WORD_NUMS,
+)
+
+from metadata_service import (  # noqa: F401
+    refresh_series_cover,
+    refresh_series_metadata,
+    refresh_library_metadata,
 )
 
 
@@ -409,7 +416,7 @@ from metadata import (  # noqa: F401
 # cycles — same pattern as prior extractions.
 from tasks import (  # noqa: F401
     rss_loop, status_loop, refresh_ongoing_loop,
-    _backfill_metadata_loop, _stuck_state_cleanup_loop,
+    _metadata_retry_loop, _backfill_metadata_loop, _stuck_state_cleanup_loop,
     backlog_search_loop, backlog_search,
     import_list_sync, rescan_loop,
     _import_list_loop, _backup_loop, _recycle_bin_reaper_loop,
@@ -524,6 +531,7 @@ async def lifespan(app: FastAPI):
     create_background_task(rss_loop(),                         name="rss_loop")
     create_background_task(status_loop(),                      name="status_loop")
     create_background_task(refresh_ongoing_loop(),             name="refresh_ongoing_loop")
+    create_background_task(_metadata_retry_loop(),             name="metadata_retry_loop")
     create_background_task(_backfill_metadata_loop(),          name="backfill_metadata_loop")
     create_background_task(backlog_search_loop(),              name="backlog_search_loop")
     create_background_task(_stuck_state_cleanup_loop(),        name="stuck_state_cleanup_loop")

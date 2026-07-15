@@ -156,6 +156,7 @@ def test_expected_loop_names_are_in_source():
         "rss_loop",
         "status_loop",
         "refresh_ongoing_loop",
+        "metadata_retry_loop",
         "backfill_metadata_loop",
         "backlog_search_loop",
         "suwayomi_monitor_loop",

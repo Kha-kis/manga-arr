@@ -56,7 +56,7 @@ async def _test_kitsu_map_preserves_half_chapters_async():
         rsp = MagicMock()
         if 'manga' in url:
             rsp.json = lambda: {
-                'data': [{'id': '1', 'attributes': {'titles': {'en': 'Test'}}}]
+                'data': [{'id': '1', 'attributes': {'titles': {'en': 'Test Series'}}}]
             }
         elif 'chapters' in url:
             offset = kw.get('params', {}).get('page[offset]', 0)
@@ -109,7 +109,7 @@ async def _test_kitsu_map_integer_async():
     async def _fake_get(url, **kw):
         rsp = MagicMock()
         if 'manga' in url:
-            rsp.json = lambda: {'data': [{'id': '1', 'attributes': {'titles': {'en': 'Test'}}}]}
+            rsp.json = lambda: {'data': [{'id': '1', 'attributes': {'titles': {'en': 'Test Series'}}}]}
         elif 'chapters' in url:
             offset = kw.get('params', {}).get('page[offset]', 0)
             rsp.json = lambda: page_data if offset == 0 else empty_page

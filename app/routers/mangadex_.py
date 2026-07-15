@@ -12,6 +12,12 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from shared import get_cfg, get_db, timed_block
+from metadata_state import (
+    SOURCE_MANGADEX_MANIFEST,
+    mark_source_attempt,
+    mark_source_failure,
+    mark_source_success,
+)
 
 log = logging.getLogger(__name__)
 
@@ -69,7 +75,17 @@ async def sync_mangadex_chapters(series_id: int) -> dict:
     """
     lock = await _get_sync_lock(series_id)
     async with lock:
-        return await _sync_mangadex_chapters_impl(series_id)
+        try:
+            return await _sync_mangadex_chapters_impl(series_id)
+        except ValueError:
+            raise
+        except Exception as exc:
+            mark_source_failure(
+                series_id,
+                SOURCE_MANGADEX_MANIFEST,
+                f"{type(exc).__name__}: {str(exc)[:300]}",
+            )
+            raise
 
 
 async def _sync_mangadex_chapters_impl(series_id: int) -> dict:
@@ -80,6 +96,7 @@ async def _sync_mangadex_chapters_impl(series_id: int) -> dict:
     if not row or not row["mangadex_id"]:
         raise ValueError(f"Series {series_id} has no mangadex_id")
 
+    mark_source_attempt(series_id, SOURCE_MANGADEX_MANIFEST)
     language = row["ddl_language"] or get_cfg("ddl_language", "en")
     mangadex_id = row["mangadex_id"]
 
@@ -107,6 +124,8 @@ async def _sync_mangadex_chapters_impl(series_id: int) -> dict:
                     )
                     if r.status_code == 429:
                         wait = int(r.headers.get("X-RateLimit-Retry-After", 5))
+                        if attempt == 2:
+                            r.raise_for_status()
                         await asyncio.sleep(wait)
                         continue
                     r.raise_for_status()
@@ -192,6 +211,53 @@ async def _sync_mangadex_chapters_impl(series_id: int) -> dict:
                 )
                 added += 1
 
+        # A successful full feed is authoritative for this language. Remove
+        # stale releases without constructing a potentially over-large IN list.
+        db.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS mdx_sync_seen"
+            " (mangadex_chapter_id TEXT PRIMARY KEY)"
+        )
+        db.execute("DELETE FROM mdx_sync_seen")
+        db.executemany(
+            "INSERT OR IGNORE INTO mdx_sync_seen(mangadex_chapter_id) VALUES(?)",
+            [(item.get("id"),) for item in all_chapters if item.get("id")],
+        )
+        db.execute(
+            "DELETE FROM mangadex_chapters WHERE series_id=? AND language=?"
+            " AND mangadex_chapter_id NOT IN"
+            " (SELECT mangadex_chapter_id FROM mdx_sync_seen)",
+            (series_id, language),
+        )
+        db.execute("DROP TABLE mdx_sync_seen")
+
+        # Fill gaps in canonical chapter metadata from the best current
+        # MangaDex release. Existing operator/import titles remain authoritative.
+        db.execute(
+            "UPDATE chapters SET"
+            " title=COALESCE(NULLIF(title,''),(SELECT NULLIF(m.title,'')"
+            "   FROM mangadex_chapters m WHERE m.series_id=chapters.series_id"
+            "   AND m.chapter_num=chapters.chapter_num AND m.language=?"
+            "   ORDER BY m.is_external ASC,(m.pages IS NOT NULL) DESC,m.publish_at DESC LIMIT 1)),"
+            " pages=COALESCE(pages,(SELECT NULLIF(m.pages,0)"
+            "   FROM mangadex_chapters m WHERE m.series_id=chapters.series_id"
+            "   AND m.chapter_num=chapters.chapter_num AND m.language=?"
+            "   ORDER BY m.is_external ASC,(m.pages IS NOT NULL) DESC,m.publish_at DESC LIMIT 1)),"
+            " metadata_source=COALESCE(metadata_source,'mangadex'),"
+            " metadata_updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')"
+            " WHERE series_id=? AND EXISTS(SELECT 1 FROM mangadex_chapters m"
+            "   WHERE m.series_id=chapters.series_id"
+            "   AND m.chapter_num=chapters.chapter_num AND m.language=?)"
+            " AND ((NULLIF(title,'') IS NULL AND EXISTS(SELECT 1"
+            "   FROM mangadex_chapters m WHERE m.series_id=chapters.series_id"
+            "   AND m.chapter_num=chapters.chapter_num AND m.language=?"
+            "   AND NULLIF(m.title,'') IS NOT NULL))"
+            " OR (pages IS NULL AND EXISTS(SELECT 1 FROM mangadex_chapters m"
+            "   WHERE m.series_id=chapters.series_id"
+            "   AND m.chapter_num=chapters.chapter_num AND m.language=?"
+            "   AND COALESCE(m.pages,0)>0)))",
+            (language, language, series_id, language, language, language),
+        )
+
     log.info(
         "MangaDex sync series=%d lang=%s: +%d updated=%d external=%d",
         series_id,
@@ -200,12 +266,18 @@ async def _sync_mangadex_chapters_impl(series_id: int) -> dict:
         updated,
         external_skipped,
     )
-    return {
+    result = {
         "added": added,
         "updated": updated,
         "total": added + updated,
         "external_skipped": external_skipped,
     }
+    mark_source_success(
+        series_id,
+        SOURCE_MANGADEX_MANIFEST,
+        details={"language": language, **result},
+    )
+    return result
 
 
 def _parse_chapter(item: dict, series_id: int) -> dict:

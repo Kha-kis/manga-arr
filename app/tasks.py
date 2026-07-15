@@ -10,6 +10,7 @@ cleanup / backoff helpers:
     status_loop                    — check download completion
     refresh_ongoing_loop           — daily AniList refresh for
                                      RELEASING / HIATUS series
+    _metadata_retry_loop           — retry due provider failures
     _backfill_metadata_loop        — startup-only backfill of
                                      MangaDex / MAL / MU ids +
                                      chapter manifests, rate-aware
@@ -64,10 +65,9 @@ from datetime import datetime, timedelta, timezone
 from events import log_event
 from grab import grab_existing, poll_rss
 from import_pipeline import check_download_status
-from metadata import anilist_search
-from metadata_enrichment import _NON_STANDARD_STUB_EDITIONS, refresh_mangadex_map
+from metadata_service import refresh_series_metadata
+from metadata_state import metadata_retry_candidates
 from shared import get_cfg, get_db
-from volumes import create_volume_stubs
 
 
 async def rss_loop():
@@ -118,7 +118,7 @@ _THROTTLED_REFRESH_DAYS = 7   # how many days between refreshes for 'throttled' 
 
 
 async def refresh_ongoing_loop():
-    """Daily: check AniList for new volumes on RELEASING series, respecting per-series update_strategy."""
+    """Refresh ongoing series through the unified metadata lifecycle."""
     await asyncio.sleep(300)  # initial delay
     while True:
         try:
@@ -131,8 +131,8 @@ async def refresh_ongoing_loop():
                     " AND anilist_id IS NOT NULL AND monitored=1"
                     " AND deleted_at IS NULL"
                 ).fetchall()
-            updated = 0
-            now_utc = datetime.utcnow()
+            outcomes: dict[str, int] = {"healthy": 0, "degraded": 0, "failed": 0}
+            now_utc = datetime.now(timezone.utc)
             for s in candidates:
                 strategy = (s['update_strategy'] or 'always') if 'update_strategy' in s.keys() else 'always'
 
@@ -145,51 +145,32 @@ async def refresh_ongoing_loop():
                     if last_refresh:
                         try:
                             last_dt = datetime.fromisoformat(last_refresh)
+                            if last_dt.tzinfo is None:
+                                last_dt = last_dt.replace(tzinfo=timezone.utc)
                             if (now_utc - last_dt).days < _THROTTLED_REFRESH_DAYS:
                                 continue   # too soon
                         except ValueError:
                             pass
                 # 'always' → fall through
 
-                results = await anilist_search(s['title'])
-                match = next((r for r in results if r['anilist_id'] == s['anilist_id']), None)
-                if not match:
-                    continue
-                new_vols   = match.get('volumes') or 0
-                old_vols   = s['total_volumes'] or 0
-                new_status = match.get('status', s['status'])
-                with get_db() as db:
-                    # Always stamp last_metadata_refresh even if no data changed
-                    db.execute(
-                        "UPDATE series SET last_metadata_refresh=? WHERE id=?",
-                        (now_utc.isoformat(), s['id'])
-                    )
-                    if new_vols > old_vols or new_status != s['status']:
-                        db.execute(
-                            "UPDATE series SET total_volumes=?, status=?,"
-                            " vol_count_source=CASE WHEN COALESCE(vol_count_source,'anilist')"
-                            " IN ('google_books','wikipedia','manual') THEN vol_count_source ELSE 'anilist' END"
-                            " WHERE id=?",
-                            (new_vols or None, new_status, s['id'])
-                        )
-                        if new_vols > old_vols and (s['edition_type'] or 'standard') not in _NON_STANDARD_STUB_EDITIONS:
-                            create_volume_stubs(db, s['id'], new_vols)
-                        # Auto-switch to 'once' when a series finishes — no need to keep polling
-                        if new_status in ('FINISHED', 'CANCELLED') and strategy == 'always':
-                            db.execute(
-                                "UPDATE series SET update_strategy='once' WHERE id=?", (s['id'],)
-                            )
-                        log_event('refresh',
-                                  f"Auto-refresh: {old_vols}→{new_vols} vols, status={new_status}",
-                                  s['id'])
-                        updated += 1
+                result = await refresh_series_metadata(
+                    s['id'],
+                    force=False,
+                    include_manifest=False,
+                    reason="scheduled",
+                )
+                outcomes[result['status']] = outcomes.get(result['status'], 0) + 1
                 try:
                     await asyncio.sleep(1)  # rate-limit AniList requests
                 except asyncio.CancelledError:
                     log_event('info', '[RefreshLoop] Loop cancelled during shutdown')
                     raise
-            if updated:
-                log_event('refresh', f"Auto-refresh complete: {updated} series updated")
+            if sum(outcomes.values()):
+                log_event(
+                    'refresh',
+                    f"Auto-refresh complete: {outcomes['healthy']} healthy, "
+                    f"{outcomes['degraded']} degraded, {outcomes['failed']} failed",
+                )
         except asyncio.CancelledError:
             log_event('info', '[RefreshLoop] Loop cancelled during shutdown')
             raise
@@ -203,6 +184,40 @@ async def refresh_ongoing_loop():
             await asyncio.sleep(interval)
         except asyncio.CancelledError:
             log_event('info', '[RefreshLoop] Loop cancelled during shutdown')
+            raise
+
+
+async def _metadata_retry_loop():
+    """Retry persisted provider failures when their backoff expires."""
+    await asyncio.sleep(600)
+    while True:
+        try:
+            series_ids = metadata_retry_candidates()
+            outcomes: dict[str, int] = {"healthy": 0, "degraded": 0, "failed": 0}
+            for series_id in series_ids:
+                result = await refresh_series_metadata(
+                    series_id,
+                    force=False,
+                    include_manifest=True,
+                    reason="retry",
+                )
+                outcomes[result["status"]] = outcomes.get(result["status"], 0) + 1
+                await asyncio.sleep(1)
+            if series_ids:
+                log_event(
+                    "refresh",
+                    f"Metadata retry: {outcomes['healthy']} healthy, "
+                    f"{outcomes['degraded']} degraded, {outcomes['failed']} failed",
+                )
+        except asyncio.CancelledError:
+            log_event("info", "[MetadataRetry] Loop cancelled during shutdown")
+            raise
+        except Exception as exc:
+            log_event("error", f"[MetadataRetry] Error: {exc}")
+        try:
+            await asyncio.sleep(300)
+        except asyncio.CancelledError:
+            log_event("info", "[MetadataRetry] Loop cancelled during shutdown")
             raise
 
 
@@ -240,8 +255,13 @@ async def _backfill_metadata_loop():
     with get_db() as db:
         missing = db.execute(
             "SELECT id FROM series WHERE deleted_at IS NULL AND ("
-            " mangadex_id IS NULL OR mal_id IS NULL OR mu_id IS NULL"
-            " OR (mangadex_id IS NOT NULL AND chapter_vol_map IS NULL))"
+            " mangadex_id IS NULL OR chapter_vol_map IS NULL OR ("
+            " mu_id IS NULL AND NOT EXISTS ("
+            "   SELECT 1 FROM series_metadata_sources ms"
+            "   WHERE ms.series_id=series.id AND ms.source='mangaupdates'"
+            "   AND ms.status='healthy'"
+            "   AND datetime(ms.last_success_at) > datetime('now','-30 days')"
+            " )))"
         ).fetchall()
     for row in missing:
         # If we've been rate-limited recently, hold off until the deadline
@@ -254,7 +274,12 @@ async def _backfill_metadata_loop():
                 log_event('info', f"[Startup] backfill cancelled during backoff for series {row['id']}")
                 return
         try:
-            await refresh_mangadex_map(row['id'])
+            await refresh_series_metadata(
+                row['id'],
+                force=False,
+                include_manifest=True,
+                reason="startup_backfill",
+            )
         except asyncio.CancelledError:
             log_event('info', f"[Startup] backfill cancelled for series {row['id']}")
             raise
