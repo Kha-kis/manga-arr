@@ -3,6 +3,30 @@
 All notable changes to this project. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 1.0.1 - 2026-07-15
+
+Patch release for a responsive visibility defect found during the authenticated
+production browser audit of `1.0.0`.
+
+### Fixed
+
+- Inactive library bulk-selection controls now stay hidden and no longer widen
+  the document beyond a 390px mobile viewport.
+- Suwayomi download-client forms now hide the port, SSL, priority, and related
+  protocol-only controls as intended.
+- Alpine `x-show` directives that share an element with Bootstrap display
+  utilities now use Alpine's `.important` modifier so Bootstrap cannot override
+  the hidden state.
+
+### Tests
+
+- 1,650 Python tests, 13 confirm-flow checks, and 10 route-sweep checks passed.
+- Browser smoke 32/32, integration 22/22, and E2E 24/24 passed in isolation.
+- Added a source invariant covering every template with `x-show` and Bootstrap
+  display utilities.
+- Added a browser regression that enters and exits bulk mode at a 390px viewport
+  and fails on horizontal document overflow.
+
 ## 1.0.0 - 2026-07-15
 
 First stable public release. This promotes `1.0.0-rc.2` without changing

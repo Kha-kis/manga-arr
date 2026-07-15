@@ -383,7 +383,50 @@ async function run() {
     fail('Omnibus & Packs', e.message);
   }
 
-  console.log('\n=== 15. Console error check ===');
+  console.log('\n=== 15. Library bulk controls fit the mobile viewport ===');
+  try {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(BASE + '/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForFunction(() => {
+      const root = Array.from(document.querySelectorAll('[x-data]'))
+        .find(el => el.getAttribute('x-data').includes('mode: false'));
+      return root && root._x_dataStack && root._x_dataStack.length > 0;
+    });
+
+    const initial = await page.evaluate(() => {
+      const controls = document.querySelector('.library-selection-controls');
+      return {
+        display: getComputedStyle(controls).display,
+        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      };
+    });
+    if (initial.display !== 'none') {
+      throw new Error(`inactive controls display=${initial.display}`);
+    }
+    if (initial.overflow > 2) {
+      throw new Error(`inactive layout overflows by ${initial.overflow}px`);
+    }
+
+    await page.click('.library-action-cluster > button[x-show="!mode"]');
+    await page.waitForFunction(
+      () => getComputedStyle(document.querySelector('.library-selection-controls')).display === 'flex'
+    );
+    const activeOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth
+    );
+    if (activeOverflow > 2) {
+      throw new Error(`active layout overflows by ${activeOverflow}px`);
+    }
+    await page.click('.library-selection-controls button:last-child');
+    await page.waitForFunction(
+      () => getComputedStyle(document.querySelector('.library-selection-controls')).display === 'none'
+    );
+    ok('Bulk controls hide correctly and fit a 390px viewport');
+  } catch (e) {
+    fail('Library mobile bulk controls', e.message);
+  }
+
+  console.log('\n=== 16. Console error check ===');
   if (consoleErrors.length === 0) ok('No JS console errors during entire test run');
   else {
     fail('Console errors detected', `${consoleErrors.length} errors`);

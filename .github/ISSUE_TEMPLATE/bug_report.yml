@@ -13,7 +13,7 @@ body:
     attributes:
       label: Mangarr version
       description: Provide the System Status version and image tag or digest.
-      placeholder: 1.0.0 / ghcr.io/kha-kis/manga-arr@sha256:...
+      placeholder: 1.0.1 / ghcr.io/kha-kis/manga-arr@sha256:...
     validations:
       required: true
   - type: dropdown
