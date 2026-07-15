@@ -41,7 +41,7 @@ or the internet can, period.
 ```yaml
 services:
   mangarr:
-    image: ghcr.io/kha-kis/manga-arr:latest
+    image: ghcr.io/kha-kis/manga-arr:1.0.0-rc.1
     ports:
       - "127.0.0.1:6789:8000"   # host_ip:host_port:container_port
 ```
@@ -90,7 +90,7 @@ services:
       - public
       - internal
   mangarr:
-    image: ghcr.io/kha-kis/manga-arr:latest
+    image: ghcr.io/kha-kis/manga-arr:1.0.0-rc.1
     # NO ports: block — only reachable from the `internal` network
     networks:
       - internal
@@ -444,12 +444,14 @@ container user can write them:
 ```bash
 mkdir -p config data/media/manga data/torrents/manga
 chmod 700 config
+cp .env.example .env
 docker compose up -d
 docker compose exec mangarr cat /config/.mangarr-setup-token
 ```
 
-The public Compose file pulls `ghcr.io/kha-kis/manga-arr:latest`. Pin
-`MANGARR_VERSION` in `.env` to deploy a specific release. Its defaults are:
+The public Compose file defaults to the exact current release candidate,
+`ghcr.io/kha-kis/manga-arr:1.0.0-rc.1`. Keep `MANGARR_VERSION` pinned in
+`.env`; `latest` is reserved for stable releases. The remaining defaults are:
 
 ```yaml
 volumes:

@@ -173,3 +173,14 @@ def test_local_publish_requires_clean_tagged_commit_and_refuses_replacement():
     ):
         assert marker in makefile
     assert "scripts/verify_release_image.py" in makefile
+
+
+def test_local_test_harness_does_not_require_dev_scripts_in_release_image():
+    makefile = (REPO_ROOT / "Makefile").read_text()
+    assert "cd app && $(PYTHON) test_confirm_flow.py" in makefile
+    assert (
+        "docker exec -i mangarr $(PYTHON) - /config/manga_arr.db "
+        "< app/verify_e2e.py"
+    ) in makefile
+    assert "docker exec mangarr $(PYTHON) /app/test_confirm_flow.py" not in makefile
+    assert "docker exec mangarr $(PYTHON) /app/verify_e2e.py" not in makefile

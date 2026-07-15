@@ -1,6 +1,6 @@
 services:
   mangarr:
-    image: "ghcr.io/kha-kis/manga-arr:${MANGARR_VERSION:-latest}"
+    image: "ghcr.io/kha-kis/manga-arr:${MANGARR_VERSION:-1.0.0-rc.1}"
     container_name: mangarr
     user: "${MANGARR_UID:-1000}:${MANGARR_GID:-1000}"
     environment:

@@ -80,7 +80,9 @@ def test_env_example_has_no_real_secrets():
 def test_public_compose_is_host_neutral_and_uses_release_image():
     """The tracked Compose file must be safe to publish unchanged."""
     compose = _read("docker-compose.yml")
-    assert "ghcr.io/kha-kis/manga-arr:${MANGARR_VERSION:-latest}" in compose
+    version = _read("app/VERSION").strip()
+    assert f"ghcr.io/kha-kis/manga-arr:${{MANGARR_VERSION:-{version}}}" in compose
+    assert f"MANGARR_VERSION={version}" in _read(".env.example")
     assert "${MANGARR_CONFIG_PATH:-./config}:/config" in compose
     assert "${MANGARR_DATA_PATH:-./data}:/data" in compose
     for private_value in (
