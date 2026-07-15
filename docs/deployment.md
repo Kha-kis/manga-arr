@@ -41,7 +41,7 @@ or the internet can, period.
 ```yaml
 services:
   mangarr:
-    build: .
+    image: ghcr.io/kha-kis/manga-arr:latest
     ports:
       - "127.0.0.1:6789:8000"   # host_ip:host_port:container_port
 ```
@@ -88,7 +88,7 @@ services:
       - public
       - internal
   mangarr:
-    build: .
+    image: ghcr.io/kha-kis/manga-arr:latest
     # NO ports: block — only reachable from the `internal` network
     networks:
       - internal
@@ -149,8 +149,8 @@ Before pointing anything at Mangarr beyond your local machine, verify:
       have a reverse proxy in front).
 - [ ] **The `/config` directory is not world-readable.** It contains
       the SQLite database and the Mangarr secret-key file. The repo's
-      `docker-compose.yml` maps it to `~/.config/mangarr` on the host —
-      check its permissions with `ls -ld ~/.config/mangarr` (should be
+      `docker-compose.yml` maps it to `./config` on the host by default —
+      check its permissions with `ls -ld ./config` (should be
       `drwx------`, i.e. mode `0700`).
 - [ ] **`/config` is writable by the container user.** The image runs
       as UID 1000 by default; host bind mounts must be writable by
@@ -181,9 +181,22 @@ Common deployment-facing overrides:
 | Instance name | `MANGARR_INSTANCE_NAME` | `Mangarr` |
 | Log level | `MANGARR_LOG_LEVEL` | `INFO` |
 | URL base | `MANGARR_URL_BASE` | empty |
-| Library path | `MANGA_SAVE_PATH` | `/manga` |
+| Library path | `MANGA_SAVE_PATH` | `/data/media/manga` |
+| Download path | `MANGA_TORRENT_PATH` | `/data/torrents/manga` |
 | Download category | `MANGA_CATEGORY` | `manga` |
 | RSS interval | `RSS_INTERVAL` | `900` |
+
+The public Compose file also accepts deployment-only controls through
+`.env`: `MANGARR_VERSION`, `MANGARR_BIND_ADDRESS`, `MANGARR_PORT`,
+`MANGARR_UID`, `MANGARR_GID`, `MANGARR_CONFIG_PATH`, and
+`MANGARR_DATA_PATH`. These select the image, host exposure, runtime user,
+and bind-mount sources; they are not stored in Mangarr's settings table.
+
+Both the library and download directories live below the same `/data`
+mount by default. Keep them on one host filesystem when using hardlink
+imports, otherwise the hardlink operation cannot cross the filesystem
+boundary. Configure indexers, download clients, notifications, Komga,
+and their credentials through the UI after first boot.
 
 `MANGARR_LOG_LEVEL` accepts `DEBUG`, `INFO`, `WARNING`, `ERROR`, or
 `CRITICAL`. `MANGARR_URL_BASE` should be empty or a path prefix such as
@@ -223,14 +236,12 @@ both inside the container and on the host.
 
 ### When your host user is not UID 1000
 
-Override at runtime — `docker-compose.yml` already has the line ready
-to uncomment:
+Override at runtime with `.env`; `docker-compose.yml` applies these values
+to the service user:
 
-```yaml
-services:
-  mangarr:
-    # Default is uid/gid 1000. Override if your host user differs:
-    # user: "${UID:-1000}:${GID:-1000}"
+```env
+MANGARR_UID=1001
+MANGARR_GID=1001
 ```
 
 Or from the CLI:
@@ -243,7 +254,7 @@ Whatever UID you pick, **the host-side bind mounts must be writable by
 that UID**. Fix ownership if needed:
 
 ```bash
-sudo chown -R "$(id -u):$(id -g)" ~/.config/mangarr /data/media/manga
+sudo chown -R "$(id -u):$(id -g)" ./config ./data
 ```
 
 ### Migrating from a pre-hardening install
@@ -332,7 +343,22 @@ the new key.
 
 ## TL;DR
 
+Create the host-visible directories before first boot so the non-root
+container user can write them:
+
+```bash
+mkdir -p config data/media/manga data/torrents/manga
+chmod 700 config
+docker compose up -d
+```
+
+The public Compose file pulls `ghcr.io/kha-kis/manga-arr:latest`. Pin
+`MANGARR_VERSION` in `.env` to deploy a specific release. Its defaults are:
+
 ```yaml
+volumes:
+  - "./config:/config"
+  - "./data:/data"
 ports:
   - "127.0.0.1:6789:8000"   # safe local-only default
 ```

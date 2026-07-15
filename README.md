@@ -16,13 +16,20 @@ email).
 ```bash
 git clone https://github.com/Kha-kis/manga-arr.git
 cd manga-arr
-cp .env.example .env   # fill in download-client credentials
+mkdir -p config data/media/manga data/torrents/manga
+chmod 700 config
 docker compose up -d
 ```
 
 Then open <http://127.0.0.1:6789> — the compose file publishes on
 loopback by default. For LAN or internet access, see
 [`docs/deployment.md`](docs/deployment.md).
+
+The default deployment pulls `ghcr.io/kha-kis/manga-arr:latest`, runs as
+UID/GID 1000, and keeps all persistent state in the host-visible
+`./config` and `./data` directories. Copy [`.env.example`](.env.example)
+to `.env` to select a version, port, bind address, UID/GID, or different
+host paths. Configure integrations and credentials in the Mangarr UI.
 
 ## Deployment & security
 
