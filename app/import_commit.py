@@ -327,7 +327,8 @@ def _process_chapter_import(
             " torrent_name=COALESCE(torrent_name,?), indexer=COALESCE(indexer,?),"
             " protocol=COALESCE(protocol,?), client=COALESCE(client,?),"
             " release_group=COALESCE(release_group,?), size_bytes=COALESCE(NULLIF(size_bytes,0),?),"
-            " volume_id=COALESCE(volume_id,?), download_id=COALESCE(download_id,?),"
+            " volume_id=COALESCE(volume_id,?),"
+            " download_id=COALESCE(NULLIF(download_id,''),?),"
             " imported_at=COALESCE(imported_at,?),"
             " chapter_range_end=COALESCE(?, chapter_range_end)"
             " WHERE id=?",

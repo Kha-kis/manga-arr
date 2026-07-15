@@ -799,6 +799,101 @@ def test_special_release_flags_is_special(env):
     assert row["proposed_is_special"] == 1
 
 
+def test_short_story_release_requires_manual_review(env):
+    """A release-group suffix must not turn a short-story book into chapter 1."""
+    import main
+
+    _seed_series(env["db_path"])
+    src_dir = env["src_root"] / "short-stories"
+    src_dir.mkdir()
+    src_path = _make_zip(
+        str(src_dir / "Death Note Short Stories (2022) (Digital) (1r0n).cbz")
+    )
+
+    with main.get_db() as db:
+        qid, needs_review = main._queue_import(
+            db,
+            7,
+            "short-story-download",
+            "Death Note Short Stories (Digital)",
+            "magnet:short-stories",
+            None,
+            src_path,
+        )
+
+    assert qid is not None
+    assert needs_review is True
+    with sqlite3.connect(env["db_path"]) as c:
+        row = c.execute(
+            "SELECT proposed_is_special,status FROM import_queue_files WHERE queue_id=?",
+            (qid,),
+        ).fetchone()
+    assert row[0] == 1
+    assert row[1] == "needs_review"
+
+
+def test_queue_import_skips_download_recorded_in_history(env):
+    """Deleted terminal queue rows must not let a completed torrent re-import."""
+    import main
+
+    _seed_series(env["db_path"])
+    src_dir = env["src_root"] / "already-imported"
+    src_dir.mkdir()
+    _make_zip(str(src_dir / "Test Series c001.cbz"))
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute(
+            "INSERT INTO history(event_type,series_id,download_id)"
+            " VALUES('imported',7,'completed-download')"
+        )
+
+    with main.get_db() as db:
+        qid, needs_review = main._queue_import(
+            db,
+            7,
+            "completed-download",
+            "Test Series c001",
+            "magnet:completed",
+            None,
+            str(src_dir),
+        )
+
+    assert qid is None
+    assert needs_review is False
+    with sqlite3.connect(env["db_path"]) as c:
+        assert c.execute("SELECT COUNT(*) FROM import_queue").fetchone()[0] == 0
+
+
+def test_chapter_import_replaces_empty_download_identity(env):
+    """Legacy empty strings must not discard the current download receipt."""
+    import main
+
+    _seed_series(env["db_path"])
+    src_dir = env["src_root"] / "chapter-download-id"
+    src_dir.mkdir()
+    _make_zip(str(src_dir / "Test Series c001.cbz"))
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute(
+            "INSERT INTO chapters(series_id,chapter_num,status,download_id)"
+            " VALUES(7,1.0,'wanted','')"
+        )
+
+    qid = _run_queue_import(
+        env["db_path"],
+        series_id=7,
+        torrent_name="Test Series c001",
+        content_path=str(src_dir),
+        download_id="current-download",
+    )
+    assert asyncio.run(main._guarded_execute_import(qid))
+
+    with sqlite3.connect(env["db_path"]) as c:
+        row = c.execute(
+            "SELECT status,download_id FROM chapters"
+            " WHERE series_id=7 AND chapter_num=1.0"
+        ).fetchone()
+    assert row == ("downloaded", "current-download")
+
+
 # ─────────────── 8. fractional volume round-trip (D11) ─────────────
 
 def test_fractional_volume_survives_review_round_trip(env):

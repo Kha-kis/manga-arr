@@ -26,6 +26,12 @@ All notable changes to this project. Format roughly follows
 
 - Scheduled backups now use the same `manga_arr.db` archive entry and
   validation format as browser and API backups.
+- Completed qBittorrent downloads now retain a durable import receipt and
+  duplicate `seen` aliases schedule only one canonical import worker.
+- Short-story and other special releases now remain in manual review instead
+  of being auto-imported from incidental numbers in release-group names.
+- Chapter imports now replace legacy empty download IDs with the current
+  download identity.
 
 ## 1.1.0 - 2026-07-15
 

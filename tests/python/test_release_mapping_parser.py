@@ -274,6 +274,7 @@ def test_detect_pack_type(title: str, vol_range, total_vols: int | None, expecte
     "Demon Slayer Side Story - Stories of Water and Flame c001-002",
     "Kimetsu no Yaiba Side Story",
     "Manga Name Sidestory Vol 1",
+    "Death Note Short Stories (Digital)",
     "漫画 外伝 c001",                  # Japanese gaiden marker
 ])
 def test_special_release_detected(title: str) -> None:
