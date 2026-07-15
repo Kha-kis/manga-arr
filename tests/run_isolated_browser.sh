@@ -130,6 +130,9 @@ for i in {1..30}; do
   sleep 1
 done
 
+echo "[isolated-browser] checking first-run browser authentication"
+MANGARR_TEST_BASE="$BASE_URL" node tests/browser_auth_setup.js
+
 # After bringing up, sanity-check the live container is still healthy.
 # A failure here means the test compose accidentally stopped/clobbered it.
 if docker ps --format '{{.Names}}' | grep -qx "$PRODUCTION_CONTAINER"; then

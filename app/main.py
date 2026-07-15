@@ -63,6 +63,7 @@ from routers import (
     mangadex_                 as _mdx_router,
     suwayomi_                 as _swy_router,
     api_v1                    as _api_v1_router,
+    auth                      as _auth_router,
 )
 
 # ── Database path ─────────────────────────────────────────────────────────────
@@ -429,6 +430,9 @@ from tasks import (  # noqa: F401
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    from auth import get_or_create_setup_token, purge_expired_sessions
+    get_or_create_setup_token()
+    purge_expired_sessions()
     # Apply WAL journal mode once — persistent setting, so every later
     # connection inherits it without re-running the (write-locked) PRAGMA.
     from shared import ensure_wal_journal_mode as _ensure_wal
@@ -615,6 +619,7 @@ templates = Jinja2Templates(directory="/app/templates")
 from middleware import (  # noqa: F401
     ApiKeyMiddleware,
     ApiVersionAliasMiddleware,
+    BrowserAuthMiddleware,
     CSRFMiddleware,
     RequestBodyLimitMiddleware,
     _should_secure_cookie,
@@ -655,6 +660,7 @@ if os.environ.get("MANGARR_DEBUG_TIMING") == "1":
 
 app.add_middleware(CSRFMiddleware)
 app.add_middleware(ApiKeyMiddleware)
+app.add_middleware(BrowserAuthMiddleware)
 app.add_middleware(ApiVersionAliasMiddleware)
 app.add_middleware(RequestBodyLimitMiddleware)
 
@@ -669,6 +675,7 @@ templates.env.filters['ch_label']        = _ch_label_filter
 templates.env.globals['get_api_key'] = _get_api_key_global
 
 # ── Include Sonarr-parity routers ─────────────────────────────────────────────
+app.include_router(_auth_router.router, tags=["Authentication"])
 app.include_router(_qp_router.router,  tags=["Quality Profiles"])
 app.include_router(_qd_router.router,  tags=["Quality Definitions"])
 app.include_router(_rp_router.router,  tags=["Release Profiles"])

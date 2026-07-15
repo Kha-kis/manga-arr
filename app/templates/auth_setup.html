@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Secure {{ get_instance_name() }}{% endblock %}
+{% block body_class %}auth-page{% endblock %}
+{% block body %}
+<main class="auth-shell" id="main-content">
+  <section class="auth-panel" aria-labelledby="setup-heading">
+    <div class="auth-brand">
+      <i class="bi bi-book-half" aria-hidden="true"></i>
+      <span>{{ get_instance_name() }}</span>
+    </div>
+    <h1 class="auth-heading" id="setup-heading">Create administrator</h1>
+    <p class="auth-copy">Claim this installation with its one-time setup token.</p>
+    {% if error %}
+    <div class="auth-error" role="alert">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="/setup">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}" />
+      <input type="hidden" name="next" value="{{ next }}" />
+      <div class="mb-3">
+        <label class="form-label" for="setup-token">Setup token</label>
+        <input
+          class="form-control font-monospace"
+          id="setup-token"
+          name="setup_token"
+          type="password"
+          autocomplete="one-time-code"
+          required
+          autofocus
+        />
+        <div class="auth-token-help">
+          Read <code>/config/.mangarr-setup-token</code> from the host or
+          container.
+        </div>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="setup-username">Username</label>
+        <input
+          class="form-control"
+          id="setup-username"
+          name="username"
+          type="text"
+          value="{{ username or '' }}"
+          autocomplete="username"
+          minlength="3"
+          maxlength="32"
+          pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,31}"
+          required
+        />
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="setup-password">Password</label>
+        <input
+          class="form-control"
+          id="setup-password"
+          name="password"
+          type="password"
+          autocomplete="new-password"
+          minlength="12"
+          maxlength="128"
+          required
+        />
+      </div>
+      <div class="mb-4">
+        <label class="form-label" for="setup-password-confirm">Confirm password</label>
+        <input
+          class="form-control"
+          id="setup-password-confirm"
+          name="password_confirm"
+          type="password"
+          autocomplete="new-password"
+          minlength="12"
+          maxlength="128"
+          required
+        />
+      </div>
+      <button class="btn btn-ember auth-action w-100" type="submit">
+        <i class="bi bi-shield-check" aria-hidden="true"></i>
+        Create administrator
+      </button>
+    </form>
+  </section>
+</main>
+{% endblock %}

@@ -62,14 +62,16 @@ If you want Mangarr reachable from other devices on your LAN:
 ```
 
 Still safer than `0.0.0.0` because it pins exposure to one interface.
-You're now trusting every device on that LAN; make sure the
-`api_key` setting is non-empty (see Security checklist below).
+Mangarr's local administrator login protects the UI, but devices on that
+LAN can still reach the login surface. Complete first-run setup before
+changing the bind address and review the checklist below.
 
 ### 3. Internet access — only through a reverse proxy
 
 **Do not publish Mangarr directly to the internet.** The app does not
-terminate TLS, has no rate limiting, and its CSRF cookie can't be
-`Secure` without HTTPS.
+terminate TLS and has no general request rate limiter. Browser login is
+throttled, but its session and CSRF cookies cannot be `Secure` without
+HTTPS.
 
 A reverse proxy (Caddy, Nginx, Traefik, …) handles TLS termination,
 rate limiting, and (optionally) an extra layer of authentication. Put
@@ -109,7 +111,7 @@ mangarr.example.com {
 
 Caddy terminates TLS and forwards requests to Mangarr via the Docker
 network. Mangarr sees `X-Forwarded-Proto: https` and `Secure`-flags
-the CSRF cookie automatically (see PR #10 / M1).
+the browser session and CSRF cookies automatically.
 
 If the public URL is mounted below a path prefix, set the same prefix
 as `MANGARR_URL_BASE` or in `Settings → General → URL Base`:
@@ -130,25 +132,62 @@ LAN device can reach Mangarr directly on port 6789. There is no TLS,
 no rate limiting, and no protection against a compromised device on
 the same network. Prefer patterns 1 or 3.
 
+## First-run browser authentication
+
+Mangarr has one local administrator account for the browser UI. On first
+boot it creates a one-time setup token at
+`/config/.mangarr-setup-token` with mode `0600`. Read it from the
+container, then open Mangarr and complete the setup form:
+
+```bash
+docker compose exec mangarr cat /config/.mangarr-setup-token
+```
+
+The setup token is removed after the administrator is created. Passwords
+are hashed with Argon2id. Browser sessions are revocable server-side,
+expire after seven days, and expire after 24 hours without activity.
+The Security page can change the password or revoke other sessions.
+
+Browser login does not replace API-key authentication. `/api/*` clients
+should continue to use the API key from `Settings → General`; API keys do
+not create browser sessions.
+
+If the administrator password is lost, reset browser access from the
+container. This deletes the administrator, revokes every browser session,
+and creates a new one-time setup token without changing library data or
+the API key:
+
+```bash
+docker compose exec mangarr python /app/auth_cli.py reset-admin --yes
+docker compose exec mangarr cat /config/.mangarr-setup-token
+```
+
+Complete the setup form immediately after a reset. Access to Docker or the
+host `/config` directory is therefore an administrator security boundary.
+
 ## Security checklist
 
 Before pointing anything at Mangarr beyond your local machine, verify:
 
+- [ ] **The local administrator is configured.** Complete setup with the
+      one-time token before changing the default loopback bind. Confirm
+      that an unauthenticated browser is redirected to `/login`.
 - [ ] **`api_key` is non-empty** in the settings table. On startup,
       Mangarr auto-generates one if missing (PR #5 / H2). If you ever
       clear it manually, the middleware now fails closed — all `/api/*`
       requests return `401` until a key is regenerated. View the
       current key at `Settings → General`.
-- [ ] **CSRF cookie is `Secure` when served over HTTPS.** PR #10 / M1
-      added `SameSite=Strict` + `HttpOnly` unconditionally; the
-      `Secure` flag is auto-added when the inbound request has
-      `X-Forwarded-Proto: https` or direct TLS. If you deploy behind
-      a reverse proxy, make sure the proxy sets that header.
+- [ ] **Browser cookies are `Secure` when served over HTTPS.** The
+      session cookie is `HttpOnly` + `SameSite=Lax`; the CSRF cookie is
+      `HttpOnly` + `SameSite=Strict`. Both add `Secure` when the inbound
+      request has `X-Forwarded-Proto: https` or direct TLS. If you deploy
+      behind a reverse proxy, make sure the proxy sets that header.
 - [ ] **The `ports:` block does not publish `0.0.0.0:PORT`** unless you
       deliberately want LAN or internet access (and, for internet, you
       have a reverse proxy in front).
 - [ ] **The `/config` directory is not world-readable.** It contains
-      the SQLite database and the Mangarr secret-key file. The repo's
+      the SQLite database, the Mangarr secret-key file, and the one-time
+      browser setup token until the administrator is created. The repo's
       `docker-compose.yml` maps it to `./config` on the host by default —
       check its permissions with `ls -ld ./config` (should be
       `drwx------`, i.e. mode `0700`).
@@ -292,7 +331,7 @@ value itself.
 
 Back up these together:
 
-- `/config/manga.db`
+- `/config/manga_arr.db`
 - `/config/.mangarr-secret-key`
 
 Do not assume one can recover the other. Restoring the database without
@@ -350,6 +389,7 @@ container user can write them:
 mkdir -p config data/media/manga data/torrents/manga
 chmod 700 config
 docker compose up -d
+docker compose exec mangarr cat /config/.mangarr-setup-token
 ```
 
 The public Compose file pulls `ghcr.io/kha-kis/manga-arr:latest`. Pin

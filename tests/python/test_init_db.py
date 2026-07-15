@@ -20,6 +20,8 @@ import pytest
 # enough to catch a transaction rollback that swallows the whole schema.
 EXPECTED_TABLES = {
     "settings",
+    "auth_admin",
+    "auth_sessions",
     "series",
     "volumes",
     "seen",

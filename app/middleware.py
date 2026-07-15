@@ -1,31 +1,39 @@
-"""ASGI middleware: request-size guard, API-key gate, and CSRF double-submit.
+"""ASGI middleware: body limits, browser/API auth, and CSRF protection.
 
-The middleware classes perform no DB writes or CONFIG mutation. The API-key
-gate consults settings via `get_cfg`, but that remains a read-only path.
+The API-key gate only reads CONFIG. Browser session validation may touch or
+remove a session row, but never mutates application settings.
 
 Loading order in main.py (bottom-up because Starlette wraps in
 reverse):
 
   app.add_middleware(CSRFMiddleware)
   app.add_middleware(ApiKeyMiddleware)
+  app.add_middleware(BrowserAuthMiddleware)
   app.add_middleware(ApiVersionAliasMiddleware)
   app.add_middleware(RequestBodyLimitMiddleware)  # outermost request guard
 
 So: RequestBodyLimitMiddleware rejects oversized bodies before buffering,
-ApiKeyMiddleware decides 401 vs continue for API clients, then CSRFMiddleware
-validates browser-delegated mutating API requests that carry only the
-in-session CSRF cookie.
+BrowserAuthMiddleware establishes local-admin identity (or delegates requests
+carrying an API key), ApiKeyMiddleware validates API clients, and
+CSRFMiddleware validates authenticated browser mutations.
 """
 
 from __future__ import annotations
 
 import hmac
 import secrets
+from urllib.parse import quote
 
 from fastapi import Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 import logging
 
+from auth import (
+    AUTH_COOKIE_NAME,
+    is_admin_configured,
+    test_auth_bypass_enabled,
+    validate_session,
+)
 from shared import get_cfg
 
 
@@ -110,12 +118,12 @@ class ApiVersionAliasMiddleware:
             return
         path = scope.get("path", "")
         if path == "/api/v3" or path.startswith("/api/v3/"):
-            rewritten = "/api/v1" + path[len("/api/v3"):]
+            rewritten = "/api/v1" + path[len("/api/v3") :]
             scope = dict(scope)
             scope["path"] = rewritten
             raw_path = scope.get("raw_path")
             if isinstance(raw_path, (bytes, bytearray)):
-                scope["raw_path"] = b"/api/v1" + bytes(raw_path)[len(b"/api/v3"):]
+                scope["raw_path"] = b"/api/v1" + bytes(raw_path)[len(b"/api/v3") :]
         await self.app(scope, receive, send)
 
 
@@ -125,12 +133,9 @@ class ApiVersionAliasMiddleware:
 class ApiKeyMiddleware:
     _warned_no_key = False
     """Require an X-Api-Key header (or ?apikey= query param) on /api/
-    routes. Exempts the SSE endpoint and health check. In-session
-    browser requests (POST/PUT/DELETE/PATCH with a csrftoken cookie)
-    may proceed without an API key, but only by delegating enforcement
-    to CSRFMiddleware. API-key-authenticated requests mark the ASGI
-    scope so CSRFMiddleware can skip duplicate CSRF checks for API
-    clients.
+    routes. Authenticated browser requests may proceed without an API key,
+    with mutating requests delegated to CSRFMiddleware. API-key-authenticated
+    requests mark the ASGI scope so CSRFMiddleware skips duplicate checks.
 
     Fails closed: if the configured key is blank/missing (bad import,
     manual edit, partial migration), refuses the request. Never
@@ -148,9 +153,6 @@ class ApiKeyMiddleware:
         request = Request(scope, receive)
         path = scope.get("path", "")
         if not path.startswith("/api/"):
-            await self.app(scope, receive, send)
-            return
-        if path in ("/api/queue-events", "/api/health"):
             await self.app(scope, receive, send)
             return
         api_key = (get_cfg("api_key", "") or "").strip()
@@ -173,7 +175,9 @@ class ApiKeyMiddleware:
             request.headers.get("X-Api-Key") or request.query_params.get("apikey") or ""
         )
         if provided:
-            if provided != api_key:
+            if not hmac.compare_digest(
+                str(provided).encode("utf-8"), str(api_key).encode("utf-8")
+            ):
                 await JSONResponse(
                     {
                         "message": "Unauthorized",
@@ -186,10 +190,9 @@ class ApiKeyMiddleware:
             await self.app(scope, receive, send)
             return
 
-        if request.method in ("POST", "PUT", "DELETE", "PATCH") and request.cookies.get(
-            "csrftoken"
-        ):
-            request.scope["mangarr_api_browser_csrf_required"] = True
+        if scope.get("mangarr_browser_authenticated"):
+            if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+                request.scope["mangarr_api_browser_csrf_required"] = True
             await self.app(scope, receive, send)
             return
 
@@ -197,6 +200,91 @@ class ApiKeyMiddleware:
             {"message": "Unauthorized", "description": "Invalid or missing API key"},
             status_code=401,
         )(scope, receive, send)
+
+
+# ── Local administrator browser authentication ──────────────────────────────
+
+
+class BrowserAuthMiddleware:
+    """Protect browser surfaces while leaving API-key validation independent."""
+
+    _PUBLIC_PATHS = frozenset({"/healthz", "/login", "/setup"})
+    _PUBLIC_PREFIXES = ("/static/",)
+
+    def __init__(self, app):
+        self.app = app
+
+    @staticmethod
+    def _has_api_key(request: Request) -> bool:
+        return bool(
+            request.headers.get("X-Api-Key") or request.query_params.get("apikey")
+        )
+
+    @staticmethod
+    def _is_htmx(request: Request) -> bool:
+        return request.headers.get("HX-Request", "").lower() == "true"
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive)
+        path = scope.get("path", "")
+        if path in self._PUBLIC_PATHS or any(
+            path.startswith(prefix) for prefix in self._PUBLIC_PREFIXES
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        if test_auth_bypass_enabled():
+            # Contract tests without browser state must still exercise the
+            # API-key gate. Existing UI-route tests acquire a CSRF cookie
+            # before making browser-originated /api/ requests.
+            if path.startswith("/api/") and not request.cookies.get("csrftoken"):
+                await self.app(scope, receive, send)
+                return
+            scope["mangarr_browser_authenticated"] = True
+            scope.setdefault("state", {})["auth_user"] = {
+                "admin_id": 1,
+                "username": "test-admin",
+            }
+            await self.app(scope, receive, send)
+            return
+
+        if path.startswith("/api/") and self._has_api_key(request):
+            await self.app(scope, receive, send)
+            return
+
+        session = validate_session(request.cookies.get(AUTH_COOKIE_NAME, ""))
+        if session:
+            scope["mangarr_browser_authenticated"] = True
+            scope.setdefault("state", {})["auth_user"] = {
+                "admin_id": session["admin_id"],
+                "username": session["username"],
+            }
+            await self.app(scope, receive, send)
+            return
+
+        target = "/login" if is_admin_configured() else "/setup"
+        if path.startswith("/api/"):
+            headers = {"HX-Redirect": target} if self._is_htmx(request) else None
+            response = JSONResponse(
+                {
+                    "message": "Unauthorized",
+                    "description": "Browser authentication required",
+                },
+                status_code=401,
+                headers=headers,
+            )
+        else:
+            next_path = path
+            if scope.get("query_string"):
+                next_path += "?" + scope["query_string"].decode("latin-1")
+            location = f"{target}?next={quote(next_path, safe='')}"
+            response = RedirectResponse(location, status_code=303)
+            response.delete_cookie(AUTH_COOKIE_NAME, path="/")
+        await response(scope, receive, send)
 
 
 # ── CSRF middleware ──────────────────────────────────────────────────────────

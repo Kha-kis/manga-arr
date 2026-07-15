@@ -11,6 +11,7 @@
  */
 const { chromium } = require('playwright');
 const { execSync } = require('child_process');
+const { authenticate } = require('./browser_auth');
 
 const BASE = process.env.MANGARR_TEST_BASE || 'http://127.0.0.1:6789';
 // Container that holds the DB the test mutates. Defaults to live `mangarr`
@@ -34,10 +35,21 @@ function dbQuery(sql) {
   return JSON.parse(out);
 }
 
+async function readApiKey(page) {
+  await page.goto(BASE + '/settings/general', {
+    waitUntil: 'domcontentloaded',
+    timeout: 20000,
+  });
+  const apiKey = await page.inputValue('#api-key-input');
+  if (!apiKey) throw new Error('API key is not set');
+  return apiKey;
+}
+
 async function run() {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
+  await authenticate(page, BASE);
 
   const consoleErrors = [];
   page.on('console', msg => { if (msg.type() === 'error') consoleErrors.push(msg.text()); });
@@ -200,6 +212,7 @@ async function run() {
       browser.newContext(), browser.newContext(), browser.newContext()
     ]);
     const pages = await Promise.all(contexts.map(c => c.newPage()));
+    await Promise.all(pages.map(p => authenticate(p, BASE)));
     const errs = [];
     pages.forEach(p => p.on('pageerror', e => errs.push(e.message)));
 
@@ -234,16 +247,13 @@ async function run() {
   console.log('\n=== E3.4: Trigger manual download status check via API ===');
   // ════════════════════════════════════════════════════════════════════
   try {
-    const apiKey = execSync(`docker exec ${CONTAINER} python3 -c "import sqlite3; db=sqlite3.connect('/config/manga_arr.db'); r=db.execute(\\"SELECT value FROM settings WHERE key='api_key'\\").fetchone(); print(r[0] if r else '')"`, { encoding: 'utf-8' }).trim();
-    if (!apiKey) fail('api_key', 'not set');
-    else {
-      const resp = await page.request.post(BASE + '/api/check-downloads', {
-        headers: { 'X-Api-Key': apiKey },
-      });
-      const data = await resp.json();
-      if (resp.status() === 200 && data.ok) ok(`Manual download check triggered: ${data.message}`);
-      else fail('check-downloads', `HTTP ${resp.status()}: ${JSON.stringify(data)}`);
-    }
+    const apiKey = await readApiKey(page);
+    const resp = await page.request.post(BASE + '/api/check-downloads', {
+      headers: { 'X-Api-Key': apiKey },
+    });
+    const data = await resp.json();
+    if (resp.status() === 200 && data.ok) ok(`Manual download check triggered: ${data.message}`);
+    else fail('check-downloads', `HTTP ${resp.status()}: ${JSON.stringify(data)}`);
   } catch (e) {
     fail('E3.4 check downloads', e.message);
   }
@@ -252,7 +262,7 @@ async function run() {
   console.log('\n=== E3.5: Trigger backlog search via API ===');
   // ════════════════════════════════════════════════════════════════════
   try {
-    const apiKey = execSync(`docker exec ${CONTAINER} python3 -c "import sqlite3; db=sqlite3.connect('/config/manga_arr.db'); r=db.execute(\\"SELECT value FROM settings WHERE key='api_key'\\").fetchone(); print(r[0] if r else '')"`, { encoding: 'utf-8' }).trim();
+    const apiKey = await readApiKey(page);
     const resp = await page.request.post(BASE + '/api/backlog-search', {
       headers: { 'X-Api-Key': apiKey },
     });
@@ -267,7 +277,7 @@ async function run() {
   console.log('\n=== E3.6: Test download client via API ===');
   // ════════════════════════════════════════════════════════════════════
   try {
-    const apiKey = execSync(`docker exec ${CONTAINER} python3 -c "import sqlite3; db=sqlite3.connect('/config/manga_arr.db'); r=db.execute(\\"SELECT value FROM settings WHERE key='api_key'\\").fetchone(); print(r[0] if r else '')"`, { encoding: 'utf-8' }).trim();
+    const apiKey = await readApiKey(page);
     const resp = await page.request.post(BASE + '/api/download-clients/1/test', {
       headers: { 'X-Api-Key': apiKey },
     });

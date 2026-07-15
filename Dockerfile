@@ -37,10 +37,10 @@ RUN useradd --uid 1000 --user-group \
 
 USER mangarr
 
-# Healthcheck hits the root page — served by the app once lifespan finishes
+# Healthcheck hits the unauthenticated liveness endpoint after lifespan finishes
 # DB init. docker-compose.yml declares the same probe; this line ensures
 # users running `docker run` directly still get it.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')" || exit 1
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

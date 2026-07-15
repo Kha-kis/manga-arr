@@ -103,6 +103,14 @@ def test_public_install_instructions_protect_config_directory():
         assert "chmod 700 config" in text
 
 
+def test_public_install_docs_cover_browser_auth_setup_and_recovery():
+    readme = _read("README.md")
+    deployment = _read("docs/deployment.md")
+    for text in (readme, deployment):
+        assert "/config/.mangarr-setup-token" in text
+    assert "python /app/auth_cli.py reset-admin --yes" in deployment
+
+
 def test_deployment_doc_exists_and_covers_three_patterns():
     doc = _read("docs/deployment.md")
     # Pattern markers — if someone restructures the doc these must remain

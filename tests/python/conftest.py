@@ -47,6 +47,13 @@ APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "a
 if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
+# Existing route tests exercise application behavior rather than browser auth.
+# Use the internal-only test switch so they do not all need session setup;
+# dedicated auth tests turn this back off and browser suites log in normally.
+os.environ["MANGARR_CONFIG_DIR"] = _TEST_CONFIG
+import auth as _auth  # noqa: E402
+_auth.set_test_auth_bypass(True)
+
 # Redirect Jinja2 template loading from /app/templates (container path) to
 # the host path so integration tests that render templates work outside
 # Docker. Only affects the default FileSystemLoader used by Jinja2Templates.

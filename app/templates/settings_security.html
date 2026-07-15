@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Security - {{ get_instance_name() }}{% endblock %}
+{% block nav_settings %}active{% endblock %}
+{% block title_short %}Security{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Security</h1>
+    <p>Local administrator and browser sessions.</p>
+  </div>
+</div>
+
+{% if changed %}
+<div class="alert alert-success" role="status">Password changed. Other sessions were revoked.</div>
+{% endif %}
+{% if revoked %}
+<div class="alert alert-success" role="status">Other browser sessions were revoked.</div>
+{% endif %}
+{% if error %}
+<div class="alert alert-danger" role="alert">{{ error }}</div>
+{% endif %}
+
+<section class="panel-editorial mb-4" aria-labelledby="password-heading">
+  <div class="panel-editorial-head">
+    <i class="bi bi-key" aria-hidden="true"></i>
+    <span id="password-heading">Administrator password</span>
+  </div>
+  <div class="panel-editorial-body">
+    <p class="text-muted mb-3">Signed in as <strong>{{ admin_username }}</strong>.</p>
+    <form
+      class="security-auth-form"
+      method="post"
+      action="/settings/security/password"
+      data-track-changes
+    >
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}" />
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label" for="current-password">Current password</label>
+          <input class="form-control" id="current-password" name="current_password"
+                 type="password" autocomplete="current-password" maxlength="128" required />
+        </div>
+        <div class="col-md-6">
+          <label class="form-label" for="new-password">New password</label>
+          <input class="form-control" id="new-password" name="new_password"
+                 type="password" autocomplete="new-password" minlength="12" maxlength="128" required />
+        </div>
+        <div class="col-md-6">
+          <label class="form-label" for="new-password-confirm">Confirm new password</label>
+          <input class="form-control" id="new-password-confirm" name="new_password_confirm"
+                 type="password" autocomplete="new-password" minlength="12" maxlength="128" required />
+        </div>
+      </div>
+      <div class="d-flex justify-content-end mt-4">
+        <button class="btn btn-ember auth-action" type="submit">
+          <i class="bi bi-key-fill" aria-hidden="true"></i>
+          Change password
+        </button>
+      </div>
+    </form>
+  </div>
+</section>
+
+<section class="panel-editorial" aria-labelledby="sessions-heading">
+  <div class="panel-editorial-head">
+    <i class="bi bi-display" aria-hidden="true"></i>
+    <span id="sessions-heading">Browser sessions</span>
+  </div>
+  <div class="panel-editorial-body d-flex flex-wrap align-items-center justify-content-between gap-3">
+    <p class="text-muted mb-0">{{ session_count }} active session{% if session_count != 1 %}s{% endif %}.</p>
+    <form method="post" action="/settings/security/sessions/revoke"
+          data-confirm="Log out every other browser session?">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}" />
+      <button
+        class="btn btn-danger-soft auth-action"
+        type="submit"
+        {% if session_count <= 1 %}disabled{% endif %}
+      >
+        <i class="bi bi-x-circle" aria-hidden="true"></i>
+        Log out other sessions
+      </button>
+    </form>
+  </div>
+</section>
+{% endblock %}
