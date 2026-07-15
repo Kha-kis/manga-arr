@@ -41,6 +41,10 @@ make test-release-safe
 - Use `vol_num_to_display()` for display and `vol_num_to_search()` for search.
 - Preserve both HTMX and plain-form behavior for action endpoints.
 - Put literal routes before parameterized siblings.
+- Use `submitted_subset()` for editor POST handlers and preserve the
+  hidden-input-first pattern for HTML checkbox fields.
+- Preserve both URL and release-GUID grab deduplication, and honor disabled
+  Prowlarr sub-indexers.
 - Use the design tokens in `app/templates/base.html` for colors, radii,
   typography, and z-index values.
 - Add focused tests for every behavior change and broader coverage for shared
@@ -61,7 +65,8 @@ git diff --check
 
 Run `make test-release-safe` before requesting merge for changes affecting
 critical workflows or public releases. The local release process is documented
-in `docs/releases.md`.
+in `docs/releases.md`; the test layers and fixture boundaries are documented in
+[`tests/README.md`](tests/README.md).
 
 By contributing, you agree that your contribution is licensed under the
 repository's `AGPL-3.0-only` license.

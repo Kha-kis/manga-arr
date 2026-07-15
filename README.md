@@ -1,37 +1,68 @@
+<div align="center">
+
 # Mangarr
 
-Mangarr is a self-hosted manga and light-novel library manager. It applies the
-`*arr` workflow to volumes, chapters, editions, and multi-volume packs: monitor
-a series, search indexers, send a release to a download client, import the
-completed files, and notify the rest of your media stack.
+**Sonarr-style automation for manga and light-novel libraries.**
 
-**Current stable release:** `1.0.1`. Back up `/config` before upgrading and pin
-the image version for reproducible deployments.
+[![Release](https://img.shields.io/github/v/release/Kha-kis/manga-arr?display_name=tag&sort=semver&style=flat-square&color=f08428)](https://github.com/Kha-kis/manga-arr/releases/latest)
+[![Container](https://img.shields.io/badge/GHCR-linux%2Famd64%20%7C%20linux%2Farm64-242434?style=flat-square&logo=docker&logoColor=white)](https://github.com/Kha-kis/manga-arr/pkgs/container/manga-arr)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/github/license/Kha-kis/manga-arr?style=flat-square&color=22c87a)](LICENSE)
+
+[Quick start](#quick-start) · [Features](#features) · [Documentation](#documentation) · [Support](SUPPORT.md)
+
+</div>
+
+![Mangarr library dashboard](docs/assets/mangarr-library.webp)
+
+Mangarr monitors manga and light-novel series, searches indexers and direct
+download sources, sends releases to a download client, and imports completed
+files into an organized library. It understands volumes, chapters, editions,
+omnibuses, specials, and multi-volume packs instead of treating manga like a
+generic TV or book collection.
+
+The current stable release is **1.0.1**. Mangarr is self-hosted, designed for a
+single administrator, and distributed as a multi-platform container image.
 
 ## Features
 
-- Manga-aware volume, chapter, edition, omnibus, and pack tracking
-- Prowlarr, Torznab, and Newznab indexers
-- qBittorrent and SABnzbd download clients
-- Suwayomi direct-download search and handoff
-- Quality profiles, custom formats, release profiles, delay profiles, and
-  language profiles
-- Automatic and manual import with CBZ/CBR handling and `ComicInfo.xml`
-- Existing-library discovery, adoption, rescan, rename preview, and organize
-  workflows
-- AniList, MangaDex, MangaUpdates, and Kitsu metadata reconciliation
-- Komga, Discord, Ntfy, Gotify, Apprise, Pushover, Pushbullet, Slack, email,
-  and generic webhook notifications
-- Sonarr-style `/api/v1` and `/api/v3` compatibility surfaces for automation
-- Single-administrator browser login plus separate API-key authentication
+- **Manga-aware monitoring:** volumes, chapters, half chapters, editions,
+  omnibuses, specials, one-shots, and packs.
+- **Automated acquisition:** RSS and backlog search through Prowlarr, Torznab,
+  and Newznab, plus direct-download search and handoff through Suwayomi.
+- **Download clients:** qBittorrent and SABnzbd with queue tracking, health
+  checks, retry handling, and import handoff.
+- **Import pipeline:** automatic and manual import, copy/move/hardlink modes,
+  CBZ/CBR handling, split RAR support, duplicate-quality checks, and
+  `ComicInfo.xml` metadata.
+- **Release control:** quality profiles, custom formats, release profiles,
+  delay profiles, language profiles, blocklists, and upgrade cutoffs.
+- **Metadata lifecycle:** AniList, MangaDex, MangaUpdates, and Kitsu discovery,
+  reconciliation, health reporting, and operator-controlled repair tools.
+- **Library operations:** existing-library adoption, rescans, rename previews,
+  organization, bulk editing, history, wanted lists, and calendar views.
+- **Notifications and media servers:** Komga, Discord, Ntfy, Gotify, Apprise,
+  Pushover, Pushbullet, Slack, email, and generic webhooks.
+- **Automation API:** native endpoints plus Sonarr-style `/api/v1` and
+  `/api/v3` compatibility surfaces.
 
-The detailed compatibility inventory and intentional non-goals are in
-[`docs/sonarr-parity.md`](docs/sonarr-parity.md).
+See the [Sonarr parity inventory](docs/sonarr-parity.md) for the exact
+compatibility scope and intentional non-goals.
+
+## How It Works
+
+1. Add a series and choose what Mangarr should monitor.
+2. Mangarr searches configured sources or evaluates new RSS releases.
+3. Matching releases are scored against profiles and sent to a download
+   client.
+4. Completed files are validated, staged, named, and imported into the library.
+5. Metadata is written, history is recorded, and downstream services are
+   notified.
 
 ## Quick Start
 
 Requirements: Docker Engine with the Compose plugin and host directories that
-are writable by UID/GID 1000, or the UID/GID configured in `.env`.
+are writable by UID/GID `1000`, or the UID/GID configured in `.env`.
 
 ```bash
 git clone https://github.com/Kha-kis/manga-arr.git
@@ -43,52 +74,34 @@ docker compose up -d
 docker compose exec mangarr cat /config/.mangarr-setup-token
 ```
 
-Open <http://127.0.0.1:6789> and create the local administrator with the
-one-time setup token. The token file is mode `0600` and is removed after setup.
+Open <http://127.0.0.1:6789> and create the administrator account with the
+one-time setup token. The default Compose configuration binds to host loopback,
+runs as a non-root user, and pins the stable image:
 
-The public Compose file:
-
-- pulls the exact stable release, `ghcr.io/kha-kis/manga-arr:1.0.1`;
-- publishes only on host loopback by default;
-- runs the container without root privileges;
-- stores persistent state in `./config` and media/download data in `./data`.
-
-The copied [`.env.example`](.env.example) pins the current release. Edit `.env`
-to change the bind address, port, runtime UID/GID, paths, timezone, or initial
-settings.
-Configure indexers, download clients, metadata providers, and notifications in
-the Mangarr UI.
-
-For LAN or internet access, reverse-proxy configuration, file ownership,
-backup, upgrade, and recovery instructions, read
-[`docs/deployment.md`](docs/deployment.md).
-
-## Authentication
-
-Browser and API authentication are deliberately separate:
-
-- Use the local administrator account for the browser UI.
-- Use the API key from **Settings > General** for clients and automation.
-- Keep the default loopback bind until first-run administrator setup is done.
-- Put Mangarr behind an HTTPS reverse proxy before exposing it beyond a trusted
-  LAN. Do not publish the application directly to the internet.
-
-If the administrator password is lost, the offline recovery command revokes all
-browser sessions and creates a new setup token without changing library data or
-the API key:
-
-```bash
-docker compose exec mangarr python /app/auth_cli.py reset-admin --yes
+```text
+ghcr.io/kha-kis/manga-arr:1.0.1
 ```
 
-See [`SECURITY.md`](SECURITY.md) for supported versions and private
-vulnerability reporting.
+Configure indexers, download clients, metadata providers, root folders, and
+notifications from the Mangarr settings UI. Keep the loopback bind for initial
+setup; use an HTTPS reverse proxy before exposing Mangarr beyond a trusted LAN.
+
+### Persistent Paths
+
+| Container path | Purpose |
+| --- | --- |
+| `/config` | SQLite database, encryption key, cached covers, and backups |
+| `/data/media/manga` | Organized manga library in the example Compose layout |
+| `/data/torrents/manga` | Completed downloads in the example Compose layout |
+
+The database and `/config/.mangarr-secret-key` are one recovery unit. A database
+restored without its matching key cannot decrypt stored integration
+credentials. Back up the entire `/config` directory before upgrades.
 
 ## Upgrading
 
-Pin `MANGARR_VERSION` to an immutable release tag in `.env`, back up the SQLite
-database and `/config/.mangarr-secret-key` together, then pull and recreate only
-Mangarr:
+Set `MANGARR_VERSION` in `.env` to the release you want, back up `/config`, then
+pull and recreate only Mangarr:
 
 ```bash
 docker compose pull mangarr
@@ -96,69 +109,72 @@ docker compose up -d --no-deps mangarr
 docker compose ps mangarr
 ```
 
-Verify `/healthz`, the System Status page, and a representative search/import
-workflow after an upgrade. Do not run an older image against a database already
-migrated by a newer release; restore the matching pre-upgrade `/config` backup
-when rolling back. The full procedure is in
-[`docs/deployment.md`](docs/deployment.md#upgrading-and-rollback).
+Verify `/healthz`, System Status, and a representative search/import workflow.
+Do not run an older image against a database migrated by a newer release; use
+the matching pre-upgrade `/config` backup for rollback. The complete procedure
+is in [Deployment and recovery](docs/deployment.md#upgrading-and-rollback).
 
-## Data And Backups
+## Security
 
-Persistent application state lives under `/config`:
+- Browser sessions use the local administrator account; integrations use the
+  separate API key from **Settings > General**.
+- Stored integration credentials are encrypted with the key under `/config`.
+- The public Compose file binds to `127.0.0.1` by default and runs without root
+  privileges.
+- Administrator recovery is an offline operation that revokes existing browser
+  sessions.
 
-- `manga_arr.db`: SQLite database
-- `.mangarr-secret-key`: key used to encrypt stored integration credentials
-- `covers/`: cached cover images
-- `backups/`: application-created database backups
+```bash
+docker compose exec mangarr python /app/auth_cli.py reset-admin --yes
+```
 
-The database and secret key are one recovery unit. A database restored without
-its matching key cannot decrypt saved credentials. The Backup page validates
-database backup ZIP files, but restore remains an offline maintenance action.
+Report vulnerabilities privately through the process in [SECURITY.md](SECURITY.md).
+Never publish API keys, setup tokens, passwords, private tracker URLs, or
+encryption keys.
+
+## Documentation
+
+| Area | Reference |
+| --- | --- |
+| Install, networking, backup, upgrade, and recovery | [Deployment and recovery](docs/deployment.md) |
+| Supported Sonarr workflows and compatibility limits | [Sonarr parity](docs/sonarr-parity.md) |
+| Versioning and release procedure | [Releases and versioning](docs/releases.md) |
+| Stable-release acceptance gate | [Release qualification](docs/release-qualification.md) |
+| User-visible changes | [Changelog](CHANGELOG.md) |
+| Development workflow | [Contributing](CONTRIBUTING.md) |
+| Test architecture and commands | [Test guide](tests/README.md) |
+| Community expectations | [Code of Conduct](CODE_OF_CONDUCT.md) |
 
 ## Development
 
-Application code is in `app/`, Jinja templates are in `app/templates/`, and
-tests are in `tests/`.
+Mangarr uses FastAPI, Starlette, Jinja2, HTMX, Alpine.js, SQLite, and Docker
+Compose. Application code lives in `app/`, templates in `app/templates/`, and
+tests in `tests/`.
 
 ```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt -r requirements-test.txt
 make test
 ```
 
-Before a release candidate or merge that changes a critical workflow, run the
-isolated browser gate as well:
-
-```bash
-make test-release-safe
-```
-
-`make test-release` additionally exercises the operator's live database and is
-manual-only. Do not use it as a normal development gate.
-
-Additional project references:
-
-- [`docs/deployment.md`](docs/deployment.md): deployment and recovery
-- [`docs/releases.md`](docs/releases.md): versioning and release process
-- [`docs/release-qualification.md`](docs/release-qualification.md): stable
-  release acceptance evidence
-- [`docs/sonarr-parity.md`](docs/sonarr-parity.md): compatibility scope
-- [`CHANGELOG.md`](CHANGELOG.md): release notes
-- [`tests/README.md`](tests/README.md): test architecture
-- [`CONTRIBUTING.md`](CONTRIBUTING.md): development and pull-request guidance
-
-## License
-
-Copyright (C) 2026 Kha-kis.
-
-Mangarr is free software licensed under the
-[GNU Affero General Public License v3.0 only](LICENSE) (`AGPL-3.0-only`). If you
-modify Mangarr and make it available to users over a network, you must offer
-those users the corresponding source code under the same license.
+Use `make test-release-safe` for changes to routes, templates, authentication,
+imports, metadata, or browser workflows. Read [CONTRIBUTING.md](CONTRIBUTING.md)
+before opening a pull request.
 
 ## Support
 
 Use [GitHub Discussions](https://github.com/Kha-kis/manga-arr/discussions) for
-setup and workflow help, and the structured
-[GitHub issue forms](https://github.com/Kha-kis/manga-arr/issues/new/choose) for
-bugs and feature proposals. See [`SUPPORT.md`](SUPPORT.md) and
-[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) before participating. Do not post API
-keys, setup tokens, passwords, private tracker URLs, or encryption keys.
+setup and workflow help. Use the
+[issue forms](https://github.com/Kha-kis/manga-arr/issues/new/choose) for
+reproducible bugs and scoped feature proposals. Support expectations are in
+[SUPPORT.md](SUPPORT.md).
+
+## License
+
+Mangarr is licensed under the [GNU Affero General Public License v3.0 only](LICENSE)
+(`AGPL-3.0-only`). If you modify Mangarr and make it available to users over a
+network, you must offer those users the corresponding source code under the
+same license.
+
+Copyright (C) 2026 Kha-kis.

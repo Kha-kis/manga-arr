@@ -14,6 +14,12 @@ docker-compose.override.yml
 /.test-config/
 .codex
 .claude/
+/.agents/
+/.serena/
+/design-system/
+/skills-lock.json
+/AGENTS.md
+/CLAUDE.md
 node_modules/
 .DS_Store
 *.log
