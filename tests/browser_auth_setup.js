@@ -23,6 +23,12 @@ async function run() {
   }
 
   await page.waitForSelector('#setup-token:focus');
+  await page.fill('#setup-username', 'browser-admin');
+  const usernameIsValid = await page.$eval(
+    '#setup-username',
+    input => input.checkValidity(),
+  );
+  if (!usernameIsValid) throw new Error('valid setup username failed native validation');
   const result = await page.evaluate(() => {
     const controls = [...document.querySelectorAll('.auth-panel input:not([type="hidden"])')];
     const submit = document.querySelector('.auth-panel button[type="submit"]');
