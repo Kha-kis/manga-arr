@@ -151,7 +151,7 @@
               <label class="form-label">Port</label>
               <input type="number" name="port" class="form-control" value="{{ c.port or '' }}" placeholder="8080">
             </div>
-            <div class="col-2 d-flex align-items-end pb-1" x-show="!isSuwayomi()" x-cloak>
+            <div class="col-2 d-flex align-items-end pb-1" x-show.important="!isSuwayomi()" x-cloak>
               <div class="form-check form-switch">
                 <input type="hidden" name="use_ssl" value="0">
                 <input class="form-check-input" type="checkbox" name="use_ssl" value="1"
@@ -265,7 +265,7 @@
               <label class="form-label">Client Priority</label>
               <input type="number" name="priority" class="form-control" value="{{ c.priority }}" min="1">
             </div>
-            <div class="col-9 d-flex align-items-end gap-4 pb-1" x-show="!isSuwayomi()" x-cloak>
+            <div class="col-9 d-flex align-items-end gap-4 pb-1" x-show.important="!isSuwayomi()" x-cloak>
               <div class="form-check form-switch">
                 <input type="hidden" name="remove_completed" value="0">
                 <input class="form-check-input" type="checkbox" name="remove_completed" value="1"
@@ -390,7 +390,7 @@
               <label class="form-label">Port</label>
               <input type="number" name="port" class="form-control" placeholder="8080">
             </div>
-            <div class="col-2 d-flex align-items-end pb-1" x-show="!isSuwayomi()" x-cloak>
+            <div class="col-2 d-flex align-items-end pb-1" x-show.important="!isSuwayomi()" x-cloak>
               <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" name="use_ssl" value="1" id="ssl_new">
                 <label class="form-check-label" for="ssl_new">Use SSL</label>
@@ -489,7 +489,7 @@
               <label class="form-label">Client Priority</label>
               <input type="number" name="priority" class="form-control" value="1" min="1">
             </div>
-            <div class="col-9 d-flex align-items-end gap-4 pb-1" x-show="!isSuwayomi()" x-cloak>
+            <div class="col-9 d-flex align-items-end gap-4 pb-1" x-show.important="!isSuwayomi()" x-cloak>
               <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" name="remove_completed" value="1" id="rc_new">
                 <label class="form-check-label" for="rc_new">Remove Completed

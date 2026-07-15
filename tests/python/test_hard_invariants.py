@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 APP_DIR = pathlib.Path(__file__).resolve().parents[2] / "app"
 ROUTERS_DIR = APP_DIR / "routers"
+TEMPLATES_DIR = APP_DIR / "templates"
 
 sys.path.insert(0, "tests/python")
 sys.path.insert(0, "app")
@@ -69,6 +70,44 @@ def test_app_code_has_no_stale_audit_markers():
                 offenders.append(f"{rel}:{lineno}: {line.strip()}")
 
     assert not offenders, "stale source markers found:\n" + "\n".join(offenders)
+
+
+def test_alpine_x_show_overrides_bootstrap_display_utilities():
+    """Bootstrap display utilities use ``!important`` and defeat plain x-show.
+
+    Alpine must use its ``.important`` modifier on the same element, otherwise
+    a false expression still remains visible and can break responsive layout.
+    """
+    display_utility_re = re.compile(
+        r"\bd(?:-(?:sm|md|lg|xl|xxl))?-(?:none|inline|inline-block|block|grid|"
+        r"inline-grid|table|table-row|table-cell|flex|inline-flex)\b"
+    )
+    tag_re = re.compile(r"<[^>]+>", re.DOTALL)
+    class_re = re.compile(r"\bclass\s*=\s*['\"]([^'\"]+)['\"]", re.DOTALL)
+    x_show_re = re.compile(r"\bx-show(?P<modifiers>(?:\.[\w-]+)*)\s*=")
+    offenders = []
+
+    for path in sorted(TEMPLATES_DIR.rglob("*.html")):
+        source = path.read_text()
+        for tag_match in tag_re.finditer(source):
+            tag = tag_match.group(0)
+            class_match = class_re.search(tag)
+            x_show_match = x_show_re.search(tag)
+            if not class_match or not x_show_match:
+                continue
+            if not display_utility_re.search(class_match.group(1)):
+                continue
+            modifiers = x_show_match.group("modifiers").split(".")
+            if "important" not in modifiers:
+                line = source.count("\n", 0, tag_match.start()) + 1
+                rel = path.relative_to(APP_DIR.parent).as_posix()
+                offenders.append(f"{rel}:{line}")
+
+    assert not offenders, (
+        "x-show shares an element with a Bootstrap display utility; use "
+        "x-show.important so Bootstrap's !important rule cannot keep it "
+        "visible:\n" + "\n".join(offenders)
+    )
 
 
 # ───────────────────── int(vol_num) silent truncation ─────────────────────
