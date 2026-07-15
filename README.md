@@ -1,17 +1,37 @@
 # Mangarr
 
-A self-hosted manga library manager — the `*arr`-style companion for
-manga and light-novel releases. FastAPI + Jinja2 + HTMX + Alpine,
-backed by SQLite.
+Mangarr is a self-hosted manga and light-novel library manager. It applies the
+`*arr` workflow to volumes, chapters, editions, and multi-volume packs: monitor
+a series, search indexers, send a release to a download client, import the
+completed files, and notify the rest of your media stack.
 
-Mangarr watches indexers (Prowlarr / Torznab / Newznab), monitors
-your series for new volumes and chapters, hands downloads off to
-qBittorrent, SABnzbd, or Suwayomi, imports completed files into
-your library, and notifies downstream tools (Komga, Discord, Ntfy,
-Gotify, Apprise, Pushover, Pushbullet, Slack, generic webhooks,
-email).
+**Current release:** `1.0.0-rc.1`. This is a release candidate. Back up
+`/config` before upgrading and pin the image version while evaluating it.
 
-## Getting started
+## Features
+
+- Manga-aware volume, chapter, edition, omnibus, and pack tracking
+- Prowlarr, Torznab, and Newznab indexers
+- qBittorrent and SABnzbd download clients
+- Suwayomi direct-download search and handoff
+- Quality profiles, custom formats, release profiles, delay profiles, and
+  language profiles
+- Automatic and manual import with CBZ/CBR handling and `ComicInfo.xml`
+- Existing-library discovery, adoption, rescan, rename preview, and organize
+  workflows
+- AniList, MangaDex, MangaUpdates, and Kitsu metadata reconciliation
+- Komga, Discord, Ntfy, Gotify, Apprise, Pushover, Pushbullet, Slack, email,
+  and generic webhook notifications
+- Sonarr-style `/api/v1` and `/api/v3` compatibility surfaces for automation
+- Single-administrator browser login plus separate API-key authentication
+
+The detailed compatibility inventory and intentional non-goals are in
+[`docs/sonarr-parity.md`](docs/sonarr-parity.md).
+
+## Quick Start
+
+Requirements: Docker Engine with the Compose plugin and host directories that
+are writable by UID/GID 1000, or the UID/GID configured in `.env`.
 
 ```bash
 git clone https://github.com/Kha-kis/manga-arr.git
@@ -22,132 +42,109 @@ docker compose up -d
 docker compose exec mangarr cat /config/.mangarr-setup-token
 ```
 
-Then open <http://127.0.0.1:6789> and create the local administrator
-with that one-time token. The token file is mode `0600` and is removed
-after setup. The compose file publishes on loopback by default. For LAN
-or internet access, see
+Open <http://127.0.0.1:6789> and create the local administrator with the
+one-time setup token. The token file is mode `0600` and is removed after setup.
+
+The public Compose file:
+
+- pulls `ghcr.io/kha-kis/manga-arr:${MANGARR_VERSION:-latest}`;
+- publishes only on host loopback by default;
+- runs the container without root privileges;
+- stores persistent state in `./config` and media/download data in `./data`.
+
+Copy [`.env.example`](.env.example) to `.env` to pin a release or change the
+bind address, port, runtime UID/GID, paths, timezone, or initial settings.
+Configure indexers, download clients, metadata providers, and notifications in
+the Mangarr UI.
+
+For LAN or internet access, reverse-proxy configuration, file ownership,
+backup, upgrade, and recovery instructions, read
 [`docs/deployment.md`](docs/deployment.md).
 
-The default deployment pulls `ghcr.io/kha-kis/manga-arr:latest`, runs as
-UID/GID 1000, and keeps all persistent state in the host-visible
-`./config` and `./data` directories. Copy [`.env.example`](.env.example)
-to `.env` to select a version, port, bind address, UID/GID, or different
-host paths. Configure integrations and credentials in the Mangarr UI.
-Browser login and API keys are separate: use the administrator account
-for the UI and the API key from Settings for clients and automation.
+## Authentication
 
-## Deployment & security
+Browser and API authentication are deliberately separate:
 
-- **[`docs/deployment.md`](docs/deployment.md)** — why the container
-  binds `0.0.0.0`, how to publish it safely (local-only / LAN /
-  reverse proxy), and a security checklist covering API-key,
-  CSRF cookie flags, `/config` permissions, encrypted-secret key
-  backup/recovery, and the `.env` template.
+- Use the local administrator account for the browser UI.
+- Use the API key from **Settings > General** for clients and automation.
+- Keep the default loopback bind until first-run administrator setup is done.
+- Put Mangarr behind an HTTPS reverse proxy before exposing it beyond a trusted
+  LAN. Do not publish the application directly to the internet.
 
-The default `docker-compose.yml` ships the safest pattern:
-`ports: ["127.0.0.1:6789:8000"]` — only the host machine can
-reach Mangarr. Move to a reverse proxy before exposing it to a LAN
-or the internet.
-
-## Security hardening completed (April 2026)
-
-A full external security audit closed with **15 merged PRs** covering
-every Critical, High, and Medium finding from the original report.
-The deferred H4 plaintext-secrets item has since been closed by a
-follow-up encryption-at-rest sweep. See [`CHANGELOG.md`](CHANGELOG.md)
-for per-PR detail. One-line summary of what each PR addressed:
-
-| PR | Severity | Finding |
-|---:|---|---|
-| [#1](https://github.com/Kha-kis/manga-arr/pull/1)  | **C1 + C3**    | Path traversal in import pipeline + XXE in ComicInfo / RSS / Torznab parsing |
-| [#2](https://github.com/Kha-kis/manga-arr/pull/2)  | **C2**         | SSRF protection on user-supplied outbound URLs (notifications, RSS, Komga test, indexers, cover URLs) |
-| [#3](https://github.com/Kha-kis/manga-arr/pull/3)  | (bonus)        | `init_db` ordering bug — chapters table add_col before CREATE TABLE |
-| [#4](https://github.com/Kha-kis/manga-arr/pull/4)  | **C2 follow-up** | Slack webhook validation + deterministic DNS acceptance test |
-| [#5](https://github.com/Kha-kis/manga-arr/pull/5)  | **H2**         | API-key middleware fails closed when `api_key` is blank; auto-seed on startup |
-| [#6](https://github.com/Kha-kis/manga-arr/pull/6)  | **H3**         | Bounded concurrent imports + atomic queue-row claim |
-| [#7](https://github.com/Kha-kis/manga-arr/pull/7)  | **H1**         | Background task lifecycle — tracking, cancel on shutdown, log unexpected exits |
-| [#8](https://github.com/Kha-kis/manga-arr/pull/8)  | **M2**         | Batch-atomic multi-file imports (staging dir + SQLite `SAVEPOINT` rollback) |
-| [#9](https://github.com/Kha-kis/manga-arr/pull/9)  | (bonus)        | `log_event` accepts the active connection to avoid `SQLITE_BUSY` inside write transactions |
-| [#10](https://github.com/Kha-kis/manga-arr/pull/10) | **M1**         | CSRF cookie `SameSite=Strict`, `HttpOnly`, conditional `Secure`; token exposed via `<meta>` for HTMX |
-| [#11](https://github.com/Kha-kis/manga-arr/pull/11) | **M3**         | Custom-format / release-profile regex ReDoS protection (nested-quantifier rejection + input-length cap) |
-| [#12](https://github.com/Kha-kis/manga-arr/pull/12) | **M4**         | Explicit allowlists for request-controlled `ORDER BY` |
-| [#13](https://github.com/Kha-kis/manga-arr/pull/13) | **M5**         | Input-shape guards on `add_col` and `fire_notifications` f-string SQL helpers |
-| [#14](https://github.com/Kha-kis/manga-arr/pull/14) | **M7**         | Log (don't silently swallow) at four best-effort exception sites |
-| [#15](https://github.com/Kha-kis/manga-arr/pull/15) | **M8**         | Deployment + network-binding documentation |
-
-### Follow-up hardening completed after the audit release
-
-- **H4 — secret encryption at rest** is now implemented for settings,
-  indexer API keys, download-client passwords, and encrypted secret
-  fields inside notification-connection settings JSON. Existing
-  plaintext rows are migrated in place when the secret cipher is
-  available at startup.
-- Master-key resolution order is:
-  `MANGARR_SECRET_KEY` environment variable, then
-  `/config/.mangarr-secret-key`, then auto-generation of that file on
-  first boot. The key file is created with mode `0600`.
-- Back up the SQLite database and `/config/.mangarr-secret-key`
-  together. Restoring one without the other leaves encrypted
-  credentials unreadable.
-- If Mangarr starts with the wrong key, encrypted credentials are
-  treated as unavailable and affected integrations fail closed until
-  you restore the correct key or re-enter the credentials in the UI.
-- Key rotation is not yet supported. To change keys safely, plan on
-  re-entering stored credentials after switching to the new key.
-
-### Tests added by the hardening sweep
-
-The audit started with no Python test harness at all. It ended with
-**172 tests** across 10 files:
-
-| File | Tests | What it covers |
-|---|--:|---|
-| `tests/python/test_api_key_middleware.py`    | 12 | H2 middleware fail-closed + `ensure_api_key` |
-| `tests/python/test_background_tasks.py`      |  7 | H1 tracked tasks + graceful cancel + exception logging |
-| `tests/python/test_csrf_cookie.py`           | 14 | M1 cookie flags + `_should_secure_cookie` helper |
-| `tests/python/test_docs_consistency.py`      |  6 | M8 guards: `Dockerfile` / `compose` / `.env.example` stay in sync with the doc |
-| `tests/python/test_fstring_input_shape.py`   | 16 | M5 identifier + typedef validators + event whitelist |
-| `tests/python/test_import_atomicity.py`      | 17 | M2 `_ImportStaging` primitives + 5 `_execute_import` integration tests |
-| `tests/python/test_import_concurrency.py`    |  9 | H3 semaphore bound + claim race |
-| `tests/python/test_init_db.py`               |  3 | #3 fresh-install init + idempotency regression |
-| `tests/python/test_log_event.py`             |  6 | #9 `db=` parameter + performance floor |
-| `tests/python/test_order_by.py`              | 14 | M4 `build_order_by` + SQL injection payloads |
-| `tests/python/test_regex_safety.py`          | 21 | M3 `safe_regex_search` + `compile_user_regex` + integration |
-| `tests/python/test_security.py`              | 10 | C1 path traversal + C3 XXE |
-| `tests/python/test_silent_except_logging.py` |  7 | M7 log-not-swallow + rollback masking guard |
-| `tests/python/test_ssrf.py`                  | 29 | C2 SSRF helper + 11 sink wirings |
-
-Run them with:
+If the administrator password is lost, the offline recovery command revokes all
+browser sessions and creates a new setup token without changing library data or
+the API key:
 
 ```bash
-PYTHONPYCACHEPREFIX=/tmp/mangarr-pyc python3 -m pytest tests/python/ -v
+docker compose exec mangarr python /app/auth_cli.py reset-admin --yes
 ```
+
+See [`SECURITY.md`](SECURITY.md) for supported versions and private
+vulnerability reporting.
+
+## Upgrading
+
+Pin `MANGARR_VERSION` to an immutable release tag in `.env`, back up the SQLite
+database and `/config/.mangarr-secret-key` together, then pull and recreate only
+Mangarr:
+
+```bash
+docker compose pull mangarr
+docker compose up -d --no-deps mangarr
+docker compose ps mangarr
+```
+
+Verify `/healthz`, the System Status page, and a representative search/import
+workflow after an upgrade. Do not run an older image against a database already
+migrated by a newer release; restore the matching pre-upgrade `/config` backup
+when rolling back. The full procedure is in
+[`docs/deployment.md`](docs/deployment.md#upgrading-and-rollback).
+
+## Data And Backups
+
+Persistent application state lives under `/config`:
+
+- `manga_arr.db`: SQLite database
+- `.mangarr-secret-key`: key used to encrypt stored integration credentials
+- `covers/`: cached cover images
+- `backups/`: application-created database backups
+
+The database and secret key are one recovery unit. A database restored without
+its matching key cannot decrypt saved credentials. The Backup page validates
+database backup ZIP files, but restore remains an offline maintenance action.
 
 ## Development
 
-The app source is `app/`. Templates are in `app/templates/`. Routers
-are in `app/routers/`. Shared helpers (`get_db`, `safe_regex_search`,
-`validate_outbound_url`, `validate_sql_identifier`, `build_order_by`,
-…) live in `app/shared.py` or `app/security.py`.
-
-Planning docs:
-
-- **[`docs/sonarr-parity.md`](docs/sonarr-parity.md)** — current
-  Sonarr/Servarr parity inventory, including implemented areas,
-  remaining gaps, non-goals, and the recommended execution order.
-
-Lint and type:
+Application code is in `app/`, Jinja templates are in `app/templates/`, and
+tests are in `tests/`.
 
 ```bash
-ruff check app/
-mypy --ignore-missing-imports --no-strict-optional --follow-imports=silent app/main.py
+make test
 ```
 
-Both are currently at baseline — the hardening sweep was careful not
-to introduce new findings.
+Before a release candidate or merge that changes a critical workflow, run the
+isolated browser gate as well:
 
-## Project instructions for Claude Code
+```bash
+make test-release-safe
+```
 
-See [`CLAUDE.md`](CLAUDE.md) and [`.claude/skills/`](.claude/skills/)
-for the project-specific agent briefings, including the accessibility,
-frontend-design, and SEO skill packs used in frontend work.
+`make test-release` additionally exercises the operator's live database and is
+manual-only. Do not use it as a normal development gate.
+
+Additional project references:
+
+- [`docs/deployment.md`](docs/deployment.md): deployment and recovery
+- [`docs/releases.md`](docs/releases.md): versioning and release process
+- [`docs/sonarr-parity.md`](docs/sonarr-parity.md): compatibility scope
+- [`CHANGELOG.md`](CHANGELOG.md): release notes
+- [`tests/README.md`](tests/README.md): test architecture
+- [`CLAUDE.md`](CLAUDE.md): codebase invariants and contributor guidance
+
+## Support
+
+Use [GitHub Issues](https://github.com/Kha-kis/manga-arr/issues) for reproducible
+bugs and focused feature requests. Include the Mangarr version shown on
+**System > Status**, deployment method, relevant sanitized logs, and exact
+reproduction steps. Do not post API keys, setup tokens, passwords, private
+tracker URLs, or encrypted-secret keys.

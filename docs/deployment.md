@@ -380,6 +380,62 @@ re-encrypt all stored secrets under a new master key. If you must change
 keys today, plan on re-entering stored credentials after switching to
 the new key.
 
+## Upgrading And Rollback
+
+Use immutable version tags for normal deployments. Set the target version in
+`.env` before pulling:
+
+```env
+MANGARR_VERSION=1.0.0-rc.1
+```
+
+### Before an upgrade
+
+1. Read the target entry in `CHANGELOG.md`, especially its upgrade notes.
+2. Confirm the current version on **System > Status**.
+3. Create and validate a database backup from **System > Backup**.
+4. Back up `/config/.mangarr-secret-key` with that database backup.
+5. Record the currently deployed image tag or digest.
+
+For the strongest rollback point, stop Mangarr and take a filesystem-level copy
+of the entire host directory mounted at `/config`. A stopped copy keeps the
+database, secret key, covers, and backup inventory in one consistent snapshot.
+
+### Deploy the upgrade
+
+```bash
+docker compose pull mangarr
+docker compose up -d --no-deps mangarr
+docker compose ps mangarr
+```
+
+Wait for the service to report `healthy`, then verify:
+
+- `GET /healthz` returns `{"status":"ok"}`;
+- **System > Status** shows the target version;
+- the library and queue load without health blockers;
+- one representative metadata search and download-client connection test pass.
+
+Database migrations run during startup. Do not interrupt the container while a
+migration is active.
+
+### Roll back
+
+Do not point an older image at a database already migrated by a newer release.
+Application code can be reverted by changing `MANGARR_VERSION`, but a complete
+rollback must restore the matching pre-upgrade `/config` snapshot:
+
+1. Stop Mangarr.
+2. Preserve the failed-upgrade `/config` directory for diagnosis.
+3. Restore the pre-upgrade database and its matching secret key, or restore the
+   complete pre-upgrade `/config` snapshot.
+4. Set `MANGARR_VERSION` back to the recorded tag or digest.
+5. Start Mangarr and verify health, version, library counts, and credentials.
+
+Never mix a restored database with a different `.mangarr-secret-key`. If the
+key does not match, encrypted integration credentials remain unavailable until
+the correct key is restored or each credential is re-entered.
+
 ## TL;DR
 
 Create the host-visible directories before first boot so the non-root
