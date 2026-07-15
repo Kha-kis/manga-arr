@@ -140,6 +140,19 @@ def init_db():
                 alias     TEXT    NOT NULL,
                 UNIQUE(series_id, alias)
             );
+            CREATE TABLE IF NOT EXISTS series_metadata_sources (
+                series_id       INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+                source          TEXT    NOT NULL,
+                status          TEXT    NOT NULL DEFAULT 'pending'
+                                        CHECK(status IN ('pending','refreshing','healthy','degraded','failed')),
+                last_attempt_at TEXT,
+                last_success_at TEXT,
+                next_retry_at   TEXT,
+                failure_count   INTEGER NOT NULL DEFAULT 0,
+                error           TEXT,
+                details         TEXT,
+                PRIMARY KEY(series_id, source)
+            );
             CREATE TABLE IF NOT EXISTS pending_releases (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 series_id  INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
@@ -281,6 +294,9 @@ def init_db():
         # back every CREATE TABLE that ran earlier in init_db.
         add_col('chapters',           'quality',          'TEXT')
         add_col('chapters',           'imported_at',      'TEXT')
+        add_col('chapters',           'pages',            'INTEGER')
+        add_col('chapters',           'metadata_source',  'TEXT')
+        add_col('chapters',           'metadata_updated_at', 'TEXT')
         # Multi-chapter file support (e.g. c001-002 packs in one CBZ).
         # When set, this row covers chapter_num..chapter_range_end inclusive
         # via a single import_path. NULL preserves the original one-row-per-
@@ -524,6 +540,8 @@ def init_db():
             );
         """)
 
+        add_col('series_tags', 'source', 'TEXT')
+
         # ── Series quality_profile_id column ─────────────────────────────────
         add_col('series', 'quality_profile_id',    'INTEGER REFERENCES quality_profiles(id)')
         add_col('series', 'language_profile_id',  'INTEGER REFERENCES language_profiles(id)')
@@ -533,6 +551,29 @@ def init_db():
         # Update strategy (Suwayomi-inspired): always | once | throttled
         add_col('series', 'update_strategy',       "TEXT DEFAULT 'always'")
         add_col('series', 'last_metadata_refresh', 'TEXT')   # ISO datetime of last AniList refresh
+        add_col('series', 'metadata_status',        "TEXT DEFAULT 'pending'")
+        add_col('series', 'metadata_last_attempt',  'TEXT')
+        add_col('series', 'metadata_error',         'TEXT')
+        add_col('series', 'chapter_map_source',     'TEXT')
+        add_col('series', 'chapter_map_updated_at', 'TEXT')
+        add_col('series', 'cover_cached_url',       'TEXT')
+        add_col('series', 'cover_updated_at',       'TEXT')
+        add_col('series', 'chapter_count_source',   "TEXT DEFAULT 'anilist'")
+        add_col('series_aliases', 'source',         'TEXT')
+        # No refresh task survives a process restart. Recover any attempt that
+        # was persisted while the previous process was shutting down.
+        db.execute(
+            "UPDATE series SET metadata_status=CASE"
+            " WHEN last_metadata_refresh IS NULL THEN 'pending' ELSE 'degraded' END,"
+            " metadata_error='previous metadata refresh was interrupted'"
+            " WHERE metadata_status='refreshing'"
+        )
+        db.execute(
+            "UPDATE series_metadata_sources SET status=CASE"
+            " WHEN last_success_at IS NULL THEN 'pending' ELSE 'degraded' END,"
+            " error='previous provider refresh was interrupted'"
+            " WHERE status='refreshing'"
+        )
         # Required scanlator: if set, only grab releases matching this group (strict mode)
         add_col('series', 'required_scanlator',    'TEXT')
         # Source type preference: any | official_only | fan_only
@@ -727,6 +768,7 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_blocklist_series       ON blocklist(series_id)",
             "CREATE INDEX IF NOT EXISTS idx_import_queue_series    ON import_queue(series_id)",
             "CREATE INDEX IF NOT EXISTS idx_events_series_time     ON events(series_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_metadata_sources_retry ON series_metadata_sources(status, next_retry_at)",
         ]:
             db.execute(_idx_stmt)
 
@@ -1236,6 +1278,9 @@ def _migrate_owned_status_constraints(db) -> None:
                 quality           TEXT,
                 imported_at       TEXT,
                 chapter_range_end REAL,
+                pages             INTEGER,
+                metadata_source   TEXT,
+                metadata_updated_at TEXT,
                 UNIQUE(series_id, chapter_num)
             )
         """),

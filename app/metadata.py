@@ -30,6 +30,7 @@ Pure move — no behaviour changes.
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import re
 
@@ -112,8 +113,96 @@ query ($id: Int) {
 }
 """
 
+ANILIST_BY_ID_QUERY = """
+query ($id: Int) {
+  Media(id: $id, type: MANGA) {
+    id
+    idMal
+    title { romaji english }
+    synonyms
+    genres
+    coverImage { large }
+    status
+    format
+    description(asHtml: false)
+    volumes
+    chapters
+    startDate { year }
+  }
+}
+"""
 
-async def fetch_anilist_aliases(series_id: int, anilist_id: int, main_title: str):
+
+class MetadataProviderError(RuntimeError):
+    """A provider could not return a valid metadata response."""
+
+
+def _clean_description(value: str | None) -> str:
+    text = re.sub(r"<[^>]+>", " ", value or "")
+    return re.sub(r"\s+", " ", html.unescape(text)).strip()[:4000]
+
+
+def _anilist_media_to_result(media: dict) -> dict:
+    title_block = media.get("title") or {}
+    title = title_block.get("english") or title_block.get("romaji", "")
+    return {
+        "anilist_id": media["id"],
+        "mal_id": media.get("idMal"),
+        "mu_id": None,
+        "title": title,
+        "romaji_title": title_block.get("romaji") or "",
+        "aliases": media.get("synonyms") or [],
+        "genres": media.get("genres") or [],
+        "cover_url": (media.get("coverImage") or {}).get("large", ""),
+        "status": media.get("status", ""),
+        "format": media.get("format", ""),
+        "volumes": media.get("volumes"),
+        "chapters": media.get("chapters"),
+        "pub_year": (media.get("startDate") or {}).get("year"),
+        "description": _clean_description(media.get("description")),
+        "source": "anilist",
+    }
+
+
+async def fetch_anilist_by_id(anilist_id: int) -> dict:
+    """Fetch one exact AniList record; never fuzzy-match a stored identity."""
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.post(
+                    "https://graphql.anilist.co",
+                    json={
+                        "query": ANILIST_BY_ID_QUERY,
+                        "variables": {"id": int(anilist_id)},
+                    },
+                    headers={"Content-Type": "application/json"},
+                )
+            if response.status_code == 429:
+                wait = int(response.headers.get("Retry-After", "30"))
+                if attempt < 2:
+                    await asyncio.sleep(min(wait, 120))
+                    continue
+            response.raise_for_status()
+            payload = response.json()
+            if payload.get("errors"):
+                raise MetadataProviderError(str(payload["errors"][0].get("message", "GraphQL error")))
+            media = (payload.get("data") or {}).get("Media")
+            if not media:
+                raise MetadataProviderError(f"AniList manga {anilist_id} was not found")
+            return _anilist_media_to_result(media)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            last_error = exc
+            if attempt < 2:
+                await asyncio.sleep(2 * (attempt + 1))
+    raise MetadataProviderError(
+        f"AniList {anilist_id} failed: {type(last_error).__name__}: {str(last_error)[:180]}"
+    )
+
+
+async def fetch_anilist_aliases(series_id: int, anilist_id: int, main_title: str) -> bool:
     """Fetch romaji title + synonyms from AniList and store as series aliases."""
     try:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -125,7 +214,7 @@ async def fetch_anilist_aliases(series_id: int, anilist_id: int, main_title: str
         data = r.json().get("data", {}).get("Media", {})
     except Exception as e:
         log_event("metadata_fetch_failed", f"[AniList] alias fetch error: {e}", series_id)
-        return
+        return False
 
     candidates = []
     title_block = data.get("title", {})
@@ -167,9 +256,11 @@ async def fetch_anilist_aliases(series_id: int, anilist_id: int, main_title: str
     )
     if genres:
         log_event("metadata", f"[AniList] genres tagged for series {series_id}: {genres[:8]}", series_id)
+    return True
 
 
-async def anilist_search(query: str) -> list[dict]:
+async def anilist_search(query: str, *, strict: bool = False) -> list[dict]:
+    last_error: Exception | None = None
     for attempt in range(3):
         try:
             async with httpx.AsyncClient(timeout=15) as client:
@@ -181,45 +272,44 @@ async def anilist_search(query: str) -> list[dict]:
             if r.status_code == 429:
                 retry_after = int(r.headers.get("Retry-After", "60"))
                 log_event("metadata", f"[AniList] Rate limited — waiting {retry_after}s (attempt {attempt + 1}/3)")
-                await asyncio.sleep(min(retry_after, 120))
-                continue
+                if attempt < 2:
+                    await asyncio.sleep(min(retry_after, 120))
+                    continue
+            r.raise_for_status()
             data = r.json()
+            if data.get("errors"):
+                raise MetadataProviderError(
+                    str(data["errors"][0].get("message", "GraphQL error"))
+                )
             break
         except Exception as e:
+            last_error = e
             log_event("metadata_fetch_failed", f"[AniList] error (attempt {attempt + 1}/3): {e}")
             if attempt < 2:
                 await asyncio.sleep(5 * (attempt + 1))
             else:
+                if strict:
+                    raise MetadataProviderError(
+                        f"AniList search failed: {type(e).__name__}: {str(e)[:180]}"
+                    ) from e
                 return []
     else:
+        if strict:
+            raise MetadataProviderError(
+                f"AniList search failed: {type(last_error).__name__}:"
+                f" {str(last_error)[:180]}"
+            )
         return []
     results = []
     for m in data.get("data", {}).get("Page", {}).get("media", []):
-        title = m["title"].get("english") or m["title"].get("romaji", "")
-        desc = re.sub(r"<[^>]+>", "", (m.get("description") or ""))[:300].strip()
-        results.append(
-            {
-                "anilist_id": m["id"],
-                "mal_id": m.get("idMal"),
-                "mu_id": None,
-                "title": title,
-                "cover_url": m["coverImage"]["large"],
-                "status": m.get("status", ""),
-                "format": m.get("format", ""),
-                "volumes": m.get("volumes"),
-                "chapters": m.get("chapters"),
-                "pub_year": (m.get("startDate") or {}).get("year"),
-                "description": desc,
-                "source": "anilist",
-            }
-        )
+        results.append(_anilist_media_to_result(m))
     return results
 
 
 # ── MangaUpdates ─────────────────────────────────────────────────────────────
 
 
-async def mu_search(query: str) -> list[dict]:
+async def mu_search(query: str, *, strict: bool = False) -> list[dict]:
     """Search MangaUpdates — used as fallback when AniList has no results."""
     try:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -228,9 +318,14 @@ async def mu_search(query: str) -> list[dict]:
                 json={"search": query, "per_page": 12},
                 headers={"Content-Type": "application/json"},
             )
+        r.raise_for_status()
         data = r.json()
     except Exception as e:
         log_event("metadata_fetch_failed", f"[MangaUpdates] search error: {e}")
+        if strict:
+            raise MetadataProviderError(
+                f"MangaUpdates search failed: {type(e).__name__}: {str(e)[:180]}"
+            ) from e
         return []
     results = []
     for item in data.get("results", []):
@@ -244,7 +339,7 @@ async def mu_search(query: str) -> list[dict]:
         # Cover image
         img = rec.get("image") or {}
         cover = (img.get("url") or {}).get("original") or ""
-        desc = re.sub(r"<[^>]+>", "", (rec.get("description") or ""))[:300].strip()
+        desc = _clean_description(rec.get("description"))
         results.append(
             {
                 "anilist_id": None,
@@ -277,37 +372,8 @@ async def search_series(query: str) -> tuple[list[dict], str]:
 
     # Bare numeric ID → look up AniList by ID directly
     if q.isdigit():
-        _id_gql = "query($id:Int){Media(id:$id,type:MANGA){id idMal title{english romaji} coverImage{large} status volumes chapters startDate{year} description genres}}"
         try:
-            async with httpx.AsyncClient(timeout=15) as _id_cli:
-                _r = await _id_cli.post(
-                    "https://graphql.anilist.co",
-                    json={"query": _id_gql, "variables": {"id": int(q)}},
-                    headers={"Content-Type": "application/json"},
-                )
-            _m = (_r.json().get("data") or {}).get("Media")
-            if _m:
-                _title = (_m.get("title") or {}).get("english") or (
-                    _m.get("title") or {}
-                ).get("romaji", "")
-                _desc = re.sub(r"<[^>]+>", "", (_m.get("description") or ""))[
-                    :300
-                ].strip()
-                return [
-                    {
-                        "anilist_id": _m["id"],
-                        "mal_id": _m.get("idMal"),
-                        "mu_id": None,
-                        "title": _title,
-                        "cover_url": (_m.get("coverImage") or {}).get("large", ""),
-                        "status": _m.get("status", ""),
-                        "volumes": _m.get("volumes"),
-                        "chapters": _m.get("chapters"),
-                        "pub_year": ((_m.get("startDate") or {}).get("year")),
-                        "description": _desc,
-                        "source": "anilist",
-                    }
-                ], "anilist"
+            return [await fetch_anilist_by_id(int(q))], "anilist"
         except Exception:
             pass  # fall through to text search
 
@@ -326,34 +392,59 @@ async def fetch_mangadex_id(
 ) -> tuple[str | None, dict]:
     """Find MangaDex manga UUID by matching AniList or MangaUpdates ID in external links.
     Returns (mangadex_uuid, links_dict) where links_dict has al/mal/mu/kt keys."""
+    def _score(candidate: str, query: str) -> float:
+        left = set(normalize(candidate).split())
+        right = set(normalize(query).split())
+        if not left or not right:
+            return 0.0
+        overlap = left & right
+        if not overlap:
+            return 0.0
+        recall = len(overlap) / len(right)
+        precision = len(overlap) / len(left)
+        return 2 * recall * precision / (recall + precision)
+
+    queries = [title]
+    for shortened in (title.split(":", 1)[0], title.split("(", 1)[0]):
+        shortened = shortened.strip()
+        if shortened and shortened not in queries:
+            queries.append(shortened)
+
     try:
+        best: tuple[float, str, dict] | None = None
         async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.get(
-                "https://api.mangadex.org/manga",
-                params={
-                    "title": title,
-                    "limit": 15,
-                    "order[relevance]": "desc",
-                    "contentRating[]": ["safe", "suggestive", "erotica"],
-                },
-            )
-        data = r.json()
-        best_id: str | None = None
-        best_links: dict[str, str] = {}
-        for manga in data.get("data", []):
-            links = manga.get("attributes", {}).get("links", {}) or {}
-            # Match by AniList ID (most reliable)
-            if anilist_id and str(links.get("al", "")) == str(anilist_id):
-                return manga["id"], links
-            # Match by MangaUpdates slug (convert our numeric id to slug for comparison)
-            if mu_id:
-                mu_slug = mu_id_to_slug(mu_id)
-                if links.get("mu", "") == mu_slug:
-                    return manga["id"], links
-            if best_id is None:
-                best_id, best_links = manga["id"], links
-        if best_id:
-            return best_id, best_links
+            for query in queries:
+                r = await client.get(
+                    "https://api.mangadex.org/manga",
+                    params={
+                        "title": query,
+                        "limit": 15,
+                        "order[relevance]": "desc",
+                        "contentRating[]": ["safe", "suggestive", "erotica"],
+                    },
+                )
+                r.raise_for_status()
+                for manga in r.json().get("data", []):
+                    attrs = manga.get("attributes") or {}
+                    links = attrs.get("links") or {}
+                    if anilist_id and str(links.get("al", "")) == str(anilist_id):
+                        return manga["id"], links
+                    if mu_id and links.get("mu", "") == mu_id_to_slug(mu_id):
+                        return manga["id"], links
+
+                    titles = list((attrs.get("title") or {}).values())
+                    for alt in attrs.get("altTitles") or []:
+                        titles.extend(alt.values())
+                    # Shortened queries are discovery aids only. Confidence is
+                    # always measured against the stored title so a subtitle or
+                    # edition search cannot silently bind the base work.
+                    confidence = max((_score(str(value), title) for value in titles), default=0.0)
+                    if best is None or confidence > best[0]:
+                        best = (confidence, manga["id"], links)
+        # Never silently bind an unrelated first search result. A strong title
+        # match is an acceptable fallback when external IDs are absent.
+        if best and best[0] >= 0.85:
+            return best[1], best[2]
     except Exception as e:
         log_event(
             "metadata_fetch_failed",
@@ -412,18 +503,49 @@ async def fetch_kitsu_chapter_map(
                 headers={"Accept": "application/vnd.api+json"},
             )
         data = r.json()
-        kitsu_id = None
+        reference_titles = [title]
+        if re.search(
+            r"\((?:official\s+colou?r|colou?red|omnibus|deluxe|collector|remaster)\)",
+            title,
+            re.IGNORECASE,
+        ):
+            reference_titles.append(title.split("(", 1)[0].strip())
+
+        def _title_score(candidate: str) -> float:
+            candidate_words = set(normalize(candidate).split())
+            if not candidate_words:
+                return 0.0
+            best = 0.0
+            for reference in reference_titles:
+                reference_words = set(normalize(reference).split())
+                overlap = candidate_words & reference_words
+                if not overlap:
+                    continue
+                precision = len(overlap) / len(candidate_words)
+                recall = len(overlap) / len(reference_words)
+                best = max(best, 2 * precision * recall / (precision + recall))
+            return best
+
+        candidates: list[tuple[float, int, str]] = []
         for item in data.get("data", []):
             attrs = item.get("attributes", {})
-            # Match on chapterCount to narrow down (AniList doesn't expose ID via Kitsu directly)
-            ch_count = attrs.get("chapterCount") or 0
-            vol_count = attrs.get("volumeCount") or 0
-            # Prefer exact chapter count match, fall back to first result
-            if total_chapters and abs(ch_count - total_chapters) <= 2:
-                kitsu_id = item["id"]
-                break
-            if kitsu_id is None:
-                kitsu_id = item["id"]
+            titles = [
+                attrs.get("canonicalTitle") or "",
+                *((attrs.get("titles") or {}).values()),
+                *(attrs.get("abbreviatedTitles") or []),
+            ]
+            score = max((_title_score(str(value)) for value in titles), default=0.0)
+            if score < 0.85:
+                continue
+            chapter_count = int(attrs.get("chapterCount") or 0)
+            distance = (
+                abs(chapter_count - total_chapters)
+                if total_chapters and chapter_count
+                else 999999
+            )
+            candidates.append((score, -distance, item["id"]))
+
+        kitsu_id = max(candidates)[2] if candidates else None
 
         if not kitsu_id:
             return {}
@@ -534,7 +656,10 @@ def _trim_cvm_to_vol_range(
 
 
 def _validate_chapter_map(
-    mapping: dict, total_chapters: int | None, source: str
+    mapping: dict,
+    total_chapters: int | None,
+    source: str,
+    total_volumes: int | None = None,
 ) -> bool:
     """Return False if the map looks too sparse to be useful."""
     if not mapping:
@@ -544,7 +669,7 @@ def _validate_chapter_map(
         if coverage < 0.5:
             log_event("metadata", f"[{source}] map covers only {len(mapping)}/{total_chapters} chapters ({coverage:.0%}) — discarding")
             return False
-    if len(set(mapping.values())) < 2:
+    if len(set(mapping.values())) < 2 and total_volumes != 1:
         log_event("metadata", f"[{source}] all chapters map to same volume — discarding")
         return False
     return True

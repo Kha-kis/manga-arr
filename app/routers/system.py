@@ -490,7 +490,39 @@ async def run_command(request: Request):
     elif name == "BacklogSearch":
         _schedule_main_coroutine("backlog_search")
     elif name == "RefreshMetadata":
-        _schedule_main_coroutine("refresh_ongoing_loop")
+        requested_series_id = body.get("seriesId", body.get("series_id"))
+        if requested_series_id is not None and (
+            not isinstance(requested_series_id, int)
+            or isinstance(requested_series_id, bool)
+            or requested_series_id <= 0
+        ):
+            COMMAND_HISTORY.pop(record["id"], None)
+            return JSONResponse(
+                {"ok": False, "message": "seriesId must be a positive integer"},
+                status_code=400,
+            )
+        handler_name = (
+            "refresh_series_metadata"
+            if requested_series_id is not None
+            else "refresh_library_metadata"
+        )
+        refresh = getattr(main_module, handler_name, None) if main_module else None
+        if callable(refresh):
+            kwargs = {
+                "force": True,
+                "include_manifest": True,
+                "reason": "command",
+            }
+            coro = (
+                refresh(requested_series_id, **kwargs)
+                if requested_series_id is not None
+                else refresh(**kwargs)
+            )
+            _create(coro, name)
+        else:
+            _finish_command(
+                record, ok=False, message="RefreshMetadata handler is unavailable"
+            )
     elif name == "ImportListSync":
         _schedule_main_coroutine("import_list_sync")
     elif name == "Backup":

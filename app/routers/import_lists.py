@@ -375,12 +375,17 @@ async def _sync_list(lst: dict):
     for series_id, title, search_pattern, cover_url, al_id in added_entries:
         try:
             import main as _m
-            _m.create_background_task(_m.refresh_mangadex_map(series_id), name=f"import_list:{series_id}:refresh_mangadex")
-            if cover_url:
-                _m.create_background_task(_m.download_cover(series_id, cover_url), name=f"import_list:{series_id}:download_cover")
-            if al_id:
-                _m.create_background_task(_m.fetch_anilist_aliases(series_id, al_id, title), name=f"import_list:{series_id}:fetch_aliases")
-            _m.create_background_task(_m.fetch_mu_metadata(series_id, title), name=f"import_list:{series_id}:fetch_mu")
+            from metadata_service import refresh_series_metadata
+
+            _m.create_background_task(
+                refresh_series_metadata(
+                    series_id,
+                    force=True,
+                    include_manifest=True,
+                    reason="import_list",
+                ),
+                name=f"import_list:{series_id}:metadata",
+            )
             _m.create_background_task(_m.grab_existing(series_id, title, search_pattern), name=f"import_list:{series_id}:grab_existing")
         except Exception as e:
             try:

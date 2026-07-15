@@ -61,6 +61,13 @@ from metadata import (
 from parsing import normalize
 from shared import get_cfg, get_db
 from events import log_event
+from metadata_state import (
+    SOURCE_CHAPTER_MAP,
+    mark_source_attempt,
+    mark_source_failure,
+    mark_source_success,
+    utc_now_iso,
+)
 from volumes import create_volume_stubs, populate_chapters
 
 
@@ -69,7 +76,15 @@ from volumes import create_volume_stubs, populate_chapters
 # Edition types where AniList's total_volumes reflects the *standard* edition count,
 # not the special edition count. Stub auto-creation is suppressed for these; stubs
 # are instead created by rescan once real files are present.
-_NON_STANDARD_STUB_EDITIONS = {"omnibus", "deluxe", "special", "collector", "remaster"}
+_NON_STANDARD_STUB_EDITIONS = {
+    "omnibus",
+    "deluxe",
+    "special",
+    "collector",
+    "remaster",
+    "official_color",
+    "colored",
+}
 
 # Search keywords used when querying Google Books for edition-specific volume counts.
 # Listed from most-specific to least-specific so we try the best match first.
@@ -272,17 +287,38 @@ def _extract_map_from_cbzs(series_dir: str) -> dict:
 
 
 async def refresh_mangadex_map(series_id: int) -> bool:
-    """Look up MangaDex, store chapter→volume map and cross-reference IDs.
-    Returns True if successful."""
+    """Refresh the chapter map without destroying the last known-good map.
+
+    Network errors, sparse responses, and temporary source removals are
+    recorded as degraded provider state.  They never replace a usable cached
+    map with NULL.
+    """
     from rescan import _series_library_dir  # noqa: WPS433 (lazy to avoid cycle)
 
     with get_db() as db:
         s = db.execute(
-            "SELECT title, anilist_id, mangadex_id, mal_id, mu_id FROM series WHERE id=?",
+            "SELECT title, anilist_id, mangadex_id, mal_id, mu_id,"
+            " chapter_vol_map,chapter_map_source FROM series WHERE id=?",
             (series_id,),
         ).fetchone()
     if not s:
         return False
+    mark_source_attempt(series_id, SOURCE_CHAPTER_MAP)
+    old_mapping: dict = {}
+    if s["chapter_vol_map"]:
+        try:
+            parsed = json.loads(s["chapter_vol_map"])
+            old_mapping = parsed if isinstance(parsed, dict) else {}
+        except (TypeError, ValueError):
+            old_mapping = {}
+    preserved_source = s["chapter_map_source"]
+    if old_mapping and not preserved_source:
+        preserved_source = "legacy"
+        with get_db() as db:
+            db.execute(
+                "UPDATE series SET chapter_map_source='legacy' WHERE id=?",
+                (series_id,),
+            )
     mdx_id = s["mangadex_id"]
     links: dict[str, str] = {}
     if not mdx_id:
@@ -297,6 +333,14 @@ async def refresh_mangadex_map(series_id: int) -> bool:
         except Exception:
             pass
     if not mdx_id:
+        error = "MangaDex ID could not be resolved"
+        mark_source_failure(
+            series_id,
+            SOURCE_CHAPTER_MAP,
+            error,
+            details={"preserved_entries": len(old_mapping)},
+            has_usable_cache=bool(old_mapping),
+        )
         log_event("metadata_fetch_failed", f"[MangaDex] Could not find ID for series {series_id}", series_id)
         return False
     with get_db() as db:
@@ -310,7 +354,7 @@ async def refresh_mangadex_map(series_id: int) -> bool:
     mapping = await fetch_chapter_volume_map(mdx_id)
     mapping = _trim_cvm_to_vol_range(mapping, total_vol, "MangaDex")
     map_source = "mangadex"
-    if not _validate_chapter_map(mapping, total_ch, "MangaDex"):
+    if not _validate_chapter_map(mapping, total_ch, "MangaDex", total_vol):
         mapping = {}
 
     # Fallback when MangaDex has no usable chapter data (DMCA'd / sparse): try Kitsu
@@ -319,14 +363,22 @@ async def refresh_mangadex_map(series_id: int) -> bool:
             meta["title"], s["anilist_id"], meta["total_chapters"]
         )
         kitsu_map = _trim_cvm_to_vol_range(kitsu_map, total_vol, "Kitsu")
-        if _validate_chapter_map(kitsu_map, total_ch, "Kitsu"):
+        if _validate_chapter_map(kitsu_map, total_ch, "Kitsu", total_vol):
             mapping = kitsu_map
             map_source = "kitsu"
 
     # Fallback: extract chapter→volume map from downloaded CBZ filenames
     if not mapping:
-        with get_db() as db:
-            cbz_dir = _series_library_dir(db, series_id)
+        try:
+            with get_db() as db:
+                cbz_dir = _series_library_dir(db, series_id)
+        except (RuntimeError, OSError) as exc:
+            cbz_dir = None
+            log_event(
+                "metadata",
+                f"[CBZ] series {series_id}: local map fallback unavailable: {exc}",
+                series_id,
+            )
         cbz_map = _extract_map_from_cbzs(cbz_dir) if cbz_dir else {}
         cbz_map = _trim_cvm_to_vol_range(cbz_map, total_vol, "CBZ")
         log_event(
@@ -334,7 +386,7 @@ async def refresh_mangadex_map(series_id: int) -> bool:
             f"[CBZ] series {series_id}: dir={cbz_dir}, entries={len(cbz_map)}, total_ch={total_ch}",
             series_id,
         )
-        if _validate_chapter_map(cbz_map, total_ch, "CBZ"):
+        if _validate_chapter_map(cbz_map, total_ch, "CBZ", total_vol):
             mapping = cbz_map
             map_source = "cbz"
 
@@ -344,34 +396,68 @@ async def refresh_mangadex_map(series_id: int) -> bool:
     mu_from_mdx = mu_slug_to_id(mu_slug) if mu_slug else None
 
     with get_db() as db:
-        db.execute(
-            "UPDATE series SET mangadex_id=?, chapter_vol_map=?,"
-            " mal_id=COALESCE(mal_id, ?), mu_id=COALESCE(mu_id, ?) WHERE id=?",
-            (
-                mdx_id,
-                json.dumps(mapping) if mapping else None,
-                int(mal_from_mdx)
-                if mal_from_mdx and str(mal_from_mdx).isdigit()
-                else None,
-                mu_from_mdx,
-                series_id,
-            ),
+        cross_refs = (
+            int(mal_from_mdx)
+            if mal_from_mdx and str(mal_from_mdx).isdigit()
+            else None,
+            mu_from_mdx,
         )
         if mapping:
+            now = utc_now_iso()
+            db.execute(
+                "UPDATE series SET mangadex_id=?, chapter_vol_map=?,"
+                " chapter_map_source=?,chapter_map_updated_at=?,"
+                " mal_id=COALESCE(mal_id, ?),mu_id=COALESCE(mu_id, ?) WHERE id=?",
+                (
+                    mdx_id,
+                    json.dumps(mapping, sort_keys=True),
+                    map_source,
+                    now,
+                    cross_refs[0],
+                    cross_refs[1],
+                    series_id,
+                ),
+            )
             ch_created = populate_chapters(db, series_id)
             log_event(
                 "metadata",
                 f"[{map_source.upper()}] Stored {len(mapping)} chapter→vol entries for series {series_id}"
                 + (f", created {ch_created} chapter stubs" if ch_created else ""),
                 series_id,
+                db=db,
             )
         else:
+            db.execute(
+                "UPDATE series SET mangadex_id=?,"
+                " mal_id=COALESCE(mal_id, ?),mu_id=COALESCE(mu_id, ?) WHERE id=?",
+                (mdx_id, cross_refs[0], cross_refs[1], series_id),
+            )
             log_event(
                 "metadata",
-                f"[MangaDex] No chapter map for {mdx_id} — cross-refs only (no fallback data)",
+                f"[MangaDex] No usable chapter map for {mdx_id}; preserved "
+                f"{len(old_mapping)} cached entries",
                 series_id,
+                db=db,
             )
-    return True
+    if mapping:
+        mark_source_success(
+            series_id,
+            SOURCE_CHAPTER_MAP,
+            details={"source": map_source, "entries": len(mapping)},
+        )
+        return True
+
+    mark_source_failure(
+        series_id,
+        SOURCE_CHAPTER_MAP,
+        "no usable chapter map returned; cached map preserved",
+        details={
+            "preserved_entries": len(old_mapping),
+            "preserved_source": preserved_source,
+        },
+        has_usable_cache=bool(old_mapping),
+    )
+    return False
 
 
 # ── Edition volume-count enrichment (Wikipedia / Google Books / MU) ──────────
@@ -687,7 +773,7 @@ async def fetch_mu_metadata(series_id: int, title: str) -> dict | None:
         return None  # never downgrade
 
     # Search MU — reuse existing mu_search() which already parses volume counts
-    results = await mu_search(title)
+    results = await mu_search(title, strict=True)
     if not results:
         return None
 
@@ -739,6 +825,7 @@ async def fetch_mu_metadata(series_id: int, title: str) -> dict | None:
                 "metadata",
                 f"[MangaUpdates] updated vol count: {current_vols}→{mu_vol_count}",
                 series_id,
+                db=db,
             )
 
     return {

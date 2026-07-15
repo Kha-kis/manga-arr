@@ -513,6 +513,14 @@ def build_metadata_health(series_id: int) -> dict:
     report = metadata_readiness_report(series_id)
     report['reconcile'] = _reconcile_summary(series_id)
     report['state']     = _health_state(report)
+    from metadata_state import build_catalog_metadata_health
+
+    report['catalog'] = build_catalog_metadata_health(series_id)
+    report['overall_state'] = (
+        report['state']
+        if report['state'] != 'healthy'
+        else report['catalog'].get('state', 'pending')
+    )
     return report
 
 
@@ -627,4 +635,4 @@ def _recommend_next_step(r: dict) -> str:
             "Running a series refresh calls populate_chapters which "
             "links them via chapter_vol_map."
         )
-    return "ready — reconcile_series_chapter_map will produce useful output"
+    return "Ready — chapter-to-volume mapping is complete"

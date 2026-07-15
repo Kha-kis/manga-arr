@@ -168,7 +168,7 @@ def test_fully_populated_series_is_ready(env):
     r = metadata_readiness_report(7)
     assert r['ready'] is True
     assert r['blockers'] == []
-    assert 'reconcile_series_chapter_map' in r['recommended_next_step']
+    assert 'mapping is complete' in r['recommended_next_step']
 
 
 # ── classification of existing rows ────────────────────────────────

@@ -876,6 +876,15 @@ def _series(row, tags: list[str]) -> dict:
         "mangaUpdatesId": row["mu_id"],
         "totalVolumes": row["total_volumes"],
         "totalChapters": row["total_chapters"],
+        "volumeCountSource": row["vol_count_source"],
+        "chapterCountSource": row["chapter_count_source"],
+        "metadataStatus": row["metadata_status"],
+        "metadataLastAttempt": row["metadata_last_attempt"],
+        "lastMetadataRefresh": row["last_metadata_refresh"],
+        "metadataError": row["metadata_error"],
+        "chapterMapSource": row["chapter_map_source"],
+        "chapterMapUpdatedAt": row["chapter_map_updated_at"],
+        "coverUpdatedAt": row["cover_updated_at"],
         "statistics": {
             "volumeCount": total,
             "volumeFileCount": downloaded,
@@ -887,7 +896,36 @@ def _series(row, tags: list[str]) -> dict:
 
 
 def _series_payload(db, row) -> dict:
-    return _series(row, _series_tags(db, row["id"], row["tags"]))
+    payload = _series(row, _series_tags(db, row["id"], row["tags"]))
+    source_rows = db.execute(
+        "SELECT source,status,last_attempt_at,last_success_at,next_retry_at,"
+        " failure_count,error,details FROM series_metadata_sources"
+        " WHERE series_id=? ORDER BY source",
+        (row["id"],),
+    ).fetchall()
+    sources = []
+    for source_row in source_rows:
+        source = dict(source_row)
+        try:
+            details = (
+                json.loads(source["details"]) if source["details"] else {}
+            )
+        except (TypeError, ValueError):
+            details = {}
+        sources.append(
+            {
+                "source": source["source"],
+                "status": source["status"],
+                "lastAttempt": source["last_attempt_at"],
+                "lastSuccess": source["last_success_at"],
+                "nextRetry": source["next_retry_at"],
+                "failureCount": source["failure_count"],
+                "error": source["error"],
+                "details": details,
+            }
+        )
+    payload["metadataSources"] = sources
+    return payload
 
 
 def _calendar_series(row) -> dict:
@@ -937,6 +975,9 @@ def _chapter(row) -> dict:
         "chapterRangeEnd": row["chapter_range_end"],
         "label": build_chapter_label(row["chapter_num"], row["chapter_range_end"]),
         "title": row["title"],
+        "pages": row["pages"],
+        "metadataSource": row["metadata_source"],
+        "metadataUpdatedAt": row["metadata_updated_at"],
         "status": row["status"],
         "monitored": _bool_default_true(row["monitored"]),
         "quality": row["quality"],
@@ -5460,9 +5501,10 @@ async def api_v1_create_series(request: Request):
         cur = db.execute(
             "INSERT INTO series(title, search_pattern, anilist_id, mal_id, mu_id,"
             " cover_url, status, description, total_volumes, total_chapters,"
-            " root_folder_id, pub_year, edition_type, vol_count_source, enabled,"
-            " monitored, monitor_mode, quality_profile_id, language_profile_id)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " root_folder_id, pub_year, edition_type, vol_count_source,"
+            " chapter_count_source, enabled, monitored, monitor_mode,"
+            " quality_profile_id, language_profile_id)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 title,
                 search_pattern,
@@ -5478,6 +5520,7 @@ async def api_v1_create_series(request: Request):
                 pub_year or None,
                 edition_type,
                 vol_count_source,
+                "anilist" if anilist_id else "manual",
                 1 if enabled else 0,
                 1 if monitored else 0,
                 monitor_mode,
@@ -5510,13 +5553,20 @@ async def api_v1_create_series(request: Request):
             (series_id,),
         ).fetchone()
 
-        return JSONResponse(
-            {
-                "ok": True,
-                "status": "created",
-                "series": _series_payload(db, row),
-            }
-        )
+        created_series = _series_payload(db, row)
+
+    import main as _m
+    from metadata_service import refresh_series_metadata
+
+    _m.create_background_task(
+        refresh_series_metadata(
+            series_id, force=True, include_manifest=True, reason="api_series_added"
+        ),
+        name=f"api_series:{series_id}:metadata",
+    )
+    return JSONResponse(
+        {"ok": True, "status": "created", "series": created_series}
+    )
 
 
 @router.get("/api/v1/series/lookup")
@@ -6554,6 +6604,20 @@ async def api_v1_root_folder_adopt_unmapped(request: Request, root_folder_id: in
         language_profile_id=language_profile_id,
     )
     if result.ok:
+        series_id = result.payload.get("series", {}).get("id")
+        if series_id:
+            import main as _m
+            from metadata_service import refresh_series_metadata
+
+            _m.create_background_task(
+                refresh_series_metadata(
+                    series_id,
+                    force=True,
+                    include_manifest=True,
+                    reason="folder_adopted",
+                ),
+                name=f"adopt_series:{series_id}:metadata",
+            )
         return JSONResponse(result.payload)
     body = {"error": result.error or "adoption failed"}
     if result.description:
