@@ -13,7 +13,7 @@
 
 </div>
 
-![Mangarr library dashboard](docs/assets/mangarr-library.webp)
+![Mangarr demo library dashboard](docs/assets/mangarr-library.webp)
 
 Mangarr monitors manga and light-novel series, searches indexers and direct
 download sources, sends releases to a download client, and imports completed
