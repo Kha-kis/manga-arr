@@ -3,6 +3,41 @@
 All notable changes to this project. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 1.1.0 - 2026-07-15
+
+First minor release focused on public installation and first-run usability.
+
+### Changed
+
+- First-run browser setup now creates the local administrator directly; the
+  container setup-token command and bootstrap file are no longer required.
+- Offline administrator recovery now revokes browser access and returns the
+  installation to the same browser-first setup screen.
+- The public Compose file uses direct, editable values for UID/GID, timezone,
+  paths, ports, and application defaults instead of requiring `.env`
+  interpolation.
+- The public image follows the stable `latest` channel by default. Exact
+  version tags remain available for reproducible deployments and rollback.
+- Standard upgrades now use `docker compose pull` followed by
+  `docker compose up -d`, matching established container-image workflows.
+
+### Security
+
+- Administrator creation remains atomic, CSRF-protected, Argon2id-hashed, and
+  limited to the first successful setup request.
+- Upgrades automatically remove the obsolete setup-token file left by older
+  Mangarr versions.
+- Documentation now requires first-run setup before public reverse-proxy
+  exposure and keeps direct internet publication outside the supported
+  security boundary.
+
+### Tests
+
+- Browser-auth coverage verifies tokenless setup, first-claim concurrency,
+  secure session creation, legacy-token cleanup, and offline recovery.
+- Deployment consistency tests pin the direct Compose contract, stable image
+  channel, editable runtime identity, and pull-and-recreate upgrade path.
+
 ## 1.0.1 - 2026-07-15
 
 Patch release for a responsive visibility defect found during the authenticated

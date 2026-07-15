@@ -41,15 +41,12 @@ def _csrf(client: TestClient) -> str:
 
 
 def _setup(client: TestClient):
-    import auth
-
     page = client.get("/setup")
     assert page.status_code == 200
     response = client.post(
         "/setup",
         data={
             "csrf_token": _csrf(client),
-            "setup_token": auth.get_or_create_setup_token(),
             "username": ADMIN_USERNAME,
             "password": ADMIN_PASSWORD,
             "password_confirm": ADMIN_PASSWORD,
@@ -76,8 +73,7 @@ def _login(client: TestClient, password: str = ADMIN_PASSWORD):
     )
 
 
-def test_unauthenticated_install_redirects_to_token_protected_setup(auth_env):
-    import auth
+def test_unauthenticated_install_redirects_to_browser_setup(auth_env):
     import main
 
     client = TestClient(main.app)
@@ -87,24 +83,22 @@ def test_unauthenticated_install_redirects_to_token_protected_setup(auth_env):
     assert response.headers["location"].startswith("/setup?next=")
     setup = client.get("/setup")
     assert setup.status_code == 200
-    assert "/config/.mangarr-setup-token" in setup.text
-    token_path = auth.setup_token_path()
-    assert os.path.exists(token_path)
-    assert os.stat(token_path).st_mode & 0o777 == 0o600
-    assert auth.get_or_create_setup_token() not in setup.text
+    assert "Create administrator" in setup.text
+    assert 'name="setup_token"' not in setup.text
+    assert 'id="setup-username"' in setup.text
+    assert "autofocus" in setup.text
 
 
-def test_concurrent_setup_token_creation_returns_one_stable_token(auth_env):
+def test_legacy_setup_token_is_removed(auth_env):
     import auth
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        tokens = list(
-            pool.map(lambda _index: auth.get_or_create_setup_token(), range(16))
-        )
+    path = os.path.join(auth_env["config_dir"], ".mangarr-setup-token")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("obsolete")
 
-    assert len(set(tokens)) == 1
-    with open(auth.setup_token_path(), encoding="utf-8") as handle:
-        assert handle.read() == tokens[0]
+    auth.remove_legacy_setup_token()
+
+    assert not os.path.exists(path)
 
 
 def test_concurrent_admin_claim_has_one_winner(auth_env):
@@ -125,7 +119,7 @@ def test_concurrent_admin_claim_has_one_winner(auth_env):
     assert auth.is_admin_configured() is True
 
 
-def test_setup_rejects_invalid_token_without_creating_admin(auth_env):
+def test_setup_rejects_invalid_account_details_without_creating_admin(auth_env):
     import auth
     import main
 
@@ -135,15 +129,14 @@ def test_setup_rejects_invalid_token_without_creating_admin(auth_env):
         "/setup",
         data={
             "csrf_token": _csrf(client),
-            "setup_token": "wrong-token",
-            "username": ADMIN_USERNAME,
+            "username": "x",
             "password": ADMIN_PASSWORD,
             "password_confirm": ADMIN_PASSWORD,
         },
     )
 
     assert response.status_code == 400
-    assert "setup token is invalid" in response.text.lower()
+    assert "username must be" in response.text.lower()
     assert auth.is_admin_configured() is False
 
 
@@ -186,12 +179,10 @@ def test_setup_stores_argon2id_hash_and_starts_secure_session(auth_env):
     cookie_token = client.cookies.get("mangarr_session")
     assert session_hash == hashlib.sha256(cookie_token.encode()).hexdigest()
     assert cookie_token not in session_hash
-    assert not os.path.exists(auth.setup_token_path())
     assert client.get("/").status_code == 200
 
 
 def test_session_cookie_is_secure_behind_https_proxy(auth_env):
-    import auth
     import main
 
     client = TestClient(main.app, base_url="https://testserver")
@@ -200,7 +191,6 @@ def test_session_cookie_is_secure_behind_https_proxy(auth_env):
         "/setup",
         data={
             "csrf_token": _csrf(client),
-            "setup_token": auth.get_or_create_setup_token(),
             "username": ADMIN_USERNAME,
             "password": ADMIN_PASSWORD,
             "password_confirm": ADMIN_PASSWORD,
@@ -359,11 +349,9 @@ def test_local_recovery_reset_removes_admin_and_revokes_sessions(auth_env):
     client = TestClient(main.app)
     _setup(client)
 
-    token_path = auth.reset_admin_for_recovery()
+    auth.reset_admin_for_recovery()
 
-    assert token_path == auth.setup_token_path()
     assert auth.is_admin_configured() is False
-    assert os.path.exists(token_path)
     response = client.get("/", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"].startswith("/setup")

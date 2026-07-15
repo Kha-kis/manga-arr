@@ -122,10 +122,6 @@ def main():
             )
             print("seeded browser administrator")
         db.execute("DELETE FROM auth_sessions")
-        try:
-            os.remove("/config/.mangarr-setup-token")
-        except FileNotFoundError:
-            pass
 
         # series 37 (for omnibus & packs test)
         existing = db.execute(

@@ -5,11 +5,9 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## Release Under Test
 
-- Stable release: `1.0.1`
-- Qualified base: `1.0.0`
-- Qualified candidate: `1.0.0-rc.2`
-- Previous candidate: `1.0.0-rc.1`
-- Stable image: `ghcr.io/kha-kis/manga-arr:1.0.1`
+- Stable release: `1.1.0`
+- Qualified base: `1.0.1`
+- Stable image: `ghcr.io/kha-kis/manga-arr:1.1.0`
 - Platforms: `linux/amd64`, `linux/arm64`
 
 ## Production Evidence
@@ -58,20 +56,20 @@ Before stable release, verify all of the following using the published image:
 1. Anonymous clone and unmodified image resolution from the public Compose
    configuration.
 2. Non-root startup against empty host directories.
-3. Health, setup token permissions, administrator creation, login, and setup
-   token removal.
+3. Health, browser-first administrator creation, login, logout, and offline
+   administrator recovery.
 4. Restore of a real database together with its matching secret key.
 5. Library counts, administrator login, and decryption of stored integration
    credentials after restore.
-6. Upgrade from the previous candidate and rollback using the matching stopped
+6. Upgrade from the previous stable release and rollback using the matching stopped
    `/config` snapshot.
 
 ## Stable Release Decision
 
-The `1.0.1` patch retains the full `1.0.0` qualification and adds a live mobile
-layout regression plus a template invariant for Alpine visibility controls.
-It is qualified when publication verifies the final two artifact-specific
-requirements below. Qualification evidence includes:
+The `1.1.0` release retains the full `1.0.1` qualification and changes only the
+public installation, first-run authentication, and container update contract.
+It is qualified when publication verifies the artifact-specific requirements
+below. Qualification evidence includes:
 
 - `make release-local` passing from the exact tagged commit;
 - browser smoke, integration, and E2E suites passing in isolation;
@@ -79,5 +77,5 @@ requirements below. Qualification evidence includes:
 - fresh-install and upgrade/rollback evidence;
 - public support, security, contribution, and conduct policies;
 - a protected default branch and immutable annotated release tags;
-- publication verification that `1.0.1`, `1.0`, `1`, and `latest` resolve to
+- publication verification that `1.1.0`, `1.1`, `1`, and `latest` resolve to
   the same stable image digest.

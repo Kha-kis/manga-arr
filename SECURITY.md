@@ -24,9 +24,9 @@ and include:
 - the expected and observed security boundary;
 - any known workarounds.
 
-Do not include real API keys, passwords, setup tokens, private tracker URLs, or
-unencrypted copies of another user's data. Reports are handled on a best-effort
-basis by the project maintainer. There is currently no paid bug-bounty program.
+Do not include real API keys, passwords, private tracker URLs, or unencrypted
+copies of another user's data. Reports are handled on a best-effort basis by
+the project maintainer. There is currently no paid bug-bounty program.
 
 ## Deployment Boundary
 

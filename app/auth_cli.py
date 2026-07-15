@@ -25,10 +25,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "reset-admin":
         if not args.yes:
             parser.error("reset-admin requires --yes")
-        token_path = reset_admin_for_recovery()
+        reset_admin_for_recovery()
         sys.stdout.write(
             "Administrator reset and browser sessions revoked.\n"
-            f"Complete setup using the one-time token at {token_path}.\n"
+            "Open Mangarr and create the replacement administrator immediately.\n"
         )
         return 0
 

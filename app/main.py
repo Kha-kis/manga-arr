@@ -431,8 +431,8 @@ from tasks import (  # noqa: F401
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    from auth import get_or_create_setup_token, purge_expired_sessions
-    get_or_create_setup_token()
+    from auth import purge_expired_sessions, remove_legacy_setup_token
+    remove_legacy_setup_token()
     purge_expired_sessions()
     # Apply WAL journal mode once — persistent setting, so every later
     # connection inherits it without re-running the (write-locked) PRAGMA.

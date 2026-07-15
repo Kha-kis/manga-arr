@@ -22,7 +22,7 @@ async function run() {
     throw new Error(`first run ended at ${pathname} with HTTP ${response.status()}`);
   }
 
-  await page.waitForSelector('#setup-token:focus');
+  await page.waitForSelector('#setup-username:focus');
   await page.fill('#setup-username', 'browser-admin');
   const usernameIsValid = await page.$eval(
     '#setup-username',
@@ -39,20 +39,16 @@ async function run() {
         height: control.getBoundingClientRect().height,
       })),
       submitHeight: submit?.getBoundingClientRect().height || 0,
-      tokenHelp: document.querySelector('.auth-token-help')?.textContent || '',
       overflows: document.documentElement.scrollWidth > window.innerWidth + 1,
     };
   });
 
   if (result.heading !== 'Create administrator') throw new Error('setup heading missing');
-  if (result.controls.length !== 4) throw new Error('setup controls missing');
+  if (result.controls.length !== 3) throw new Error('setup controls missing');
   if (result.controls.some(control => control.height < 44)) {
     throw new Error(`setup control below 44px: ${JSON.stringify(result.controls)}`);
   }
   if (result.submitHeight < 44) throw new Error('setup submit target below 44px');
-  if (!result.tokenHelp.includes('/config/.mangarr-setup-token')) {
-    throw new Error('setup token recovery path missing');
-  }
   if (result.overflows) throw new Error('setup page overflows mobile viewport');
   if (errors.length) throw new Error(`setup page errors: ${errors.join('; ')}`);
 
