@@ -111,6 +111,7 @@ def test_public_docs_cover_versioned_upgrade_and_rollback():
         "ghcr.io/kha-kis/manga-arr:latest",
         "docker compose pull",
         "docker compose up -d",
+        "public 1.0.x Compose",
     ):
         assert marker in readme
         assert marker in deployment
