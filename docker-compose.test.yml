@@ -1,6 +1,6 @@
 # Isolated test container.
 #
-# Distinct from docker-compose.yml in three ways that keep it safe to run
+# Distinct from compose.yaml in three ways that keep it safe to run
 # alongside the live container:
 #   - container_name: mangarr-test           (vs. mangarr)
 #   - host port:      127.0.0.1:16789        (vs. 6789)
@@ -41,9 +41,9 @@ services:
       - QBIT_HOST=http://mock-qbit:8080
       - SAB_HOST=http://192.0.2.2:65530
       - PROWLARR_URL=http://192.0.2.3:65530
-      - MANGA_SAVE_PATH=/data/media/manga
-      - MANGA_CATEGORY=manga
-      - RSS_INTERVAL=86400  # effectively "never" during a test run
+      - MANGARR_LIBRARY_PATH=/data/media/manga
+      - MANGARR_CATEGORY=manga
+      - MANGARR_RSS_INTERVAL=86400  # effectively "never" during a test run
     volumes:
       - ./.test-config:/config
       - ./app:/app

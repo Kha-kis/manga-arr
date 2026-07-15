@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt \
 # with them. The vendored copy bakes in via the COPY below.
 COPY LICENSE /app/LICENSE
 COPY app/ /app/
+COPY bin/mangarr /usr/local/bin/mangarr
 
 # Non-root runtime user. UID 1000 matches the typical self-hosted default
 # and is overridable at runtime via `docker run --user UID:GID` or a
@@ -34,6 +35,7 @@ COPY app/ /app/
 RUN useradd --uid 1000 --user-group \
       --home-dir /home/mangarr --create-home --shell /usr/sbin/nologin mangarr \
  && mkdir -p /config \
+ && chmod 0755 /usr/local/bin/mangarr \
  && chown -R mangarr:mangarr /app /config
 
 # Release metadata is declared after dependency and source layers so changing
@@ -53,8 +55,13 @@ LABEL org.opencontainers.image.title="Mangarr" \
 
 USER mangarr
 
+ENV PYTHONPATH=/app \
+    MANGARR_UMASK=0022
+
+ENTRYPOINT ["python", "/app/docker_entrypoint.py"]
+
 # Healthcheck hits the unauthenticated liveness endpoint after lifespan finishes
-# DB init. docker-compose.yml declares the same probe; this line ensures
+# DB init. compose.yaml declares the same probe; this line ensures
 # users running `docker run` directly still get it.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')" || exit 1

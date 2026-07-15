@@ -44,7 +44,7 @@ async def event_loop_lag_monitor():
         t0 = _t.perf_counter()
         try:
             await _a.sleep(interval)
-        except asyncio.CancelledError:
+        except _a.CancelledError:
             return
         dt_ms = (_t.perf_counter() - t0) * 1000
         lag = dt_ms - interval * 1000

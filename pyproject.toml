@@ -1,5 +1,50 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mangarr"
+dynamic = ["version", "dependencies"]
+description = "Self-hosted manga library manager"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "AGPL-3.0-only"
+authors = [{ name = "Kha-kis" }]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Framework :: FastAPI",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
+
+[project.urls]
+Homepage = "https://github.com/Kha-kis/manga-arr"
+Documentation = "https://github.com/Kha-kis/manga-arr/blob/master/docs/deployment.md"
+Issues = "https://github.com/Kha-kis/manga-arr/issues"
+
+[project.scripts]
+mangarr = "cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "app" }
+py-modules = ["auth", "backups", "cli", "shared", "version"]
+
+[tool.setuptools.dynamic]
+version = { file = ["app/VERSION"] }
+dependencies = { file = ["requirements.txt"] }
+
 [tool.mypy]
 python_version = "3.11"
 warn_unused_ignores = true
 mypy_path = "app"
 no_namespace_packages = true
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]

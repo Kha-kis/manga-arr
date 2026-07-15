@@ -59,7 +59,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import zipfile
 from datetime import datetime, timedelta, timezone
 
 from events import log_event
@@ -782,19 +781,16 @@ async def _import_list_loop():
 
 async def _backup_loop():
     """Auto-backup — interval and retention controlled by settings."""
-    from main import DB_PATH  # noqa: WPS433 (lazy to avoid cycle)
-    from routers.system import BACKUP_DIR, update_task_state
+    from routers.system import BACKUP_DIR, _create_backup_file, update_task_state
     await asyncio.sleep(3600)  # 1h delay after startup
     while True:
         interval_days = max(1, min(30, int(get_cfg('backup_interval_days', '1') or 1)))
         retention     = max(1, min(30, int(get_cfg('backup_retention',     '7') or 7)))
         try:
-            os.makedirs(BACKUP_DIR, exist_ok=True)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            fname = f"mangarr_auto_{ts}.zip"
-            fpath = os.path.join(BACKUP_DIR, fname)
-            with zipfile.ZipFile(fpath, 'w', zipfile.ZIP_DEFLATED) as zf:
-                zf.write(DB_PATH, "mangarr.db")
+            fname, _fpath = await asyncio.to_thread(
+                _create_backup_file,
+                "mangarr_auto",
+            )
             # Keep only last N auto backups
             auto_backups = sorted(
                 [f for f in os.listdir(BACKUP_DIR)

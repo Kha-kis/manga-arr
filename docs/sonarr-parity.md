@@ -160,27 +160,27 @@ Recommended scope:
 ### 4. Backup Restore Workflow
 
 Mangarr can create, download, retain, delete, and validate backups through both
-the Backup page and `/api/v1/system/backup` endpoints. The Backup page includes
-restore readiness guidance and validates that a server-side backup ZIP contains
-a readable `manga_arr.db`. Actual restore remains an offline maintenance action
-because replacing the live SQLite database from the running app would be unsafe.
+the Backup page and `/api/v1/system/backup` endpoints. Current backup ZIPs use a
+WAL-safe SQLite snapshot and include the database, matching encryption key, and
+a version manifest. The supported `mangarr backup restore` command performs an
+offline restore and keeps timestamped rollback files.
 
 Recommended scope:
 
-1. Keep restore as documented/manual unless real deployments need live restore.
-2. If adding live restore, require upload validation, explicit shutdown/restart
-   guidance, and secret-key compatibility checks.
-3. Do not restore over a live DB without a deliberately designed maintenance
-   mode.
+1. Keep restore offline; do not replace the live DB without a deliberately
+   designed maintenance mode.
+2. Continue accepting legacy database-only archives with clear secret-key
+   compatibility warnings.
+3. Treat browser-uploaded restore as unnecessary until deployments demonstrate
+   a real need for it.
 
 ### 5. Media-Management Permissions And Import Options
 
 Sonarr exposes advanced import/rename options such as chmod/chown, hardlink/copy
 preferences, extra-file import, and custom import scripts. Mangarr now includes
-hardlink/move/copy import modes, a configurable minimum-free-space guard, and
-deployment documentation for the container UID/GID and writable bind-mount
-ownership model. It otherwise relies mostly on container/user/filesystem setup
-plus its archive staging pipeline.
+hardlink/move/copy import modes, a configurable minimum-free-space guard, a
+container-wide `MANGARR_UMASK`, and deployment documentation for UID/GID and
+writable bind-mount ownership. Hardlinks retain the source inode's permissions.
 
 Recommended scope:
 

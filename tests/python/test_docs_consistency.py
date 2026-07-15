@@ -31,7 +31,7 @@ def test_dockerfile_still_binds_0000_inside_container():
 
 def test_compose_publishes_standard_lan_port_and_docs_show_host_only_option():
     """The public Compose file should work on a LAN without interpolation."""
-    compose = _read("docker-compose.yml")
+    compose = _read("compose.yaml")
     assert '- "6789:8000"' in compose
     assert "${MANGARR_BIND_ADDRESS" not in compose
 
@@ -44,12 +44,12 @@ def test_public_install_does_not_require_env_file():
     """Self-hosters configure the tracked Compose example directly."""
     assert not (REPO_ROOT / ".env.example").exists()
     assert "cp .env.example" not in _read("README.md")
-    assert "${" not in _read("docker-compose.yml")
+    assert "${" not in _read("compose.yaml")
 
 
 def test_public_compose_is_host_neutral_and_uses_release_image():
     """The tracked Compose file must be safe to publish unchanged."""
-    compose = _read("docker-compose.yml")
+    compose = _read("compose.yaml")
     assert "ghcr.io/kha-kis/manga-arr:latest" in compose
     assert "- ./config:/config" in compose
     assert "- ./data:/data" in compose
@@ -63,7 +63,7 @@ def test_public_compose_is_host_neutral_and_uses_release_image():
         "build: .",
     ):
         assert private_value not in compose, \
-            f"public docker-compose.yml contains host-specific value {private_value!r}"
+            f"public compose.yaml contains host-specific value {private_value!r}"
 
 
 def test_public_community_and_release_qualification_files_exist():
@@ -100,7 +100,7 @@ def test_public_install_docs_cover_browser_auth_setup_and_recovery():
         assert "Create administrator" in text
         assert ".mangarr-setup-token" not in text
         assert "first browser" in text.lower()
-    assert "python /app/auth_cli.py reset-admin --yes" in deployment
+    assert "mangarr admin reset --yes" in deployment
 
 
 def test_public_docs_cover_versioned_upgrade_and_rollback():
@@ -195,9 +195,11 @@ def test_deployment_doc_documents_proxy_env_guidance():
 
 def test_compose_shows_user_override_pattern():
     """Self-hosters must be able to match bind-directory ownership."""
-    compose = _read("docker-compose.yml")
+    compose = _read("compose.yaml")
     assert 'user: "1000:1000"' in compose, \
-        "docker-compose.yml should show a directly editable non-root UID/GID"
+        "compose.yaml should show a directly editable non-root UID/GID"
+    assert "container_name:" not in compose
+    assert 'MANGARR_UMASK: "0022"' in compose
 
 
 def test_gitignore_excludes_local_compose_overrides_and_env():
@@ -207,3 +209,5 @@ def test_gitignore_excludes_local_compose_overrides_and_env():
     assert ".env" in lines, ".gitignore should exclude .env"
     assert "docker-compose.override.yml" in lines, \
         "host-specific Compose overrides must never be committed"
+    assert "compose.override.yaml" in lines, \
+        "modern host-specific Compose overrides must never be committed"

@@ -16,6 +16,7 @@ import math
 import os
 import re
 import secrets
+import sqlite3
 import threading
 import time
 
@@ -168,12 +169,19 @@ def update_admin_password(password_hash: str) -> None:
         db.execute("DELETE FROM auth_sessions")
 
 
-def reset_admin_for_recovery() -> None:
+def reset_admin_for_recovery(config_dir: str | None = None) -> None:
     """Remove browser credentials so the next browser can create an administrator."""
-    with get_db() as db:
-        db.execute("DELETE FROM auth_sessions")
-        db.execute("DELETE FROM auth_admin WHERE id=1")
-    remove_legacy_setup_token()
+    if config_dir is None:
+        with get_db() as db:
+            db.execute("DELETE FROM auth_sessions")
+            db.execute("DELETE FROM auth_admin WHERE id=1")
+    else:
+        db_path = os.path.join(config_dir, "manga_arr.db")
+        with sqlite3.connect(db_path, timeout=15) as db:
+            db.execute("PRAGMA busy_timeout=15000")
+            db.execute("DELETE FROM auth_sessions")
+            db.execute("DELETE FROM auth_admin WHERE id=1")
+    remove_legacy_setup_token(config_dir)
     logging.getLogger(__name__).warning(
         "local administrator reset; complete browser setup at /setup before exposure",
     )
@@ -268,9 +276,12 @@ def purge_expired_sessions() -> int:
         return max(0, cursor.rowcount)
 
 
-def remove_legacy_setup_token() -> None:
+def remove_legacy_setup_token(config_dir: str | None = None) -> None:
     """Remove the bootstrap file created by Mangarr versions before 1.1."""
-    path = os.path.join(_CONFIG_DIR, _LEGACY_SETUP_TOKEN_FILENAME)
+    path = os.path.join(
+        config_dir or _CONFIG_DIR,
+        _LEGACY_SETUP_TOKEN_FILENAME,
+    )
     try:
         os.remove(path)
     except FileNotFoundError:

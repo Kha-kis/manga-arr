@@ -6,6 +6,7 @@ workflow-specific `/api/*` actions.
 """
 from __future__ import annotations
 
+import asyncio
 import difflib
 import json
 import os
@@ -13,9 +14,7 @@ import platform
 import re
 import shutil
 import sqlite3
-import zipfile
 from datetime import datetime, timedelta, timezone
-from io import BytesIO
 
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -800,19 +799,7 @@ def _list_backup_entries() -> list[dict]:
 
 
 def _create_backup_file() -> dict:
-    os.makedirs(system_router.BACKUP_DIR, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"mangarr_backup_{ts}.zip"
-    saved_path = os.path.join(system_router.BACKUP_DIR, filename)
-
-    buf = BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        if os.path.exists(system_router.DB_PATH):
-            zf.write(system_router.DB_PATH, arcname="manga_arr.db")
-    buf.seek(0)
-    zip_bytes = buf.read()
-    with open(saved_path, "wb") as f:
-        f.write(zip_bytes)
+    filename, _saved_path = system_router._create_backup_file()
     entry = _backup_entry(filename)
     if entry is None:
         raise OSError("backup was not written")
@@ -1941,7 +1928,7 @@ async def api_v1_system_backups():
 @router.post("/api/v1/system/backup")
 async def api_v1_create_system_backup():
     try:
-        backup = _create_backup_file()
+        backup = await asyncio.to_thread(_create_backup_file)
     except OSError as exc:
         return JSONResponse(
             {"error": f"backup failed: {type(exc).__name__}"},
@@ -1952,7 +1939,10 @@ async def api_v1_create_system_backup():
 
 @router.post("/api/v1/system/backup/{filename}/validate")
 async def api_v1_validate_system_backup(filename: str):
-    payload, status_code = system_router._validate_backup_zip(filename)
+    payload, status_code = await asyncio.to_thread(
+        system_router._validate_backup_zip,
+        filename,
+    )
     if not payload.get("ok"):
         payload = {
             **payload,

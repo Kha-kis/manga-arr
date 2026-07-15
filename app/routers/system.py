@@ -4,24 +4,25 @@ import asyncio
 import os
 import platform
 import shutil
-import sqlite3
 import sys
-import tempfile
-import zipfile
 from datetime import datetime, timezone
-from io import BytesIO
 from itertools import count
 from typing import Optional
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import (
+    FileResponse,
     HTMLResponse,
     JSONResponse,
     RedirectResponse,
-    StreamingResponse,
 )
 
 from routers._templates import templates
+from backups import (
+    BackupArchiveError,
+    create_backup_archive as create_backup_archive_file,
+    validate_backup_archive,
+)
 from shared import DB_PATH, get_cfg, get_db
 from version import APP_VERSION
 
@@ -68,61 +69,22 @@ def _validate_backup_zip(filename: str) -> tuple[dict, int]:
         return {"ok": False, "message": "Backup not found"}, 404
 
     try:
-        with zipfile.ZipFile(fpath, "r") as zf:
-            names = zf.namelist()
-            if "manga_arr.db" not in names:
-                return {
-                    "ok": False,
-                    "filename": safe_name,
-                    "message": "Backup does not contain manga_arr.db",
-                    "entries": names,
-                    "containsDatabase": False,
-                    "databaseValid": False,
-                }, 422
-            db_bytes = zf.read("manga_arr.db")
-    except zipfile.BadZipFile:
-        return {"ok": False, "filename": safe_name, "message": "Invalid ZIP file"}, 400
-    except OSError as exc:
+        details = validate_backup_archive(fpath)
+    except BackupArchiveError as exc:
         return {
             "ok": False,
             "filename": safe_name,
-            "message": f"Backup validation failed: {type(exc).__name__}",
-        }, 500
-
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    try:
-        tmp.write(db_bytes)
-        tmp.close()
-        with sqlite3.connect(tmp.name) as c:
-            quick_check = c.execute("PRAGMA quick_check").fetchone()
-            db_valid = bool(quick_check and quick_check[0] == "ok")
-            if db_valid:
-                c.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
-    except sqlite3.DatabaseError:
-        db_valid = False
-    finally:
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
-
-    if not db_valid:
-        return {
-            "ok": False,
-            "filename": safe_name,
-            "message": "manga_arr.db is not a valid SQLite database",
-            "entries": names,
-            "containsDatabase": True,
+            "message": str(exc),
+            "containsDatabase": False,
             "databaseValid": False,
-        }, 422
+            **exc.details,
+        }, exc.status_code
 
     return {
         "ok": True,
         "filename": safe_name,
         "message": "Backup validated",
-        "entries": names,
-        "containsDatabase": True,
-        "databaseValid": True,
+        **details,
         "sizeBytes": os.path.getsize(fpath),
     }, 200
 
@@ -310,23 +272,13 @@ def _fmt_bytes(n: float) -> str:
     return f"{n:.1f} PB"
 
 
-def _create_backup_archive() -> tuple[str, bytes]:
-    os.makedirs(BACKUP_DIR, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"mangarr_backup_{ts}.zip"
-    saved_path = os.path.join(BACKUP_DIR, filename)
-
-    buf = BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        if os.path.exists(DB_PATH):
-            zf.write(DB_PATH, arcname="manga_arr.db")
-    buf.seek(0)
-    zip_bytes = buf.read()
-
-    with open(saved_path, "wb") as f:
-        f.write(zip_bytes)
-
-    return filename, zip_bytes
+def _create_backup_file(filename_prefix: str = "mangarr_backup") -> tuple[str, str]:
+    return create_backup_archive_file(
+        db_path=DB_PATH,
+        backup_dir=BACKUP_DIR,
+        filename_prefix=filename_prefix,
+        config_dir=os.path.dirname(DB_PATH),
+    )
 
 
 def _root_folders_disk(db) -> list[dict]:
@@ -527,7 +479,7 @@ async def run_command(request: Request):
         _schedule_main_coroutine("import_list_sync")
     elif name == "Backup":
         _start_command(record)
-        filename, _zip_bytes = _create_backup_archive()
+        filename, _saved_path = await asyncio.to_thread(_create_backup_file)
         _finish_command(record, ok=True, message=f"Backup created: {filename}")
         return JSONResponse(_command_public(record))
     elif name == "CleanupSeen":
@@ -627,12 +579,11 @@ async def system_backup_page(request: Request):
 
 @router.post("/api/system/backup/create")
 async def create_backup():
-    filename, zip_bytes = _create_backup_archive()
-
-    return StreamingResponse(
-        BytesIO(zip_bytes),
+    filename, saved_path = await asyncio.to_thread(_create_backup_file)
+    return FileResponse(
+        saved_path,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        filename=filename,
     )
 
 
@@ -653,7 +604,7 @@ async def delete_backup(filename: str):
 
 @router.post("/api/system/backup/{filename}/validate")
 async def validate_backup(filename: str):
-    payload, status_code = _validate_backup_zip(filename)
+    payload, status_code = await asyncio.to_thread(_validate_backup_zip, filename)
     return JSONResponse(payload, status_code=status_code)
 
 

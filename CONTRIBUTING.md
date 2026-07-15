@@ -14,8 +14,8 @@ the application's data-safety guarantees.
 
 ## Development Setup
 
-The supported development environment is Python 3.11 with Docker and Node.js
-available for the browser suite.
+The supported development range is Python 3.11 through 3.14, with Docker and
+Node.js available for the browser suite. Release containers use Python 3.14.
 
 ```bash
 python3 -m venv .venv
@@ -62,6 +62,9 @@ Before opening a pull request:
 make test
 git diff --check
 ```
+
+GitHub runs `make test-fast` as the short required PR check. It supplements the
+local full suite; it does not replace `make test`.
 
 Run `make test-release-safe` before requesting merge for changes affecting
 critical workflows or public releases. The local release process is documented

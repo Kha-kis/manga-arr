@@ -4,6 +4,10 @@
 !LICENSE
 !requirements.txt
 
+!bin/
+bin/*
+!bin/mangarr
+
 !app/
 app/*
 !app/*.py

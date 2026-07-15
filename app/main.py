@@ -81,6 +81,7 @@ CONFIG: dict = {}
 # load_config / ensure_api_key / lifespan keep working unchanged.
 from config import (  # noqa: F401
     ENV_DEFAULTS,
+    ENV_ALIASES,
     SETTINGS_SECRET_KEYS,
     SETTINGS_VALIDATORS,
     _validate_setting_value,
@@ -95,7 +96,11 @@ def load_config():
     global CONFIG
     cfg = {}
     for key, (env_var, default) in ENV_DEFAULTS.items():
-        cfg[key] = os.getenv(env_var, default) if env_var else default
+        cfg[key] = default
+        for candidate in (env_var, *ENV_ALIASES.get(key, ())):
+            if candidate and candidate in os.environ:
+                cfg[key] = os.environ[candidate]
+                break
     for key in list(cfg):
         if key in SETTINGS_VALIDATORS:
             default_for_key = ENV_DEFAULTS.get(key, (None, ''))[1]

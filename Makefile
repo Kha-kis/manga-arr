@@ -8,7 +8,7 @@
 # http://127.0.0.1:6789 and currently exercise the operator's live DB.
 # Do NOT wire them into CI until a hermetic test DB is in place.
 
-.PHONY: help test test-release test-release-safe \
+.PHONY: help lint test-fast test test-release test-release-safe \
         test-python test-confirm-flow test-route-sweep \
         test-browser-smoke test-browser-integration test-browser-e2e \
         test-browser-isolated test-browser-isolated-smoke \
@@ -29,6 +29,8 @@ RELEASE_TAG_ARGS = $(shell $(PYTHON) scripts/release_metadata.py --image "$(RELE
 
 help:
 	@echo "Hermetic targets (no running app required):"
+	@echo "  lint                   Ruff correctness + new-module format checks"
+	@echo "  test-fast              Short PR gate for contracts and invariants"
 	@echo "  test-python            Full Python suite (pytest tests/python/)"
 	@echo "  test-confirm-flow      Static JS/CSS confirm-flow analysis"
 	@echo "  test-route-sweep       Auto-derived FastAPI route render check"
@@ -51,6 +53,23 @@ help:
 	@echo "  release-push      Publish multi-arch tags after explicit confirmation"
 
 # ── Hermetic targets ──────────────────────────────────────────────────────────
+
+lint:
+	$(PYTHON) -m ruff check app tests/python scripts
+	$(PYTHON) -m ruff format --check \
+	  app/backups.py app/cli.py app/docker_entrypoint.py bin/mangarr
+
+test-fast: lint
+	$(PYTEST) \
+	  tests/python/test_backup_service.py \
+	  tests/python/test_container_conventions.py \
+	  tests/python/test_docs_consistency.py \
+	  tests/python/test_hard_invariants.py \
+	  tests/python/test_main_py_split_invariants.py \
+	  tests/python/test_operator_cli.py \
+	  tests/python/test_release_automation.py -q
+	cd app && $(PYTHON) test_confirm_flow.py
+	docker compose -f compose.yaml config --quiet
 
 test-python:
 	$(PYTEST) tests/python/ -q
@@ -96,7 +115,7 @@ test-browser-isolated-e2e:
 
 # ── Aggregates ────────────────────────────────────────────────────────────────
 
-test: test-python test-confirm-flow test-route-sweep
+test: lint test-python test-confirm-flow test-route-sweep
 
 # Safe pre-release: hermetic gate + isolated browser suite.
 test-release-safe: test test-browser-isolated

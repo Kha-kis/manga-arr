@@ -69,11 +69,25 @@ def test_release_workflow_is_tag_only_and_pins_actions():
             assert len(ref) == 40 and all(ch in "0123456789abcdef" for ch in ref)
 
 
+def test_every_workflow_pins_action_revisions():
+    for workflow_path in (REPO_ROOT / ".github/workflows").glob("*.yml"):
+        workflow = workflow_path.read_text()
+        for line in workflow.splitlines():
+            if "uses:" not in line:
+                continue
+            ref = line.split("@", 1)[1].split()[0]
+            assert len(ref) == 40, f"{workflow_path.name}: {line.strip()}"
+            assert all(ch in "0123456789abcdef" for ch in ref), (
+                f"{workflow_path.name}: {line.strip()}"
+            )
+
+
 def test_docker_context_is_allowlisted():
     dockerignore = (REPO_ROOT / ".dockerignore").read_text().splitlines()
     assert dockerignore[0] == "**"
     assert "!LICENSE" in dockerignore
     assert "!requirements.txt" in dockerignore
+    assert "!bin/mangarr" in dockerignore
     assert "app/*" in dockerignore
     assert "!app/*.py" in dockerignore
     assert "app/test_confirm_flow.py" in dockerignore

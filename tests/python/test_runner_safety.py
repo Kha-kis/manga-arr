@@ -135,7 +135,7 @@ def test_runner_does_not_target_production_compose_file(runner_text):
     compose file. Different files = different projects = different orphans."""
     assert "docker-compose.test.yml" in runner_text
     # Must NOT reference the production compose file directly.
-    assert "docker-compose.yml" not in runner_text or (
+    assert "compose.yaml" not in runner_text or (
         # Allow the string only in error messages; the actual command must use .test.
         "$COMPOSE_FILE" in runner_text
     )
