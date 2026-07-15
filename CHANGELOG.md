@@ -3,6 +3,30 @@
 All notable changes to this project. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- Added the supported `mangarr` operator CLI for administrator recovery and
+  backup creation, validation, and stopped-container restore.
+- Added a required fast pull-request gate, weekly security scanning, project
+  package metadata, Ruff correctness checks, and configurable
+  `MANGARR_UMASK` support.
+
+### Changed
+
+- Backup creation now uses SQLite's online backup API and produces a versioned,
+  self-contained archive with the database, encryption key, and manifest.
+- Public environment variables now use consistent `MANGARR_*` names while
+  retaining all previous names as backward-compatible aliases.
+- The public deployment file is now `compose.yaml` and no longer forces a
+  global container name.
+
+### Fixed
+
+- Scheduled backups now use the same `manga_arr.db` archive entry and
+  validation format as browser and API backups.
+
 ## 1.1.0 - 2026-07-15
 
 First minor release focused on public installation and first-run usability.

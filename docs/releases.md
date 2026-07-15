@@ -23,6 +23,7 @@ documentation consistency.
 - Every Git tag is `v` followed by the exact application version, for example
   `v1.0.0-rc.2`.
 - Release and image tags are immutable. Never move or replace a published tag.
+- An active repository ruleset blocks updates and deletion for every `v*` tag.
 - `latest` points only to the newest stable release, never to a release
   candidate.
 
@@ -83,9 +84,10 @@ remains required because it exercises the full isolated browser stack.
 
 ## Local-First Automation
 
-Normal pull requests do not automatically start GitHub Actions. The repository's
-Test and Security workflows remain manual-only and disabled while hosted-runner
-billing is unavailable. Run the same release evidence locally:
+Every pull request runs a required fast gate covering Ruff correctness checks,
+package and CLI metadata, backup/recovery contracts, deployment consistency,
+architecture invariants, and the static confirmation flow. The expensive full
+Python and isolated-browser suites remain local-first:
 
 ```bash
 make release-local
@@ -97,10 +99,12 @@ Compose configuration with Trivy, builds the production image, verifies its
 version, labels, non-root user, and file inventory, then gates the image on
 fixed High/Critical vulnerabilities.
 
-`.github/workflows/release.yml` is the only tag-triggered workflow. It runs only
-for an explicit `v*` tag, requires that tag to exactly match `app/VERSION`, and
-publishes amd64/arm64 images with SBOM and provenance attestations. It never
-publishes `latest` for a release candidate.
+The full Test workflow remains available by manual dispatch, and the Security
+workflow runs weekly or by manual dispatch. `.github/workflows/release.yml` is
+the only tag-triggered workflow. It runs only for an explicit `v*` tag, requires
+that tag to exactly match `app/VERSION`, and publishes amd64/arm64 images with
+SBOM and provenance attestations. It never publishes `latest` for a release
+candidate.
 
 If hosted Actions cannot run, an authenticated maintainer can use the local
 fallback after the full gate passes:

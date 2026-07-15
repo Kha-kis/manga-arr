@@ -19,8 +19,8 @@
   </div>
   <div class="panel-body d-flex align-items-center gap-3">
     <p class="text-muted mb-0 backup-create-copy">
-      Creates a ZIP archive of the Mangarr database and downloads it to your browser.
-      A copy is also saved to <code>/config/backups/</code>.
+      Creates a consistent ZIP containing the database, encryption key, and version manifest.
+      A copy is saved to <code>/config/backups/</code>. Treat every backup as sensitive.
     </p>
     <button class="btn btn-outline-ember btn-sm flex-shrink-0" id="createBackupBtn" onclick="createBackup()">
       <i class="bi bi-download me-1"></i>Create &amp; Download
@@ -108,13 +108,13 @@
   </div>
   <div class="panel-body">
     <p class="text-muted backup-create-copy">
-      Mangarr validates backup files here, but database restore is an offline maintenance action.
-      Stop the container before replacing the live database.
+      Mangarr validates backup files here, but restore remains an offline maintenance action.
+      Stop the service before running the supported restore command.
     </p>
     <ol class="mb-0 backup-restore-list">
-      <li>Validate the backup ZIP and confirm it contains a readable <code>manga_arr.db</code>.</li>
-      <li>Preserve the matching secret key source: <code>/config/.mangarr-secret-key</code> or <code>MANGARR_SECRET_KEY</code>.</li>
-      <li>Stop Mangarr, replace the live database with the backup database, then start Mangarr again.</li>
+      <li>Validate the ZIP and confirm it is self-contained. Legacy backups still require their matching secret key.</li>
+      <li>Stop Mangarr and run <code>mangarr backup restore &lt;archive&gt; --yes</code> in a one-off container.</li>
+      <li>Start Mangarr and verify login, library counts, and stored integrations.</li>
     </ol>
   </div>
 </div>
@@ -190,7 +190,8 @@ async function validateBackup(filename) {
       showToast(data.message || 'Backup validation failed', false);
       return;
     }
-    showToast('Backup validated: ' + filename, true);
+    const detail = data.selfContained ? 'self-contained' : 'legacy database-only';
+    showToast('Backup validated (' + detail + '): ' + filename, true);
   } catch (e) {
     showToast('Network error — validation failed', false);
   }

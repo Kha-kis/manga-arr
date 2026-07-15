@@ -8,6 +8,7 @@ suite that never runs in CI.
 
 ```bash
 make test                    # PR gate. Hermetic, ~2.5min. Run before every push.
+make test-fast               # Short required GitHub PR check.
 make test-browser-isolated   # Pre-release. Spins up isolated container, ~3min.
 make test-release-safe       # Both of the above.
 ```
@@ -27,6 +28,8 @@ Both are read-only.
 make help                                 # list and describe everything
 
 # Hermetic — no app required
+make lint                                 # Ruff correctness + focused format checks
+make test-fast                            # short PR contract/invariant gate
 make test-python                          # full Python suite
 make test-confirm-flow                    # static JS/CSS confirm-flow analysis
 make test-route-sweep                     # auto-derived FastAPI page sweep
@@ -51,7 +54,13 @@ make test-release                         # all live-container variants. Manual 
 
 ## What runs in CI
 
-`.github/workflows/test.yml` defines two jobs:
+`.github/workflows/pr-fast.yml` runs `make test-fast` automatically for every
+pull request and is the required branch-protection check. It targets the
+minimum supported Python 3.11 and validates that the `mangarr` console command
+can be installed from project metadata.
+
+`.github/workflows/test.yml` remains manually dispatchable and defines two
+full-suite jobs:
 
 1. **`hermetic`** — `make test`. Runs the Python suite, static confirm-flow,
    and the auto-derived route sweep. ~30s.

@@ -68,13 +68,13 @@ Mangarr and add this `compose.yaml`:
 services:
   mangarr:
     image: ghcr.io/kha-kis/manga-arr:latest
-    container_name: mangarr
     user: "1000:1000"
     environment:
       TZ: Etc/UTC
-      MANGA_SAVE_PATH: /data/media/manga
-      MANGA_TORRENT_PATH: /data/torrents/manga
-      MANGA_CATEGORY: manga
+      MANGARR_UMASK: "0022"
+      MANGARR_LIBRARY_PATH: /data/media/manga
+      MANGARR_DOWNLOAD_PATH: /data/torrents/manga
+      MANGARR_CATEGORY: manga
     volumes:
       - ./config:/config
       - ./data:/data
@@ -109,9 +109,10 @@ trusted LAN; use an HTTPS reverse proxy before exposing Mangarr beyond it.
 | `/data/media/manga` | Organized manga library in the example Compose layout |
 | `/data/torrents/manga` | Completed downloads in the example Compose layout |
 
-The database and `/config/.mangarr-secret-key` are one recovery unit. A database
-restored without its matching key cannot decrypt stored integration
-credentials. Back up the entire `/config` directory before upgrades.
+Application-created backups contain a consistent SQLite snapshot, the matching
+encryption key, and a version manifest. Treat them as sensitive. A stopped
+snapshot of the entire `/config` directory remains the strongest pre-upgrade
+recovery artifact because it also includes cached covers and rollback files.
 
 ## Upgrading
 
@@ -127,7 +128,7 @@ Mangarr `.env` file is no longer required.
 ```bash
 docker compose pull
 docker compose up -d
-docker compose ps mangarr
+docker compose ps
 ```
 
 Verify `/healthz`, System Status, and a representative search/import workflow.
@@ -148,7 +149,7 @@ by a newer release. The complete procedure is in
   sessions.
 
 ```bash
-docker compose exec mangarr python /app/auth_cli.py reset-admin --yes
+docker compose exec mangarr mangarr admin reset --yes
 ```
 
 Report vulnerabilities privately through the process in [SECURITY.md](SECURITY.md).
@@ -169,9 +170,9 @@ Never publish API keys, passwords, private tracker URLs, or encryption keys.
 
 ## Development
 
-Mangarr uses FastAPI, Starlette, Jinja2, HTMX, Alpine.js, SQLite, and Docker
-Compose. Application code lives in `app/`, templates in `app/templates/`, and
-tests in `tests/`.
+Mangarr supports Python 3.11 through 3.14 for development and uses Python 3.14
+in the release container. Application code lives in `app/`, templates in
+`app/templates/`, and tests in `tests/`.
 
 ```bash
 python3 -m venv .venv

@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+"""Container entry point for the supported Mangarr operator CLI."""
+
+from cli import main
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,16 +1,16 @@
 services:
   mangarr:
     image: ghcr.io/kha-kis/manga-arr:latest
-    container_name: mangarr
 
     # Match this UID:GID to the owner of ./config and ./data on the host.
     user: "1000:1000"
     environment:
       TZ: Etc/UTC
-      MANGA_SAVE_PATH: /data/media/manga
-      MANGA_TORRENT_PATH: /data/torrents/manga
-      MANGA_CATEGORY: manga
-      RSS_INTERVAL: "900"
+      MANGARR_UMASK: "0022"
+      MANGARR_LIBRARY_PATH: /data/media/manga
+      MANGARR_DOWNLOAD_PATH: /data/torrents/manga
+      MANGARR_CATEGORY: manga
+      MANGARR_RSS_INTERVAL: "900"
     volumes:
       - ./config:/config
       - ./data:/data

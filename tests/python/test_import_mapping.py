@@ -675,6 +675,8 @@ def test_queue_import_expands_zip_wrapped_split_rar_payload(env, monkeypatch):
 
     def fake_unrar(args, **kwargs):
         out_arg = next((arg for arg in args if str(arg).startswith("-o")), args[-1])
+        if str(out_arg) == "-o+":
+            out_arg = args[-1]
         out_dir = Path(str(out_arg)[2:] if str(out_arg).startswith("-o") else out_arg)
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "o01nep071.pdf").write_bytes(b"%PDF-1.4\n")

@@ -263,7 +263,7 @@ def test_each_check_function_uses_snapshot_not_get_db():
 def test_docker_healthcheck_uses_unauthenticated_liveness_endpoint():
     """Docker health must not depend on auth or optional integrations."""
     with open(os.path.join(os.path.dirname(__file__), "..", "..",
-                           "docker-compose.yml")) as f:
+                           "compose.yaml")) as f:
         compose = f.read()
     # Authenticated pages redirect, so Docker must probe the public endpoint.
     assert "urlopen('http://localhost:8000/healthz')" in compose

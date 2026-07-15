@@ -1,0 +1,42 @@
+name: Fast PR
+
+on:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fast-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    name: Fast checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up minimum supported Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-test.txt
+
+      - name: Install pinned dependencies
+        run: python -m pip install -r requirements.txt -r requirements-test.txt
+
+      - name: Validate package metadata and CLI
+        run: |
+          python -m pip install --no-deps .
+          mangarr --version
+
+      - name: Run fast gate
+        run: make test-fast

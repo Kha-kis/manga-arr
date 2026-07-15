@@ -13,14 +13,14 @@ Create a directory for Mangarr and place this in `compose.yaml`:
 services:
   mangarr:
     image: ghcr.io/kha-kis/manga-arr:latest
-    container_name: mangarr
     user: "1000:1000"
     environment:
       TZ: Etc/UTC
-      MANGA_SAVE_PATH: /data/media/manga
-      MANGA_TORRENT_PATH: /data/torrents/manga
-      MANGA_CATEGORY: manga
-      RSS_INTERVAL: "900"
+      MANGARR_UMASK: "0022"
+      MANGARR_LIBRARY_PATH: /data/media/manga
+      MANGARR_DOWNLOAD_PATH: /data/torrents/manga
+      MANGARR_CATEGORY: manga
+      MANGARR_RSS_INTERVAL: "900"
     volumes:
       - ./config:/config
       - ./data:/data
@@ -61,6 +61,7 @@ The values most operators change are standard Compose fields:
 | --- | --- | --- |
 | Image channel | `ghcr.io/kha-kis/manga-arr:latest` | Editing `image:` |
 | Runtime identity | `1000:1000` | Editing `user:` |
+| Created-file permissions | `0022` | Editing `environment.MANGARR_UMASK` |
 | Timezone | `Etc/UTC` | Editing `environment.TZ` |
 | Web port | Host `6789`, container `8000` | Editing `ports:` |
 | Application state | `./config:/config` | Editing the host side of `volumes:` |
@@ -73,10 +74,11 @@ Useful optional container environment values include:
 | `MANGARR_INSTANCE_NAME` | Name shown in the browser UI |
 | `MANGARR_LOG_LEVEL` | Runtime log level, normally `INFO` |
 | `MANGARR_URL_BASE` | Path prefix when Mangarr is served below a domain path |
-| `MANGA_SAVE_PATH` | Library path visible inside the container |
-| `MANGA_TORRENT_PATH` | Completed-download path visible inside the container |
-| `MANGA_CATEGORY` | Download-client category |
-| `RSS_INTERVAL` | RSS polling interval in seconds |
+| `MANGARR_LIBRARY_PATH` | Library path visible inside the container |
+| `MANGARR_DOWNLOAD_PATH` | Completed-download path visible inside the container |
+| `MANGARR_CATEGORY` | Download-client category |
+| `MANGARR_RSS_INTERVAL` | RSS polling interval in seconds |
+| `MANGARR_UMASK` | Octal process umask applied before Mangarr starts |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | Standard outbound proxy controls |
 
 Add optional values directly under `environment:`. For example:
@@ -89,6 +91,11 @@ environment:
   HTTPS_PROXY: http://proxy.example:8080
   NO_PROXY: localhost,127.0.0.1,prowlarr,qbittorrent,sabnzbd,komga
 ```
+
+Mangarr continues to accept the pre-1.2 names `MANGA_SAVE_PATH`,
+`MANGA_TORRENT_PATH`, `MANGA_CATEGORY`, and `RSS_INTERVAL`. The canonical
+`MANGARR_*` name wins when both forms are present, so existing installations
+can migrate without a flag day.
 
 ## Container User And File Ownership
 
@@ -113,6 +120,12 @@ chmod 700 config
 
 Do not solve permission failures by running the container as root or making
 `/config` world-writable.
+
+`MANGARR_UMASK` controls permissions for files and directories Mangarr creates.
+Use `0002` when the container UID shares a writable media group and imported
+content should remain group-writable. Hardlinked files retain the source
+inode's permissions, so configure the download client with a compatible umask
+as well.
 
 ## Volume Layout
 
@@ -199,7 +212,7 @@ After setup:
 If the administrator password is lost, reset browser access from the container:
 
 ```bash
-docker compose exec mangarr python /app/auth_cli.py reset-admin --yes
+docker compose exec mangarr mangarr admin reset --yes
 ```
 
 This deletes the browser administrator and revokes all browser sessions without
@@ -219,7 +232,7 @@ Before exposing Mangarr beyond a trusted LAN, verify:
 - [ ] Remote access uses an HTTPS reverse proxy rather than a direct public
       Docker port.
 - [ ] The proxy sends `X-Forwarded-Proto: https` so cookies receive `Secure`.
-- [ ] The database and `/config/.mangarr-secret-key` are backed up together.
+- [ ] Application backup ZIPs and stopped `/config` snapshots are stored securely.
 - [ ] Indexer URLs, passwords, API keys, and private tracker details are not
       stored in Compose or committed to source control.
 
@@ -232,10 +245,14 @@ Persistent application state lives under `/config`:
 | `/config/manga_arr.db` | SQLite database |
 | `/config/.mangarr-secret-key` | Encryption key for stored credentials |
 | `/config/covers/` | Cached cover images |
-| `/config/backups/` | Application-created database backup archives |
+| `/config/backups/` | Application-created self-contained backup archives |
 
-The database and secret key are one recovery unit. A database restored without
-its matching key cannot decrypt saved integration credentials.
+Mangarr backup ZIPs are created from SQLite's online backup API, so committed
+WAL transactions are included consistently. Current archives contain
+`manga_arr.db`, the matching `.mangarr-secret-key`, and `manifest.json`. Treat
+every archive as sensitive because it can decrypt saved integration
+credentials. Legacy database-only archives remain valid but require the
+matching key from their original `/config` directory.
 
 For a complete pre-upgrade snapshot, stop Mangarr and archive the host config
 directory:
@@ -246,13 +263,26 @@ tar -C . -czf mangarr-config-backup.tgz config
 docker compose start mangarr
 ```
 
-The Backup page creates and validates database backup ZIP files. A full host
-snapshot remains the strongest recovery artifact because it includes the
-database, encryption key, covers, and backup metadata together.
+The Backup page creates and validates self-contained backup ZIP files. A full
+host snapshot remains the strongest pre-upgrade recovery artifact because it
+also includes covers, prior restore snapshots, and backup metadata.
 
 ## Restoring
 
-Restore only while Mangarr is stopped:
+Validate and restore an application backup only while Mangarr is stopped. The
+restore command retains the previous database and key as timestamped
+`pre-restore` files:
+
+```bash
+docker compose stop mangarr
+docker compose run --rm --no-deps mangarr \
+  mangarr backup validate /config/backups/mangarr_backup_TIMESTAMP.zip
+docker compose run --rm --no-deps mangarr \
+  mangarr backup restore /config/backups/mangarr_backup_TIMESTAMP.zip --yes
+docker compose up -d
+```
+
+For a full stopped `/config` snapshot, restore the host archive instead:
 
 ```bash
 docker compose stop mangarr
@@ -303,10 +333,10 @@ Before upgrading:
 
 1. Read the target release in `CHANGELOG.md`.
 2. Create a stopped `/config` snapshot.
-3. Record the currently running image and digest:
+3. Record the currently configured image:
 
 ```bash
-docker inspect mangarr --format '{{.Config.Image}} {{.Image}}'
+docker compose images mangarr
 ```
 
 4. Confirm the new image supports your architecture and review migration notes.

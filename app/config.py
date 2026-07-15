@@ -41,21 +41,21 @@ ENV_DEFAULTS = {
     # operators must configure the reverse proxy to strip the prefix before
     # forwarding requests to the container.
     'url_base':            ('MANGARR_URL_BASE',      ''),
-    'save_path':           ('MANGA_SAVE_PATH',  '/manga'),
+    'save_path':           ('MANGARR_LIBRARY_PATH',  '/manga'),
     # torrent_save_path: where qBittorrent writes in-progress downloads.
     # When empty, falls back to save_path (keeps the single-directory
     # default from before this setting was split out). Setting it enables
     # the standard *arr separation: downloads in /data/torrents/manga,
     # library in /data/media/manga. Both must be on the same filesystem
     # if import_mode='hardlink' (the default) — see docs/deployment.md.
-    'torrent_save_path':   ('MANGA_TORRENT_PATH', ''),
+    'torrent_save_path':   ('MANGARR_DOWNLOAD_PATH', ''),
     'import_mode':         (None,               'hardlink'), # hardlink | move | copy
-    'category':            ('MANGA_CATEGORY',   'manga'),
-    'rss_interval':        ('RSS_INTERVAL',     '900'),
-    'komga_url':           ('KOMGA_URL',        ''),
-    'komga_user':          ('KOMGA_USER',       ''),
-    'komga_pass':          ('KOMGA_PASS',       ''),
-    'komga_library_id':    ('KOMGA_LIBRARY_ID', ''),
+    'category':            ('MANGARR_CATEGORY',   'manga'),
+    'rss_interval':        ('MANGARR_RSS_INTERVAL', '900'),
+    'komga_url':           ('MANGARR_KOMGA_URL',        ''),
+    'komga_user':          ('MANGARR_KOMGA_USER',       ''),
+    'komga_pass':          ('MANGARR_KOMGA_PASSWORD',   ''),
+    'komga_library_id':    ('MANGARR_KOMGA_LIBRARY_ID', ''),
     'komga_scan_enabled':  (None,               'false'),
     # Release filtering (global fallback when no Release Profile matches)
     'ignored_words':       (None,               'raw,korean,chinese,manhwa,manhua,webtoon'),
@@ -88,6 +88,19 @@ ENV_DEFAULTS = {
     # Import free-space guard. 0 disables the guard; otherwise imports
     # require this many MiB to remain free after planned staging bytes.
     'minimum_free_space_mb':    (None,    '0'),
+}
+
+# Existing deployments keep their original variable names indefinitely. The
+# canonical MANGARR_* name wins when both forms are supplied.
+ENV_ALIASES = {
+    'save_path':           ('MANGA_SAVE_PATH',),
+    'torrent_save_path':   ('MANGA_TORRENT_PATH',),
+    'category':            ('MANGA_CATEGORY',),
+    'rss_interval':        ('RSS_INTERVAL',),
+    'komga_url':           ('KOMGA_URL',),
+    'komga_user':          ('KOMGA_USER',),
+    'komga_pass':          ('KOMGA_PASS',),
+    'komga_library_id':    ('KOMGA_LIBRARY_ID',),
 }
 
 

@@ -56,8 +56,26 @@ def test_torrent_save_path_is_in_env_defaults():
     import main
     assert 'torrent_save_path' in main.ENV_DEFAULTS
     env_var, default = main.ENV_DEFAULTS['torrent_save_path']
-    assert env_var == 'MANGA_TORRENT_PATH'
+    assert env_var == 'MANGARR_DOWNLOAD_PATH'
     assert default == ''
+
+
+def test_legacy_download_path_environment_alias_still_loads(env, monkeypatch):
+    import main
+
+    monkeypatch.delenv("MANGARR_DOWNLOAD_PATH", raising=False)
+    monkeypatch.setenv("MANGA_TORRENT_PATH", "/legacy/downloads")
+    main.load_config()
+    assert main.CONFIG["torrent_save_path"] == "/legacy/downloads"
+
+
+def test_canonical_download_path_environment_name_wins(env, monkeypatch):
+    import main
+
+    monkeypatch.setenv("MANGA_TORRENT_PATH", "/legacy/downloads")
+    monkeypatch.setenv("MANGARR_DOWNLOAD_PATH", "/canonical/downloads")
+    main.load_config()
+    assert main.CONFIG["torrent_save_path"] == "/canonical/downloads"
 
 
 def test_blank_torrent_save_path_is_normal(env):

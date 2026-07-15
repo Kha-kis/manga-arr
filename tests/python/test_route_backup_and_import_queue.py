@@ -140,8 +140,8 @@ def test_backup_page_renders_restore_readiness_and_validate_controls(env):
     assert "Restore Readiness" in r.text
     assert "/api/system/backup/${encodeURIComponent(filename)}/validate" in r.text
     assert "Validate backup mangarr_backup_20260101_000000.zip" in r.text
-    assert "/config/.mangarr-secret-key" in r.text
-    assert "MANGARR_SECRET_KEY" in r.text
+    assert "self-contained" in r.text
+    assert "mangarr backup restore" in r.text
 
 
 def test_backup_create_returns_valid_zip_with_db(env):
@@ -170,6 +170,7 @@ def test_backup_create_returns_valid_zip_with_db(env):
         assert "manga_arr.db" in names, (
             f"backup must contain manga_arr.db, got {names!r}"
         )
+        assert "manifest.json" in names
         db_bytes = zf.read("manga_arr.db")
 
     # The extracted DB must be queryable and contain our seed row
@@ -236,6 +237,7 @@ def test_backup_validate_accepts_created_backup(env):
     assert body["containsDatabase"] is True
     assert body["databaseValid"] is True
     assert "manga_arr.db" in body["entries"]
+    assert body["formatVersion"] == 1
 
 
 def test_backup_validate_rejects_non_zip_filename(env):
