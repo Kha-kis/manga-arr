@@ -1,13 +1,12 @@
 # Mangarr runtime dependencies — exact pins.
 #
-# Dependabot owns version bumps. Reproduce locally with:
+# Dependency updates are reviewed manually while hosted automation is disabled.
+# Reproduce locally with:
 #   python3 -m venv .venv && source .venv/bin/activate
 #   pip install -r requirements.txt
 #
-# Editing this file: prefer letting Dependabot open a PR for each
-# upgrade so the bump goes through CI (pip-audit + the full test
-# suite) before merging. Manual edits should still be a single PR
-# per package so a regression is easy to bisect.
+# Keep each manual package update in a focused PR. Run `make test` and
+# `make security-deps` before merging so regressions remain easy to bisect.
 
 # Web framework + ASGI server
 fastapi==0.139.0

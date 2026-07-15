@@ -135,6 +135,13 @@ def test_security_policy_uses_private_reporting_and_documents_boundary():
     assert "/config" in policy
 
 
+def test_release_docs_cover_local_billing_safe_gate():
+    releases = _read("docs/releases.md")
+    assert "make release-local" in releases
+    assert "make release-push CONFIRM_RELEASE=" in releases
+    assert "only tag-triggered workflow" in releases
+
+
 def test_deployment_doc_exists_and_covers_three_patterns():
     doc = _read("docs/deployment.md")
     # Pattern markers — if someone restructures the doc these must remain

@@ -74,3 +74,36 @@ commit. An RC tag itself is never renamed or converted into a stable tag.
 
 GitHub-hosted automation is useful evidence, but the local release-safe gate
 remains required because it exercises the full isolated browser stack.
+
+## Local-First Automation
+
+Normal pull requests do not automatically start GitHub Actions. The repository's
+Test and Security workflows remain manual-only and disabled while hosted-runner
+billing is unavailable. Run the same release evidence locally:
+
+```bash
+make release-local
+```
+
+That target validates version metadata, runs `make test-release-safe`, audits
+pinned Python dependencies, scans Git history for secrets, gates Docker and
+Compose configuration with Trivy, builds the production image, verifies its
+version, labels, non-root user, and file inventory, then gates the image on
+fixed High/Critical vulnerabilities.
+
+`.github/workflows/release.yml` is the only tag-triggered workflow. It runs only
+for an explicit `v*` tag, requires that tag to exactly match `app/VERSION`, and
+publishes amd64/arm64 images with SBOM and provenance attestations. It never
+publishes `latest` for a release candidate.
+
+If hosted Actions cannot run, an authenticated maintainer can use the local
+fallback after the full gate passes:
+
+```bash
+make release-push CONFIRM_RELEASE=1.0.0-rc.1
+```
+
+The confirmation must exactly match `app/VERSION`. The Docker client must
+already be logged in to `ghcr.io` with package-write permission. Local
+publishing also requires a clean worktree with `v<version>` pointing at `HEAD`;
+both publishing paths refuse to replace an existing exact-version image tag.

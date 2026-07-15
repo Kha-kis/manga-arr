@@ -25,6 +25,8 @@ available in the merged pull requests.
   repair paths across AniList, MangaDex, MangaUpdates, and Kitsu data.
 - Public non-root container packaging, host-neutral Docker Compose defaults,
   a database-backed health endpoint, and first-run deployment documentation.
+- Local-first release gates plus tag-only multi-architecture GHCR publishing
+  with immutable version tags, SBOM generation, and provenance attestations.
 
 ### Changed
 

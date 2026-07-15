@@ -1,4 +1,4 @@
-FROM python:3.14-slim
+FROM python:3.14-slim@sha256:d3400aa122fa42cf0af0dbe8ec3091b047eac5c8f7e3539f7135e86d855dc015
 
 WORKDIR /app
 
@@ -34,6 +34,20 @@ RUN useradd --uid 1000 --user-group \
       --home-dir /home/mangarr --create-home --shell /usr/sbin/nologin mangarr \
  && mkdir -p /config \
  && chown -R mangarr:mangarr /app /config
+
+# Release metadata is declared after dependency and source layers so changing
+# build timestamps or commit identities does not invalidate those caches.
+ARG MANGARR_VERSION=dev
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+
+LABEL org.opencontainers.image.title="Mangarr" \
+      org.opencontainers.image.description="Self-hosted manga library manager" \
+      org.opencontainers.image.source="https://github.com/Kha-kis/manga-arr" \
+      org.opencontainers.image.documentation="https://github.com/Kha-kis/manga-arr/blob/master/docs/deployment.md" \
+      org.opencontainers.image.version="${MANGARR_VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}"
 
 USER mangarr
 
