@@ -2381,9 +2381,7 @@ async def patch_series(request: Request, series_id: int):
     except _sql.OperationalError as e:
         # The DB was locked or otherwise unable to service our write within
         # the busy_timeout window. Return a structured 503 so callers can
-        # retry instead of a generic 500. Root cause of lock contention is
-        # orthogonal to this endpoint — see the post-review notes in
-        # docs/audit-remediation-plan.md.
+        # retry instead of a generic 500.
         msg = str(e).lower()
         if "locked" in msg or "busy" in msg:
             return JSONResponse(
