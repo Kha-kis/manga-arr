@@ -3,6 +3,32 @@
 All notable changes to this project. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 1.0.0 - 2026-07-15
+
+First stable public release. This promotes `1.0.0-rc.2` without changing
+application behavior; the candidate runtime is the code qualified by the
+production, metadata, download/import, recovery, and security gates below.
+
+### Release Qualification
+
+- 1,649 Python tests, 13 confirm-flow checks, and 10 route-sweep checks passed.
+- Browser smoke 31/31, integration 22/22, and E2E 24/24 passed in isolation.
+- Real qBittorrent, SABnzbd, and Suwayomi connection probes passed.
+- Anonymous installation, administrator setup, `rc.1` to `rc.2` upgrade, and
+  stopped-snapshot rollback passed.
+- A real 2.3 GB backup restored all 30 series, administrator access, and 17
+  encrypted credentials.
+- Dependency, 424-commit secret, configuration, and image scans completed with
+  no release blockers or fixed High/Critical image vulnerabilities.
+
+### Operations
+
+- The public Compose file pins `1.0.0` by default.
+- Stable image publication provides `1.0.0`, `1.0`, `1`, and `latest` tags from
+  one immutable multi-architecture image index.
+- Public support, contribution, conduct, issue, and pull-request workflows are
+  available, and the protected default branch requires pull requests.
+
 ## 1.0.0-rc.2 - 2026-07-15
 
 Second public release candidate. Runtime behavior is unchanged from `rc.1`;

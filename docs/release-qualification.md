@@ -3,11 +3,12 @@
 This document defines the evidence required before a Mangarr release candidate
 can become a stable release. Passing unit tests alone is not sufficient.
 
-## Candidate Under Test
+## Release Under Test
 
-- Candidate: `1.0.0-rc.2`
+- Stable release: `1.0.0`
+- Qualified candidate: `1.0.0-rc.2`
 - Previous candidate: `1.0.0-rc.1`
-- Image: `ghcr.io/kha-kis/manga-arr:1.0.0-rc.2`
+- Stable image: `ghcr.io/kha-kis/manga-arr:1.0.0`
 - Platforms: `linux/amd64`, `linux/arm64`
 
 ## Production Evidence
@@ -66,12 +67,14 @@ Before stable release, verify all of the following using the published image:
 
 ## Stable Release Decision
 
-A stable release requires:
+The `1.0.0` release is qualified when publication verifies the final two
+artifact-specific requirements below. Qualification evidence includes:
 
 - `make release-local` passing from the exact tagged commit;
 - browser smoke, integration, and E2E suites passing in isolation;
 - dependency, secret, configuration, and image scans without release blockers;
 - fresh-install and upgrade/rollback evidence;
 - public support, security, contribution, and conduct policies;
-- a protected default branch and an immutable published tag;
-- `latest` resolving to the exact stable image digest.
+- a protected default branch and immutable annotated release tags;
+- publication verification that `1.0.0`, `1.0`, `1`, and `latest` resolve to
+  the same stable image digest.

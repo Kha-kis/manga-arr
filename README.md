@@ -5,8 +5,8 @@ Mangarr is a self-hosted manga and light-novel library manager. It applies the
 a series, search indexers, send a release to a download client, import the
 completed files, and notify the rest of your media stack.
 
-**Current release:** `1.0.0-rc.2`. This is a release candidate. Back up
-`/config` before upgrading and pin the image version while evaluating it.
+**Current stable release:** `1.0.0`. Back up `/config` before upgrading and pin
+the image version for reproducible deployments.
 
 ## Features
 
@@ -48,7 +48,7 @@ one-time setup token. The token file is mode `0600` and is removed after setup.
 
 The public Compose file:
 
-- pulls the exact current RC, `ghcr.io/kha-kis/manga-arr:1.0.0-rc.2`;
+- pulls the exact stable release, `ghcr.io/kha-kis/manga-arr:1.0.0`;
 - publishes only on host loopback by default;
 - runs the container without root privileges;
 - stores persistent state in `./config` and media/download data in `./data`.
