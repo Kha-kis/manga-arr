@@ -141,6 +141,15 @@ Additional project references:
 - [`tests/README.md`](tests/README.md): test architecture
 - [`CLAUDE.md`](CLAUDE.md): codebase invariants and contributor guidance
 
+## License
+
+Copyright (C) 2026 Kha-kis.
+
+Mangarr is free software licensed under the
+[GNU Affero General Public License v3.0 only](LICENSE) (`AGPL-3.0-only`). If you
+modify Mangarr and make it available to users over a network, you must offer
+those users the corresponding source code under the same license.
+
 ## Support
 
 Use [GitHub Issues](https://github.com/Kha-kis/manga-arr/issues) for reproducible

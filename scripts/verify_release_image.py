@@ -49,6 +49,7 @@ def verify_image(image: str, version: str, revision: str) -> None:
     expected_labels = {
         "org.opencontainers.image.title": "Mangarr",
         "org.opencontainers.image.source": "https://github.com/Kha-kis/manga-arr",
+        "org.opencontainers.image.licenses": "AGPL-3.0-only",
         "org.opencontainers.image.version": version,
         "org.opencontainers.image.revision": revision,
     }
