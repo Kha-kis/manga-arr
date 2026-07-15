@@ -4,6 +4,7 @@
  * tabs, beforeunload, HTMX confirm, keyboard nav, no console errors.
  */
 const { chromium } = require('playwright');
+const { authenticate } = require('./browser_auth');
 
 const BASE = process.env.MANGARR_TEST_BASE || 'http://127.0.0.1:6789';
 const results = [];
@@ -18,6 +19,7 @@ async function run() {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
+  await authenticate(page, BASE);
 
   // Capture console errors (page.on('console') fires for every console message)
   const consoleErrors = [];

@@ -24,8 +24,12 @@ import os
 import sqlite3
 from datetime import datetime
 
+from argon2 import PasswordHasher
+
 DB_PATH = "/config/manga_arr.db"
 COVERS_DIR = "/config/covers"
+BROWSER_AUTH_USERNAME = "browser-admin"
+BROWSER_AUTH_PASSWORD = "mangarr-browser-test-password"
 
 # 1×1 transparent PNG. The series page emits <img src="/covers/{id}.jpg">
 # and the browser logs a console error when that 404s, which would fail
@@ -103,6 +107,25 @@ def main():
 
     with sqlite3.connect(DB_PATH) as db:
         db.row_factory = sqlite3.Row
+
+        if not db.execute("SELECT 1 FROM auth_admin WHERE id=1").fetchone():
+            now = datetime.now().astimezone().isoformat()
+            db.execute(
+                "INSERT INTO auth_admin(id,username,password_hash,created_at,updated_at) "
+                "VALUES(1,?,?,?,?)",
+                (
+                    BROWSER_AUTH_USERNAME,
+                    PasswordHasher().hash(BROWSER_AUTH_PASSWORD),
+                    now,
+                    now,
+                ),
+            )
+            print("seeded browser administrator")
+        db.execute("DELETE FROM auth_sessions")
+        try:
+            os.remove("/config/.mangarr-setup-token")
+        except FileNotFoundError:
+            pass
 
         # series 37 (for omnibus & packs test)
         existing = db.execute(

@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Log in - {{ get_instance_name() }}{% endblock %}
+{% block body_class %}auth-page{% endblock %}
+{% block body %}
+<main class="auth-shell" id="main-content">
+  <section class="auth-panel" aria-labelledby="login-heading">
+    <div class="auth-brand">
+      <i class="bi bi-book-half" aria-hidden="true"></i>
+      <span>{{ get_instance_name() }}</span>
+    </div>
+    <h1 class="auth-heading" id="login-heading">Log in</h1>
+    <p class="auth-copy">Use the local administrator account for this server.</p>
+    {% if error %}
+    <div class="auth-error" role="alert">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="/login">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}" />
+      <input type="hidden" name="next" value="{{ next }}" />
+      <div class="mb-3">
+        <label class="form-label" for="login-username">Username</label>
+        <input
+          class="form-control"
+          id="login-username"
+          name="username"
+          type="text"
+          value="{{ username or '' }}"
+          autocomplete="username"
+          maxlength="32"
+          required
+          autofocus
+        />
+      </div>
+      <div class="mb-4">
+        <label class="form-label" for="login-password">Password</label>
+        <input
+          class="form-control"
+          id="login-password"
+          name="password"
+          type="password"
+          autocomplete="current-password"
+          maxlength="128"
+          required
+        />
+      </div>
+      <button class="btn btn-ember auth-action w-100" type="submit">
+        <i class="bi bi-box-arrow-in-right" aria-hidden="true"></i>
+        Log in
+      </button>
+    </form>
+  </section>
+</main>
+{% endblock %}

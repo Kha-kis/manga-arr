@@ -119,6 +119,7 @@
         --sidebar-w:  228px;
         --sidebar-collapsed: 60px;
         --topbar-h:   52px;
+        --measure-auth: 28rem;
         /* measure scale */
         --line-hairline: 1px;
         --line-strong: 2px;
@@ -461,6 +462,76 @@
 
       .topbar-title strong {
         color: var(--text);
+      }
+
+      .topbar-actions {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: var(--space-xs);
+      }
+
+      .topbar-actions form { display: contents; }
+
+      /* Authentication */
+      .auth-page {
+        display: grid;
+        background-image: none;
+      }
+      .auth-shell {
+        width: 100%;
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        padding: var(--space-4xl);
+      }
+      .auth-panel {
+        width: min(100%, var(--measure-auth));
+        background: var(--ink-2);
+        border: var(--line-hairline) solid var(--edge-2);
+        border-radius: var(--radius-md);
+        padding: var(--space-4xl);
+        box-shadow: 0 var(--space-xl) var(--space-5xl) var(--void-soft);
+      }
+      .auth-brand {
+        display: flex;
+        align-items: center;
+        gap: var(--space-lg);
+        margin-bottom: var(--space-3xl);
+        color: var(--text);
+        font-family: var(--font-display);
+        font-size: var(--text-display-lg);
+        font-weight: 700;
+      }
+      .auth-brand i { color: var(--ember); }
+      .auth-heading {
+        font-family: var(--font-display);
+        font-size: var(--text-display-xl);
+        font-weight: 700;
+        margin-bottom: var(--space-sm);
+      }
+      .auth-copy {
+        color: var(--text-2);
+        margin-bottom: var(--space-3xl);
+      }
+      .auth-error {
+        color: var(--ruby);
+        background: var(--ruby-bg);
+        border: var(--line-hairline) solid var(--ruby-soft);
+        border-radius: var(--radius-sm);
+        padding: var(--space-lg) var(--space-xl);
+        margin-bottom: var(--space-xl);
+      }
+      .auth-token-help {
+        color: var(--text-2);
+        font-size: var(--text-sm);
+        margin-top: var(--space-xs);
+      }
+      .auth-token-help code { overflow-wrap: anywhere; }
+      .auth-panel .form-control,
+      .security-auth-form .form-control,
+      .auth-action {
+        min-height: var(--control-touch);
       }
 
       /* Page content */
@@ -3250,7 +3321,8 @@
     </style>
     {% block head %}{% endblock %}
   </head>
-  <body>
+  <body class="{% block body_class %}{% endblock %}">
+    {% block body %}
     <a href="#main-content" class="skip-link">Skip to main content</a>
     <div class="app-shell">
       <!-- ── Sidebar overlay (mobile) ── -->
@@ -3414,6 +3486,11 @@
                   ><i class="bi bi-sliders2"></i>General</a
                 >
               </li>
+              <li>
+                <a class="dropdown-item" href="/settings/security"
+                  ><i class="bi bi-shield-lock"></i>Security</a
+                >
+              </li>
               <li><hr class="dropdown-divider" /></li>
               <li><div class="dropdown-header">Profiles</div></li>
               <li>
@@ -3514,6 +3591,27 @@
               >{% block title_short %}Mangarr{% endblock %}</strong
             >{% endblock %}</span
           >
+          <div class="topbar-actions">
+            <a
+              href="/settings/security"
+              class="btn-icon"
+              title="Security settings"
+              aria-label="Security settings"
+            >
+              <i class="bi bi-person-circle" aria-hidden="true"></i>
+            </a>
+            <form method="post" action="/logout">
+              <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}" />
+              <button
+                type="submit"
+                class="btn-icon"
+                title="Log out"
+                aria-label="Log out"
+              >
+                <i class="bi bi-box-arrow-right" aria-hidden="true"></i>
+              </button>
+            </form>
+          </div>
         </div>
 
         <!-- Page content -->
@@ -3954,5 +4052,6 @@
       });
     </script>
     {% block scripts %}{% endblock %}
+    {% endblock %}
   </body>
 </html>

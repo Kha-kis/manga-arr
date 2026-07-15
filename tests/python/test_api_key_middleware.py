@@ -123,7 +123,7 @@ def _make_test_app(api_key_value):
 
 
 def _make_csrf_api_test_app(api_key_value):
-    """Build an app with the production API-key + CSRF middleware stack."""
+    """Build the API/CSRF stack with an authenticated browser marker."""
     import main
     from fastapi import FastAPI
 
@@ -133,8 +133,17 @@ def _make_csrf_api_test_app(api_key_value):
     async def mutate():
         return {"ok": True}
 
+    class AuthenticatedBrowser:
+        def __init__(self, inner):
+            self.inner = inner
+
+        async def __call__(self, scope, receive, send):
+            scope["mangarr_browser_authenticated"] = True
+            await self.inner(scope, receive, send)
+
     app.add_middleware(main.CSRFMiddleware)
     app.add_middleware(main.ApiKeyMiddleware)
+    app.add_middleware(AuthenticatedBrowser)
 
     import shared
     main.CONFIG["api_key"] = api_key_value
@@ -180,6 +189,14 @@ def test_api_route_rejects_wrong_request_key():
     app = _make_test_app("server-secret")
     client = TestClient(app)
     r = client.get("/api/ping", headers={"X-Api-Key": "wrong-key"})
+    assert r.status_code == 401
+
+
+def test_api_route_rejects_non_ascii_query_key_without_server_error():
+    from fastapi.testclient import TestClient
+    app = _make_test_app("server-secret")
+    client = TestClient(app)
+    r = client.get("/api/ping?apikey=%C3%A9")
     assert r.status_code == 401
 
 

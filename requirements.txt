@@ -35,3 +35,6 @@ defusedxml==0.7.1
 
 # Fernet-based encryption for at-rest secrets in the settings table
 cryptography==48.0.1
+
+# Argon2id password hashing for the local administrator account
+argon2-cffi==25.1.0

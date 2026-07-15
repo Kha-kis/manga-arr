@@ -260,14 +260,11 @@ def test_each_check_function_uses_snapshot_not_get_db():
     assert "_health_db_snapshot()" in src
 
 
-def test_docker_healthcheck_still_uses_root_not_health():
-    """Regression guard: Docker's container health should remain tied to
-    `/` (the library page), not `/health`. Binding Docker health to
-    /health would make container status depend on optional upstream
-    integrations (Komga, SAB, qBit), which isn't the intent."""
+def test_docker_healthcheck_uses_unauthenticated_liveness_endpoint():
+    """Docker health must not depend on auth or optional integrations."""
     with open(os.path.join(os.path.dirname(__file__), "..", "..",
                            "docker-compose.yml")) as f:
         compose = f.read()
-    # Extract the healthcheck block and confirm it probes / not /health.
-    assert "urlopen('http://localhost:8000/')" in compose
-    assert "urlopen('http://localhost:8000/health')" not in compose
+    # Authenticated pages redirect, so Docker must probe the public endpoint.
+    assert "urlopen('http://localhost:8000/healthz')" in compose
+    assert "urlopen('http://localhost:8000/')" not in compose

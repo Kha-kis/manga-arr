@@ -19,10 +19,13 @@ cd manga-arr
 mkdir -p config data/media/manga data/torrents/manga
 chmod 700 config
 docker compose up -d
+docker compose exec mangarr cat /config/.mangarr-setup-token
 ```
 
-Then open <http://127.0.0.1:6789> — the compose file publishes on
-loopback by default. For LAN or internet access, see
+Then open <http://127.0.0.1:6789> and create the local administrator
+with that one-time token. The token file is mode `0600` and is removed
+after setup. The compose file publishes on loopback by default. For LAN
+or internet access, see
 [`docs/deployment.md`](docs/deployment.md).
 
 The default deployment pulls `ghcr.io/kha-kis/manga-arr:latest`, runs as
@@ -30,6 +33,8 @@ UID/GID 1000, and keeps all persistent state in the host-visible
 `./config` and `./data` directories. Copy [`.env.example`](.env.example)
 to `.env` to select a version, port, bind address, UID/GID, or different
 host paths. Configure integrations and credentials in the Mangarr UI.
+Browser login and API keys are separate: use the administrator account
+for the UI and the API key from Settings for clients and automation.
 
 ## Deployment & security
 
