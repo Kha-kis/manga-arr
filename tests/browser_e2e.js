@@ -35,6 +35,14 @@ function dbQuery(sql) {
   return JSON.parse(out);
 }
 
+function containerPython(code) {
+  const encoded = Buffer.from(code, 'utf8').toString('base64');
+  return execSync(
+    `docker exec ${CONTAINER} python3 -c "import base64; exec(base64.b64decode('${encoded}'))"`,
+    { encoding: 'utf-8' }
+  ).trim();
+}
+
 async function readApiKey(page) {
   await page.goto(BASE + '/settings/general', {
     waitUntil: 'domcontentloaded',
@@ -335,7 +343,174 @@ async function run() {
   }
 
   // ════════════════════════════════════════════════════════════════════
-  console.log('\n=== E3.8: Data integrity unchanged after all tests ===');
+  console.log('\n=== E3.8: Import Review persists an isolated special ===');
+  // ════════════════════════════════════════════════════════════════════
+  const specialToken = 'e2e_special_' + Date.now();
+  let specialQueueId = null;
+  let specialSeriesId = null;
+  let specialSourceDir = null;
+  let specialLibraryDir = null;
+  try {
+    const seriesTitle = `E2E Special Series ${specialToken}`;
+    specialSourceDir = `/config/.${specialToken}-source`;
+    specialLibraryDir = `/config/.${specialToken}-library`;
+    const sourcePath = `${specialSourceDir}/${seriesTitle} Bonus Story.cbz`;
+    const initialTitle = `Bonus Story ${specialToken}`;
+    const finalTitle = `Revised Bonus ${specialToken}`;
+    const downloadId = `${specialToken}_download`;
+
+    const setupCode = `
+import json, os, sqlite3, zipfile
+source_dir = ${JSON.stringify(specialSourceDir)}
+library_dir = ${JSON.stringify(specialLibraryDir)}
+source_path = ${JSON.stringify(sourcePath)}
+os.makedirs(source_dir, exist_ok=True)
+os.makedirs(library_dir, exist_ok=True)
+with zipfile.ZipFile(source_path, 'w') as archive:
+    archive.writestr('page.txt', 'Mangarr browser E2E')
+db = sqlite3.connect('/config/manga_arr.db')
+root_id = db.execute(
+    "INSERT INTO root_folders(path,label,is_default) VALUES(?,? ,0)",
+    (library_dir, ${JSON.stringify(specialToken)}),
+).lastrowid
+series_id = db.execute(
+    "INSERT INTO series(title,search_pattern,root_folder_id,enabled,monitored) VALUES(?,?,?,1,1)",
+    (${JSON.stringify(seriesTitle)}, ${JSON.stringify(seriesTitle)}, root_id),
+).lastrowid
+volume_id = db.execute(
+    "INSERT INTO volumes(series_id,volume_num,title,status,import_path) VALUES(?,1,'Volume 1','downloaded','/library/original-v1.cbz')",
+    (series_id,),
+).lastrowid
+db.execute(
+    "INSERT INTO chapters(series_id,volume_id,chapter_num,title,status,import_path) VALUES(?,?,1,'Chapter 1','downloaded','/library/original-c001.cbz')",
+    (series_id, volume_id),
+)
+cur = db.execute(
+    "INSERT INTO import_queue(series_id,download_id,torrent_name,torrent_url,src_dir,status) VALUES(?,?,?,?,?, 'partial')",
+    (series_id, ${JSON.stringify(downloadId)}, ${JSON.stringify(initialTitle)}, ${JSON.stringify('magnet:' + specialToken)}, source_dir),
+)
+queue_id = cur.lastrowid
+db.execute(
+    "INSERT INTO import_queue_files(queue_id,filename,src_path,proposed_is_special,proposed_import_kind,proposed_special_title,file_type,status) VALUES(?,?,?,?,?,?,?,?)",
+    (queue_id, ${JSON.stringify('Vinland Saga - Special - ' + initialTitle + '.cbz')}, source_path, 1, 'special', ${JSON.stringify(initialTitle)}, 'special', 'needs_review'),
+)
+db.commit()
+print(json.dumps({'queue_id': queue_id, 'series_id': series_id}))
+`;
+    const fixture = JSON.parse(containerPython(setupCode));
+    specialQueueId = fixture.queue_id;
+    specialSeriesId = fixture.series_id;
+    const beforeMainline = dbQuery(
+      `SELECT id,status,import_path FROM volumes WHERE series_id=${specialSeriesId} AND volume_num=1 ORDER BY id`
+    );
+
+    await page.goto(BASE + '/queue', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.evaluate((queueId) => {
+      bootstrap.Modal.getOrCreateInstance(document.getElementById(`review-${queueId}`)).show();
+    }, specialQueueId);
+    await page.waitForSelector(`#review-${specialQueueId}.show`, { timeout: 3000 });
+
+    const controlState = await page.evaluate((queueId) => {
+      const modal = document.getElementById(`review-${queueId}`);
+      const kind = modal.querySelector('.queue-review-kind-select');
+      const title = modal.querySelector('.queue-review-special-title');
+      const volume = modal.querySelector('[name^="vol_"]');
+      return {
+        kind: kind && kind.value,
+        titleVisible: title && !title.closest('[data-import-kinds]').classList.contains('d-none'),
+        volumeDisabled: volume && volume.disabled,
+      };
+    }, specialQueueId);
+    if (controlState.kind === 'special' && controlState.titleVisible && controlState.volumeDisabled) {
+      ok('Special review enables only the special mapping controls');
+    } else {
+      fail('special review controls', JSON.stringify(controlState));
+    }
+
+    const titleInput = page.locator(`#review-${specialQueueId} .queue-review-special-title`);
+    await titleInput.fill(finalTitle);
+    const preview = await page.textContent(`#review-${specialQueueId} [id^="review-destination-"]`);
+    if (preview.includes(`${seriesTitle} - Special - ${finalTitle}.cbz`)) {
+      ok('Special destination preview updates with the title');
+    } else {
+      fail('special destination preview', preview);
+    }
+
+    const responsePromise = page.waitForResponse(
+      response => response.url().endsWith(`/import/${specialQueueId}/process`) && response.request().method() === 'POST',
+      { timeout: 10000 }
+    );
+    await page.click(`#review-${specialQueueId} button[type="submit"]`);
+    const importResponse = await responsePromise;
+    if (importResponse.status() === 200) ok('Special import submitted through HTMX');
+    else fail('special import response', `HTTP ${importResponse.status()}`);
+    await new Promise(resolve => setTimeout(resolve, 800));
+
+    const imported = dbQuery(
+      `SELECT title,volume_num,is_special,edition_type,pack_type,import_path FROM volumes WHERE series_id=${specialSeriesId} AND download_id='${downloadId}'`
+    );
+    if (
+      imported.length === 1 &&
+      imported[0].title === finalTitle &&
+      imported[0].volume_num === null &&
+      imported[0].is_special === 1 &&
+      imported[0].edition_type === 'special' &&
+      imported[0].pack_type === 'special'
+    ) {
+      ok('Special persisted as a standalone library record');
+    } else {
+      fail('special persistence', JSON.stringify(imported));
+    }
+    const afterMainline = dbQuery(
+      `SELECT id,status,import_path FROM volumes WHERE series_id=${specialSeriesId} AND volume_num=1 ORDER BY id`
+    );
+    if (JSON.stringify(afterMainline) === JSON.stringify(beforeMainline)) {
+      ok('Special import left Volume 1 unchanged');
+    } else {
+      fail('mainline isolation', JSON.stringify({ beforeMainline, afterMainline }));
+    }
+  } catch (e) {
+    fail('E3.8 special import review', e.message);
+  } finally {
+    try {
+      const queueIdLiteral = specialQueueId === null ? 'None' : String(specialQueueId);
+      const seriesIdLiteral = specialSeriesId === null ? 'None' : String(specialSeriesId);
+      const sourceDirLiteral = specialSourceDir === null ? 'None' : JSON.stringify(specialSourceDir);
+      const libraryDirLiteral = specialLibraryDir === null ? 'None' : JSON.stringify(specialLibraryDir);
+      const cleanupCode = `
+import os, shutil, sqlite3
+db = sqlite3.connect('/config/manga_arr.db')
+rows = db.execute("SELECT import_path FROM volumes WHERE download_id=?", (${JSON.stringify(specialToken + '_download')},)).fetchall()
+for (path,) in rows:
+    if path and os.path.isfile(path):
+        os.unlink(path)
+db.execute("DELETE FROM history WHERE download_id=?", (${JSON.stringify(specialToken + '_download')},))
+db.execute("DELETE FROM volumes WHERE download_id=?", (${JSON.stringify(specialToken + '_download')},))
+queue_id = ${queueIdLiteral}
+if queue_id is not None:
+    db.execute("DELETE FROM import_queue_files WHERE queue_id=?", (queue_id,))
+    db.execute("DELETE FROM import_queue WHERE id=?", (queue_id,))
+db.execute("DELETE FROM events WHERE message LIKE ?", ('%' + ${JSON.stringify(specialToken)} + '%',))
+series_id = ${seriesIdLiteral}
+if series_id is not None:
+    db.execute("DELETE FROM chapters WHERE series_id=?", (series_id,))
+    db.execute("DELETE FROM volumes WHERE series_id=?", (series_id,))
+    db.execute("DELETE FROM series WHERE id=?", (series_id,))
+db.execute("DELETE FROM root_folders WHERE path=?", (${libraryDirLiteral},))
+db.commit()
+source_dir = ${sourceDirLiteral}
+if source_dir and os.path.isdir(source_dir):
+    shutil.rmtree(source_dir)
+library_dir = ${libraryDirLiteral}
+if library_dir and os.path.isdir(library_dir):
+    shutil.rmtree(library_dir)
+`;
+      containerPython(cleanupCode);
+    } catch (_) {}
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  console.log('\n=== E3.9: Data integrity unchanged after all tests ===');
   // ════════════════════════════════════════════════════════════════════
   try {
     const s40 = dbQuery(`SELECT id, title FROM series WHERE id=40`);
@@ -350,11 +525,11 @@ async function run() {
     execSync(`docker exec ${CONTAINER} python3 /app/verify_e2e.py > /tmp/verify_final.out 2>&1`);
     ok('verify_e2e.py still passes after E2E mutations');
   } catch (e) {
-    fail('E3.8 data integrity', e.message);
+    fail('E3.9 data integrity', e.message);
   }
 
   // ════════════════════════════════════════════════════════════════════
-  console.log('\n=== E3.9: Console error summary ===');
+  console.log('\n=== E3.10: Console error summary ===');
   // ════════════════════════════════════════════════════════════════════
   if (consoleErrors.length === 0) ok('Zero console errors in entire E2E run');
   else {

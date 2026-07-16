@@ -5,7 +5,15 @@ import os
 
 from events import log_event
 from parsing import extract_chapter_num
-from files import build_filename, quality_from_filename, quality_rank, safe_join_under
+from files import (
+    build_filename,
+    build_special_filename,
+    derive_special_title,
+    quality_from_filename,
+    quality_rank,
+    safe_join_under,
+)
+from import_kinds import normalize_import_kind
 from rescan import _series_library_dir
 
 log = logging.getLogger(__name__)
@@ -20,6 +28,7 @@ class _FilePlan:
         src_path: str,
         filename: str,
         dst_path: str,
+        import_kind: str,
         file_type: str,
         proposed_vol: float | None,
         proposed_chap: float | None,
@@ -28,6 +37,7 @@ class _FilePlan:
         vol_range_end: float | None,
         pack_type: str | None,
         is_special: int,
+        special_title: str | None,
         has_volume_range: bool,
         is_legacy_chapter_stub: bool,
         is_legacy_chapter_recheck: bool,
@@ -38,6 +48,7 @@ class _FilePlan:
         self.src_path = src_path
         self.filename = filename
         self.dst_path = dst_path
+        self.import_kind = import_kind
         self.file_type = file_type
         self.proposed_vol = proposed_vol
         self.proposed_chap = proposed_chap
@@ -46,6 +57,7 @@ class _FilePlan:
         self.vol_range_end = vol_range_end
         self.pack_type = pack_type
         self.is_special = is_special
+        self.special_title = special_title
         self.has_volume_range = has_volume_range
         self.is_legacy_chapter_stub = is_legacy_chapter_stub
         self.is_legacy_chapter_recheck = is_legacy_chapter_recheck
@@ -94,7 +106,7 @@ def _plan_import(
     queue = dict(queue_row)
 
     files = db.execute(
-        "SELECT * FROM import_queue_files WHERE queue_id=? AND status IN ('pending', 'needs_review')",
+        "SELECT * FROM import_queue_files WHERE queue_id=? AND status='pending'",
         (queue_id,),
     ).fetchall()
 
@@ -166,6 +178,7 @@ def _plan_import(
                     src_path=f["src_path"],
                     filename=f["filename"],
                     dst_path="",
+                    import_kind="skip",
                     file_type="",
                     proposed_vol=None,
                     proposed_chap=None,
@@ -174,6 +187,7 @@ def _plan_import(
                     vol_range_end=None,
                     pack_type=None,
                     is_special=0,
+                    special_title=None,
                     has_volume_range=False,
                     is_legacy_chapter_stub=False,
                     is_legacy_chapter_recheck=False,
@@ -237,10 +251,44 @@ def _plan_import(
             if "proposed_is_special" in _keys and f["proposed_is_special"]
             else 0
         )
+        row_import_kind = (
+            f["proposed_import_kind"]
+            if "proposed_import_kind" in _keys
+            else None
+        )
+        special_title = (
+            f["proposed_special_title"]
+            if "proposed_special_title" in _keys
+            else None
+        )
+        import_kind = normalize_import_kind(
+            row_import_kind,
+            file_type=file_type,
+            pack_type=row_pack_type,
+            is_special=row_is_special,
+            volume_range_end=row_vol_re,
+            chapter_range_end=row_chap_re,
+        )
+        if new_chap is not None:
+            import_kind = "chapter_range" if row_chap_re is not None else "chapter"
+        elif new_vol is not None and import_kind != "special":
+            import_kind = "volume_range" if row_vol_re is not None else "volume"
+
+        if import_kind == "special":
+            file_type = "special"
+            row_is_special = 1
+            proposed_vol = None
+            proposed_chap = None
+            row_vol_rs = None
+            row_vol_re = None
+            row_chap_re = None
+            special_title = special_title or derive_special_title(
+                s["title"] if s else "", f["src_path"] or f["filename"]
+            )
 
         is_legacy_chapter_recheck = False
         if (
-            file_type == "volume"
+            import_kind == "volume"
             and proposed_vol is None
             and proposed_chap is None
             and f["id"] not in volume_overrides
@@ -249,6 +297,7 @@ def _plan_import(
             if recheck_chap is not None:
                 proposed_chap = recheck_chap
                 file_type = "chapter"
+                import_kind = "chapter"
                 is_legacy_chapter_recheck = True
                 db.execute(
                     "UPDATE import_queue_files SET proposed_chapter=?, file_type='chapter' WHERE id=?",
@@ -262,7 +311,7 @@ def _plan_import(
         is_legacy_chapter_stub = False
 
         if (
-            file_type == "volume"
+            import_kind == "volume"
             and proposed_vol is None
             and not has_vol_range
             and f["id"] not in volume_overrides
@@ -284,7 +333,16 @@ def _plan_import(
                 plan_status = "needs_review"
 
         filename = f["filename"]
-        if (
+        if import_kind == "special":
+            filename = build_special_filename(
+                s["title"] if s else "", special_title or "Special", f["src_path"]
+            )
+            db.execute(
+                "UPDATE import_queue_files SET filename=?, proposed_special_title=?,"
+                " proposed_is_special=1, proposed_import_kind='special' WHERE id=?",
+                (filename, special_title, f["id"]),
+            )
+        elif (
             file_type == "chapter"
             and proposed_chap is not None
             and ("{Volume" in filename or "{Chapter" in filename)
@@ -299,10 +357,24 @@ def _plan_import(
                 "UPDATE import_queue_files SET filename=? WHERE id=?",
                 (filename, f["id"]),
             )
+        elif (
+            import_kind == "volume"
+            and proposed_vol is not None
+            and "{Volume" in filename
+        ):
+            filename = build_filename(
+                s["title"] if s else "",
+                proposed_vol,
+                os.path.basename(f["src_path"] or filename),
+            )
+            db.execute(
+                "UPDATE import_queue_files SET filename=? WHERE id=?",
+                (filename, f["id"]),
+            )
 
         if (
             plan_status == "ready"
-            and file_type == "volume"
+            and import_kind == "volume"
             and proposed_vol is not None
         ):
             existing = db.execute(
@@ -341,6 +413,7 @@ def _plan_import(
                 src_path=f["src_path"],
                 filename=filename,
                 dst_path=dst_path,
+                import_kind=import_kind,
                 file_type=file_type,
                 proposed_vol=proposed_vol,
                 proposed_chap=proposed_chap,
@@ -349,6 +422,7 @@ def _plan_import(
                 vol_range_end=row_vol_re,
                 pack_type=row_pack_type,
                 is_special=row_is_special,
+                special_title=special_title,
                 has_volume_range=has_vol_range,
                 is_legacy_chapter_stub=is_legacy_chapter_stub,
                 is_legacy_chapter_recheck=is_legacy_chapter_recheck,

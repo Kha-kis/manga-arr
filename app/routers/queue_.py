@@ -122,12 +122,17 @@ async def _build_queue_rows() -> tuple[list, list, str, list]:
         for q in pending_raw:
             dl_id = (q["download_id"] or "").lower()
             files = db.execute(
-                "SELECT * FROM import_queue_files WHERE queue_id=? ORDER BY filename",
+                "SELECT * FROM import_queue_files WHERE queue_id=?"
+                " AND status IN ('pending','needs_review','failed') ORDER BY filename",
                 (q["id"],),
             ).fetchall()
             needs_review = q["status"] == "partial" or any(
-                f["status"] in ("needs_review", "pending")
-                and f["proposed_volume"] is None
+                f["status"] == "needs_review"
+                or (
+                    f["status"] == "pending"
+                    and f["proposed_volume"] is None
+                    and f["proposed_chapter"] is None
+                )
                 for f in files
             )
             pending_by_dlid[dl_id] = {

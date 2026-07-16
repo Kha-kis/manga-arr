@@ -169,50 +169,28 @@
 {# Review modals — rendered alongside the table so they stay in sync with polling updates #}
 {% for row in queue_rows %}
 {% if row.stage == 'review' and row.queue_id %}
-<div class="modal fade" id="review-{{ row.queue_id }}" tabindex="-1" aria-hidden="true">
+<div class="modal fade" id="review-{{ row.queue_id }}" tabindex="-1"
+     aria-labelledby="review-title-{{ row.queue_id }}" aria-hidden="true">
   <div class="modal-dialog modal-xl modal-dialog-scrollable">
     <div class="modal-content">
       <div class="modal-header">
         <div>
-          <div class="fw-bold text-ember">{{ row.series_title }}</div>
+          <div class="fw-bold text-ember" id="review-title-{{ row.queue_id }}">{{ row.series_title }}</div>
           <div class="text-muted text-xs">{{ row.torrent_name }}</div>
         </div>
         <button type="button" class="btn-close ms-3" data-bs-dismiss="modal" aria-label="Close import review"></button>
       </div>
-      {#
-        Review form (Stage 2 of the mapping audit).
-
-        Each row exposes every shape the Stage 1 parser can produce:
-          - single volume   (Vol, optionally 3a / 3.5 / 3½)
-          - volume range    (Vol + Vol End)
-          - single chapter  (Ch)
-          - chapter range   (Ch + Ch End)
-          - complete pack, special release, skip
-
-        Name conventions consumed by routers/import_.py:
-          vol_{id}, vol_end_{id}     — volume (start) and range end
-          chap_{id}, chap_end_{id}   — chapter (start) and range end
-          pack_{id}                  — pack type override
-          spec_{id}                  — is_special checkbox
-          skip_{id}                  — skip this file
-
-        Volume inputs use type="text" (not number) so letter/fraction
-        suffixes like "3a" or "3½" round-trip without truncation —
-        fixes audit D11. `pattern` validates the allowed shapes.
-      #}
-      <form method="POST" action="/import/{{ row.queue_id }}/process">
+      <form method="POST" action="/import/{{ row.queue_id }}/process"
+            hx-post="/import/{{ row.queue_id }}/process" hx-swap="none"
+            hx-disabled-elt="find button[type='submit']">
         <div class="modal-body p-0">
           <table class="table table-sm mb-0">
             <thead>
               <tr>
                 <th>Filename</th>
-                <th class="queue-col-review-vol" title="Volume (accepts 3, 3.5, 3a, 3½)">Vol</th>
-                <th class="queue-col-review-vol" title="Volume-range end (for packs covering v1-v3 in one file)">Vol End</th>
-                <th class="queue-col-review-chapter" title="Chapter number, decimals OK">Ch</th>
-                <th class="queue-col-review-chapter" title="Chapter-range end (for c001-002 style packs)">Ch End</th>
-                <th class="queue-col-review-pack" title="Pack type">Pack</th>
-                <th class="queue-col-review-flag" title="Mark as side-story / oneshot / extra">Spec</th>
-                <th class="queue-col-review-flag">Skip</th>
+                <th class="queue-col-review-kind">Import as</th>
+                <th class="queue-col-review-mapping">Mapping</th>
+                <th class="queue-col-review-destination">Destination</th>
               </tr>
             </thead>
             <tbody>
@@ -226,57 +204,72 @@
               {% set chap_re    = f['proposed_chapter_range_end']  if 'proposed_chapter_range_end'  in keys else None %}
               {% set pack_type  = f['proposed_pack_type']          if 'proposed_pack_type'          in keys else None %}
               {% set is_special = f['proposed_is_special']         if 'proposed_is_special'         in keys else 0 %}
-              {# Volume cell prefers the range start when a range is set — that's the operator's anchor #}
+              {% set import_kind = f['proposed_import_kind'] if 'proposed_import_kind' in keys else None %}
+              {% set special_title = f['proposed_special_title'] if 'proposed_special_title' in keys else None %}
+              {% if not import_kind %}
+                {% set import_kind = 'special' if is_special else ('chapter_range' if chap_re is not none else ('chapter' if is_chapter else ('volume_range' if vol_re is not none else 'volume'))) %}
+              {% endif %}
               {% set vol_input_val = vol_rs if vol_rs is not none else vol_start %}
               {% set unmapped = not vol_start and not chap_start and not vol_rs and not chap_re %}
-              <tr id="mr_{{ f['id'] }}" class="{% if unmapped %}queue-review-row-unmapped{% endif %}">
+              <tr id="mr_{{ f['id'] }}" class="queue-review-row{% if unmapped %} queue-review-row-unmapped{% endif %}">
                 <td class="queue-review-filename">
                   {{ f['filename'] }}
-                  {% if is_chapter %}<span class="badge-status badge-sky ms-1 text-2xs">chapter</span>{% endif %}
-                  {% if is_special %}<span class="badge-status badge-ember ms-1 text-2xs">special</span>{% endif %}
                   {% if unmapped %}<span class="badge-status badge-wanted ms-1">unmapped</span>{% endif %}
                 </td>
                 <td>
-                  <input type="text" name="vol_{{ f['id'] }}" class="form-control form-control-sm queue-review-input-vol"
-                         value="{{ vol_input_val|vol_display if vol_input_val is not none else '' }}"
-                         placeholder="?" pattern="[0-9]+([.][0-9]+)?[a-d½¼¾]?"
-                         title="e.g. 3, 3.5, 3a, 3½">
-                </td>
-                <td>
-                  <input type="text" name="vol_end_{{ f['id'] }}" class="form-control form-control-sm queue-review-input-vol"
-                         value="{{ vol_re|vol_display if vol_re is not none else '' }}"
-                         placeholder="—" pattern="[0-9]+([.][0-9]+)?[a-d½¼¾]?"
-                         title="Leave blank for single volume">
-                </td>
-                <td>
-                  <input type="number" name="chap_{{ f['id'] }}" class="form-control form-control-sm queue-review-input-chapter"
-                         value="{{ chap_start if chap_start is not none else '' }}"
-                         placeholder="?" step="any" min="0">
-                </td>
-                <td>
-                  <input type="number" name="chap_end_{{ f['id'] }}" class="form-control form-control-sm queue-review-input-chapter"
-                         value="{{ chap_re if chap_re is not none else '' }}"
-                         placeholder="—" step="any" min="0"
-                         title="Leave blank for single chapter">
-                </td>
-                <td>
-                  <select name="pack_{{ f['id'] }}" class="form-select form-select-sm queue-review-pack-select">
-                    <option value=""              {% if not pack_type %}selected{% endif %}>auto</option>
-                    <option value="volume"        {% if pack_type == 'volume' %}selected{% endif %}>volume</option>
-                    <option value="volume_range"  {% if pack_type == 'volume_range' %}selected{% endif %}>vol range</option>
-                    <option value="chapter"       {% if pack_type == 'chapter' %}selected{% endif %}>chapter</option>
-                    <option value="chapter_range" {% if pack_type == 'chapter_range' %}selected{% endif %}>ch range</option>
-                    <option value="complete"      {% if pack_type == 'complete' %}selected{% endif %}>complete</option>
-                    <option value="special"       {% if pack_type == 'special' %}selected{% endif %}>special</option>
+                  <select name="kind_{{ f['id'] }}" class="form-select form-select-sm queue-review-kind-select"
+                          aria-label="Import type for {{ f['filename'] }}"
+                          onchange="updateImportKind({{ f['id'] }}, this.value)">
+                    <option value="volume" {% if import_kind == 'volume' %}selected{% endif %}>Volume</option>
+                    <option value="volume_range" {% if import_kind == 'volume_range' %}selected{% endif %}>Volume range</option>
+                    <option value="chapter" {% if import_kind == 'chapter' %}selected{% endif %}>Chapter</option>
+                    <option value="chapter_range" {% if import_kind == 'chapter_range' %}selected{% endif %}>Chapter range</option>
+                    <option value="special" {% if import_kind == 'special' %}selected{% endif %}>Special</option>
+                    <option value="skip">Skip</option>
                   </select>
                 </td>
-                <td class="text-center">
-                  <input class="form-check-input" type="checkbox" name="spec_{{ f['id'] }}" value="1"
-                         id="msp_{{ f['id'] }}" {% if is_special %}checked{% endif %}>
+                <td class="queue-review-mapping-cell">
+                  <div data-import-kinds="volume,volume_range" class="queue-review-control-group d-flex gap-1">
+                    <input type="text" name="vol_{{ f['id'] }}" class="form-control form-control-sm queue-review-input-vol"
+                           value="{{ vol_input_val|vol_display if vol_input_val is not none else '' }}"
+                           placeholder="Volume" pattern="[0-9]+([.][0-9]+)?[a-d½¼¾]?"
+                           aria-label="Volume start for {{ f['filename'] }}">
+                    <input type="text" name="vol_end_{{ f['id'] }}" class="form-control form-control-sm queue-review-input-vol"
+                           data-import-kinds="volume_range"
+                           value="{{ vol_re|vol_display if vol_re is not none else '' }}"
+                           placeholder="End" pattern="[0-9]+([.][0-9]+)?[a-d½¼¾]?"
+                           aria-label="Volume end for {{ f['filename'] }}">
+                    <select name="pack_{{ f['id'] }}" class="form-select form-select-sm queue-review-pack-select"
+                            data-import-kinds="volume_range" aria-label="Volume range coverage">
+                      <option value="volume_range" {% if pack_type != 'complete' %}selected{% endif %}>Range</option>
+                      <option value="complete" {% if pack_type == 'complete' %}selected{% endif %}>Complete</option>
+                    </select>
+                  </div>
+                  <div data-import-kinds="chapter,chapter_range" class="queue-review-control-group d-flex gap-1">
+                    <input type="number" name="chap_{{ f['id'] }}" class="form-control form-control-sm queue-review-input-chapter"
+                           value="{{ chap_start if chap_start is not none else '' }}"
+                           placeholder="Chapter" step="any" min="0"
+                           aria-label="Chapter start for {{ f['filename'] }}">
+                    <input type="number" name="chap_end_{{ f['id'] }}" class="form-control form-control-sm queue-review-input-chapter"
+                           data-import-kinds="chapter_range"
+                           value="{{ chap_re if chap_re is not none else '' }}"
+                           placeholder="End" step="any" min="0"
+                           aria-label="Chapter end for {{ f['filename'] }}">
+                  </div>
+                  <div data-import-kinds="special" class="queue-review-control-group">
+                    <input type="text" name="special_title_{{ f['id'] }}"
+                           class="form-control form-control-sm queue-review-special-title"
+                           value="{{ special_title or '' }}" maxlength="180" placeholder="Special title"
+                           aria-label="Special title for {{ f['filename'] }}"
+                           oninput="updateSpecialPreview({{ f['id'] }}, this.value)">
+                  </div>
+                  <span data-import-kinds="skip" class="badge-status badge-unknown">Skipped</span>
                 </td>
-                <td class="text-center">
-                  <input class="form-check-input" type="checkbox" name="skip_{{ f['id'] }}" value="1"
-                         id="ms_{{ f['id'] }}" onchange="dimRow('mr_{{ f['id'] }}', this.checked)">
+                <td class="queue-review-destination-cell">
+                  <code id="review-destination-{{ f['id'] }}" class="text-2xs break-all"
+                        data-default="{{ f['filename'] }}"
+                        data-series="{{ row.series_title }}"
+                        data-extension=".{{ f['filename'].rsplit('.', 1)[-1] if '.' in f['filename'] else '' }}">{{ f['filename'] }}</code>
                 </td>
               </tr>
               {% endfor %}
@@ -286,7 +279,10 @@
         <div class="modal-footer">
           <code class="text-2xs queue-review-source">{{ row.src_dir }}</code>
           <button type="button" class="btn btn-secondary btn-sm" onclick="skipAll({{ row.queue_id }})">Skip All</button>
-          <button type="submit" class="btn-grab btn btn-sm px-3"><i class="bi bi-box-arrow-in-down me-1"></i>Import</button>
+          <button type="submit" class="btn-grab btn btn-sm px-3">
+            <span class="spinner-border spinner-border-sm me-1 htmx-indicator" aria-hidden="true"></span>
+            <i class="bi bi-box-arrow-in-down me-1"></i>Import
+          </button>
         </div>
       </form>
     </div>

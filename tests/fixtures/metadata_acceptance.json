@@ -59,7 +59,7 @@
       "expected": {
         "total_volumes": 14,
         "total_chapters": 129,
-        "vol_count_source": "anilist",
+        "vol_count_source": "local",
         "chapter_count_source": "local",
         "status": "RELEASING",
         "update_strategy": "always",

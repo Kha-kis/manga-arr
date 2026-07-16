@@ -280,6 +280,24 @@ def build_filename(series_title: str, volume_num: float | None,
         return sanitize_filename(os.path.basename(original_filename))
 
 
+def derive_special_title(series_title: str, original_filename: str) -> str:
+    """Build an editable special title without duplicating the series prefix."""
+    stem = os.path.splitext(os.path.basename(original_filename))[0].strip()
+    prefix = re.compile(rf"^{re.escape(series_title)}(?:\s*[-:–—]\s*|\s+)", re.IGNORECASE)
+    title = prefix.sub("", stem, count=1).strip(" -:–—")
+    return sanitize_filename(title or stem or "Special")
+
+
+def build_special_filename(
+    series_title: str, special_title: str, original_filename: str
+) -> str:
+    """Return a stable filename that cannot be mistaken for mainline content."""
+    ext = os.path.splitext(os.path.basename(original_filename))[1]
+    safe_series = sanitize_filename(series_title)
+    safe_title = sanitize_filename(special_title.strip() or "Special")
+    return sanitize_filename(f"{safe_series} - Special - {safe_title}{ext}")
+
+
 # ── Quality tiering ──────────────────────────────────────────────────────────
 
 QUALITY_RANK: dict[str, int] = {

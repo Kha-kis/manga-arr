@@ -761,6 +761,9 @@
     {# ── Metadata health panel (read-only diagnostic) ── #}
     {% include "partials/metadata_health_panel.html" %}
 
+    {# ── Field-level metadata provenance and candidate review ── #}
+    {% include "partials/metadata_sources_panel.html" %}
+
     {# ── Reconcile preview (HTMX swaps into here on demand) ── #}
     <div id="reconcile-preview-panel"></div>
 
@@ -920,6 +923,51 @@
               </div>
             </td>
           </tr>
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% if specials %}
+    <div class="section-label mt-2 mb-3">
+      <i class="bi bi-stars text-gold me-1"></i>Specials
+      <span class="series-section-count">{{ specials|length }}</span>
+    </div>
+    <div class="table-wrap mb-4">
+      <table class="table table-sm mb-0 series-special-table">
+        <thead>
+          <tr>
+            <th>Title</th>
+            <th class="series-pack-col-copies">Format</th>
+            <th class="series-pack-col-date">Date</th>
+            <th>Release</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for special in specials %}
+          <tr>
+            <td class="fw-semibold text-gold">
+              <i class="bi bi-star-fill me-1"></i>{{ special['title'] or 'Special' }}
+            </td>
+            <td>
+              {% if special['quality'] %}
+              <span class="badge-status badge-downloaded">{{ special['quality']|upper }}</span>
+              {% else %}<span class="text-muted-3">—</span>{% endif %}
+            </td>
+            <td class="series-pack-date">
+              {{ (special['imported_at'] or special['grabbed_at']) | format_date if (special['imported_at'] or special['grabbed_at']) else '—' }}
+            </td>
+            <td>
+              <div class="pill-badges mb-1">
+                {% if special['indexer'] %}<span class="badge-status badge-indexer">{{ special['indexer'] }}</span>{% endif %}
+                {% if special['protocol'] %}<span class="badge-status badge-{{ special['protocol'] }}">{{ special['protocol']|format_protocol }}</span>{% endif %}
+              </div>
+              <div class="series-pack-release-title" title="{{ special['torrent_name'] or '' }}">
+                {{ special['torrent_name'] or special['title'] or '—' }}
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
         </tbody>
       </table>
     </div>
