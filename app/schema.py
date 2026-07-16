@@ -146,6 +146,8 @@ def init_db():
                 src_path         TEXT,
                 dst_path         TEXT,
                 proposed_volume  REAL,
+                proposed_import_kind TEXT,
+                proposed_special_title TEXT,
                 status           TEXT DEFAULT 'pending'
             );
             CREATE TABLE IF NOT EXISTS series_aliases (
@@ -269,6 +271,33 @@ def init_db():
         add_col('import_queue_files', 'proposed_chapter_range_end',   'REAL')
         add_col('import_queue_files', 'proposed_pack_type',           'TEXT')
         add_col('import_queue_files', 'proposed_is_special',          'INTEGER DEFAULT 0')
+        add_col('import_queue_files', 'proposed_import_kind',         'TEXT')
+        add_col('import_queue_files', 'proposed_special_title',       'TEXT')
+        db.execute("""
+            UPDATE import_queue_files
+               SET proposed_import_kind = CASE
+                   WHEN COALESCE(proposed_is_special, 0) = 1
+                        OR proposed_pack_type = 'special' THEN 'special'
+                   WHEN status = 'skipped' THEN 'skip'
+                   WHEN proposed_chapter_range_end IS NOT NULL
+                        OR proposed_pack_type = 'chapter_range' THEN 'chapter_range'
+                   WHEN proposed_volume_range_end IS NOT NULL
+                        OR proposed_pack_type = 'volume_range' THEN 'volume_range'
+                   WHEN file_type = 'chapter'
+                        OR proposed_pack_type = 'chapter' THEN 'chapter'
+                   ELSE 'volume'
+               END
+             WHERE proposed_import_kind IS NULL
+                OR proposed_import_kind NOT IN (
+                    'volume', 'volume_range', 'chapter',
+                    'chapter_range', 'special', 'skip'
+                )
+        """)
+        db.execute("""
+            UPDATE import_queue_files
+               SET proposed_is_special = 1
+             WHERE proposed_import_kind = 'special'
+        """)
         add_col('import_queue',            'failed_at',                'TIMESTAMP')
         # Side-story / oneshot persistence on the final volumes row.
         # Stage 2 only stores this flag; Stage 3 adds the coverage

@@ -205,7 +205,7 @@ def _commit_import(
         _mark_downloaded(db, series_id, queue["volume_num"], queue["torrent_url"])
         db.execute(
             "UPDATE volumes SET import_path=? WHERE series_id=? AND download_id=?"
-            " AND volume_num IS NULL",
+            " AND volume_num IS NULL AND COALESCE(is_special,0)=0",
             (dst_dir, series_id, queue["download_id"]),
         )
         log_event(
@@ -222,7 +222,17 @@ def _commit_import(
             vol_label,
             source_title=queue["torrent_name"] or "",
             download_id=queue["download_id"] or "",
-            data={"dst_dir": dst_dir, "count": imported_count},
+            data={
+                "dst_dir": dst_dir,
+                "count": imported_count,
+                "import_kinds": sorted(
+                    {
+                        fp.import_kind
+                        for fp in plan.files
+                        if fp.plan_status == "ready"
+                    }
+                ),
+            },
         )
     else:
         log_event(
@@ -258,7 +268,9 @@ def _process_import_file(
     has_stage_fail,
 ):
     """Process a single file during Phase 3 import."""
-    if fp.file_type == "chapter" and fp.proposed_chap is not None:
+    if fp.import_kind == "special":
+        _process_special_import(db, fp, dst, queue, series_id)
+    elif fp.import_kind in ("chapter", "chapter_range") and fp.proposed_chap is not None:
         _process_chapter_import(
             db,
             fp,
@@ -271,6 +283,75 @@ def _process_import_file(
         )
     else:
         _process_volume_import(db, fp, dst, plan, queue, series_id, imported_vols)
+
+
+def _process_special_import(db, fp, dst, queue, series_id):
+    """Persist a standalone special without touching numbered library rows."""
+    imported_at = datetime.utcnow().isoformat()
+    seen_row = db.execute(
+        "SELECT torrent_name, indexer, protocol, client, release_group, size_bytes"
+        " FROM seen WHERE (download_id=? AND download_id IS NOT NULL)"
+        " OR torrent_url=? LIMIT 1",
+        (queue["download_id"], queue["torrent_url"]),
+    ).fetchone()
+    meta = dict(seen_row) if seen_row else {}
+    title = (fp.special_title or "Special").strip() or "Special"
+    quality = quality_from_filename(fp.filename)
+
+    existing = db.execute(
+        "SELECT id FROM volumes WHERE series_id=? AND COALESCE(is_special,0)=1"
+        " AND import_path=?",
+        (series_id, dst),
+    ).fetchone()
+    if existing:
+        db.execute(
+            "UPDATE volumes SET title=?, status='downloaded', source_url=?,"
+            " torrent_name=?, download_id=?, indexer=?, protocol=?, client=?,"
+            " release_group=?, size_bytes=?, quality=?, imported_at=COALESCE(imported_at,?),"
+            " pack_type='special', is_special=1, edition_type='special' WHERE id=?",
+            (
+                title,
+                queue["torrent_url"],
+                meta.get("torrent_name") or queue["torrent_name"],
+                queue["download_id"],
+                meta.get("indexer"),
+                meta.get("protocol"),
+                meta.get("client"),
+                meta.get("release_group"),
+                meta.get("size_bytes"),
+                quality,
+                imported_at,
+                existing["id"],
+            ),
+        )
+    else:
+        db.execute(
+            "INSERT INTO volumes(series_id, volume_num, title, status, source_url,"
+            " torrent_name, import_path, download_id, indexer, protocol, client,"
+            " release_group, size_bytes, quality, imported_at, pack_type, is_special,"
+            " edition_type) VALUES(?,NULL,?,'downloaded',?,?,?,?,?,?,?,?,?,?,?,?,1,'special')",
+            (
+                series_id,
+                title,
+                queue["torrent_url"],
+                meta.get("torrent_name") or queue["torrent_name"],
+                dst,
+                queue["download_id"],
+                meta.get("indexer"),
+                meta.get("protocol"),
+                meta.get("client"),
+                meta.get("release_group"),
+                meta.get("size_bytes"),
+                quality,
+                imported_at,
+                "special",
+            ),
+        )
+
+    db.execute(
+        "UPDATE import_queue_files SET status='imported', dst_path=? WHERE id=?",
+        (dst, fp.file_id),
+    )
 
 
 def _process_chapter_import(

@@ -10,6 +10,8 @@ import zipfile
 from files import (
     MANGA_EXTENSIONS,
     build_filename,
+    build_special_filename,
+    derive_special_title,
     pack_image_dir_to_cbz,
     quality_from_filename,
     safe_join_under,
@@ -28,6 +30,7 @@ from parsing import (
 from shared import get_cfg, get_db
 from comicinfo import read_comic_info
 from events import add_history, log_event
+from import_kinds import infer_import_kind
 from rescan import _series_library_dir
 
 
@@ -370,6 +373,21 @@ def _queue_import(
         else:
             proposed_pack_type = None
 
+        proposed_import_kind = infer_import_kind(
+            file_type=file_type,
+            pack_type=proposed_pack_type,
+            is_special=proposed_is_special,
+            volume_range_end=proposed_vol_re,
+            chapter_range_end=proposed_chap_re,
+        )
+        proposed_special_title = None
+        if proposed_import_kind == "special":
+            proposed_special_title = derive_special_title(s["title"], fname)
+            dst_fname = build_special_filename(
+                s["title"], proposed_special_title, fname
+            )
+            dst_path = os.path.join(dst_dir, dst_fname)
+
         is_unmapped = (
             proposed_vol is None
             and proposed_chap is None
@@ -396,6 +414,8 @@ def _queue_import(
                 proposed_chap_re,
                 proposed_pack_type,
                 proposed_is_special,
+                proposed_import_kind,
+                proposed_special_title,
                 file_type,
                 file_status,
             )
@@ -422,8 +442,8 @@ def _queue_import(
         "(queue_id, filename, src_path, dst_path, proposed_volume, proposed_chapter,"
         " proposed_volume_range_start, proposed_volume_range_end,"
         " proposed_chapter_range_end, proposed_pack_type, proposed_is_special,"
-        " file_type, status)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " proposed_import_kind, proposed_special_title, file_type, status)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [(queue_id, *row) for row in file_rows],
     )
 

@@ -2567,10 +2567,9 @@
       .queue-col-actions { width: 5.625rem; }
       .queue-col-progress-wide { width: 11.25rem; }
       .queue-col-status-compact { width: 6.875rem; }
-      .queue-col-review-vol { width: var(--space-6xl); }
-      .queue-col-review-chapter { width: 4.375rem; }
-      .queue-col-review-pack { width: 6.875rem; }
-      .queue-col-review-flag { width: 3.125rem; }
+      .queue-col-review-kind { width: calc(var(--space-6xl) * 2); }
+      .queue-col-review-mapping { width: calc(var(--space-6xl) * 3); }
+      .queue-col-review-destination { width: 30%; }
       .queue-release-title {
         display: block;
         max-width: 17.5rem;
@@ -2710,6 +2709,10 @@
       .queue-review-input-vol { width: 4.6875rem; font-size: var(--text-base); }
       .queue-review-input-chapter { width: 4.0625rem; font-size: var(--text-base); }
       .queue-review-pack-select { width: 6.5625rem; font-size: var(--text-sm); }
+      .queue-review-kind-select { min-width: calc(var(--space-6xl) * 1.5); }
+      .queue-review-control-group { align-items: center; flex-wrap: wrap; }
+      .queue-review-special-title { min-width: calc(var(--space-6xl) * 2); }
+      .queue-review-destination-cell { color: var(--text-2); }
       .queue-review-source {
         margin-right: auto;
         color: var(--text-3);

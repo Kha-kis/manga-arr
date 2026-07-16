@@ -1,6 +1,7 @@
 """Import queue and manual import routes."""
 
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -10,6 +11,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from routers._templates import templates
+from files import sanitize_filename
+from import_kinds import VALID_IMPORT_KINDS, infer_import_kind
 from shared import cascade_chapters, get_cfg, get_db, vol_num_to_display, with_flash
 
 router = APIRouter()
@@ -193,7 +196,7 @@ def clear_inactive_import_queue_entries() -> dict:
 
 
 def retry_import_queue_entry(queue_id: int) -> dict:
-    """Reset a failed/partial import queue entry and schedule processing."""
+    """Retry failed files while preserving decisions that still need review."""
     import main as _m
 
     with get_db() as db:
@@ -207,18 +210,19 @@ def retry_import_queue_entry(queue_id: int) -> dict:
             return {"ok": False, "status": "not_retryable"}
 
         db.execute(
-            "UPDATE import_queue SET status='pending' WHERE id=?",
-            (queue_id,),
-        )
-        db.execute(
             "UPDATE import_queue_files SET status='pending'"
-            " WHERE queue_id=? AND status IN ('failed','needs_review')",
+            " WHERE queue_id=? AND status='failed'",
             (queue_id,),
         )
         has_review = db.execute(
             "SELECT 1 FROM import_queue_files WHERE queue_id=? AND status='needs_review'",
             (queue_id,),
         ).fetchone()
+        queue_status = "partial" if has_review else "pending"
+        db.execute(
+            "UPDATE import_queue SET status=? WHERE id=?",
+            (queue_status, queue_id),
+        )
 
     queued = False
     if not has_review:
@@ -227,20 +231,16 @@ def retry_import_queue_entry(queue_id: int) -> dict:
             name=f"import:retry:{queue_id}",
         )
         queued = True
-    return {"ok": True, "status": "queued", "queued": queued}
+    return {
+        "ok": True,
+        "status": "queued" if queued else "needs_review",
+        "queued": queued,
+    }
 
 
 @router.post("/import/{queue_id}/process")
 async def process_import(queue_id: int, request: Request):
-    """Process an import queue item after user review: parse form overrides then execute.
-
-    Stage 2 of the mapping audit: the review UI now carries explicit
-    range / pack-type / is-special fields per file. Operator overrides
-    are written straight to import_queue_files so _execute_import reads
-    a consistent, already-resolved row. The old volume_overrides /
-    chapter_overrides kwargs remain on the call for any queue row that
-    was written before this change (they behave identically).
-    """
+    """Validate operator decisions, persist them, and execute valid files."""
     import main as _m
 
     form = await request.form()
@@ -248,20 +248,24 @@ async def process_import(queue_id: int, request: Request):
     volume_overrides: dict[int, float] = {}
     chapter_overrides: dict[int, float] = {}
     skip_ids: set[int] = set()
+    validation_errors = 0
+    valid_files = 0
 
     with get_db() as db:
-        file_ids = [
-            r["id"]
-            for r in db.execute(
-                "SELECT id FROM import_queue_files WHERE queue_id=?", (queue_id,)
-            ).fetchall()
-        ]
+        file_rows = db.execute(
+            "SELECT * FROM import_queue_files WHERE queue_id=?", (queue_id,)
+        ).fetchall()
 
-        for fid in file_ids:
-            if form.get(f"skip_{fid}"):
-                # Skip wins over everything else — don't waste a DB write
-                # persisting overrides for a file we're dropping.
+        for file_row in file_rows:
+            fid = file_row["id"]
+            raw_kind = form.get(f"kind_{fid}")
+            if form.get(f"skip_{fid}") or raw_kind == "skip":
                 skip_ids.add(fid)
+                db.execute(
+                    "UPDATE import_queue_files SET status='pending',"
+                    " proposed_import_kind='skip' WHERE id=?",
+                    (fid,),
+                )
                 continue
 
             # Volume (start) — accepts fractional/letter suffixes (D11).
@@ -287,9 +291,12 @@ async def process_import(queue_id: int, request: Request):
             except ValueError:
                 chap_end_val = None
 
-            # Pack type select (empty string → no override, leaves the
-            # parser's proposal in place).
-            pack_raw = form.get(f"pack_{fid}", "") or ""
+            pack_form_value = form.get(f"pack_{fid}")
+            pack_raw = (
+                pack_form_value
+                if pack_form_value is not None
+                else file_row["proposed_pack_type"]
+            ) or ""
             assert isinstance(pack_raw, str)
             pack_raw = pack_raw.strip()
             if pack_raw not in _VALID_PACK_TYPES:
@@ -305,43 +312,115 @@ async def process_import(queue_id: int, request: Request):
             vol_given = vol_val is not None or vol_end_val is not None
             chap_given = chap_val is not None or chap_end_val is not None
             conflict = (
-                vol_given and chap_given and pack_raw in ("", "complete", "special")
+                raw_kind is None
+                and vol_given
+                and chap_given
+                and pack_raw not in (
+                    "volume",
+                    "volume_range",
+                    "chapter",
+                    "chapter_range",
+                )
             )
+            if raw_kind is not None:
+                import_kind = str(raw_kind).strip().lower()
+                if import_kind not in VALID_IMPORT_KINDS:
+                    import_kind = ""
+            elif conflict:
+                import_kind = ""
+            else:
+                import_kind = infer_import_kind(
+                    file_type=(
+                        "chapter"
+                        if chap_given or pack_raw in ("chapter", "chapter_range")
+                        else "volume"
+                    ),
+                    pack_type=pack_raw,
+                    is_special=is_special_flag,
+                    volume_range_end=vol_end_val,
+                    chapter_range_end=chap_end_val,
+                )
 
-            if conflict:
+            special_title = ""
+            invalid = conflict or not import_kind
+            if import_kind == "special":
+                raw_title = form.get(f"special_title_{fid}", "") or ""
+                special_title = sanitize_filename(str(raw_title).strip())[:180]
+                invalid = invalid or not str(raw_title).strip()
+                vol_val = vol_end_val = chap_val = chap_end_val = None
+                pack_type = None
+                file_type = "special"
+            elif import_kind == "volume":
+                invalid = invalid or vol_val is None or vol_end_val is not None
+                pack_type = "complete" if pack_raw == "complete" else "volume"
+                file_type = "volume"
+                chap_val = chap_end_val = None
+            elif import_kind == "volume_range":
+                invalid = (
+                    invalid
+                    or vol_val is None
+                    or vol_end_val is None
+                    or vol_end_val < vol_val
+                )
+                pack_type = "complete" if pack_raw == "complete" else "volume_range"
+                file_type = "volume"
+                chap_val = chap_end_val = None
+            elif import_kind == "chapter":
+                invalid = invalid or chap_val is None or chap_end_val is not None
+                pack_type = "chapter"
+                file_type = "chapter"
+                vol_val = vol_end_val = None
+            elif import_kind == "chapter_range":
+                invalid = (
+                    invalid
+                    or chap_val is None
+                    or chap_end_val is None
+                    or chap_end_val < chap_val
+                )
+                pack_type = "chapter_range"
+                file_type = "chapter"
+                vol_val = vol_end_val = None
+            else:
+                invalid = True
+                pack_type = None
+                file_type = file_row["file_type"] or "volume"
+
+            if invalid:
                 db.execute(
                     "UPDATE import_queue_files SET status='needs_review' WHERE id=?",
                     (fid,),
                 )
+                validation_errors += 1
                 continue
 
-            # Work out the new row values. Cleared fields (empty form
-            # input on a row that previously had a value) zero out via
-            # NULL writes — this lets the operator remove a parser
-            # guess they disagree with.
             updates: list[tuple[str, object]] = [
-                ("proposed_volume", vol_val),
+                (
+                    "proposed_volume",
+                    vol_val if import_kind == "volume" else None,
+                ),
                 (
                     "proposed_volume_range_start",
-                    vol_val if vol_end_val is not None else None,
+                    vol_val if import_kind == "volume_range" else None,
                 ),
-                ("proposed_volume_range_end", vol_end_val),
+                (
+                    "proposed_volume_range_end",
+                    vol_end_val if import_kind == "volume_range" else None,
+                ),
                 ("proposed_chapter", chap_val),
                 ("proposed_chapter_range_end", chap_end_val),
-                ("proposed_pack_type", pack_raw or None),
-                ("proposed_is_special", is_special_flag),
+                ("proposed_pack_type", pack_type),
+                ("proposed_is_special", int(import_kind == "special")),
+                ("proposed_import_kind", import_kind),
+                ("proposed_special_title", special_title or None),
+                ("file_type", file_type),
+                ("status", "pending"),
             ]
-            # Route file_type with the operator's verdict so downstream
-            # code paths (volume vs chapter insert) pick the right shape.
-            if chap_given or pack_raw in ("chapter", "chapter_range"):
-                updates.append(("file_type", "chapter"))
-            elif vol_given or pack_raw in ("volume", "volume_range", "complete"):
-                updates.append(("file_type", "volume"))
             set_clause = ", ".join(f"{col}=?" for col, _ in updates)
             db.execute(
                 f"UPDATE import_queue_files SET {set_clause} WHERE id=?",
                 [v for _, v in updates] + [fid],
             )
+            valid_files += 1
 
             # Mirror the resolved values into the legacy kwargs so a
             # fallback code path inside _execute_import still sees the
@@ -352,13 +431,41 @@ async def process_import(queue_id: int, request: Request):
             if chap_val is not None:
                 chapter_overrides[fid] = chap_val
 
-    # Route through the guarded wrapper so two racing form submits (or a
-    # form submit racing an auto-import worker) can't both process the row.
-    await _m._guarded_execute_import(
-        queue_id, volume_overrides, skip_ids, chapter_overrides
-    )
+        if validation_errors and valid_files == 0 and not skip_ids:
+            db.execute(
+                "UPDATE import_queue SET status='partial' WHERE id=?", (queue_id,)
+            )
+
+    if valid_files or skip_ids:
+        await _m._guarded_execute_import(
+            queue_id, volume_overrides, skip_ids, chapter_overrides
+        )
+
+    with get_db() as db:
+        result_row = db.execute(
+            "SELECT status FROM import_queue WHERE id=?", (queue_id,)
+        ).fetchone()
+    if result_row is None:
+        message, toast_type = "Import completed", "success"
+    elif result_row["status"] == "partial":
+        message, toast_type = "Review required for remaining files", "warning"
+    elif result_row["status"] == "failed":
+        message, toast_type = "Import failed", "error"
+    else:
+        message, toast_type = "Import queued", "info"
+
+    if request.headers.get("HX-Request") == "true":
+        return HTMLResponse(
+            "",
+            headers={
+                "HX-Refresh": "true",
+                "HX-Trigger": json.dumps(
+                    {"showToast": {"msg": message, "type": toast_type}}
+                ),
+            },
+        )
     return RedirectResponse(
-        with_flash("/import", "Import queued for retry", "success"), status_code=303
+        with_flash("/queue", message, toast_type), status_code=303
     )
 
 

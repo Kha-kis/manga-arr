@@ -143,6 +143,8 @@ def test_schema_has_new_import_queue_files_columns(env):
         "proposed_chapter_range_end",
         "proposed_pack_type",
         "proposed_is_special",
+        "proposed_import_kind",
+        "proposed_special_title",
     ):
         assert name in cols, f"missing column {name}"
     assert cols["proposed_is_special"][1] in ("0", 0), \
@@ -803,7 +805,7 @@ def test_short_story_release_requires_manual_review(env):
     """A release-group suffix must not turn a short-story book into chapter 1."""
     import main
 
-    _seed_series(env["db_path"])
+    _seed_series(env["db_path"], title="Death Note")
     src_dir = env["src_root"] / "short-stories"
     src_dir.mkdir()
     src_path = _make_zip(
@@ -825,11 +827,257 @@ def test_short_story_release_requires_manual_review(env):
     assert needs_review is True
     with sqlite3.connect(env["db_path"]) as c:
         row = c.execute(
-            "SELECT proposed_is_special,status FROM import_queue_files WHERE queue_id=?",
+            "SELECT proposed_is_special,proposed_import_kind,proposed_special_title,status"
+            " FROM import_queue_files WHERE queue_id=?",
             (qid,),
         ).fetchone()
     assert row[0] == 1
-    assert row[1] == "needs_review"
+    assert row[1] == "special"
+    assert row[2] == "Short Stories (2022) (Digital) (1r0n)"
+    assert row[3] == "needs_review"
+
+
+def test_special_review_import_isolated_from_mainline_records(env):
+    """A numbered special must not replace the matching volume or chapter."""
+    _seed_series(env["db_path"], title="Death Note", total_volumes=12)
+    src_dir = env["src_root"] / "special-isolation"
+    src_dir.mkdir()
+    _make_zip(str(src_dir / "Death Note c0001.cbz"))
+
+    with sqlite3.connect(env["db_path"]) as c:
+        vol_id = c.execute(
+            "INSERT INTO volumes(series_id,volume_num,title,status,import_path)"
+            " VALUES(7,1,'Volume 1','downloaded','/library/death-note-v01.cbz')"
+        ).lastrowid
+        c.execute(
+            "INSERT INTO chapters(series_id,volume_id,chapter_num,title,status,import_path)"
+            " VALUES(7,?,1,'Chapter 1','downloaded','/library/death-note-c001.cbz')",
+            (vol_id,),
+        )
+
+    qid = _run_queue_import(
+        env["db_path"],
+        series_id=7,
+        torrent_name="Death Note Short Stories Digital",
+        content_path=str(src_dir),
+        download_id="death-note-special",
+    )
+    with sqlite3.connect(env["db_path"]) as c:
+        fid = c.execute(
+            "SELECT id FROM import_queue_files WHERE queue_id=?", (qid,)
+        ).fetchone()[0]
+
+    import main
+    from fastapi.testclient import TestClient
+
+    with TestClient(main.app, follow_redirects=False) as client:
+        response = _post_review(
+            client,
+            qid,
+            {
+                f"kind_{fid}": "special",
+                f"special_title_{fid}": "Short Stories",
+            },
+        )
+    assert response.status_code == 303
+
+    with sqlite3.connect(env["db_path"]) as c:
+        c.row_factory = sqlite3.Row
+        mainline_volume = c.execute(
+            "SELECT title,status,import_path FROM volumes"
+            " WHERE series_id=7 AND volume_num=1"
+        ).fetchone()
+        mainline_chapter = c.execute(
+            "SELECT title,status,import_path FROM chapters"
+            " WHERE series_id=7 AND chapter_num=1"
+        ).fetchone()
+        special = c.execute(
+            "SELECT volume_num,title,status,import_path,pack_type,is_special,edition_type"
+            " FROM volumes WHERE series_id=7 AND is_special=1"
+        ).fetchone()
+        queue = c.execute(
+            "SELECT 1 FROM import_queue WHERE id=?", (qid,)
+        ).fetchone()
+
+    assert dict(mainline_volume) == {
+        "title": "Volume 1",
+        "status": "downloaded",
+        "import_path": "/library/death-note-v01.cbz",
+    }
+    assert dict(mainline_chapter) == {
+        "title": "Chapter 1",
+        "status": "downloaded",
+        "import_path": "/library/death-note-c001.cbz",
+    }
+    assert special["volume_num"] is None
+    assert special["title"] == "Short Stories"
+    assert special["status"] == "downloaded"
+    assert special["pack_type"] == "special"
+    assert special["is_special"] == 1
+    assert special["edition_type"] == "special"
+    assert special["import_path"].endswith(
+        "Death Note - Special - Short Stories.cbz"
+    )
+    assert os.path.isfile(special["import_path"])
+    assert queue is None
+
+    from fastapi.testclient import TestClient
+
+    with TestClient(main.app, follow_redirects=False) as client:
+        detail = client.get("/series/7")
+    assert detail.status_code == 200
+    assert "Specials" in detail.text
+    assert "Short Stories" in detail.text
+
+
+def test_numberless_pdf_imports_as_special_without_format_tokens(env):
+    """A numberless special uses its dedicated filename path."""
+    _seed_series(env["db_path"], title="Death Note")
+    src_dir = env["src_root"] / "numberless-special"
+    src_dir.mkdir()
+    source = src_dir / "Death Note - L Change the WorLd.pdf"
+    source.write_bytes(b"%PDF-1.4\n%%EOF\n")
+
+    qid = _run_queue_import(
+        env["db_path"],
+        series_id=7,
+        torrent_name="Death Note Special",
+        content_path=str(src_dir),
+        download_id="death-note-l-change",
+    )
+    with sqlite3.connect(env["db_path"]) as c:
+        row = c.execute(
+            "SELECT id,filename,proposed_import_kind,proposed_special_title,status"
+            " FROM import_queue_files WHERE queue_id=?",
+            (qid,),
+        ).fetchone()
+    assert row[1] == "Death Note - Special - L Change the WorLd.pdf"
+    assert row[2:] == ("special", "L Change the WorLd", "needs_review")
+
+    import main
+    from fastapi.testclient import TestClient
+
+    with TestClient(main.app, follow_redirects=False) as client:
+        response = _post_review(
+            client,
+            qid,
+            {
+                f"kind_{row[0]}": "special",
+                f"special_title_{row[0]}": "L Change the WorLd",
+            },
+        )
+    assert response.status_code == 303
+
+    with sqlite3.connect(env["db_path"]) as c:
+        special = c.execute(
+            "SELECT title,import_path,is_special FROM volumes"
+            " WHERE series_id=7 AND is_special=1"
+        ).fetchone()
+    assert special[0] == "L Change the WorLd"
+    assert special[1].endswith("Death Note - Special - L Change the WorLd.pdf")
+    assert "{Volume" not in special[1]
+    assert special[2] == 1
+
+
+def test_multiple_special_files_create_distinct_records(env):
+    """A multi-file special release creates one standalone record per file."""
+    _seed_series(env["db_path"])
+    src_dir = env["src_root"] / "multi-special"
+    src_dir.mkdir()
+    _make_zip(str(src_dir / "Test Series Bonus A.cbz"))
+    _make_zip(str(src_dir / "Test Series Bonus B.cbz"))
+
+    qid = _run_queue_import(
+        env["db_path"],
+        series_id=7,
+        torrent_name="Test Series Special Collection",
+        content_path=str(src_dir),
+        download_id="multi-special-download",
+    )
+    with sqlite3.connect(env["db_path"]) as c:
+        rows = c.execute(
+            "SELECT id,proposed_special_title FROM import_queue_files"
+            " WHERE queue_id=? ORDER BY id",
+            (qid,),
+        ).fetchall()
+
+    form = {}
+    for fid, title in rows:
+        form[f"kind_{fid}"] = "special"
+        form[f"special_title_{fid}"] = title
+
+    import main
+    from fastapi.testclient import TestClient
+
+    with TestClient(main.app, follow_redirects=False) as client:
+        response = _post_review(client, qid, form)
+    assert response.status_code == 303
+
+    with sqlite3.connect(env["db_path"]) as c:
+        specials = c.execute(
+            "SELECT title,import_path FROM volumes"
+            " WHERE series_id=7 AND is_special=1 ORDER BY title"
+        ).fetchall()
+    assert [row[0] for row in specials] == ["Bonus A", "Bonus B"]
+    assert len({row[1] for row in specials}) == 2
+
+
+def test_mixed_review_imports_valid_file_and_keeps_invalid_file_blocked(env):
+    """A valid decision must not pull an invalid sibling into execution."""
+    _seed_series(env["db_path"])
+    src_dir = env["src_root"] / "mixed-review"
+    src_dir.mkdir()
+    _make_zip(str(src_dir / "Test Series Bonus Story.cbz"))
+    _make_zip(str(src_dir / "Test Series Mystery.cbz"))
+
+    qid = _run_queue_import(
+        env["db_path"],
+        series_id=7,
+        torrent_name="Test Series Special Collection",
+        content_path=str(src_dir),
+        download_id="mixed-review-download",
+    )
+    with sqlite3.connect(env["db_path"]) as c:
+        rows = c.execute(
+            "SELECT id,src_path FROM import_queue_files WHERE queue_id=?",
+            (qid,),
+        ).fetchall()
+    bonus_id = next(fid for fid, path in rows if "Bonus Story" in path)
+    mystery_id = next(fid for fid, path in rows if "Mystery" in path)
+
+    import main
+    from fastapi.testclient import TestClient
+
+    with TestClient(main.app, follow_redirects=False) as client:
+        response = _post_review(
+            client,
+            qid,
+            {
+                f"kind_{bonus_id}": "special",
+                f"special_title_{bonus_id}": "Bonus Story",
+                f"kind_{mystery_id}": "volume",
+                f"vol_{mystery_id}": "",
+            },
+        )
+    assert response.status_code == 303
+
+    with sqlite3.connect(env["db_path"]) as c:
+        queue_status = c.execute(
+            "SELECT status FROM import_queue WHERE id=?", (qid,)
+        ).fetchone()[0]
+        file_status = c.execute(
+            "SELECT status FROM import_queue_files WHERE id=?", (mystery_id,)
+        ).fetchone()[0]
+        specials = c.execute(
+            "SELECT title FROM volumes WHERE series_id=7 AND is_special=1"
+        ).fetchall()
+        mainline = c.execute(
+            "SELECT volume_num FROM volumes WHERE series_id=7 AND volume_num IS NOT NULL"
+        ).fetchall()
+    assert queue_status == "partial"
+    assert file_status == "needs_review"
+    assert specials == [("Bonus Story",)]
+    assert mainline == []
 
 
 def test_queue_import_skips_download_recorded_in_history(env):
@@ -1152,8 +1400,9 @@ def test_mark_downloaded_chapter_pack_marks_placeholder_downloaded(env, monkeypa
 # ─────────────── 13. review UI exposes new fields ─────────────────
 
 def test_review_template_renders_range_and_pack_inputs(env):
-    """Queue table partial should render the new range inputs + pack
-    type select + special checkbox. Checks the rendered HTML so a future
+    """Queue table partial renders explicit kinds and their mapping inputs.
+
+    Checks the rendered HTML so a future
     template refactor can't silently drop them."""
     _seed_series(env["db_path"])
     src_dir = env["src_root"] / "uirender"
@@ -1191,8 +1440,10 @@ def test_review_template_renders_range_and_pack_inputs(env):
     # Pack type select
     assert 'name="pack_' in html
     assert '>vol range<' in html or 'value="volume_range"' in html
-    # Special checkbox
-    assert 'name="spec_' in html
+    # Explicit kind and special title controls
+    assert 'name="kind_' in html
+    assert 'value="special"' in html
+    assert 'name="special_title_' in html
     # Volume input should NOT use step="1" (would truncate 3a/3.5)
     assert 'name="vol_' in html
     # If the vol input has step="1" we regressed D11. The new form uses

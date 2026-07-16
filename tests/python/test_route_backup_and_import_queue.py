@@ -446,9 +446,10 @@ def test_import_dismiss_resets_grabbed_volumes_and_clears_seen(env):
 # ───────────────────── import queue: retry ─────────────────────
 
 
-def test_import_retry_resets_failed_to_pending(env):
-    """POST /import/{id}/retry on a 'failed' row resets status='pending'
-    AND resets failed/needs_review files back to 'pending'.
+def test_import_retry_preserves_manual_review(env):
+    """POST /import/{id}/retry only resets failed child files.
+
+    The parent remains partial while an operator decision is outstanding.
 
     Mocks _process_auto_import to a no-op — the handler dispatches it via
     asyncio.create_task and the test races against the async worker
@@ -469,16 +470,14 @@ def test_import_retry_resets_failed_to_pending(env):
     with sqlite3.connect(env['db_path']) as c:
         c.row_factory = sqlite3.Row
         q = c.execute("SELECT status FROM import_queue WHERE id=201").fetchone()
-        # Both child files should be back to 'pending' (one was 'failed', one
-        # 'needs_review'; both reset by the retry handler)
         files = sorted(
             r['status'] for r in c.execute(
                 "SELECT status FROM import_queue_files WHERE queue_id=201"
             ).fetchall()
         )
-    assert q['status'] == 'pending'
-    assert files == ['pending', 'pending'], (
-        f"both queue files should reset to pending, got {files!r}"
+    assert q['status'] == 'partial'
+    assert files == ['needs_review', 'pending'], (
+        f"review files must remain blocked while failed files reset, got {files!r}"
     )
 
 

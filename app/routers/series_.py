@@ -590,7 +590,16 @@ async def series_detail(request: Request, series_id: int):
     raw_packs = [
         v
         for v in all_rows
-        if v["volume_num"] is None and v["status"] in ("grabbed", "downloaded")
+        if v["volume_num"] is None
+        and v["status"] in ("grabbed", "downloaded")
+        and not (v["is_special"] or v["pack_type"] == "special")
+    ]
+    specials = [
+        dict(v)
+        for v in all_rows
+        if v["volume_num"] is None
+        and v["status"] in ("grabbed", "downloaded")
+        and (v["is_special"] or v["pack_type"] == "special")
     ]
 
     ch_map: dict = {}
@@ -881,6 +890,7 @@ async def series_detail(request: Request, series_id: int):
             "s": s,
             "volumes": volumes,
             "packs": packs,
+            "specials": specials,
             "stats": stats,
             "root_folders": root_folders,
             "ch_map_count": ch_map_count,

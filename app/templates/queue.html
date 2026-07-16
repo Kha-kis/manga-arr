@@ -72,6 +72,52 @@ function skipAll(queueId) {
   document.getElementById('skip-form-' + queueId).submit();
 }
 
+function sanitizeImportFilename(value) {
+  return (value || '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/^[. ]+|[. ]+$/g, '') || 'Special';
+}
+
+function updateSpecialPreview(fileId, title) {
+  const preview = document.getElementById('review-destination-' + fileId);
+  if (!preview) return;
+  const series = sanitizeImportFilename(preview.dataset.series);
+  const extension = preview.dataset.extension || '';
+  preview.textContent = series + ' - Special - ' + sanitizeImportFilename(title) + extension;
+}
+
+function updateImportKind(fileId, kind) {
+  const row = document.getElementById('mr_' + fileId);
+  if (!row) return;
+  row.querySelectorAll('[data-import-kinds]').forEach(element => {
+    const active = element.dataset.importKinds.split(',').includes(kind);
+    element.classList.toggle('d-none', !active);
+  });
+  row.querySelectorAll('input, select').forEach(control => {
+    if (control.name === 'kind_' + fileId) return;
+    control.disabled = Boolean(control.closest('[data-import-kinds].d-none'));
+  });
+  const specialTitle = row.querySelector('[name="special_title_' + fileId + '"]');
+  if (specialTitle) {
+    specialTitle.required = kind === 'special';
+  }
+  row.classList.toggle('queue-review-row-dimmed', kind === 'skip');
+  const preview = document.getElementById('review-destination-' + fileId);
+  if (kind === 'special' && specialTitle) {
+    updateSpecialPreview(fileId, specialTitle.value);
+  } else if (preview) {
+    preview.textContent = kind === 'skip' ? '—' : preview.dataset.default;
+  }
+}
+
+function initializeImportReview(root = document) {
+  root.querySelectorAll('.queue-review-kind-select').forEach(select => {
+    const fileId = select.name.replace('kind_', '');
+    updateImportKind(fileId, select.value);
+  });
+}
+
+document.addEventListener('DOMContentLoaded', () => initializeImportReview());
+document.addEventListener('htmx:afterSwap', event => initializeImportReview(event.target));
+
 // Pause the queue HTMX poll while any modal is open so the swap
 // doesn't destroy the modal mid-interaction.
 document.addEventListener('show.bs.modal', () => {
