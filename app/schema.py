@@ -169,6 +169,24 @@ def init_db():
                 details         TEXT,
                 PRIMARY KEY(series_id, source)
             );
+            CREATE TABLE IF NOT EXISTS series_metadata_fields (
+                series_id       INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+                field_name      TEXT    NOT NULL,
+                value_json      TEXT,
+                selected_source TEXT    NOT NULL DEFAULT 'legacy',
+                locked          INTEGER NOT NULL DEFAULT 0 CHECK(locked IN (0,1)),
+                selected_at     TEXT    NOT NULL,
+                PRIMARY KEY(series_id, field_name)
+            );
+            CREATE TABLE IF NOT EXISTS series_metadata_candidates (
+                series_id  INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+                field_name TEXT    NOT NULL,
+                source     TEXT    NOT NULL,
+                value_json TEXT,
+                confidence REAL,
+                fetched_at TEXT    NOT NULL,
+                PRIMARY KEY(series_id, field_name, source)
+            );
             CREATE TABLE IF NOT EXISTS pending_releases (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 series_id  INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
@@ -308,7 +326,7 @@ def init_db():
         add_col('volumes',            'imported_at',      'TEXT')
         add_col('volumes',            'edition_type',     'TEXT')   # standard|deluxe|omnibus|special|collector|digital
         add_col('volumes',            'language',         'TEXT')   # en|ja|fr|etc — detected from release title
-        add_col('series',             'vol_count_source', 'TEXT DEFAULT "anilist"')  # anilist|mangaupdates|wikipedia|google_books|manual
+        add_col('series',             'vol_count_source', 'TEXT DEFAULT "anilist"')  # anilist|mangaupdates|wikipedia|google_books|local|manual
 
         # ── chapters table ────────────────────────────────────────────────────
         db.executescript("""
@@ -619,6 +637,9 @@ def init_db():
             " error='previous provider refresh was interrupted'"
             " WHERE status='refreshing'"
         )
+        from metadata_provenance import backfill_metadata_provenance
+
+        backfill_metadata_provenance(db)
         # Required scanlator: if set, only grab releases matching this group (strict mode)
         add_col('series', 'required_scanlator',    'TEXT')
         # Source type preference: any | official_only | fan_only
@@ -814,6 +835,8 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_import_queue_series    ON import_queue(series_id)",
             "CREATE INDEX IF NOT EXISTS idx_events_series_time     ON events(series_id, created_at)",
             "CREATE INDEX IF NOT EXISTS idx_metadata_sources_retry ON series_metadata_sources(status, next_retry_at)",
+            "CREATE INDEX IF NOT EXISTS idx_metadata_fields_series ON series_metadata_fields(series_id)",
+            "CREATE INDEX IF NOT EXISTS idx_metadata_candidates_series ON series_metadata_candidates(series_id, field_name)",
         ]:
             db.execute(_idx_stmt)
 

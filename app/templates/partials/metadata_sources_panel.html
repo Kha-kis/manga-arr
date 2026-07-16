@@ -1,0 +1,118 @@
+{% if metadata_sources %}
+{% set ms = metadata_sources %}
+<section id="metadata-sources-panel" class="panel mb-4">
+  <div class="panel-header metadata-sources-header">
+    <div class="d-flex align-items-center gap-2 flex-wrap">
+      <i class="bi bi-database-check"></i>
+      <span class="fw-semibold">Metadata sources</span>
+      {% if ms['pending_count'] %}
+      <span class="badge-status metadata-source-badge is-ember">{{ ms['pending_count'] }} pending</span>
+      {% endif %}
+      {% if ms['conflict_count'] %}
+      <span class="badge-status metadata-source-badge is-gold">{{ ms['conflict_count'] }} conflicts</span>
+      {% endif %}
+      {% if not ms['pending_count'] and not ms['conflict_count'] %}
+      <span class="badge-status metadata-source-badge is-jade">Current</span>
+      {% endif %}
+    </div>
+    <div class="d-flex align-items-center gap-2 flex-wrap">
+      {% if ms['pending_count'] %}
+      <form method="post" action="/series/{{ ms['series_id'] }}/metadata/apply-safe"
+            hx-post="/series/{{ ms['series_id'] }}/metadata/apply-safe"
+            hx-target="#metadata-sources-panel" hx-swap="outerHTML" hx-disabled-elt="button">
+        <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+        <button type="submit" class="btn btn-primary btn-sm">
+          <span class="spinner-border spinner-border-sm me-1 htmx-indicator" aria-hidden="true"></span>
+          <i class="bi bi-check2-circle me-1"></i>Apply safe
+        </button>
+      </form>
+      {% endif %}
+      <form method="post" action="/series/{{ ms['series_id'] }}/metadata/preview"
+            hx-post="/series/{{ ms['series_id'] }}/metadata/preview"
+            hx-target="#metadata-sources-panel" hx-swap="outerHTML" hx-disabled-elt="button">
+        <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+        <button type="submit" class="btn btn-secondary btn-sm">
+          <span class="spinner-border spinner-border-sm me-1 htmx-indicator" aria-hidden="true"></span>
+          <i class="bi bi-cloud-download me-1"></i>Check sources
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <details class="metadata-sources-details" {% if ms['pending_count'] or ms['conflict_count'] %}open{% endif %}>
+    <summary>
+      <span>{{ ms['candidate_count'] }} candidates across {{ ms['fields']|length }} fields</span>
+      <i class="bi bi-chevron-down" aria-hidden="true"></i>
+    </summary>
+    <div class="metadata-sources-list">
+      {% for field in ms['fields'] %}
+      <div class="metadata-source-row {% if field['conflict'] %}has-conflict{% elif field['pending'] %}has-pending{% endif %}">
+        <div class="metadata-source-current">
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <span class="fw-semibold">{{ field['label'] }}</span>
+            <span class="badge-status metadata-source-badge is-muted">
+              {{ field['selected_source']|replace('_',' ')|title }}
+            </span>
+            {% if field['locked'] %}
+            <span class="text-xs text-gold"><i class="bi bi-lock-fill me-1"></i>Locked</span>
+            {% endif %}
+          </div>
+          <div class="metadata-source-value" title="{{ field['value'] if field['value'] is not none else 'Not set' }}">
+            {{ field['display_value'] }}
+          </div>
+          {% if field['selected_at'] %}
+          <div class="text-2xs text-muted-3">Selected {{ field['selected_at']|format_date }}</div>
+          {% endif %}
+        </div>
+
+        <div class="metadata-source-actions">
+          <form method="post" action="/series/{{ ms['series_id'] }}/metadata/lock"
+                hx-post="/series/{{ ms['series_id'] }}/metadata/lock"
+                hx-target="#metadata-sources-panel" hx-swap="outerHTML" hx-disabled-elt="button">
+            <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+            <input type="hidden" name="field_name" value="{{ field['field_name'] }}">
+            <input type="hidden" name="locked" value="{{ '0' if field['locked'] else '1' }}">
+            <button type="submit" class="btn-icon" title="{{ 'Unlock' if field['locked'] else 'Lock' }} {{ field['label'] }}"
+                    aria-label="{{ 'Unlock' if field['locked'] else 'Lock' }} {{ field['label'] }}">
+              <i class="bi bi-{{ 'unlock' if field['locked'] else 'lock' }}"></i>
+            </button>
+          </form>
+        </div>
+
+        {% if field['candidates'] %}
+        <div class="metadata-candidate-list">
+          {% for candidate in field['candidates'] %}
+          <div class="metadata-candidate-row">
+            <div class="metadata-candidate-copy">
+              <span class="metadata-candidate-source">{{ candidate['source']|replace('_',' ')|title }}</span>
+              <span class="metadata-candidate-value" title="{{ candidate['value'] }}">{{ candidate['display_value'] }}</span>
+              {% if candidate['is_recommended'] and not candidate['is_current'] %}
+              <span class="text-2xs text-ember">Recommended</span>
+              {% endif %}
+            </div>
+            {% if candidate['is_current'] %}
+            <i class="bi bi-check2 text-jade" title="Selected" aria-label="Selected"></i>
+            {% else %}
+            <form method="post" action="/series/{{ ms['series_id'] }}/metadata/apply-candidate"
+                  hx-post="/series/{{ ms['series_id'] }}/metadata/apply-candidate"
+                  hx-target="#metadata-sources-panel" hx-swap="outerHTML" hx-disabled-elt="button">
+              <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+              <input type="hidden" name="field_name" value="{{ field['field_name'] }}">
+              <input type="hidden" name="source" value="{{ candidate['source'] }}">
+              <input type="hidden" name="allow_decrease" value="{{ '1' if candidate['is_decrease'] else '0' }}">
+              <button type="submit" class="btn btn-secondary btn-sm" {% if field['locked'] %}disabled{% endif %}>
+                {% if candidate['is_decrease'] %}<i class="bi bi-arrow-down-circle me-1"></i>Use lower
+                {% else %}<i class="bi bi-check2 me-1"></i>Use{% endif %}
+              </button>
+            </form>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </details>
+</section>
+{% endif %}

@@ -68,6 +68,11 @@ from metadata_state import (
     mark_source_success,
     utc_now_iso,
 )
+from metadata_provenance import (
+    metadata_field_is_locked,
+    record_metadata_candidates,
+    record_metadata_selections,
+)
 from volumes import create_volume_stubs, populate_chapters
 
 
@@ -286,7 +291,7 @@ def _extract_map_from_cbzs(series_dir: str) -> dict:
     return mapping
 
 
-async def refresh_mangadex_map(series_id: int) -> bool:
+async def refresh_mangadex_map(series_id: int, *, apply_changes: bool = True) -> bool:
     """Refresh the chapter map without destroying the last known-good map.
 
     Network errors, sparse responses, and temporary source removals are
@@ -303,6 +308,7 @@ async def refresh_mangadex_map(series_id: int) -> bool:
         ).fetchone()
     if not s:
         return False
+    s = dict(s)
     mark_source_attempt(series_id, SOURCE_CHAPTER_MAP)
     old_mapping: dict = {}
     if s["chapter_vol_map"]:
@@ -314,11 +320,12 @@ async def refresh_mangadex_map(series_id: int) -> bool:
     preserved_source = s["chapter_map_source"]
     if old_mapping and not preserved_source:
         preserved_source = "legacy"
-        with get_db() as db:
-            db.execute(
-                "UPDATE series SET chapter_map_source='legacy' WHERE id=?",
-                (series_id,),
-            )
+        if apply_changes:
+            with get_db() as db:
+                db.execute(
+                    "UPDATE series SET chapter_map_source='legacy' WHERE id=?",
+                    (series_id,),
+                )
     mdx_id = s["mangadex_id"]
     links: dict[str, str] = {}
     if not mdx_id:
@@ -341,7 +348,11 @@ async def refresh_mangadex_map(series_id: int) -> bool:
             details={"preserved_entries": len(old_mapping)},
             has_usable_cache=bool(old_mapping),
         )
-        log_event("metadata_fetch_failed", f"[MangaDex] Could not find ID for series {series_id}", series_id)
+        log_event(
+            "metadata_fetch_failed",
+            f"[MangaDex] Could not find ID for series {series_id}",
+            series_id,
+        )
         return False
     with get_db() as db:
         meta = db.execute(
@@ -395,50 +406,111 @@ async def refresh_mangadex_map(series_id: int) -> bool:
     mu_slug = links.get("mu")
     mu_from_mdx = mu_slug_to_id(mu_slug) if mu_slug else None
 
-    with get_db() as db:
-        cross_refs = (
-            int(mal_from_mdx)
-            if mal_from_mdx and str(mal_from_mdx).isdigit()
-            else None,
-            mu_from_mdx,
+    cross_refs = (
+        int(mal_from_mdx) if mal_from_mdx and str(mal_from_mdx).isdigit() else None,
+        mu_from_mdx,
+    )
+    record_metadata_candidates(
+        series_id,
+        "mangadex",
+        {
+            "mangadex_id": mdx_id,
+            "mal_id": cross_refs[0],
+            "mu_id": cross_refs[1],
+        },
+        confidence=1.0,
+    )
+    if mapping:
+        record_metadata_candidates(
+            series_id,
+            map_source,
+            {"chapter_vol_map": mapping},
+            confidence=1.0 if map_source == "mangadex" else 0.8,
         )
-        if mapping:
-            now = utc_now_iso()
-            db.execute(
-                "UPDATE series SET mangadex_id=?, chapter_vol_map=?,"
-                " chapter_map_source=?,chapter_map_updated_at=?,"
-                " mal_id=COALESCE(mal_id, ?),mu_id=COALESCE(mu_id, ?) WHERE id=?",
-                (
-                    mdx_id,
-                    json.dumps(mapping, sort_keys=True),
-                    map_source,
-                    now,
-                    cross_refs[0],
-                    cross_refs[1],
+
+    if apply_changes:
+        field_locks = {
+            field_name: metadata_field_is_locked(series_id, field_name)
+            for field_name in ("mangadex_id", "mal_id", "mu_id", "chapter_vol_map")
+        }
+        apply_mapping = bool(mapping) and not field_locks["chapter_vol_map"]
+        selected_mangadex_id = (
+            s["mangadex_id"] if field_locks["mangadex_id"] else mdx_id
+        )
+        selected_mal_id = s["mal_id"] or (
+            None if field_locks["mal_id"] else cross_refs[0]
+        )
+        selected_mu_id = s["mu_id"] or (None if field_locks["mu_id"] else cross_refs[1])
+        with get_db() as db:
+            selected_values: dict[str, object] = {}
+            selected_sources: dict[str, str] = {}
+            if not field_locks["mangadex_id"]:
+                selected_values["mangadex_id"] = selected_mangadex_id
+                selected_sources["mangadex_id"] = "mangadex"
+            if (
+                not field_locks["mal_id"]
+                and not s["mal_id"]
+                and cross_refs[0] is not None
+            ):
+                selected_values["mal_id"] = cross_refs[0]
+                selected_sources["mal_id"] = "mangadex"
+            if (
+                not field_locks["mu_id"]
+                and not s["mu_id"]
+                and cross_refs[1] is not None
+            ):
+                selected_values["mu_id"] = cross_refs[1]
+                selected_sources["mu_id"] = "mangadex"
+            if apply_mapping:
+                selected_values["chapter_vol_map"] = mapping
+                selected_sources["chapter_vol_map"] = map_source
+            record_metadata_selections(
+                series_id,
+                selected_values,
+                selected_sources,
+                db=db,
+            )
+            if apply_mapping:
+                now = utc_now_iso()
+                db.execute(
+                    "UPDATE series SET mangadex_id=?,chapter_vol_map=?,"
+                    " chapter_map_source=?,chapter_map_updated_at=?,"
+                    " mal_id=?,mu_id=? WHERE id=?",
+                    (
+                        selected_mangadex_id,
+                        json.dumps(mapping, sort_keys=True),
+                        map_source,
+                        now,
+                        selected_mal_id,
+                        selected_mu_id,
+                        series_id,
+                    ),
+                )
+                ch_created = populate_chapters(db, series_id)
+                log_event(
+                    "metadata",
+                    f"[{map_source.upper()}] Stored {len(mapping)} chapter→vol entries for series {series_id}"
+                    + (f", created {ch_created} chapter stubs" if ch_created else ""),
                     series_id,
-                ),
-            )
-            ch_created = populate_chapters(db, series_id)
-            log_event(
-                "metadata",
-                f"[{map_source.upper()}] Stored {len(mapping)} chapter→vol entries for series {series_id}"
-                + (f", created {ch_created} chapter stubs" if ch_created else ""),
-                series_id,
-                db=db,
-            )
-        else:
-            db.execute(
-                "UPDATE series SET mangadex_id=?,"
-                " mal_id=COALESCE(mal_id, ?),mu_id=COALESCE(mu_id, ?) WHERE id=?",
-                (mdx_id, cross_refs[0], cross_refs[1], series_id),
-            )
-            log_event(
-                "metadata",
-                f"[MangaDex] No usable chapter map for {mdx_id}; preserved "
-                f"{len(old_mapping)} cached entries",
-                series_id,
-                db=db,
-            )
+                    db=db,
+                )
+            else:
+                db.execute(
+                    "UPDATE series SET mangadex_id=?,mal_id=?,mu_id=? WHERE id=?",
+                    (
+                        selected_mangadex_id,
+                        selected_mal_id,
+                        selected_mu_id,
+                        series_id,
+                    ),
+                )
+                log_event(
+                    "metadata",
+                    f"[MangaDex] No usable chapter map for {mdx_id}; preserved "
+                    f"{len(old_mapping)} cached entries",
+                    series_id,
+                    db=db,
+                )
     if mapping:
         mark_source_success(
             series_id,
@@ -512,10 +584,18 @@ async def fetch_wikipedia_volume_count(
             if wikitext:
                 break
         except Exception as e:
-            log_event("metadata_fetch_failed", f"[Wikipedia] series {series_id} '{search_title}': {e}", series_id)
+            log_event(
+                "metadata_fetch_failed",
+                f"[Wikipedia] series {series_id} '{search_title}': {e}",
+                series_id,
+            )
 
     if not wikitext:
-        log_event("metadata_fetch_failed", f"[Wikipedia] series {series_id} '{title}': no article found", series_id)
+        log_event(
+            "metadata_fetch_failed",
+            f"[Wikipedia] series {series_id} '{title}': no article found",
+            series_id,
+        )
         return None
 
     # Strip <ref> footnotes — they contain long URLs that inflate character
@@ -595,7 +675,11 @@ async def fetch_wikipedia_volume_count(
 
 
 async def fetch_edition_volume_count(
-    series_id: int, title: str, edition_type: str
+    series_id: int,
+    title: str,
+    edition_type: str,
+    *,
+    apply_changes: bool = True,
 ) -> int | None:
     """Query Google Books to find the correct total_volumes for a non-standard edition
     (omnibus, deluxe, collector, special, remaster). Returns the max volume number
@@ -611,7 +695,7 @@ async def fetch_edition_volume_count(
             "SELECT vol_count_source FROM series WHERE id=?", (series_id,)
         ).fetchone()
     current_source = (src_row["vol_count_source"] if src_row else None) or "anilist"
-    if current_source in ("google_books", "wikipedia", "manual"):
+    if apply_changes and current_source in ("google_books", "wikipedia", "manual"):
         log_event(
             "metadata",
             f"[GoogleBooks] series {series_id}: skipping — source already '{current_source}'",
@@ -645,7 +729,11 @@ async def fetch_edition_volume_count(
             _r.raise_for_status()
             return _r.json().get("items", [])
         except Exception as e:
-            log_event("metadata_fetch_failed", f"[GoogleBooks] series {series_id} query '{q}': {e}", series_id)
+            log_event(
+                "metadata_fetch_failed",
+                f"[GoogleBooks] series {series_id} query '{q}': {e}",
+                series_id,
+            )
             return []
 
     def _extract_vols(items: list[dict]) -> set[int]:
@@ -705,12 +793,24 @@ async def fetch_edition_volume_count(
         # Fallback 1: Try Wikipedia for edition-specific volume count
         wiki_count = await fetch_wikipedia_volume_count(series_id, title, edition_type)
         if wiki_count:
-            with get_db() as db:
-                db.execute(
-                    "UPDATE series SET total_volumes=?, vol_count_source='wikipedia' WHERE id=?",
-                    (wiki_count, series_id),
-                )
-                create_volume_stubs(db, series_id, wiki_count)
+            record_metadata_candidates(
+                series_id, "wikipedia", {"total_volumes": wiki_count}
+            )
+            if apply_changes and not metadata_field_is_locked(
+                series_id, "total_volumes"
+            ):
+                with get_db() as db:
+                    db.execute(
+                        "UPDATE series SET total_volumes=?, vol_count_source='wikipedia' WHERE id=?",
+                        (wiki_count, series_id),
+                    )
+                    create_volume_stubs(db, series_id, wiki_count)
+                    record_metadata_selections(
+                        series_id,
+                        {"total_volumes": wiki_count},
+                        {"total_volumes": "wikipedia"},
+                        db=db,
+                    )
             log_event(
                 "metadata",
                 f"[Wikipedia] {edition_type} edition: {wiki_count} volumes "
@@ -727,7 +827,7 @@ async def fetch_edition_volume_count(
                 "SELECT total_volumes FROM series WHERE id=?", (series_id,)
             ).fetchone()
             al_count = (al_row["total_volumes"] or 0) if al_row else 0
-            if al_count > 0:
+            if apply_changes and al_count > 0:
                 create_volume_stubs(db, series_id, al_count)
         if al_count > 0:
             log_event(
@@ -740,12 +840,20 @@ async def fetch_edition_volume_count(
         return None
 
     best_count = max(found_volumes)
-    with get_db() as db:
-        db.execute(
-            "UPDATE series SET total_volumes=?, vol_count_source='google_books' WHERE id=?",
-            (best_count, series_id),
-        )
-        create_volume_stubs(db, series_id, best_count)
+    record_metadata_candidates(series_id, "google_books", {"total_volumes": best_count})
+    if apply_changes and not metadata_field_is_locked(series_id, "total_volumes"):
+        with get_db() as db:
+            db.execute(
+                "UPDATE series SET total_volumes=?, vol_count_source='google_books' WHERE id=?",
+                (best_count, series_id),
+            )
+            create_volume_stubs(db, series_id, best_count)
+            record_metadata_selections(
+                series_id,
+                {"total_volumes": best_count},
+                {"total_volumes": "google_books"},
+                db=db,
+            )
     log_event(
         "metadata",
         f"[GoogleBooks] {edition_type} edition: {best_count} volumes "
@@ -755,7 +863,9 @@ async def fetch_edition_volume_count(
     return best_count
 
 
-async def fetch_mu_metadata(series_id: int, title: str) -> dict | None:
+async def fetch_mu_metadata(
+    series_id: int, title: str, *, apply_changes: bool = True
+) -> dict | None:
     """Cross-reference MangaUpdates to get a more reliable volume count for standard
     editions, and to populate mu_id if missing. Never overwrites google_books or manual
     sources. Returns a summary dict or None if no confident match was found.
@@ -767,9 +877,10 @@ async def fetch_mu_metadata(series_id: int, title: str) -> dict | None:
         ).fetchone()
     if not s_row:
         return None
+    s_row = dict(s_row)
 
     current_source = s_row["vol_count_source"] or "anilist"
-    if current_source in ("google_books", "wikipedia", "manual"):
+    if apply_changes and current_source in ("google_books", "wikipedia", "manual"):
         return None  # never downgrade
 
     # Search MU — reuse existing mu_search() which already parses volume counts
@@ -799,13 +910,34 @@ async def fetch_mu_metadata(series_id: int, title: str) -> dict | None:
     edition = s_row["edition_type"] or "standard"
     current_vols = s_row["total_volumes"] or 0
 
+    record_metadata_candidates(
+        series_id,
+        "mangaupdates",
+        {"mu_id": matched_mu_id, "total_volumes": mu_vol_count},
+        confidence=_f1(best["title"]),
+    )
+
     updated_vols = False
+    if not apply_changes:
+        return {
+            "mu_id": matched_mu_id,
+            "volumes": mu_vol_count,
+            "updated_vols": False,
+        }
+    mu_id_locked = metadata_field_is_locked(series_id, "mu_id")
+    volumes_locked = metadata_field_is_locked(series_id, "total_volumes")
     with get_db() as db:
         # Always store mu_id if we didn't have one
-        if matched_mu_id and not s_row["mu_id"]:
+        if matched_mu_id and not s_row["mu_id"] and not mu_id_locked:
             db.execute(
                 "UPDATE series SET mu_id=? WHERE id=? AND (mu_id IS NULL OR mu_id='')",
                 (matched_mu_id, series_id),
+            )
+            record_metadata_selections(
+                series_id,
+                {"mu_id": matched_mu_id},
+                {"mu_id": "mangaupdates"},
+                db=db,
             )
         # Update volume count only for standard editions where MU count is strictly higher
         should_update = (
@@ -813,6 +945,7 @@ async def fetch_mu_metadata(series_id: int, title: str) -> dict | None:
             and mu_vol_count is not None
             and mu_vol_count > current_vols
             and current_source not in ("google_books", "wikipedia", "manual")
+            and not volumes_locked
         )
         if should_update:
             db.execute(
@@ -820,6 +953,12 @@ async def fetch_mu_metadata(series_id: int, title: str) -> dict | None:
                 (mu_vol_count, series_id),
             )
             create_volume_stubs(db, series_id, mu_vol_count)
+            record_metadata_selections(
+                series_id,
+                {"total_volumes": mu_vol_count},
+                {"total_volumes": "mangaupdates"},
+                db=db,
+            )
             updated_vols = True
             log_event(
                 "metadata",

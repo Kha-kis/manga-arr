@@ -5,6 +5,7 @@ here. Provider I/O is performed without an open database connection; each
 result is committed in a short transaction and recorded in persistent source
 state.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -21,6 +22,10 @@ from metadata_enrichment import (
     fetch_edition_volume_count,
     fetch_mu_metadata,
     refresh_mangadex_map,
+)
+from metadata_provenance import (
+    record_metadata_candidates,
+    record_metadata_selections,
 )
 from metadata_state import (
     SOURCE_ALIASES,
@@ -96,15 +101,27 @@ def _useful_alias(alias: str, main_title: str) -> bool:
     return latin >= max(1, int(len(alias.replace(" ", "")) * 0.4))
 
 
-def _store_aliases_and_genres(series_id: int, main_title: str, record: dict) -> dict:
+def _store_aliases_and_genres(
+    series_id: int,
+    main_title: str,
+    record: dict,
+    *,
+    apply_changes: bool = True,
+) -> dict:
     candidates = [record.get("romaji_title") or "", *(record.get("aliases") or [])]
     aliases = sorted(
         {alias.strip() for alias in candidates if _useful_alias(alias, main_title)},
         key=str.casefold,
     )
     genres = sorted(
-        {str(genre).strip().lower() for genre in (record.get("genres") or []) if str(genre).strip()}
+        {
+            str(genre).strip().lower()
+            for genre in (record.get("genres") or [])
+            if str(genre).strip()
+        }
     )[:8]
+    if not apply_changes:
+        return {"aliases": len(aliases), "genres": len(genres)}
     with get_db() as db:
         db.execute(
             "DELETE FROM series_aliases WHERE series_id=? AND source='anilist'",
@@ -129,13 +146,42 @@ def _store_aliases_and_genres(series_id: int, main_title: str, record: dict) -> 
     return {"aliases": len(aliases), "genres": len(genres)}
 
 
-def _apply_anilist_record(series_id: int, record: dict) -> list[str]:
+def _apply_anilist_record(
+    series_id: int, record: dict, *, apply_changes: bool = True
+) -> list[str]:
     """Apply canonical fields while preserving manual and observed counts."""
+    record_metadata_candidates(
+        series_id,
+        "anilist",
+        {
+            "title": record.get("title"),
+            "anilist_id": record.get("anilist_id"),
+            "mal_id": record.get("mal_id"),
+            "cover_url": record.get("cover_url"),
+            "status": record.get("status"),
+            "description": record.get("description"),
+            "pub_year": record.get("pub_year"),
+            "total_volumes": record.get("volumes"),
+            "total_chapters": record.get("chapters"),
+        },
+        confidence=1.0,
+    )
     with get_db() as db:
         row = db.execute("SELECT * FROM series WHERE id=?", (series_id,)).fetchone()
         if not row:
             raise ValueError(f"series {series_id} not found")
         current = dict(row)
+        provenance_rows = db.execute(
+            "SELECT field_name,selected_source,locked FROM series_metadata_fields"
+            " WHERE series_id=?",
+            (series_id,),
+        ).fetchall()
+        selected_sources = {
+            item["field_name"]: item["selected_source"] for item in provenance_rows
+        }
+        field_locks = {
+            item["field_name"]: bool(item["locked"]) for item in provenance_rows
+        }
         max_downloaded_volume = db.execute(
             "SELECT MAX(volume_num) FROM volumes WHERE series_id=?"
             " AND status='downloaded' AND COALESCE(is_special,0)=0",
@@ -151,16 +197,22 @@ def _apply_anilist_record(series_id: int, record: dict) -> list[str]:
         current_volumes = current.get("total_volumes") or 0
         incoming_volumes = int(record["volumes"] or 0)
         observed_volumes = int(math.ceil(float(max_downloaded_volume or 0)))
-        if volume_source in _PROTECTED_COUNT_SOURCES:
+        local_candidates = {}
+        if observed_volumes:
+            local_candidates["total_volumes"] = observed_volumes
+        volume_locked = field_locks.get("total_volumes", volume_source == "manual")
+        if volume_locked or volume_source in {"google_books", "wikipedia"}:
             total_volumes = current_volumes or None
             next_volume_source = volume_source
         else:
-            total_volumes = max(
-                current_volumes, incoming_volumes, observed_volumes
-            ) or None
+            total_volumes = (
+                max(current_volumes, incoming_volumes, observed_volumes) or None
+            )
             next_volume_source = (
-                volume_source
-                if volume_source == "mangaupdates" and current_volumes >= (total_volumes or 0)
+                "local"
+                if observed_volumes > max(current_volumes, incoming_volumes)
+                else volume_source
+                if current_volumes > incoming_volumes
                 else "anilist"
             )
 
@@ -168,20 +220,28 @@ def _apply_anilist_record(series_id: int, record: dict) -> list[str]:
         current_chapters = current.get("total_chapters") or 0
         incoming_chapters = int(record["chapters"] or 0)
         observed_chapters = int(math.ceil(float(max_downloaded_chapter or 0)))
-        if chapter_source == "manual":
+        if observed_chapters:
+            local_candidates["total_chapters"] = observed_chapters
+        if local_candidates:
+            record_metadata_candidates(
+                series_id,
+                "local",
+                local_candidates,
+                confidence=1.0,
+                db=db,
+            )
+        chapter_locked = field_locks.get("total_chapters", chapter_source == "manual")
+        if chapter_locked:
             total_chapters = current_chapters or None
             next_chapter_source = chapter_source
         else:
-            total_chapters = max(
-                current_chapters, incoming_chapters, observed_chapters
-            ) or None
+            total_chapters = (
+                max(current_chapters, incoming_chapters, observed_chapters) or None
+            )
             next_chapter_source = (
                 "local"
                 if observed_chapters > incoming_chapters
-                or (
-                    chapter_source == "local"
-                    and current_chapters > incoming_chapters
-                )
+                or (chapter_source == "local" and current_chapters > incoming_chapters)
                 else "anilist"
             )
 
@@ -197,7 +257,34 @@ def _apply_anilist_record(series_id: int, record: dict) -> list[str]:
             "vol_count_source": next_volume_source,
             "chapter_count_source": next_chapter_source,
         }
+        provenance_values = {
+            key: values[key]
+            for key in (
+                "anilist_id",
+                "mal_id",
+                "cover_url",
+                "status",
+                "description",
+                "pub_year",
+                "total_volumes",
+                "total_chapters",
+            )
+        }
+        for field_name in (
+            "anilist_id",
+            "mal_id",
+            "cover_url",
+            "status",
+            "description",
+            "pub_year",
+        ):
+            if field_locks.get(field_name):
+                values[field_name] = current.get(field_name)
+                provenance_values[field_name] = current.get(field_name)
+
         changed = [key for key, value in values.items() if current.get(key) != value]
+        if not apply_changes:
+            return []
         db.execute(
             "UPDATE series SET anilist_id=?,mal_id=?,cover_url=?,status=?,"
             " description=?,pub_year=?,total_volumes=?,total_chapters=?,"
@@ -216,12 +303,29 @@ def _apply_anilist_record(series_id: int, record: dict) -> list[str]:
                 series_id,
             ),
         )
+        provenance_sources = {
+            field_name: (
+                selected_sources.get(field_name, "legacy")
+                if field_locks.get(field_name)
+                else "anilist"
+            )
+            for field_name in provenance_values
+        }
+        provenance_sources["total_volumes"] = next_volume_source
+        provenance_sources["total_chapters"] = next_chapter_source
+        record_metadata_selections(
+            series_id,
+            provenance_values,
+            provenance_sources,
+            db=db,
+        )
         edition = current.get("edition_type") or "standard"
         if total_volumes and edition not in _NON_STANDARD_STUB_EDITIONS:
             create_volume_stubs(db, series_id, int(total_volumes))
-        if values["status"] in {"FINISHED", "CANCELLED"} and (
-            current.get("update_strategy") or "always"
-        ) == "always":
+        if (
+            values["status"] in {"FINISHED", "CANCELLED"}
+            and (current.get("update_strategy") or "always") == "always"
+        ):
             db.execute(
                 "UPDATE series SET update_strategy='once' WHERE id=?", (series_id,)
             )
@@ -281,6 +385,7 @@ async def refresh_series_metadata(
     force: bool = False,
     include_manifest: bool = True,
     reason: str = "manual",
+    apply_changes: bool = True,
 ) -> dict[str, Any]:
     """Refresh every metadata layer for a series and return a stable summary."""
     lock = await _refresh_lock(series_id)
@@ -294,7 +399,8 @@ async def refresh_series_metadata(
                 "errors": ["series not found"],
             }
 
-        mark_series_attempt(series_id)
+        if apply_changes:
+            mark_series_attempt(series_id)
         changed_fields: list[str] = []
         errors: list[str] = []
         warnings: list[str] = []
@@ -305,7 +411,9 @@ async def refresh_series_metadata(
         record: dict | None = None
         try:
             record = await _resolve_anilist_record(series)
-            changed_fields.extend(_apply_anilist_record(series_id, record))
+            changed_fields.extend(
+                _apply_anilist_record(series_id, record, apply_changes=apply_changes)
+            )
             mark_source_success(
                 series_id,
                 SOURCE_ANILIST,
@@ -325,11 +433,12 @@ async def refresh_series_metadata(
             mark_source_attempt(series_id, SOURCE_ALIASES)
             try:
                 alias_result = _store_aliases_and_genres(
-                    series_id, series["title"], record
+                    series_id,
+                    series["title"],
+                    record,
+                    apply_changes=apply_changes,
                 )
-                mark_source_success(
-                    series_id, SOURCE_ALIASES, details=alias_result
-                )
+                mark_source_success(series_id, SOURCE_ALIASES, details=alias_result)
                 sources[SOURCE_ALIASES] = "healthy"
             except Exception as exc:
                 error = f"aliases: {type(exc).__name__}: {str(exc)[:180]}"
@@ -339,7 +448,7 @@ async def refresh_series_metadata(
 
         current = _series_snapshot(series_id) or series
         volume_source = current.get("vol_count_source") or "anilist"
-        if volume_source in _PROTECTED_COUNT_SOURCES:
+        if apply_changes and volume_source in _PROTECTED_COUNT_SOURCES:
             mark_source_success(
                 series_id,
                 SOURCE_MANGAUPDATES,
@@ -349,7 +458,11 @@ async def refresh_series_metadata(
         elif force or source_retry_due(series_id, SOURCE_MANGAUPDATES):
             mark_source_attempt(series_id, SOURCE_MANGAUPDATES)
             try:
-                mu_result = await fetch_mu_metadata(series_id, current["title"])
+                mu_result = await fetch_mu_metadata(
+                    series_id,
+                    current["title"],
+                    apply_changes=apply_changes,
+                )
                 if mu_result:
                     mark_source_success(
                         series_id, SOURCE_MANGAUPDATES, details=mu_result
@@ -371,7 +484,7 @@ async def refresh_series_metadata(
                 sources[SOURCE_MANGAUPDATES] = "failed"
 
         try:
-            map_ok = await refresh_mangadex_map(series_id)
+            map_ok = await refresh_mangadex_map(series_id, apply_changes=apply_changes)
             sources["chapter_map"] = "healthy" if map_ok else "degraded"
             if not map_ok:
                 warnings.append("chapter map refresh returned no usable map")
@@ -389,7 +502,12 @@ async def refresh_series_metadata(
             "colored",
         }:
             try:
-                await fetch_edition_volume_count(series_id, current["title"], edition)
+                await fetch_edition_volume_count(
+                    series_id,
+                    current["title"],
+                    edition,
+                    apply_changes=apply_changes,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -398,7 +516,7 @@ async def refresh_series_metadata(
                 )
 
         current = _series_snapshot(series_id) or series
-        if include_manifest and current.get("mangadex_id"):
+        if apply_changes and include_manifest and current.get("mangadex_id"):
             if force or source_retry_due(series_id, SOURCE_MANGADEX_MANIFEST):
                 try:
                     from routers.mangadex_ import sync_mangadex_chapters
@@ -412,21 +530,29 @@ async def refresh_series_metadata(
                     warnings.append(error)
                     sources[SOURCE_MANGADEX_MANIFEST] = "failed"
 
-        cover_ok, cover_error = await refresh_series_cover(series_id, force=force)
-        sources[SOURCE_COVER] = "healthy" if cover_ok else "failed"
-        if cover_error:
-            warnings.append(f"cover: {cover_error}")
+        if apply_changes:
+            cover_ok, cover_error = await refresh_series_cover(series_id, force=force)
+            sources[SOURCE_COVER] = "healthy" if cover_ok else "failed"
+            if cover_error:
+                warnings.append(f"cover: {cover_error}")
 
-        status = "healthy" if core_ok and not warnings else "degraded" if core_ok else "failed"
-        combined_error = "; ".join([*errors, *warnings])[:1000] or None
-        finish_series_refresh(
-            series_id,
-            status=status,
-            error=combined_error,
-            successful=core_ok,
+        status = (
+            "healthy"
+            if core_ok and not warnings
+            else "degraded"
+            if core_ok
+            else "failed"
         )
+        combined_error = "; ".join([*errors, *warnings])[:1000] or None
+        if apply_changes:
+            finish_series_refresh(
+                series_id,
+                status=status,
+                error=combined_error,
+                successful=core_ok,
+            )
         log_event(
-            "metadata_refresh",
+            "metadata_refresh" if apply_changes else "metadata_preview",
             f"Metadata refresh {status} ({reason}); changed={sorted(set(changed_fields))}; "
             f"warnings={len(warnings)} errors={len(errors)}",
             series_id,
@@ -439,6 +565,7 @@ async def refresh_series_metadata(
             "sources": sources,
             "warnings": warnings,
             "errors": errors,
+            "applied": apply_changes,
         }
 
 

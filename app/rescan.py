@@ -303,7 +303,27 @@ def rescan_series_folder(db, series_id: int) -> dict:
                 current_tv = tv_row['total_volumes'] if tv_row else None
                 if current_tv is None or new_max > current_tv:
                     db.execute(
-                        "UPDATE series SET total_volumes=? WHERE id=?", (new_max, series_id)
+                        "UPDATE series SET total_volumes=?,vol_count_source='local'"
+                        " WHERE id=?",
+                        (new_max, series_id),
+                    )
+                    from metadata_provenance import (
+                        record_metadata_candidates,
+                        record_metadata_selections,
+                    )
+
+                    record_metadata_candidates(
+                        series_id,
+                        'local',
+                        {'total_volumes': new_max},
+                        confidence=1.0,
+                        db=db,
+                    )
+                    record_metadata_selections(
+                        series_id,
+                        {'total_volumes': new_max},
+                        {'total_volumes': 'local'},
+                        db=db,
                     )
 
     return {'found': len(on_disk), 'recovered': recovered, 'missing': missing, 'lost': lost, 'created': created}

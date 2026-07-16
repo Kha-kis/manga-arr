@@ -883,6 +883,10 @@ async def series_detail(request: Request, series_id: int):
         )
         metadata_health = None
 
+    from metadata_provenance import build_metadata_repair_report
+
+    metadata_sources = build_metadata_repair_report(series_id)
+
     return templates.TemplateResponse(
         request,
         "series.html",
@@ -912,6 +916,7 @@ async def series_detail(request: Request, series_id: int):
             "suwayomi_enabled": suwayomi_enabled,
             "swy_vol_jobs": swy_vol_jobs,
             "metadata_health": metadata_health,
+            "metadata_sources": metadata_sources,
         },
     )
 
@@ -944,6 +949,142 @@ async def api_series_metadata_health(request: Request, series_id: int):
             request, "partials/metadata_health_panel.html", {"metadata_health": payload}
         )
     return JSONResponse(payload)
+
+
+def _metadata_sources_response(
+    request: Request,
+    series_id: int,
+    *,
+    message: str | None = None,
+    tone: str = "success",
+):
+    from metadata_provenance import build_metadata_repair_report
+
+    report = build_metadata_repair_report(series_id)
+    if request.headers.get("HX-Request") == "true":
+        response = templates.TemplateResponse(
+            request,
+            "partials/metadata_sources_panel.html",
+            {"metadata_sources": report},
+        )
+        if message:
+            response.headers["HX-Trigger"] = json.dumps(
+                {"showToast": {"msg": message, "type": tone}}
+            )
+        return response
+    return RedirectResponse(
+        with_flash(f"/series/{series_id}", message or "Metadata sources updated", tone),
+        status_code=303,
+    )
+
+
+@router.get("/api/series/{series_id}/metadata-sources", response_class=HTMLResponse)
+async def api_series_metadata_sources(request: Request, series_id: int):
+    from metadata_provenance import build_metadata_repair_report
+
+    report = build_metadata_repair_report(series_id)
+    if not report["fields"]:
+        return JSONResponse({"error": "series not found"}, status_code=404)
+    if request.headers.get("HX-Request") == "true":
+        return templates.TemplateResponse(
+            request,
+            "partials/metadata_sources_panel.html",
+            {"metadata_sources": report},
+        )
+    return JSONResponse(report)
+
+
+@router.post("/series/{series_id}/metadata/preview")
+async def preview_series_metadata(request: Request, series_id: int):
+    from metadata_service import refresh_series_metadata
+
+    result = await refresh_series_metadata(
+        series_id,
+        force=True,
+        include_manifest=False,
+        reason="preview",
+        apply_changes=False,
+    )
+    message = (
+        "Metadata candidates refreshed"
+        if result.get("ok")
+        else (result.get("errors") or ["Metadata preview failed"])[0]
+    )
+    return _metadata_sources_response(
+        request,
+        series_id,
+        message=message,
+        tone="success" if result.get("ok") else "error",
+    )
+
+
+@router.post("/series/{series_id}/metadata/apply-safe")
+async def apply_safe_series_metadata(request: Request, series_id: int):
+    from metadata_provenance import apply_recommended_candidates
+
+    result = apply_recommended_candidates(series_id)
+    applied = len(result["applied"])
+    skipped = len(result["skipped"])
+    message = f"Applied {applied} safe metadata candidate(s)"
+    if skipped:
+        message += f"; left {skipped} for review"
+    return _metadata_sources_response(
+        request,
+        series_id,
+        message=message,
+        tone="success" if applied or not skipped else "warning",
+    )
+
+
+@router.post("/series/{series_id}/metadata/apply-candidate")
+async def apply_series_metadata_candidate(
+    request: Request,
+    series_id: int,
+    field_name: str = Form(...),
+    source: str = Form(...),
+    allow_decrease: str = Form("0"),
+):
+    from metadata_provenance import apply_metadata_candidate
+
+    try:
+        result = apply_metadata_candidate(
+            series_id,
+            field_name,
+            source,
+            allow_decrease=allow_decrease == "1",
+        )
+    except ValueError as exc:
+        return _metadata_sources_response(
+            request, series_id, message=str(exc), tone="error"
+        )
+    return _metadata_sources_response(
+        request,
+        series_id,
+        message=f"Selected {result['source']} for {result['field_name'].replace('_', ' ')}",
+    )
+
+
+@router.post("/series/{series_id}/metadata/lock")
+async def lock_series_metadata_field(
+    request: Request,
+    series_id: int,
+    field_name: str = Form(...),
+    locked: str = Form("1"),
+):
+    from metadata_provenance import set_metadata_field_lock
+
+    try:
+        set_metadata_field_lock(series_id, field_name, locked == "1")
+    except ValueError as exc:
+        return _metadata_sources_response(
+            request, series_id, message=str(exc), tone="error"
+        )
+    state = "locked" if locked == "1" else "unlocked"
+    return _metadata_sources_response(
+        request,
+        series_id,
+        message=f"{field_name.replace('_', ' ').title()} {state}",
+    )
 
 
 # ── Series-scoped reconciliation ─────────────────────────────────────────────
@@ -1945,16 +2086,20 @@ async def refresh_series(request: Request, series_id: int):
         if result.get("ok")
         else (result.get("errors") or ["Metadata refresh failed"])[0]
     )
-    tone = "success" if result.get("status") == "healthy" else "warning" if result.get("ok") else "error"
+    tone = (
+        "success"
+        if result.get("status") == "healthy"
+        else "warning"
+        if result.get("ok")
+        else "error"
+    )
     if request.headers.get("HX-Request") == "true":
         import json
         from fastapi.responses import Response as _Resp
 
         return _Resp(
             headers={
-                "HX-Trigger": json.dumps(
-                    {"showToast": {"msg": message, "type": tone}}
-                )
+                "HX-Trigger": json.dumps({"showToast": {"msg": message, "type": tone}})
             }
         )
     return RedirectResponse(
@@ -2223,6 +2368,17 @@ async def edit_series(request: Request, series_id: int):
         if updates:
             params.append(series_id)
             db.execute(f"UPDATE series SET {', '.join(updates)} WHERE id=?", params)
+            from metadata_provenance import record_manual_metadata
+
+            manual_values = {}
+            if "title" in submitted:
+                manual_values["title"] = str(submitted.get("title") or "").strip()
+            if _manual_new is not None:
+                manual_values["total_volumes"] = _manual_new
+            if map_updated:
+                manual_values["chapter_vol_map"] = new_map
+            if manual_values:
+                record_manual_metadata(series_id, manual_values, db=db, locked=True)
 
         if _manual_new is not None:
             if _manual_old and _manual_new < _manual_old:
@@ -2384,9 +2540,35 @@ async def patch_series(request: Request, series_id: int):
                 db.execute(
                     "UPDATE series SET chapter_count_source=? WHERE id=?",
                     (
-                        "manual" if payload["total_chapters"] is not None else "anilist",
+                        "manual"
+                        if payload["total_chapters"] is not None
+                        else "anilist",
                         series_id,
                     ),
+                )
+            from metadata_provenance import (
+                record_manual_metadata,
+                record_metadata_selections,
+            )
+
+            manual_values = {
+                field_name: payload[field_name]
+                for field_name in ("title", "total_volumes", "total_chapters")
+                if field_name in payload and payload[field_name] is not None
+            }
+            if manual_values:
+                record_manual_metadata(series_id, manual_values, db=db, locked=True)
+            cleared_counts = {
+                field_name: None
+                for field_name in ("total_volumes", "total_chapters")
+                if field_name in payload and payload[field_name] is None
+            }
+            if cleared_counts:
+                record_metadata_selections(
+                    series_id,
+                    cleared_counts,
+                    {field_name: "anilist" for field_name in cleared_counts},
+                    db=db,
                 )
     except _sql.OperationalError as e:
         # The DB was locked or otherwise unable to service our write within
