@@ -189,6 +189,12 @@ def test_local_publish_requires_clean_tagged_commit_and_refuses_replacement():
     assert "scripts/verify_release_image.py" in makefile
 
 
+def test_security_config_scan_skips_generated_test_caches():
+    makefile = (REPO_ROOT / "Makefile").read_text()
+    assert "--skip-dirs .ruff_cache" in makefile
+    assert "--skip-dirs .pytest_cache" in makefile
+
+
 def test_local_test_harness_does_not_require_dev_scripts_in_release_image():
     makefile = (REPO_ROOT / "Makefile").read_text()
     assert "cd app && $(PYTHON) test_confirm_flow.py" in makefile

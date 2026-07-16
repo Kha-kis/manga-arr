@@ -5,9 +5,10 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## Release Under Test
 
-- Stable release: `1.1.0`
-- Qualified base: `1.0.1`
-- Stable image: `ghcr.io/kha-kis/manga-arr:1.1.0`
+- Release candidate: `1.2.0-rc.1`
+- Stable target: `1.2.0`
+- Qualified base: `1.1.0`
+- Candidate image: `ghcr.io/kha-kis/manga-arr:1.2.0-rc.1`
 - Platforms: `linux/amd64`, `linux/arm64`
 
 ## Production Evidence
@@ -66,10 +67,10 @@ Before stable release, verify all of the following using the published image:
 
 ## Stable Release Decision
 
-The `1.1.0` release retains the full `1.0.1` qualification and changes only the
-public installation, first-run authentication, and container update contract.
-It is qualified when publication verifies the artifact-specific requirements
-below. Qualification evidence includes:
+The `1.2.0` release retains the full `1.1.0` qualification and adds explicit
+ambiguous-import review, standalone specials, field-level metadata provenance,
+and hardened backup/recovery conventions. The candidate must complete an
+operational soak before stable promotion. Qualification evidence includes:
 
 - `make release-local` passing from the exact tagged commit;
 - browser smoke, integration, and E2E suites passing in isolation;
@@ -77,5 +78,7 @@ below. Qualification evidence includes:
 - fresh-install and upgrade/rollback evidence;
 - public support, security, contribution, and conduct policies;
 - a protected default branch and immutable annotated release tags;
-- publication verification that `1.1.0`, `1.1`, `1`, and `latest` resolve to
-  the same stable image digest.
+- candidate publication verification that `1.2.0-rc.1` resolves to the tested
+  multi-platform image digest without moving stable aliases;
+- stable publication verification that `1.2.0`, `1.2`, `1`, and `latest`
+  resolve to the same stable image digest.

@@ -136,7 +136,10 @@ security-secrets:
 	gitleaks git --no-banner
 
 security-config:
-	trivy config --severity HIGH,CRITICAL --exit-code 1 .
+	trivy config \
+	  --skip-dirs .ruff_cache \
+	  --skip-dirs .pytest_cache \
+	  --severity HIGH,CRITICAL --exit-code 1 .
 
 security-local: security-deps security-secrets security-config
 
