@@ -55,6 +55,7 @@ def test_backfill_preserves_manual_ownership_and_cascades(provenance_db):
     assert volume_state["selected_source"] == "manual"
     assert volume_state["locked"] is True
     assert volume_state["candidates"][0]["source"] == "manual"
+    assert volume_state["alternative_count"] == 0
 
     with shared.get_db() as db:
         db.execute("DELETE FROM series WHERE id=7")
@@ -82,6 +83,7 @@ def test_unlock_allows_provider_candidate_to_replace_manual_value(provenance_db)
 
     locked = _state(7, "total_volumes")
     assert locked["pending"] is False
+    assert locked["alternative_count"] == 1
     set_metadata_field_lock(7, "total_volumes", False)
     unlocked = _state(7, "total_volumes")
     assert unlocked["locked"] is False

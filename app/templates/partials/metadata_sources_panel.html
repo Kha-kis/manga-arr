@@ -79,7 +79,10 @@
           </form>
         </div>
 
-        {% if field['candidates'] %}
+        {% set show_candidates = field['candidates'] and (
+          field['alternative_count'] > 0 or field['pending'] or field['conflict']
+        ) %}
+        {% if show_candidates %}
         <div class="metadata-candidate-list">
           {% for candidate in field['candidates'] %}
           <div class="metadata-candidate-row">

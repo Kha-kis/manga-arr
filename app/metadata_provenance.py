@@ -386,6 +386,9 @@ def get_metadata_field_states(series_id: int) -> list[dict[str, Any]]:
                 and isinstance(candidate["value"], (int, float))
                 and candidate["value"] < current
             )
+        alternative_count = sum(
+            1 for candidate in candidates if not candidate["is_current"]
+        )
         result.append(
             {
                 "field_name": field_name,
@@ -399,6 +402,7 @@ def get_metadata_field_states(series_id: int) -> list[dict[str, Any]]:
                 "conflict": len(candidate_values) > 1,
                 "recommended": recommended,
                 "candidates": candidates,
+                "alternative_count": alternative_count,
             }
         )
     return result
