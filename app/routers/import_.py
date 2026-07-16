@@ -253,7 +253,9 @@ async def process_import(queue_id: int, request: Request):
 
     with get_db() as db:
         file_rows = db.execute(
-            "SELECT * FROM import_queue_files WHERE queue_id=?", (queue_id,)
+            "SELECT * FROM import_queue_files WHERE queue_id=?"
+            " AND status IN ('pending','needs_review','failed')",
+            (queue_id,),
         ).fetchall()
 
         for file_row in file_rows:

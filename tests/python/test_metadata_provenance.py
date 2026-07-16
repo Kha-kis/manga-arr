@@ -351,6 +351,80 @@ def test_anilist_apply_preserves_locked_core_field(provenance_db):
     assert candidate == '"Provider description"'
 
 
+def test_anilist_apply_preserves_provider_source_lock(provenance_db):
+    import metadata_service
+    import shared
+    from metadata_provenance import (
+        backfill_metadata_provenance,
+        set_metadata_field_lock,
+    )
+
+    with shared.get_db() as db:
+        backfill_metadata_provenance(db)
+    set_metadata_field_lock(7, "total_chapters", True)
+    record = {
+        "anilist_id": 123,
+        "mal_id": None,
+        "cover_url": None,
+        "status": "RELEASING",
+        "description": None,
+        "pub_year": None,
+        "volumes": 12,
+        "chapters": 100,
+    }
+
+    metadata_service._apply_anilist_record(7, record)
+
+    with sqlite3.connect(provenance_db) as db:
+        db.row_factory = sqlite3.Row
+        series = db.execute(
+            "SELECT total_chapters FROM series WHERE id=7"
+        ).fetchone()
+        selected = db.execute(
+            "SELECT selected_source,locked FROM series_metadata_fields"
+            " WHERE series_id=7 AND field_name='total_chapters'"
+        ).fetchone()
+    assert series["total_chapters"] == 90
+    assert dict(selected) == {"selected_source": "anilist", "locked": 1}
+
+
+def test_rescan_records_local_candidate_without_overwriting_locked_count(
+    provenance_db, tmp_path
+):
+    import rescan
+    import shared
+    from metadata_provenance import backfill_metadata_provenance
+
+    library_dir = tmp_path / "library" / "Existing Title"
+    library_dir.mkdir(parents=True)
+    (library_dir / "Existing Title v14.cbz").write_bytes(b"not-a-real-archive")
+    with shared.get_db() as db:
+        backfill_metadata_provenance(db)
+        with (
+            patch.object(rescan, "_series_library_dir", return_value=str(library_dir)),
+            patch.object(rescan, "_try_inject_comicinfo"),
+        ):
+            result = rescan.rescan_series_folder(db, 7)
+
+    assert result["created"] == 1
+    with sqlite3.connect(provenance_db) as db:
+        db.row_factory = sqlite3.Row
+        series = db.execute(
+            "SELECT total_volumes,vol_count_source FROM series WHERE id=7"
+        ).fetchone()
+        selected = db.execute(
+            "SELECT selected_source,locked FROM series_metadata_fields"
+            " WHERE series_id=7 AND field_name='total_volumes'"
+        ).fetchone()
+        candidate = db.execute(
+            "SELECT value_json FROM series_metadata_candidates"
+            " WHERE series_id=7 AND field_name='total_volumes' AND source='local'"
+        ).fetchone()
+    assert dict(series) == {"total_volumes": 12, "vol_count_source": "manual"}
+    assert dict(selected) == {"selected_source": "manual", "locked": 1}
+    assert candidate["value_json"] == "14"
+
+
 def test_selected_value_does_not_overwrite_fresh_provider_candidate(provenance_db):
     import metadata_service
 

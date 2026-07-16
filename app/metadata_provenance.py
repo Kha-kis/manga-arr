@@ -260,17 +260,24 @@ def record_metadata_selections(
     values: dict[str, Any],
     sources: dict[str, str],
     *,
+    locks: dict[str, bool] | None = None,
     db=None,
 ) -> None:
     def write(connection) -> None:
         for field_name, value in values.items():
             if field_name in FIELD_CONFIG:
+                lock_state = (
+                    locks[field_name]
+                    if locks is not None and field_name in locks
+                    else None
+                )
                 _record_selection(
                     connection,
                     series_id,
                     field_name,
                     value,
                     sources.get(field_name, "legacy"),
+                    locked=lock_state,
                 )
 
     if db is not None:

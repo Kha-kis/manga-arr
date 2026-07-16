@@ -317,6 +317,7 @@ def _apply_anilist_record(
             series_id,
             provenance_values,
             provenance_sources,
+            locks=field_locks,
             db=db,
         )
         edition = current.get("edition_type") or "standard"

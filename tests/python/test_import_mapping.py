@@ -1022,8 +1022,8 @@ def test_multiple_special_files_create_distinct_records(env):
     assert len({row[1] for row in specials}) == 2
 
 
-def test_mixed_review_imports_valid_file_and_keeps_invalid_file_blocked(env):
-    """A valid decision must not pull an invalid sibling into execution."""
+def test_mixed_review_imports_valid_file_then_finishes_blocked_sibling(env):
+    """A later review must not reprocess a sibling imported on the first pass."""
     _seed_series(env["db_path"])
     src_dir = env["src_root"] / "mixed-review"
     src_dir.mkdir()
@@ -1078,6 +1078,35 @@ def test_mixed_review_imports_valid_file_and_keeps_invalid_file_blocked(env):
     assert file_status == "needs_review"
     assert specials == [("Bonus Story",)]
     assert mainline == []
+
+    from routers import queue_ as queue_router
+
+    queue_rows = asyncio.run(queue_router._build_queue_rows())[0]
+    review_row = next(row for row in queue_rows if row["queue_id"] == qid)
+    assert [row["id"] for row in review_row["files"]] == [mystery_id]
+
+    with TestClient(main.app, follow_redirects=False) as client:
+        response = _post_review(
+            client,
+            qid,
+            {
+                f"kind_{mystery_id}": "special",
+                f"special_title_{mystery_id}": "Mystery",
+            },
+        )
+    assert response.status_code == 303
+
+    with sqlite3.connect(env["db_path"]) as c:
+        remaining_queue = c.execute(
+            "SELECT 1 FROM import_queue WHERE id=?", (qid,)
+        ).fetchone()
+        specials = c.execute(
+            "SELECT title,import_path FROM volumes"
+            " WHERE series_id=7 AND is_special=1 ORDER BY title"
+        ).fetchall()
+    assert remaining_queue is None
+    assert [row[0] for row in specials] == ["Bonus Story", "Mystery"]
+    assert all(os.path.isfile(row[1]) for row in specials)
 
 
 def test_queue_import_skips_download_recorded_in_history(env):

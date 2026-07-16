@@ -18,6 +18,7 @@ main to avoid an import cycle.
 """
 from __future__ import annotations
 
+import math
 import os
 from datetime import datetime
 
@@ -296,17 +297,13 @@ def rescan_series_folder(db, series_id: int) -> dict:
                 " WHERE series_id=? AND volume_num IS NOT NULL", (series_id,)
             ).fetchone()
             if max_row and max_row['m'] is not None:
-                new_max = int(max_row['m'])
+                new_max = math.ceil(float(max_row['m']))
                 tv_row = db.execute(
-                    "SELECT total_volumes FROM series WHERE id=?", (series_id,)
+                    "SELECT total_volumes,vol_count_source FROM series WHERE id=?",
+                    (series_id,),
                 ).fetchone()
                 current_tv = tv_row['total_volumes'] if tv_row else None
                 if current_tv is None or new_max > current_tv:
-                    db.execute(
-                        "UPDATE series SET total_volumes=?,vol_count_source='local'"
-                        " WHERE id=?",
-                        (new_max, series_id),
-                    )
                     from metadata_provenance import (
                         record_metadata_candidates,
                         record_metadata_selections,
@@ -319,11 +316,28 @@ def rescan_series_folder(db, series_id: int) -> dict:
                         confidence=1.0,
                         db=db,
                     )
-                    record_metadata_selections(
-                        series_id,
-                        {'total_volumes': new_max},
-                        {'total_volumes': 'local'},
-                        db=db,
+                    lock_row = db.execute(
+                        "SELECT locked FROM series_metadata_fields"
+                        " WHERE series_id=? AND field_name='total_volumes'",
+                        (series_id,),
+                    ).fetchone()
+                    count_locked = (
+                        bool(lock_row['locked'])
+                        if lock_row is not None
+                        else bool(tv_row and tv_row['vol_count_source'] == 'manual')
                     )
+                    if not count_locked:
+                        db.execute(
+                            "UPDATE series SET total_volumes=?,vol_count_source='local'"
+                            " WHERE id=?",
+                            (new_max, series_id),
+                        )
+                        record_metadata_selections(
+                            series_id,
+                            {'total_volumes': new_max},
+                            {'total_volumes': 'local'},
+                            locks={'total_volumes': False},
+                            db=db,
+                        )
 
     return {'found': len(on_disk), 'recovered': recovered, 'missing': missing, 'lost': lost, 'created': created}
