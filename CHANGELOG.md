@@ -5,6 +5,11 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.2.0-rc.1 - 2026-07-16
+
+First release candidate for safer ambiguous imports, standalone specials, and
+operator-controlled metadata provenance.
+
 ### Added
 
 - Added the supported `mangarr` operator CLI for administrator recovery and
@@ -12,6 +17,12 @@ All notable changes to this project. Format roughly follows
 - Added a required fast pull-request gate, weekly security scanning, project
   package metadata, Ruff correctness checks, and configurable
   `MANGARR_UMASK` support.
+- Added explicit volume, volume-range, chapter, chapter-range, special, and
+  skip classifications to import review.
+- Added standalone special-file persistence and a separate specials section on
+  series pages so specials cannot overwrite or satisfy mainline records.
+- Added field-level metadata candidates, selected-source provenance, operator
+  locks, conflict reporting, and safe candidate application.
 
 ### Changed
 
@@ -21,6 +32,10 @@ All notable changes to this project. Format roughly follows
   retaining all previous names as backward-compatible aliases.
 - The public deployment file is now `compose.yaml` and no longer forces a
   global container name.
+- Import review now processes only actionable files on repeated partial
+  submissions and leaves completed or skipped siblings terminal.
+- Metadata refresh and local rescans now preserve explicit field locks while
+  still recording newly observed provider and local candidates.
 
 ### Fixed
 
@@ -32,6 +47,18 @@ All notable changes to this project. Format roughly follows
   of being auto-imported from incidental numbers in release-group names.
 - Chapter imports now replace legacy empty download IDs with the current
   download identity.
+- Provider refreshes no longer silently replace explicit metadata lock state.
+- Fractional volume observations now use ceiling semantics instead of integer
+  truncation when deriving local volume counts.
+
+### Validation
+
+- Production migration preserved all existing series, volume, chapter,
+  history, queue, and seen-release records with clean SQLite integrity and
+  foreign-key checks.
+- Authenticated production smoke covered library, search, queue review,
+  metadata provenance, desktop/mobile rendering, and all configured download
+  clients without enqueueing a release.
 
 ## 1.1.0 - 2026-07-15
 
