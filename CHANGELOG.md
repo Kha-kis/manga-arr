@@ -5,6 +5,27 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.2.0-rc.2 - 2026-07-17
+
+Second release candidate for the 1.2.0 import-review and metadata-provenance
+release. This candidate replaces `rc.1`, which was rejected during its
+production soak.
+
+### Fixed
+
+- Large multi-indexer RSS feeds now yield to the event loop between release
+  evaluations so health checks and interactive requests remain responsive
+  throughout matching.
+
+### Validation
+
+- The `rc.1` soak identified repeatable 10-second health-probe timeouts during
+  15-minute RSS cycles while the container remained running with zero restarts.
+- Regression coverage exercises cooperative scheduling across a large
+  nonmatching feed.
+- 1,698 Python tests, 13 confirmation-flow checks, and 10 route-sweep checks
+  pass after the responsiveness fix.
+
 ## 1.2.0-rc.1 - 2026-07-16
 
 First release candidate for safer ambiguous imports, standalone specials, and
