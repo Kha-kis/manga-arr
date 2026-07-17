@@ -167,6 +167,35 @@ def test_poll_rss_two_ticks_no_double_grab(fresh_db_with_series):
     )
 
 
+def test_poll_rss_yields_during_large_feed_processing(
+    fresh_db_with_series, monkeypatch
+):
+    """CPU-heavy matching must not starve health and interactive requests."""
+    import grab_rss
+
+    items = [
+        _mock_rss_item(
+            url=f"https://example.test/releases/{index}",
+            title=f"Unrelated Release {index}",
+        )
+        for index in range(64)
+    ]
+    real_sleep = asyncio.sleep
+    yield_count = 0
+
+    async def _counting_sleep(delay):
+        nonlocal yield_count
+        assert delay == 0
+        yield_count += 1
+        await real_sleep(0)
+
+    monkeypatch.setattr(grab_rss.asyncio, "sleep", _counting_sleep)
+    with _patch_fetch(items):
+        asyncio.run(grab_rss.poll_rss())
+
+    assert yield_count >= len(items)
+
+
 # ───────────────────── rss_loop wrapping ─────────────────────────────────────
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 
 from shared import get_cfg, get_db
@@ -46,6 +47,9 @@ async def poll_rss():
 
     grabbed = 0
     for item in items:
+        # Matching a large multi-indexer feed is CPU-bound. Yield once per
+        # release so health checks and interactive requests remain responsive.
+        await asyncio.sleep(0)
         if not item["url"] or item["url"] in seen_urls or item["url"] in blocked_urls:
             continue
         if is_foreign_language(item["title"]):
