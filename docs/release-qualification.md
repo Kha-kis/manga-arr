@@ -5,19 +5,22 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## Release Under Test
 
-- Release candidate: `1.2.0-rc.1`
+- Release candidate: `1.2.0-rc.2`
 - Stable target: `1.2.0`
 - Qualified base: `1.1.0`
-- Candidate image: `ghcr.io/kha-kis/manga-arr:1.2.0-rc.1`
+- Candidate image: `ghcr.io/kha-kis/manga-arr:1.2.0-rc.2`
 - Platforms: `linux/amd64`, `linux/arm64`
 
 ## Production Evidence
 
 - Mangarr has been used in production across the pre-1.0 release line since
   April 2026.
-- The release-candidate deployment is healthy with no restart loop.
-- Available candidate logs contain no SQLite lock, traceback, fatal, or
-  unhandled-error signatures.
+- The `1.2.0-rc.1` production soak found repeatable 10-second health-probe
+  timeouts while CPU-bound RSS matching processed large multi-indexer feeds;
+  that candidate was rejected rather than promoted.
+- `1.2.0-rc.2` adds cooperative scheduling to RSS matching and must complete a
+  fresh operational soak with hourly health, restart, log, and integrity
+  evidence before stable promotion.
 - A queue item that cannot infer a safe volume remains in `needs_review`
   instead of being imported incorrectly.
 
@@ -78,7 +81,7 @@ operational soak before stable promotion. Qualification evidence includes:
 - fresh-install and upgrade/rollback evidence;
 - public support, security, contribution, and conduct policies;
 - a protected default branch and immutable annotated release tags;
-- candidate publication verification that `1.2.0-rc.1` resolves to the tested
+- candidate publication verification that `1.2.0-rc.2` resolves to the tested
   multi-platform image digest without moving stable aliases;
 - stable publication verification that `1.2.0`, `1.2`, `1`, and `latest`
   resolve to the same stable image digest.
