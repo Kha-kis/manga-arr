@@ -5,6 +5,21 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+### Fixed
+
+- SABnzbd connection tests now reject a missing API key instead of reporting a
+  false-positive connection from the unauthenticated version endpoint.
+- Successful tests of saved download clients now clear stale circuit-breaker
+  state immediately.
+- Repeated open-circuit and missing-SAB-key events are rate-limited to prevent
+  one backlog search from flooding the activity database.
+
+### Changed
+
+- Release qualification now requires authenticated download-client probes and
+  treats recurring configuration or circuit-breaker events as promotion
+  blockers.
+
 ## 1.2.0-rc.2 - 2026-07-17
 
 Second release candidate for the 1.2.0 import-review and metadata-provenance

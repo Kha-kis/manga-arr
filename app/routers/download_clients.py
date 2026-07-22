@@ -449,6 +449,8 @@ async def test_download_client(client_id: int):
         return JSONResponse({"ok": False, "message": "Client not found"})
 
     ok, msg = await _test_client(_row_decrypted(c))
+    if ok:
+        _cb_clear(client_id)
     return JSONResponse({"ok": ok, "message": msg})
 
 
@@ -533,20 +535,28 @@ async def _test_client(c: dict) -> tuple[bool, str]:
             return False, f"HTTP {r.status_code}: {body}"
 
         elif t == "sabnzbd":
+            if not (c.get("password") or "").strip():
+                return False, "API key is required for SABnzbd"
             url_base = (c["url_base"] or "").strip("/")
             api_url = f"{host}/{url_base}/api" if url_base else f"{host}/api"
             async with httpx.AsyncClient(timeout=10) as cli:
                 r = await cli.get(
                     api_url,
                     params={
-                        "mode": "version",
+                        "mode": "queue",
+                        "start": 0,
+                        "limit": 0,
                         "apikey": c["password"] or "",
                         "output": "json",
                     },
                 )
             if r.status_code == 200:
-                v = r.json().get("version", "?")
-                return True, f"SABnzbd {v}"
+                data = r.json()
+                queue = data.get("queue") if isinstance(data, dict) else None
+                if isinstance(queue, dict):
+                    return True, f"SABnzbd {queue.get('version', '?')}"
+                detail = str(data.get("error") or "invalid API response")[:120]
+                return False, f"SABnzbd API error: {detail}"
             return False, f"HTTP {r.status_code}"
 
         elif t == "deluge":

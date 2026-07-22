@@ -6,6 +6,8 @@ import os
 import sqlite3
 import sys
 import tempfile
+import asyncio
+from unittest.mock import patch
 
 import pytest
 
@@ -135,3 +137,21 @@ def test_half_open_after_timeout_does_not_immediately_reopen(env):
     # And next failure still opens (threshold-1 + 1 = threshold)
     _cb_record_failure(1)
     assert _cb_is_open(1) is True
+
+
+def test_open_circuit_event_opts_into_log_dedup(env):
+    import clients
+    from routers.download_clients import _cb_record_failure, _CB_THRESHOLD
+
+    for _ in range(_CB_THRESHOLD):
+        _cb_record_failure(2)
+
+    with patch("clients.log_event") as log_event:
+        result = asyncio.run(clients.grab_url("http://indexer/release.nzb", "nzb"))
+
+    assert result == (False, "SAB", None, False)
+    log_event.assert_called_once_with(
+        "error",
+        "[grab_url] Circuit open for client SAB — skipping grab",
+        dedup=True,
+    )
