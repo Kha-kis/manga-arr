@@ -253,6 +253,11 @@ async def sab_grab(
     apikey = (client or {}).get("password") or ""
     cat = (client or {}).get("category") or get_cfg("category")
     if not apikey:
+        log_event(
+            "configuration_error",
+            "[SAB] API key is not configured",
+            dedup=True,
+        )
         return False, None, False
     try:
         async with httpx.AsyncClient(timeout=20) as cli:
@@ -391,7 +396,11 @@ async def grab_url(
 
     client_id = client.get("id", 0) or 0
     if _cb_is_open(client_id):
-        log_event("error", f"[grab_url] Circuit open for client {client['name']} — skipping grab")
+        log_event(
+            "error",
+            f"[grab_url] Circuit open for client {client['name']} — skipping grab",
+            dedup=True,
+        )
         return False, client["name"], None, False
 
     ctype = client["type"]

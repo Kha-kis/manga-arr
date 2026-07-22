@@ -85,6 +85,13 @@ def test_public_community_and_release_qualification_files_exist():
         assert f"]({path})" in readme
 
 
+def test_release_qualification_requires_authenticated_client_evidence():
+    qualification = _read("docs/release-qualification.md")
+    assert "authenticated operation" in qualification
+    assert "configuration errors" in qualification
+    assert "circuit-breaker transitions" in qualification
+
+
 def test_public_install_instructions_protect_config_directory():
     """The documented first boot must match the config permission checklist."""
     for path in ("README.md", "docs/deployment.md"):

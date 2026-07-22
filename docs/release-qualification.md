@@ -5,10 +5,10 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## Release Under Test
 
-- Release candidate: `1.2.0-rc.2`
+- Release candidate: successor to rejected `1.2.0-rc.2`
 - Stable target: `1.2.0`
 - Qualified base: `1.1.0`
-- Candidate image: `ghcr.io/kha-kis/manga-arr:1.2.0-rc.2`
+- Candidate image: pending
 - Platforms: `linux/amd64`, `linux/arm64`
 
 ## Production Evidence
@@ -18,9 +18,15 @@ can become a stable release. Passing unit tests alone is not sufficient.
 - The `1.2.0-rc.1` production soak found repeatable 10-second health-probe
   timeouts while CPU-bound RSS matching processed large multi-indexer feeds;
   that candidate was rejected rather than promoted.
-- `1.2.0-rc.2` adds cooperative scheduling to RSS matching and must complete a
-  fresh operational soak with hourly health, restart, log, and integrity
-  evidence before stable promotion.
+- The `1.2.0-rc.2` soak completed 74 hourly samples with no health failures,
+  restarts, critical logs, or database-integrity errors. It was still rejected:
+  a missing SABnzbd API key passed the version-only connection probe, then
+  opened the circuit breaker during each daily backlog search and produced
+  hundreds of skipped-grab events.
+- The successor candidate must complete a fresh operational soak with hourly
+  health, restart, log, and integrity evidence. Recurring configuration errors
+  or download-client circuit-breaker transitions block promotion even when the
+  container and health endpoint remain available.
 - A queue item that cannot infer a safe volume remains in `needs_review`
   instead of being imported incorrectly.
 
@@ -46,12 +52,14 @@ reconciliation, and metadata-health rendering.
 | Area | Acceptance evidence |
 | --- | --- |
 | qBittorrent | Authentication/version probe, magnet and torrent handoff, missing-hash behavior, save-path routing, timeout, and circuit breaker |
-| SABnzbd | Queue/version probe, accepted and rejected NZB handoff, transport failure, timeout, and queue mapping |
+| SABnzbd | API-key-aware connection test, authenticated queue probe, accepted and rejected NZB handoff, transport failure, timeout, circuit recovery, and queue mapping |
 | Suwayomi | GraphQL connection probe, source/title confidence, chapter and volume jobs, retry exhaustion and recovery, filesystem import, and idempotency |
 | Shared import | Search-to-library E2E, short SQLite claims, bounded concurrency, cancellation, atomic copy/move/hardlink staging, rollback, duplicate quality handling, ranges, packs, specials, and split RAR |
 
 Live connection probes are read-only. They must never enqueue a release merely
-to prove connectivity.
+to prove connectivity. A public version endpoint alone is insufficient: the
+probe must exercise an authenticated operation that requires the configured
+credential.
 
 ## Installation And Recovery
 
@@ -79,9 +87,11 @@ operational soak before stable promotion. Qualification evidence includes:
 - browser smoke, integration, and E2E suites passing in isolation;
 - dependency, secret, configuration, and image scans without release blockers;
 - fresh-install and upgrade/rollback evidence;
+- no recurring configuration errors or download-client circuit-breaker
+  transitions during the production soak;
 - public support, security, contribution, and conduct policies;
 - a protected default branch and immutable annotated release tags;
-- candidate publication verification that `1.2.0-rc.2` resolves to the tested
+- candidate publication verification that the successor candidate resolves to the tested
   multi-platform image digest without moving stable aliases;
 - stable publication verification that `1.2.0`, `1.2`, `1`, and `latest`
   resolve to the same stable image digest.

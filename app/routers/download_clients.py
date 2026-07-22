@@ -449,6 +449,8 @@ async def test_download_client(client_id: int):
         return JSONResponse({"ok": False, "message": "Client not found"})
 
     ok, msg = await _test_client(_row_decrypted(c))
+    if ok:
+        _cb_clear(client_id)
     return JSONResponse({"ok": ok, "message": msg})
 
 
@@ -533,6 +535,8 @@ async def _test_client(c: dict) -> tuple[bool, str]:
             return False, f"HTTP {r.status_code}: {body}"
 
         elif t == "sabnzbd":
+            if not (c.get("password") or "").strip():
+                return False, "API key is required for SABnzbd"
             url_base = (c["url_base"] or "").strip("/")
             api_url = f"{host}/{url_base}/api" if url_base else f"{host}/api"
             async with httpx.AsyncClient(timeout=10) as cli:

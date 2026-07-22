@@ -80,7 +80,10 @@ def test_sab_grab_returns_failure_without_apikey():
     import main
     captured: list = []
     cli, _ = _client_factory(captured=captured)
-    with patch("httpx.AsyncClient", new=cli):
+    with (
+        patch("httpx.AsyncClient", new=cli),
+        patch("clients.log_event") as log_event,
+    ):
         ok, nzo_id, healthy = asyncio.run(main.sab_grab(
             "http://indexer/release.nzb",
             client={"host": "http://sab.local:65080", "password": ""},
@@ -89,6 +92,33 @@ def test_sab_grab_returns_failure_without_apikey():
     assert nzo_id is None
     assert healthy is False
     assert captured == []  # never made an HTTP call
+    log_event.assert_called_once_with(
+        "configuration_error",
+        "[SAB] API key is not configured",
+        dedup=True,
+    )
+
+
+def test_sab_connection_test_rejects_missing_apikey_without_http():
+    from routers.download_clients import _test_client
+
+    cli, captured = _client_factory()
+    with patch("routers.download_clients.httpx.AsyncClient", new=cli):
+        ok, message = asyncio.run(
+            _test_client(
+                {
+                    "type": "sabnzbd",
+                    "host": "http://sab.local",
+                    "port": 65080,
+                    "url_base": "",
+                    "password": "",
+                }
+            )
+        )
+
+    assert ok is False
+    assert message == "API key is required for SABnzbd"
+    assert captured == []
 
 
 def test_sab_grab_returns_failure_when_sab_rejects():

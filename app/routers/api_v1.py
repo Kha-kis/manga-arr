@@ -4677,6 +4677,8 @@ async def api_v1_test_download_client(client_id: int):
     ok, message = await _test_download_client_connection(
         _download_client_row_decrypted(row)
     )
+    if ok:
+        _clear_download_client_circuit(client_id)
     return JSONResponse({"ok": ok, "message": message})
 
 

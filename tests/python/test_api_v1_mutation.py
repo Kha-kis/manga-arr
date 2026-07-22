@@ -3931,6 +3931,10 @@ def test_api_v1_test_download_client_uses_existing_connection_probe(
             " VALUES(1691, 'Probe Client', 'qbittorrent',"
             " 'http://qbittorrent', 'user', 'secret')"
         )
+        c.execute(
+            "INSERT INTO client_breaker_state(client_id, failures, open_until)"
+            " VALUES(1691, 3, 9999999999)"
+        )
 
     observed = {}
 
@@ -3949,6 +3953,11 @@ def test_api_v1_test_download_client_uses_existing_connection_probe(
     assert observed["id"] == 1691
     assert observed["name"] == "Probe Client"
     assert observed["password"] == "secret"
+    with sqlite3.connect(env) as c:
+        breaker = c.execute(
+            "SELECT 1 FROM client_breaker_state WHERE client_id=1691"
+        ).fetchone()
+    assert breaker is None
 
 
 def test_api_v1_test_download_client_rejects_unknown_id(env):

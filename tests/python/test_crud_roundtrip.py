@@ -212,6 +212,12 @@ def test_download_client_crud_roundtrip(app_client):
         return type("R", (), {"status_code": 200, "text": "Ok.", "cookies": {"SID": "x"}})()
     async def _mock_get(self, url, *a, **kw):
         return type("R", (), {"status_code": 200, "text": "4.6.0-mock"})()
+    with sqlite3.connect(db_path) as db:
+        db.execute(
+            "INSERT INTO client_breaker_state(client_id, failures, open_until)"
+            " VALUES(?, 3, 9999999999)",
+            (cid,),
+        )
     with patch("httpx.AsyncClient.post", new=_mock_post), \
          patch("httpx.AsyncClient.get",  new=_mock_get):
         r = client.post(
@@ -221,6 +227,11 @@ def test_download_client_crud_roundtrip(app_client):
     assert r.status_code == 200, f"test endpoint: {r.status_code} {r.text!r}"
     body = r.json()
     assert body["ok"] is True
+    assert _row(
+        db_path,
+        "SELECT * FROM client_breaker_state WHERE client_id=?",
+        cid,
+    ) is None
 
     # DELETE
     r = client.post(f"/download-clients/{cid}/delete", data={"csrf_token": _csrf(client)})
