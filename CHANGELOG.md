@@ -5,6 +5,13 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.2.0-rc.3 - 2026-07-22
+
+Third release candidate for the 1.2.0 import-review and metadata-provenance
+release. This candidate replaces `rc.2`, which passed availability and database
+checks but was rejected after production evidence exposed unreliable SABnzbd
+configuration validation.
+
 ### Fixed
 
 - SABnzbd connection tests now reject a missing API key instead of reporting a
@@ -19,6 +26,15 @@ All notable changes to this project. Format roughly follows
 - Release qualification now requires authenticated download-client probes and
   treats recurring configuration or circuit-breaker events as promotion
   blockers.
+
+### Validation
+
+- The `rc.2` soak completed 74 hourly samples with no health failures,
+  restarts, critical logs, or database-integrity errors.
+- Production review identified and reproduced the missing-key false positive
+  and daily circuit-breaker event storm before stable promotion.
+- 1,703 Python tests, 13 confirmation-flow checks, and 10 route-sweep checks
+  pass after the SABnzbd reliability fix.
 
 ## 1.2.0-rc.2 - 2026-07-17
 
