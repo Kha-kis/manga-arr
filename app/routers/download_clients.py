@@ -543,14 +543,20 @@ async def _test_client(c: dict) -> tuple[bool, str]:
                 r = await cli.get(
                     api_url,
                     params={
-                        "mode": "version",
+                        "mode": "queue",
+                        "start": 0,
+                        "limit": 0,
                         "apikey": c["password"] or "",
                         "output": "json",
                     },
                 )
             if r.status_code == 200:
-                v = r.json().get("version", "?")
-                return True, f"SABnzbd {v}"
+                data = r.json()
+                queue = data.get("queue") if isinstance(data, dict) else None
+                if isinstance(queue, dict):
+                    return True, f"SABnzbd {queue.get('version', '?')}"
+                detail = str(data.get("error") or "invalid API response")[:120]
+                return False, f"SABnzbd API error: {detail}"
             return False, f"HTTP {r.status_code}"
 
         elif t == "deluge":

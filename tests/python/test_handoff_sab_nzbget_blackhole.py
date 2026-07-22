@@ -121,6 +121,62 @@ def test_sab_connection_test_rejects_missing_apikey_without_http():
     assert captured == []
 
 
+def test_sab_connection_test_requires_authenticated_queue_payload():
+    from routers.download_clients import _test_client
+
+    cli, captured = _client_factory(
+        get_resp=_MockResp(200, json_data={"queue": {"version": "5.0.4", "slots": []}})
+    )
+    with patch("routers.download_clients.httpx.AsyncClient", new=cli):
+        ok, message = asyncio.run(
+            _test_client(
+                {
+                    "type": "sabnzbd",
+                    "host": "http://sab.local",
+                    "port": 65080,
+                    "url_base": "",
+                    "password": "sab-key",
+                }
+            )
+        )
+
+    assert ok is True
+    assert message == "SABnzbd 5.0.4"
+    assert captured[0]["params"] == {
+        "mode": "queue",
+        "start": 0,
+        "limit": 0,
+        "apikey": "sab-key",
+        "output": "json",
+    }
+
+
+def test_sab_connection_test_rejects_http_200_api_error():
+    from routers.download_clients import _test_client
+
+    cli, _ = _client_factory(
+        get_resp=_MockResp(
+            200,
+            json_data={"status": False, "error": "API Key Incorrect"},
+        )
+    )
+    with patch("routers.download_clients.httpx.AsyncClient", new=cli):
+        ok, message = asyncio.run(
+            _test_client(
+                {
+                    "type": "sabnzbd",
+                    "host": "http://sab.local",
+                    "port": 65080,
+                    "url_base": "",
+                    "password": "wrong-key",
+                }
+            )
+        )
+
+    assert ok is False
+    assert message == "SABnzbd API error: API Key Incorrect"
+
+
 def test_sab_grab_returns_failure_when_sab_rejects():
     """SAB reachable but rejects (status=false): ok=False, healthy=True
     (don't trip the circuit breaker on a business-logic rejection)."""
