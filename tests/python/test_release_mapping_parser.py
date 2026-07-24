@@ -63,6 +63,20 @@ def test_single_volume_parses(title: str, expected: int) -> None:
     assert extract_volume_num(title) == expected
 
 
+@pytest.mark.parametrize("title,expected", [
+    ("Jujutsu.Kaisen.v25.2025.Digital.LuCaZ", 25),
+    ("One.Punch.Man.v13.2018.F.digital.aKraa", 13),
+    ("Vinland.Saga.Omnibus.v09.2017.Digital.danke-Empire", 9),
+    ("One.Piece.v63.2012.Digital.AnHeroGold-Empire", 63),
+])
+def test_dot_delimited_publication_year_is_not_a_decimal_volume(
+    title: str, expected: int
+) -> None:
+    assert extract_volume_num(title) == expected
+    assert extract_volume_range(title) is None
+    assert extract_chapter_num(title) is None
+
+
 # ─────────────── 2. no ghost chapter from volume files (D1, D3) ────────────
 
 @pytest.mark.parametrize("title", [
@@ -100,6 +114,10 @@ def test_volume_file_has_no_ghost_chapter(title: str) -> None:
 ])
 def test_single_chapter_parses(title: str, expected: float) -> None:
     assert extract_chapter_num(title) == expected
+
+
+def test_dot_delimited_publication_year_is_not_a_decimal_chapter() -> None:
+    assert extract_chapter_num("Manga.Name.Ch.25.2025.Digital") == 25
 
 
 # ─────────────────────────── 4. chapter ranges ─────────────────────────────
@@ -184,9 +202,22 @@ def test_chapter_range_is_not_a_volume_range(title: str) -> None:
     ("Manga Name Vol. 1-3.cbz",  (1.0, 3.0)),
     ("Manga Name vol.1-vol.5",   (1.0, 5.0)),
     ("Manga Name Volume 1-10",   (1.0, 10.0)),
+    ("Manga Name v1.5-v2.5",     (1.5, 2.5)),
+    ("Manga Name v1a-v5b",       (1.01, 5.02)),
+    ("Manga Name v3½-v7",        (3.5, 7.0)),
 ])
 def test_volume_range_parses(title: str, expected: tuple[float, float]) -> None:
     assert extract_volume_range(title) == expected
+
+
+def test_dot_delimited_consecutive_volumes_parse_as_pack() -> None:
+    title = "One.Piece.Volume.104.105"
+    volume_range = extract_volume_range(title)
+
+    assert volume_range == (104.0, 105.0)
+    assert extract_volume_num(title) is None
+    assert extract_chapter_num(title) is None
+    assert detect_pack_type(title, volume_range) == "volume"
 
 
 @pytest.mark.parametrize("title", [
@@ -370,13 +401,17 @@ def test_year_span_triggers_complete() -> None:
 # ────────────── 11. fractional / letter-suffix parser behaviour ─────────────
 
 @pytest.mark.parametrize("title,expected", [
-    ("Manga Name v3a.cbz",  3.01),
-    ("Manga Name v3b",      3.02),
-    ("Manga Name v3½",      3.5),
-    ("Manga Name v3¼",      3.25),
-    ("Manga Name v3¾",      3.75),
-    ("Manga Name Ch.3a",    3.01),
-    ("Manga Name Ch.3½",    3.5),
+    ("Manga Name v1.5",          1.5),
+    ("Manga Name v10.5",         10.5),
+    ("Manga Name Volume.1.5",    1.5),
+    ("Manga Name Volume.10.5",   10.5),
+    ("Manga Name v3a.cbz",       3.01),
+    ("Manga Name v3b",           3.02),
+    ("Manga Name v3½",           3.5),
+    ("Manga Name v3¼",           3.25),
+    ("Manga Name v3¾",           3.75),
+    ("Manga Name Ch.3a",         3.01),
+    ("Manga Name Ch.3½",         3.5),
 ])
 def test_fractional_and_letter_suffixes(title: str, expected: float) -> None:
     """Parser produces the fractional value. The review UI's

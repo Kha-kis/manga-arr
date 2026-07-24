@@ -185,6 +185,11 @@ def vol_num_to_display(vol_num) -> str:
 
 # ── Volume / chapter number extraction ───────────────────────────────────────
 
+_DECIMAL_SUFFIX_RE = r'(?:\.(?!(?:19|20)\d{2}\b)\d+)?'
+_LETTER_OR_FRAC_SUFFIX_RE = r'[a-d½¼¾]?'
+_NUMBER_TRAILING_GUARDS_RE = r'(?!\d)(?![gGmMkK][bBiI]|[pP]\b)'
+
+
 def extract_volume_num(title: str) -> float | None:
     """Extract a single volume number from a release title. See main.py's
     original docstring for the full derivation — this is a pure move."""
@@ -236,7 +241,7 @@ def extract_volume_num(title: str) -> float | None:
     )
     marker_pos = marker_match.start() if marker_match else len(title)
 
-    _num = r'(\d{1,3}(?:\.\d+)?[a-d½¼¾]?)(?!\d)(?![gGmMkK][bBiI]|[pP]\b)'
+    _num = rf'(\d{{1,3}}{_DECIMAL_SUFFIX_RE}{_LETTER_OR_FRAC_SUFFIX_RE}){_NUMBER_TRAILING_GUARDS_RE}'
     patterns = [
         rf'\bv(?:ol(?:ume)?)?\.?\s*{_num}',
         rf'\bvolume\s+{_num}',
@@ -261,10 +266,20 @@ def extract_volume_range(title: str) -> tuple[float, float] | None:
         return None
     if extract_chapter_range(title):
         return None
-    _sfx = r'[a-d½¼¾]?'
+
+    # Dot-delimited release names occasionally list consecutive volumes as
+    # "Volume.104.105". Keep this deliberately narrower than decimal parsing:
+    # require the full marker and consecutive integer endpoints.
+    dot_pack = re.search(r'\bvolume\.(\d{1,4})\.(\d{1,4})\b', title, re.IGNORECASE)
+    if dot_pack:
+        dot_start = float(dot_pack.group(1))
+        dot_end = float(dot_pack.group(2))
+        if dot_end == dot_start + 1:
+            return (dot_start, dot_end)
+
     patterns = [
-        rf'\bv(?:ol(?:ume)?)?\.?\s*(\d{{1,4}}(?:\.\d+)?{_sfx})\s*[-–—~]\s*(?:v(?:ol(?:ume)?)?\.?\s*)?(\d{{1,4}}(?:\.\d+)?{_sfx})\b',
-        rf'\[(\d{{1,4}}(?:\.\d+)?{_sfx})\s*[-–—~]\s*(\d{{1,4}}(?:\.\d+)?{_sfx})\]',
+        rf'\bv(?:ol(?:ume)?)?\.?\s*(\d{{1,4}}{_DECIMAL_SUFFIX_RE}{_LETTER_OR_FRAC_SUFFIX_RE})\s*[-–—~]\s*(?:v(?:ol(?:ume)?)?\.?\s*)?(\d{{1,4}}{_DECIMAL_SUFFIX_RE}{_LETTER_OR_FRAC_SUFFIX_RE})\b',
+        rf'\[(\d{{1,4}}{_DECIMAL_SUFFIX_RE}{_LETTER_OR_FRAC_SUFFIX_RE})\s*[-–—~]\s*(\d{{1,4}}{_DECIMAL_SUFFIX_RE}{_LETTER_OR_FRAC_SUFFIX_RE})\]',
         r'(?:^|[\s(])\b(\d{1,3})\s*[-–—]\s*(\d{1,3})\b(?=[\s),\[]|$)',
     ]
     for pat in patterns:
@@ -285,13 +300,12 @@ def extract_chapter_range(title: str) -> tuple[float, float] | None:
     `ch`, `chapter`) so a bare `1-2` doesn't get misread as chapters."""
     if not title:
         return None
-    _sfx = r'[a-d½¼¾]?'
     pat = (
         rf'\bc(?:h(?:a(?:p(?:ter)?)?)?)?s?\.?\s*'
-        rf'(\d{{1,4}}(?:\.\d+)?{_sfx})'
+        rf'(\d{{1,4}}{_DECIMAL_SUFFIX_RE}{_LETTER_OR_FRAC_SUFFIX_RE})'
         rf'\s*[-–—~]\s*'
         rf'(?:c(?:h(?:a(?:p(?:ter)?)?)?)?s?\.?\s*)?'
-        rf'(\d{{1,4}}(?:\.\d+)?{_sfx})\b'
+        rf'(\d{{1,4}}{_DECIMAL_SUFFIX_RE}{_LETTER_OR_FRAC_SUFFIX_RE})\b'
     )
     m = re.search(pat, title, re.IGNORECASE)
     if not m:
@@ -318,17 +332,17 @@ def extract_chapter_num(title: str) -> float | None:
         return None
 
     # Japanese episode marker: 第3話
-    m = re.search(r'第\s*(\d{1,4}(?:\.\d+)?)\s*話', title)
+    m = re.search(rf'第\s*(\d{{1,4}}{_DECIMAL_SUFFIX_RE})\s*話', title)
     if m:
         val = _parse_vol_suffix(m.group(1))
         if val is not None:
             return val
 
-    _num = r'(\d{1,4}(?:\.\d+)?[a-d½¼¾]?)(?!\d)(?![gGmMkK][bBiI]|[pP]\b)'
+    _num = rf'(\d{{1,4}}{_DECIMAL_SUFFIX_RE}{_LETTER_OR_FRAC_SUFFIX_RE}){_NUMBER_TRAILING_GUARDS_RE}'
     patterns = [
         rf'\bch(?:a(?:p(?:ter)?)?)?s?\.?\s*{_num}',
         rf'\bep(?:isode)?\.?\s*{_num}',
-        rf'\bc(\d{{2,4}}(?:\.\d+)?[a-d½¼¾]?)(?!\d)(?![gGmMkK][bBiI]|[pP]\b)',
+        rf'\bc(\d{{2,4}}{_DECIMAL_SUFFIX_RE}{_LETTER_OR_FRAC_SUFFIX_RE}){_NUMBER_TRAILING_GUARDS_RE}',
     ]
     for pat in patterns:
         m = re.search(pat, title, re.IGNORECASE)
@@ -355,7 +369,10 @@ def extract_chapter_num(title: str) -> float | None:
             r'|\b(?:19|20)\d{2}\b',
             '', title, flags=re.IGNORECASE
         )
-        m = re.search(r'(?<![.\d])(\d{1,4}(?:\.\d+)?)(?!\d)(?![gGmMkK][bBiI]|[pP]\b)', clean)
+        m = re.search(
+            rf'(?<![.\d])(\d{{1,4}}{_DECIMAL_SUFFIX_RE}){_NUMBER_TRAILING_GUARDS_RE}',
+            clean,
+        )
         if m:
             val = _parse_vol_suffix(m.group(1))
             if val is not None and val <= 9999:
@@ -390,7 +407,7 @@ def is_complete_pack(title: str, total_volumes: int | None = None) -> bool:
     return False
 
 
-def detect_pack_type(title: str, vol_range: tuple | None,
+def detect_pack_type(title: str, vol_range: tuple[float, float] | None,
                      total_volumes: int | None = None) -> str:
     """Returns 'complete', 'chapter', or 'volume' for a pack release.
     Full ordering contract documented in main.py's original site (still
@@ -413,14 +430,14 @@ def detect_pack_type(title: str, vol_range: tuple | None,
                 return 'chapter'
         if single_m:
             num = float(single_m.group(1))
-            if num > 60 and not re.search(r'\bv(?:ol)?[\s.]', t):
+            if num > 60 and not re.search(r'\bv(?:ol(?:ume)?)?[\s.]', t):
                 return 'chapter'
         return 'volume'
     start, end = vol_range
     if total_volumes and total_volumes > 0:
         if start > total_volumes * 1.5 or end > total_volumes * 2:
             return 'chapter'
-    if end > 60 and not re.search(r'\bv(?:ol)?[\s.]', t):
+    if end > 60 and not re.search(r'\bv(?:ol(?:ume)?)?[\s.]', t):
         return 'chapter'
     return 'volume'
 
