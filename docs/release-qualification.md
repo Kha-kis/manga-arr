@@ -5,10 +5,10 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## Release Under Test
 
-- Release candidate: `1.2.0-rc.5`
+- Release candidate: `1.2.0-rc.6`
 - Stable target: `1.2.0`
 - Qualified base: `1.1.0`
-- Candidate image: `ghcr.io/kha-kis/manga-arr:1.2.0-rc.5`
+- Candidate image: `ghcr.io/kha-kis/manga-arr:1.2.0-rc.6`
 - Platforms: `linux/amd64`, `linux/arm64`
 
 ## Production Evidence
@@ -34,14 +34,23 @@ can become a stable release. Passing unit tests alone is not sufficient.
   remaining completed downloads could import. Reconciliation preserved all
   history and SAB files, quarantined 14 duplicate imports, corrected dedup
   mappings, and restored an integrity-clean database.
-- The `1.2.0-rc.5` candidate must complete a fresh operational soak with hourly
+- The `1.2.0-rc.5` parser fixes preserved canonical volume numbers during
+  production recovery, but equal-or-better completed downloads were recorded
+  as failures and retried every five minutes. Two polls created 100 false
+  failure records without changing canonical files. The candidate was stopped
+  and rejected.
+- The `1.2.0-rc.6` candidate must complete a fresh operational soak with hourly
   health, restart, log, integrity, import-path, and backlog-search evidence.
   Recurring configuration errors, inaccessible completed downloads, unrelated
   automatic grabs, malformed volume numbers, or download-client
   circuit-breaker transitions block promotion even when the container and
   health endpoint remain available.
+- A completed download skipped because the canonical target has equal or better
+  quality creates one terminal `import_skipped` receipt and does not reappear
+  on later status polls.
 - A queue item that cannot infer a safe volume remains in `needs_review`
-  instead of being imported incorrectly.
+  instead of being imported incorrectly or hidden by terminal evidence for an
+  imported sibling.
 
 ## Metadata Acceptance
 
@@ -104,7 +113,7 @@ operational soak before stable promotion. Qualification evidence includes:
   transitions during the production soak;
 - public support, security, contribution, and conduct policies;
 - a protected default branch and immutable annotated release tags;
-- candidate publication verification that `1.2.0-rc.5` resolves to the tested
+- candidate publication verification that `1.2.0-rc.6` resolves to the tested
   multi-platform image digest without moving stable aliases;
 - stable publication verification that `1.2.0`, `1.2`, `1`, and `latest`
   resolve to the same stable image digest.
