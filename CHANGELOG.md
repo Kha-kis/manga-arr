@@ -5,12 +5,43 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.2.0-rc.5 - 2026-07-24
+
+Fifth release candidate for the 1.2.0 import-review and metadata-provenance
+release. This candidate replaces `rc.4`, which was rejected after its live
+backlog pass exposed dot-delimited publication years being interpreted as
+decimal volume numbers.
+
+### Fixed
+
+- Release names such as `v63.2012` now map to volume 63 with publication year
+  2012 instead of creating a synthetic volume 63.2012.
+- Consecutive dot-delimited packs such as `Volume.104.105` map to volume range
+  104-105.
+- French `T21`, `T 21`, `T.21`, and `Tome 21` markers are recognized as tome
+  numbers without creating ghost chapters.
+- Bracketed `[Manga FR]` markers are recognized by the global foreign-language
+  fallback.
+
+### Validation
+
+- Production qualification confirmed all 103 `rc.4` backlog grabs were genuine
+  title matches and the uploader-tag regression did not recur.
+- Reconciliation preserved all history and SABnzbd downloads, corrected 99
+  dedup mappings, blocklisted two rejected jobs, and moved 14 duplicate imports
+  to quarantine without deleting them.
+- Database integrity and foreign-key checks pass after reconciliation, with no
+  malformed or synthetic incident rows remaining.
+- 1,750 Python tests, 13 confirmation-flow checks, and 10 route-sweep checks
+  pass after the parser fixes.
+
 ## 1.2.0-rc.4 - 2026-07-24
 
 Fourth release candidate for the 1.2.0 import-review and metadata-provenance
 release. This candidate replaces `rc.3`, whose production soak exposed an
 unsafe backlog title match and a deployment-specific SABnzbd completed-folder
-misconfiguration.
+misconfiguration. The candidate was later rejected when live backlog results
+exposed the dot-delimited publication-year parser defect corrected in `rc.5`.
 
 ### Fixed
 

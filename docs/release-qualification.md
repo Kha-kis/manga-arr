@@ -5,10 +5,10 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## Release Under Test
 
-- Release candidate: `1.2.0-rc.4`
+- Release candidate: `1.2.0-rc.5`
 - Stable target: `1.2.0`
 - Qualified base: `1.1.0`
-- Candidate image: `ghcr.io/kha-kis/manga-arr:1.2.0-rc.4`
+- Candidate image: `ghcr.io/kha-kis/manga-arr:1.2.0-rc.5`
 - Platforms: `linux/amd64`, `linux/arm64`
 
 ## Production Evidence
@@ -28,11 +28,18 @@ can become a stable release. Passing unit tests alone is not sufficient.
   `/config/Downloads/complete` folder, and backlog search matched a series
   alias inside an unrelated release's uploader tag. The deployment path was
   restored and the matcher now shares the boundary-aware RSS behavior.
-- The `1.2.0-rc.4` candidate must complete a fresh operational soak with hourly
+- The `1.2.0-rc.4` live backlog pass confirmed the boundary-aware title fix,
+  then exposed a separate parser defect: dot-delimited publication years such
+  as `v63.2012` became decimal volume numbers. Mangarr was stopped before the
+  remaining completed downloads could import. Reconciliation preserved all
+  history and SAB files, quarantined 14 duplicate imports, corrected dedup
+  mappings, and restored an integrity-clean database.
+- The `1.2.0-rc.5` candidate must complete a fresh operational soak with hourly
   health, restart, log, integrity, import-path, and backlog-search evidence.
   Recurring configuration errors, inaccessible completed downloads, unrelated
-  automatic grabs, or download-client circuit-breaker transitions block
-  promotion even when the container and health endpoint remain available.
+  automatic grabs, malformed volume numbers, or download-client
+  circuit-breaker transitions block promotion even when the container and
+  health endpoint remain available.
 - A queue item that cannot infer a safe volume remains in `needs_review`
   instead of being imported incorrectly.
 
@@ -97,7 +104,7 @@ operational soak before stable promotion. Qualification evidence includes:
   transitions during the production soak;
 - public support, security, contribution, and conduct policies;
 - a protected default branch and immutable annotated release tags;
-- candidate publication verification that `1.2.0-rc.4` resolves to the tested
+- candidate publication verification that `1.2.0-rc.5` resolves to the tested
   multi-platform image digest without moving stable aliases;
 - stable publication verification that `1.2.0`, `1.2`, `1`, and `latest`
   resolve to the same stable image digest.
