@@ -87,10 +87,29 @@ def _queue_import(
     _rel_is_special = is_special_release(torrent_name or "")
     _rel_pack_type = detect_pack_type(torrent_name or "", _rel_vol_range, _total_vols)
 
-    # A successful import must remain terminal even when it updated an existing
-    # chapter/volume or imported a special file without creating a new volume.
-    # The history row is the durable receipt after completed queue rows are
-    # removed. Ignore empty IDs: they are not unique download identities.
+    # Existing queue state is authoritative. In particular, a mixed import can
+    # have a durable imported receipt while a sibling file still needs review.
+    # Never let terminal evidence hide or rewrite that unresolved work.
+    existing = db.execute(
+        "SELECT id, status FROM import_queue WHERE series_id=? AND download_id=? LIMIT 1",
+        (series_id, download_id),
+    ).fetchone()
+    if existing:
+        if existing["status"] in ("pending", "partial"):
+            has_review = db.execute(
+                "SELECT 1 FROM import_queue_files WHERE queue_id=? AND status='needs_review'",
+                (existing["id"],),
+            ).fetchone()
+            if existing["status"] == "pending" or has_review:
+                return existing["id"], bool(has_review)
+        return None, False
+
+    # A successfully handled import must remain terminal even when it updated
+    # an existing chapter/volume, imported a special without creating a new
+    # volume, or intentionally skipped every file because the library already
+    # satisfied the import. The history row is the durable receipt after
+    # completed queue rows are removed. Ignore empty IDs: they are not unique
+    # download identities.
     already_done = None
     if download_id:
         already_done = db.execute(
@@ -102,7 +121,8 @@ def _queue_import(
             " WHERE series_id=? AND download_id=? AND status='downloaded'"
             ") OR EXISTS ("
             " SELECT 1 FROM history"
-            " WHERE series_id=? AND download_id=? AND event_type='imported'"
+            " WHERE series_id=? AND download_id=?"
+            " AND event_type IN ('imported','import_skipped')"
             ")",
             (
                 series_id,
@@ -114,11 +134,6 @@ def _queue_import(
             ),
         ).fetchone()
     if already_done:
-        db.execute(
-            "UPDATE import_queue SET status='imported' WHERE series_id=? AND download_id=?"
-            " AND status IN ('pending','partial','failed')",
-            (series_id, download_id),
-        )
         return None, False
 
     cvm: dict = json.loads(s["chapter_vol_map"]) if s["chapter_vol_map"] else {}
@@ -198,19 +213,6 @@ def _queue_import(
         (series_id, download_id),
     ).fetchone()
     _is_chapter_grab = _chap_stub is not None
-
-    existing = db.execute(
-        "SELECT id, status FROM import_queue WHERE series_id=? AND download_id=? LIMIT 1",
-        (series_id, download_id),
-    ).fetchone()
-    if existing:
-        if existing["status"] == "pending":
-            has_review = db.execute(
-                "SELECT 1 FROM import_queue_files WHERE queue_id=? AND status='needs_review'",
-                (existing["id"],),
-            ).fetchone()
-            return existing["id"], bool(has_review)
-        return None, False
 
     if scan_paths is None:
         scan_paths = []

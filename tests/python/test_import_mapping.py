@@ -16,6 +16,7 @@ schema / queue / review / import — not wanted/missing.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sqlite3
 import sys
@@ -312,16 +313,26 @@ def test_import_plan_repairs_legacy_chapter_filename_tokens(env):
     assert filename == "Series - c001.cbz"
 
 
-def test_execute_import_skips_lower_quality_existing_volume(env):
-    """A retry must not downgrade an already-downloaded volume."""
+@pytest.mark.parametrize("candidate_ext", ["cbz", "cbr"])
+def test_execute_import_skips_satisfied_existing_volume_terminally(
+    env, candidate_ext
+):
+    """Equal/lower-quality duplicates get one terminal skip receipt."""
     import main
 
     _seed_series(env["db_path"])
     existing = env["lib_root"] / "Test Series" / "Test Series v01.cbz"
     _make_zip(str(existing))
-    src_dir = env["src_root"] / "lower-quality-dup"
+    canonical_content = existing.read_bytes()
+    src_dir = env["src_root"] / f"{candidate_ext}-quality-dup"
     src_dir.mkdir()
-    src_path = _make_rar_stub(str(src_dir / "Test Series v01.cbr"))
+    src_path = src_dir / f"Test Series v01.{candidate_ext}"
+    if candidate_ext == "cbz":
+        _make_zip(str(src_path), name="candidate.png")
+    else:
+        _make_rar_stub(str(src_path))
+    download_id = f"dl-{candidate_ext}-duplicate"
+    torrent_url = f"magnet:{candidate_ext}-duplicate"
 
     with sqlite3.connect(env["db_path"]) as c:
         c.execute(
@@ -331,13 +342,14 @@ def test_execute_import_skips_lower_quality_existing_volume(env):
         )
         c.execute(
             "INSERT INTO volumes(series_id, volume_num, status, download_id, pack_type)"
-            " VALUES(7, NULL, 'grabbed', 'dl-lower', 'volume')",
+            " VALUES(7, NULL, 'grabbed', ?, 'volume')",
+            (download_id,),
         )
         c.execute(
             "INSERT INTO import_queue(series_id, download_id, torrent_name,"
             " torrent_url, src_dir, status)"
-            " VALUES(7, 'dl-lower', 'Test Series v01', 'magnet:lower', ?, 'pending')",
-            (str(src_dir),),
+            " VALUES(7, ?, 'Test Series v01', ?, ?, 'pending')",
+            (download_id, torrent_url, str(src_dir)),
         )
         qid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
         c.execute(
@@ -346,15 +358,13 @@ def test_execute_import_skips_lower_quality_existing_volume(env):
             " VALUES(?,?,?,?,1.0,'volume','pending')",
             (
                 qid,
-                "Test Series v01.cbr",
-                src_path,
-                str(env["lib_root"] / "Test Series" / "Test Series v01.cbr"),
+                src_path.name,
+                str(src_path),
+                str(env["lib_root"] / "Test Series" / src_path.name),
             ),
         )
 
     assert asyncio.run(main._guarded_execute_import(qid))
-    downgraded = env["lib_root"] / "Test Series" / "Test Series v01.cbr"
-    converted = env["lib_root"] / "Test Series" / "Test Series v01.cbz"
     with sqlite3.connect(env["db_path"]) as c:
         c.row_factory = sqlite3.Row
         vol = c.execute(
@@ -362,17 +372,180 @@ def test_execute_import_skips_lower_quality_existing_volume(env):
             " WHERE series_id=7 AND volume_num=1.0"
         ).fetchone()
         placeholder = c.execute(
-            "SELECT 1 FROM volumes WHERE series_id=7 AND download_id='dl-lower'"
-            " AND volume_num IS NULL"
+            "SELECT 1 FROM volumes WHERE series_id=7 AND download_id=?"
+            " AND volume_num IS NULL",
+            (download_id,),
         ).fetchone()
         queue = c.execute("SELECT 1 FROM import_queue WHERE id=?", (qid,)).fetchone()
+        history = c.execute(
+            "SELECT event_type, data FROM history WHERE series_id=7 AND download_id=?",
+            (download_id,),
+        ).fetchall()
+        errors = c.execute(
+            "SELECT message FROM events WHERE series_id=7 AND event_type='error'"
+        ).fetchall()
     assert vol["status"] == "downloaded"
     assert vol["quality"] == "cbz"
     assert vol["import_path"] == str(existing)
-    assert not downgraded.exists()
-    assert converted.exists()  # the original existing CBZ is still present
+    assert existing.read_bytes() == canonical_content
+    assert src_path.exists()
     assert placeholder is None
     assert queue is None
+    assert [row["event_type"] for row in history] == ["import_skipped"]
+    assert json.loads(history[0]["data"]) == {
+        "count": 0,
+        "skipped_count": 1,
+        "reason": "all_files_skipped",
+    }
+    assert errors == []
+
+    with main.get_db() as db:
+        requeued = main._queue_import(
+            db,
+            7,
+            download_id,
+            "Test Series v01",
+            torrent_url,
+            1.0,
+            str(src_dir),
+        )
+    assert requeued == (None, False)
+    with sqlite3.connect(env["db_path"]) as c:
+        assert c.execute(
+            "SELECT COUNT(*) FROM import_queue WHERE download_id=?",
+            (download_id,),
+        ).fetchone()[0] == 0
+        assert c.execute(
+            "SELECT COUNT(*) FROM history WHERE download_id=?",
+            (download_id,),
+        ).fetchone()[0] == 1
+
+
+def test_execute_import_needs_review_is_not_terminal_success(env):
+    """A zero-import review outcome must remain partial and nonterminal."""
+    import main
+
+    _seed_series(env["db_path"])
+    src_dir = env["src_root"] / "needs-review"
+    src_dir.mkdir()
+    src_path = _make_zip(str(src_dir / "Test Series Mystery.cbz"))
+
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute(
+            "INSERT INTO import_queue(series_id, download_id, torrent_name,"
+            " torrent_url, src_dir, status)"
+            " VALUES(7, 'dl-review', 'Test Series Mystery', 'magnet:review',"
+            " ?, 'pending')",
+            (str(src_dir),),
+        )
+        qid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+        c.execute(
+            "INSERT INTO import_queue_files(queue_id, filename, src_path, dst_path,"
+            " proposed_volume, file_type, status)"
+            " VALUES(?,?,?,?,NULL,'volume','pending')",
+            (
+                qid,
+                "Test Series Mystery.cbz",
+                src_path,
+                str(env["lib_root"] / "Test Series" / "Test Series Mystery.cbz"),
+            ),
+        )
+
+    assert asyncio.run(main._guarded_execute_import(qid))
+    with sqlite3.connect(env["db_path"]) as c:
+        assert c.execute(
+            "SELECT status FROM import_queue WHERE id=?", (qid,)
+        ).fetchone()[0] == "partial"
+        assert c.execute(
+            "SELECT status FROM import_queue_files WHERE queue_id=?", (qid,)
+        ).fetchone()[0] == "needs_review"
+        assert c.execute(
+            "SELECT COUNT(*) FROM history WHERE download_id='dl-review'"
+        ).fetchone()[0] == 0
+        assert c.execute(
+            "SELECT COUNT(*) FROM events"
+            " WHERE series_id=7 AND event_type='error'"
+            " AND message='Import failed: Test Series Mystery'"
+        ).fetchone()[0] == 0
+
+
+def test_next_poll_preserves_mixed_partial_queue_with_import_receipt(env):
+    """A partial queue stays visible when an imported sibling wrote a receipt."""
+    import main
+
+    _seed_series(env["db_path"])
+    src_dir = env["src_root"] / "mixed-needs-review"
+    src_dir.mkdir()
+    _make_zip(str(src_dir / "Test Series v01.cbz"))
+    _make_zip(str(src_dir / "Test Series Mystery.cbz"))
+
+    with main.get_db() as db:
+        qid, needs_review = main._queue_import(
+            db,
+            7,
+            "dl-mixed-review",
+            "Test Series mixed review",
+            "magnet:mixed-review",
+            None,
+            str(src_dir),
+        )
+    assert qid is not None
+    assert needs_review
+
+    assert asyncio.run(main._guarded_execute_import(qid))
+    with sqlite3.connect(env["db_path"]) as c:
+        c.row_factory = sqlite3.Row
+        queue = c.execute(
+            "SELECT status FROM import_queue WHERE id=?", (qid,)
+        ).fetchone()
+        files = c.execute(
+            "SELECT filename, status FROM import_queue_files"
+            " WHERE queue_id=? ORDER BY filename",
+            (qid,),
+        ).fetchall()
+        receipt = c.execute(
+            "SELECT event_type FROM history"
+            " WHERE series_id=7 AND download_id='dl-mixed-review'",
+        ).fetchall()
+        imported = c.execute(
+            "SELECT status, import_path FROM volumes"
+            " WHERE series_id=7 AND volume_num=1.0",
+        ).fetchone()
+
+    assert queue["status"] == "partial"
+    assert [(row["filename"], row["status"]) for row in files] == [
+        ("Test Series Mystery.cbz", "needs_review"),
+        ("Test Series v01.cbz", "imported"),
+    ]
+    assert [row["event_type"] for row in receipt] == ["imported"]
+    assert imported["status"] == "downloaded"
+    assert os.path.exists(imported["import_path"])
+
+    with main.get_db() as db:
+        next_poll = main._queue_import(
+            db,
+            7,
+            "dl-mixed-review",
+            "Test Series mixed review",
+            "magnet:mixed-review",
+            None,
+            str(src_dir),
+        )
+    assert next_poll == (qid, True)
+
+    with sqlite3.connect(env["db_path"]) as c:
+        assert c.execute(
+            "SELECT status FROM import_queue WHERE id=?", (qid,)
+        ).fetchone()[0] == "partial"
+        assert c.execute(
+            "SELECT COUNT(*) FROM import_queue"
+            " WHERE series_id=7 AND download_id='dl-mixed-review'",
+        ).fetchone()[0] == 1
+        assert c.execute(
+            "SELECT status FROM import_queue_files"
+            " WHERE queue_id=? AND filename='Test Series Mystery.cbz'",
+            (qid,),
+        ).fetchone()[0] == "needs_review"
 
 
 def test_execute_import_mixed_pack_skips_duplicate_and_imports_wanted(env):
