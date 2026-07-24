@@ -39,6 +39,7 @@ _LANG_REJECT_RE = re.compile(
     r'italian[eo]?|german|deutsch|portuguese|portugu[eê]s|russian|'
     r'polish|dutch|indonesian|malay|vietnamese|thai|arabic|turkish|'
     r'japanese|unlocalized)\b'
+    r'|\[\s*manga\s+(?:fr|french|fran[çc]ais)\s*\]'
     r'|\[(?:fr|es|de|it|pt|ru|pl|nl|id|ms|vi|th|ar|tr|jp|jpn|raw)\]'
     r'|\((?:jp|jpn|raw)\)'        # (Raw), (JPN), (JP) in parens
     r'|(?<!\w)vf(?!\w)',          # VF as standalone token (French)
@@ -65,6 +66,15 @@ def _extract_series_portion(torrent_title: str) -> str:
     t = re.sub(
         r'\s*(?:v|vol\.?|volume|ch\.?|chapter|#)\s*\d.*$', '', t,
         flags=re.IGNORECASE
+    )
+    # French releases commonly use a trailing "T" (tome) marker. Keep this
+    # suffix-only after normalization so model identifiers such as T21-Pro
+    # remain part of the title instead of being stripped as release metadata.
+    t = re.sub(
+        r'\s+(?:tome\s+|t\s*)\d{1,3}$',
+        '',
+        t,
+        flags=re.IGNORECASE,
     )
     return t.strip()
 
@@ -188,6 +198,10 @@ def vol_num_to_display(vol_num) -> str:
 _DECIMAL_SUFFIX_RE = r'(?:\.(?!(?:19|20)\d{2}\b)\d+)?'
 _LETTER_OR_FRAC_SUFFIX_RE = r'[a-d½¼¾]?'
 _NUMBER_TRAILING_GUARDS_RE = r'(?!\d)(?![gGmMkK][bBiI]|[pP]\b)'
+_FRENCH_TOME_PREFIX_RE = r'(?<!\w)(?:tome\s+|t\.?\s*)'
+_FRENCH_TOME_TRAILING_BOUNDARY_RE = (
+    r'(?=$|[\s\[\](),]|\.(?:cb[rz]|epub|pdf)\b)'
+)
 
 
 def extract_volume_num(title: str) -> float | None:
@@ -200,6 +214,16 @@ def extract_volume_num(title: str) -> float | None:
     # the start as if it were a single-volume release. (D9)
     if extract_volume_range(title):
         return None
+
+    # French "tome" markers. These are deliberately integer-only and require
+    # a metadata/file boundary so embedded words and model IDs do not parse.
+    m = re.search(
+        rf'{_FRENCH_TOME_PREFIX_RE}(\d{{1,3}}){_FRENCH_TOME_TRAILING_BOUNDARY_RE}',
+        title,
+        re.IGNORECASE,
+    )
+    if m:
+        return float(m.group(1))
 
     # Omnibus / box set markers
     m = re.search(r'\b(?:omnibus|box[\s-]?set)\s+(\d{1,3})\b', title, re.IGNORECASE)
@@ -355,6 +379,20 @@ def extract_chapter_num(title: str) -> float | None:
     has_vol = (
         bool(re.search(r'\bv(?:ol(?:ume)?)?\.?\s*\d', title, re.IGNORECASE))
         or bool(re.search(r'(?<![A-Za-z])v(?:ol(?:ume)?)?_\d', title, re.IGNORECASE))
+        or bool(
+            re.search(
+                rf'{_FRENCH_TOME_PREFIX_RE}\d{{1,3}}{_FRENCH_TOME_TRAILING_BOUNDARY_RE}',
+                title,
+                re.IGNORECASE,
+            )
+        )
+        or bool(
+            re.search(
+                rf'{_FRENCH_TOME_PREFIX_RE}\d{{1,3}}\s*[-–—~]\s*\d',
+                title,
+                re.IGNORECASE,
+            )
+        )
         or bool(re.search(r'(?:第\s*)?\d+\s*[巻券]|\d+\s*권', title))
         or bool(re.search(r'\b(?:omnibus|box[\s-]?set)\b', title, re.IGNORECASE))
     )
@@ -370,7 +408,7 @@ def extract_chapter_num(title: str) -> float | None:
             '', title, flags=re.IGNORECASE
         )
         m = re.search(
-            rf'(?<![.\d])(\d{{1,4}}{_DECIMAL_SUFFIX_RE}){_NUMBER_TRAILING_GUARDS_RE}',
+            rf'(?<![.\w])(\d{{1,4}}{_DECIMAL_SUFFIX_RE})(?!\w){_NUMBER_TRAILING_GUARDS_RE}',
             clean,
         )
         if m:
