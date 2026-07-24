@@ -234,7 +234,30 @@ def _commit_import(
                 ),
             },
         )
-    else:
+    elif new_status == "imported" and not any_error:
+        skipped_count = sum(fp.plan_status == "skip" for fp in plan.files)
+        log_event(
+            "import",
+            f"Skipped {skipped_count} file(s); import already satisfied: "
+            f"{queue['torrent_name']}",
+            series_id,
+            db=db,
+        )
+        add_history(
+            db,
+            "import_skipped",
+            series_id,
+            s_title,
+            vol_label,
+            source_title=queue["torrent_name"] or "",
+            download_id=queue["download_id"] or "",
+            data={
+                "count": 0,
+                "skipped_count": skipped_count,
+                "reason": "all_files_skipped",
+            },
+        )
+    elif any_error:
         log_event(
             "error",
             f"Import failed: {queue['torrent_name']}",

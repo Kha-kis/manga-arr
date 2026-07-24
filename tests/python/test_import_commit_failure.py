@@ -86,6 +86,7 @@ def test_commit_all_failure_marks_import_failed(test_env, monkeypatch):
     """When staging.commit_all() fails, import should return False and mark queue failed."""
     import import_staging
     import import_execute
+    import main
 
     # Seed data: series + import queue
     with sqlite3.connect(test_env["db_path"]) as c:
@@ -166,6 +167,37 @@ def test_commit_all_failure_marks_import_failed(test_env, monkeypatch):
         assert chap_downloaded == 0, (
             "No chapters should be marked as downloaded after commit failure"
         )
+
+        history_types = [
+            row["event_type"]
+            for row in c.execute(
+                "SELECT event_type FROM history WHERE series_id=? AND download_id='dl-test'",
+                (sid,),
+            ).fetchall()
+        ]
+        assert history_types == ["import_failed"]
+        assert c.execute(
+            "SELECT COUNT(*) FROM events"
+            " WHERE series_id=? AND event_type='error'"
+            " AND message='Import failed: Test v01'",
+            (sid,),
+        ).fetchone()[0] == 1
+
+        c.execute("DELETE FROM import_queue_files WHERE queue_id=?", (qid,))
+        c.execute("DELETE FROM import_queue WHERE id=?", (qid,))
+
+    with main.get_db() as db:
+        retry_qid, needs_review = main._queue_import(
+            db,
+            sid,
+            "dl-test",
+            "Test v01",
+            "magnet:test",
+            1.0,
+            test_env["src_root"],
+        )
+    assert retry_qid is not None
+    assert not needs_review
 
 
 def test_minimum_free_space_guard_blocks_before_staging(test_env, monkeypatch):
