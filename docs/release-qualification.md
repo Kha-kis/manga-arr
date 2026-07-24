@@ -5,10 +5,10 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## Release Under Test
 
-- Release candidate: `1.2.0-rc.3`
+- Release candidate: `1.2.0-rc.4`
 - Stable target: `1.2.0`
 - Qualified base: `1.1.0`
-- Candidate image: `ghcr.io/kha-kis/manga-arr:1.2.0-rc.3`
+- Candidate image: `ghcr.io/kha-kis/manga-arr:1.2.0-rc.4`
 - Platforms: `linux/amd64`, `linux/arm64`
 
 ## Production Evidence
@@ -23,10 +23,16 @@ can become a stable release. Passing unit tests alone is not sufficient.
   a missing SABnzbd API key passed the version-only connection probe, then
   opened the circuit breaker during each daily backlog search and produced
   hundreds of skipped-grab events.
-- The `1.2.0-rc.3` candidate must complete a fresh operational soak with hourly
-  health, restart, log, and integrity evidence. Recurring configuration errors
-  or download-client circuit-breaker transitions block promotion even when the
-  container and health endpoint remain available.
+- The `1.2.0-rc.3` soak exposed two independent blockers. SABnzbd had been
+  changed from the shared `/data/usenet/complete` folder to its private
+  `/config/Downloads/complete` folder, and backlog search matched a series
+  alias inside an unrelated release's uploader tag. The deployment path was
+  restored and the matcher now shares the boundary-aware RSS behavior.
+- The `1.2.0-rc.4` candidate must complete a fresh operational soak with hourly
+  health, restart, log, integrity, import-path, and backlog-search evidence.
+  Recurring configuration errors, inaccessible completed downloads, unrelated
+  automatic grabs, or download-client circuit-breaker transitions block
+  promotion even when the container and health endpoint remain available.
 - A queue item that cannot infer a safe volume remains in `needs_review`
   instead of being imported incorrectly.
 
@@ -91,7 +97,7 @@ operational soak before stable promotion. Qualification evidence includes:
   transitions during the production soak;
 - public support, security, contribution, and conduct policies;
 - a protected default branch and immutable annotated release tags;
-- candidate publication verification that `1.2.0-rc.3` resolves to the tested
+- candidate publication verification that `1.2.0-rc.4` resolves to the tested
   multi-platform image digest without moving stable aliases;
 - stable publication verification that `1.2.0`, `1.2`, `1`, and `latest`
   resolve to the same stable image digest.

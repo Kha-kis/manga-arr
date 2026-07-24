@@ -5,6 +5,31 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.2.0-rc.4 - 2026-07-24
+
+Fourth release candidate for the 1.2.0 import-review and metadata-provenance
+release. This candidate replaces `rc.3`, whose production soak exposed an
+unsafe backlog title match and a deployment-specific SABnzbd completed-folder
+misconfiguration.
+
+### Fixed
+
+- Automatic backlog search now uses the same boundary-aware title matcher as
+  RSS processing. Series aliases can no longer match only an uploader or
+  release-group tag on an unrelated release.
+
+### Validation
+
+- The regression suite proves an alias in an uploader tag is rejected while a
+  genuine alias title is still grabbed.
+- Production reconciliation blocklisted 75 false releases and removed only
+  their synthetic unnumbered grab rows; SABnzbd files and Mangarr history were
+  preserved.
+- The shared SABnzbd completed folder was restored to
+  `/data/usenet/complete` and verified from Mangarr, Sonarr, Radarr, and Lidarr.
+- 1,707 Python tests, 13 confirmation-flow checks, and 10 route-sweep checks
+  pass after the matcher fix.
+
 ## 1.2.0-rc.3 - 2026-07-22
 
 Third release candidate for the 1.2.0 import-review and metadata-provenance
