@@ -5,12 +5,45 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.2.0-rc.6 - 2026-07-24
+
+Sixth release candidate for the 1.2.0 import-review and metadata-provenance
+release. This candidate replaces `rc.5`, whose production qualification found
+that intentionally skipped completed downloads were retried every five minutes
+and recorded as import failures.
+
+### Fixed
+
+- Completed downloads whose canonical target has equal or better quality now
+  create a durable `import_skipped` receipt instead of an `import_failed`
+  record.
+- Download-status polling no longer recreates import queues for a completed
+  intentional skip.
+- A mixed partial import keeps unresolved `needs_review` files visible when a
+  later poll finds terminal evidence for an imported sibling.
+- Genuine import failures remain retryable and do not create terminal skip
+  receipts.
+
+### Validation
+
+- Production qualification reproduced the `rc.5` defect as 50 false failures
+  per five-minute poll. Canonical files, downloaded states, SABnzbd jobs, and
+  import paths remained unchanged.
+- Regression coverage proves equal- and lower-quality skips preserve canonical
+  bytes, paths, and status; repeated polls create no new queue or error.
+- Mixed partial queues remain partial across repeated polls, while genuine
+  failures remain retryable.
+- 1,753 Python tests, 13 confirmation-flow checks, and 10 route-sweep checks
+  pass after the import receipt fix.
+
 ## 1.2.0-rc.5 - 2026-07-24
 
 Fifth release candidate for the 1.2.0 import-review and metadata-provenance
 release. This candidate replaces `rc.4`, which was rejected after its live
 backlog pass exposed dot-delimited publication years being interpreted as
-decimal volume numbers.
+decimal volume numbers. The candidate was later rejected when live recovery
+showed intentionally skipped completed downloads being retried every five
+minutes and recorded as failures.
 
 ### Fixed
 
