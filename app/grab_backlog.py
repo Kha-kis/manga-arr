@@ -11,12 +11,17 @@ from __future__ import annotations
 
 import difflib
 import re
+from typing import Any
+
+from parsing import matches as _title_matches
 from shared import get_cfg, get_db, vol_num_to_search
 
 try:
     from .grab_core import grab_item, _search_all
 except ImportError:
     from grab_core import grab_item, _search_all
+
+_ReleaseItem = dict[str, Any]
 
 
 async def grab_existing(series_id: int, title: str, pattern: str) -> int:
@@ -95,16 +100,16 @@ async def _grab_existing_inner(series_id: int, title: str, pattern: str) -> int:
 
 
 def matches(pattern: str, text: str) -> bool:
-    """Simple pattern matching helper (moved here to avoid circularity)."""
-    return re.search(pattern, text, re.IGNORECASE) is not None
+    """Match a series title without treating uploader tags as aliases."""
+    return _title_matches(pattern, text)
 
 
 def _select_covering_packs(
-    items: list[dict],
+    items: list[_ReleaseItem],
     missing_vols: set[float],
     total_volumes: int | None,
     all_patterns: list[str],
-) -> list[dict]:
+) -> list[_ReleaseItem]:
     """
     Greedy non-overlapping selection of complete/range packs that maximises
     coverage of missing_vols.  Sorted largest-coverage-first, then by seeders.
@@ -130,7 +135,7 @@ def _select_covering_packs(
 
     candidates.sort(key=lambda x: (x[0], x[2].get("seeders", 0)), reverse=True)
 
-    selected: list[dict] = []
+    selected: list[_ReleaseItem] = []
     claimed: set[float] = set()
     for _coverage, _rng, item, covered in candidates:
         newly = covered - claimed
@@ -212,7 +217,7 @@ async def search_complete_pack(
     end_str = f"v01-v{int(total_volumes):02d}" if total_volumes else None
 
     seen_item_urls: set[str] = set()
-    all_items: list[dict] = []
+    all_items: list[_ReleaseItem] = []
 
     async def _add_results(query: str):
         for item in await _search_all(query, series_id=series_id):
