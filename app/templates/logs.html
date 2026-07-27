@@ -15,6 +15,7 @@
   <a href="/logs?event_type={{ et }}"
      class="btn btn-sm logs-filter-btn {% if event_type == et %}btn-ember{% else %}btn-secondary{% endif %}">
     {% if et == 'error' %}<i class="bi bi-exclamation-triangle me-1 text-ruby"></i>
+    {% elif et == 'warning' %}<i class="bi bi-exclamation-circle me-1 text-gold"></i>
     {% elif et == 'grab' %}<i class="bi bi-cloud-download me-1"></i>
     {% elif et in ('imported','download_complete') %}<i class="bi bi-check-circle me-1"></i>
     {% elif et == 'rss_poll' %}<i class="bi bi-rss me-1"></i>
@@ -49,6 +50,7 @@
           {% elif et == 'search' %}<span class="badge-status badge-hiatus"><i class="bi bi-search me-1"></i>search</span>
           {% elif et == 'refresh' %}<span class="badge-status badge-releasing"><i class="bi bi-arrow-clockwise me-1"></i>refresh</span>
           {% elif et == 'komga_scan' %}<span class="badge-status badge-client"><i class="bi bi-collection-play me-1"></i>komga</span>
+          {% elif et == 'warning' %}<span class="badge-status badge-warning-soft"><i class="bi bi-exclamation-circle me-1"></i>warning</span>
           {% elif et == 'error' %}<span class="badge-status badge-wanted"><i class="bi bi-exclamation-triangle me-1"></i>error</span>
           {% else %}<span class="badge-status badge-unknown">{{ et }}</span>
           {% endif %}

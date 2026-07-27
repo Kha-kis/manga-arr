@@ -198,9 +198,10 @@ async def history_clear_failed(request: Request):
 async def logs_page(request: Request, page: int = 1, event_type: str = ""):
     per_page = 100
     offset   = (page - 1) * per_page
-    _VALID_TYPES = {'grab', 'imported', 'error', 'rss_poll', 'backlog_search',
-                    'refresh', 'import_list_sync', 'backup', 'series_added',
-                    'series_deleted', 'grab_failed', 'import_failed', 'info'}
+    _VALID_TYPES = {'grab', 'imported', 'error', 'warning',
+                    'rss_poll', 'backlog_search', 'refresh', 'import_list_sync',
+                    'backup', 'series_added', 'series_deleted', 'grab_failed',
+                    'import_failed', 'info'}
     et = event_type if event_type in _VALID_TYPES else ""
     with get_db() as db:
         if et:

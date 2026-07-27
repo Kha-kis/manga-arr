@@ -1,8 +1,12 @@
 """Indexers — DB-managed indexer configuration (Sonarr parity)."""
 
-import httpx
 import json
+import math
+import sqlite3
 import time
+from typing import Any, Literal
+
+import httpx
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from routers._templates import templates
@@ -34,6 +38,148 @@ router = APIRouter()
 _BACKOFF_MIN = 60  # seconds
 _BACKOFF_MAX = 3600  # 1 hour cap
 _BACKOFF_BASE = 2  # exponential base
+_NO_PROWLARR_IDS: frozenset[int] = frozenset()
+
+
+_ACTIVE_INDEXERS_SQL = """
+    SELECT indexers.*
+    FROM indexers
+    WHERE indexers.enabled=1
+      AND (
+        (:purpose='rss' AND
+          (indexers.use_rss=1 OR indexers.use_rss IS NULL))
+        OR (:purpose='auto' AND
+          (indexers.use_auto_search=1 OR indexers.use_auto_search IS NULL))
+        OR (:purpose='interactive' AND
+          (indexers.use_interactive_search=1
+           OR indexers.use_interactive_search IS NULL))
+      )
+      AND (
+        :series_id IS NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM indexer_tags WHERE indexer_id=indexers.id
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM indexer_tags AS it
+          JOIN series_tags AS st ON it.tag=st.tag
+          WHERE it.indexer_id=indexers.id AND st.series_id=:series_id
+        )
+      )
+    ORDER BY indexers.priority
+"""
+
+
+def _active_indexer_rows(
+    db: sqlite3.Connection,
+    purpose: Literal["rss", "auto", "interactive"],
+    series_id: int | None = None,
+) -> list[sqlite3.Row]:
+    """Select purpose- and series-tag-eligible indexer rows."""
+    return db.execute(
+        _ACTIVE_INDEXERS_SQL,
+        {"purpose": purpose, "series_id": series_id},
+    ).fetchall()
+
+
+def _prowlarr_child_ownership(
+    indexers: list[dict[str, Any]],
+) -> dict[int, frozenset[int]]:
+    """Map parent rows to imported Prowlarr IDs owned by eligible children.
+
+    Callers pass only rows selected for the current purpose and series. This
+    ensures a disabled, purpose-disabled, or tag-ineligible child does not
+    suppress that source in an otherwise eligible parent's fan-out.
+    """
+    owned: dict[int, set[int]] = {}
+    for indexer in indexers:
+        parent_id = indexer.get("parent_prowlarr_id")
+        prowlarr_id = indexer.get("prowlarr_indexer_id")
+        if parent_id is None or prowlarr_id is None:
+            continue
+        owned.setdefault(int(parent_id), set()).add(int(prowlarr_id))
+    return {parent_id: frozenset(ids) for parent_id, ids in owned.items()}
+
+
+def _indexer_exception_detail(exc: Exception) -> str:
+    """Describe an indexer failure without relying on a non-empty ``str``.
+
+    httpx timeout exceptions commonly stringify to an empty string. Transport
+    details are deliberately normalized so request URLs (which may contain a
+    Torznab API key in the query string) cannot leak into event logs.
+    """
+    kind = type(exc).__name__
+    if isinstance(exc, httpx.TimeoutException):
+        return (
+            f"{kind}: request timed out; check Prowlarr and upstream tracker "
+            "availability"
+        )
+    if isinstance(exc, httpx.ConnectError):
+        return (
+            f"{kind}: connection failed; check the configured host, port, "
+            "and network path"
+        )
+    if isinstance(exc, httpx.NetworkError):
+        return f"{kind}: network transport failed; check upstream availability"
+    if isinstance(exc, httpx.DecodingError):
+        return (
+            f"{kind}: response decoding failed; check the upstream response "
+            "encoding"
+        )
+    if isinstance(exc, httpx.TooManyRedirects):
+        return f"{kind}: too many redirects; check the configured base URL"
+    if isinstance(exc, httpx.TransportError):
+        return f"{kind}: HTTP transport failed; check upstream availability"
+    if isinstance(exc, httpx.RequestError):
+        return (
+            f"{kind}: HTTP request failed; check upstream availability and "
+            "configuration"
+        )
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"{kind}: upstream returned HTTP {exc.response.status_code}"
+    detail = str(exc).strip()
+    return f"{kind}: {detail}" if detail else f"{kind}: no detail provided"
+
+
+def _indexer_exception_severity(exc: Exception) -> Literal["warning", "error"]:
+    """Expected upstream/network failures warn; application defects error."""
+    if isinstance(exc, httpx.RequestError):
+        return "warning"
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status == 429 or 500 <= status < 600:
+            return "warning"
+    return "error"
+
+
+def _indexer_exception_response(
+    exc: Exception,
+) -> tuple[int | None, str | None]:
+    """Extract backoff metadata without exposing request URLs."""
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None, None
+    return exc.response.status_code, exc.response.headers.get("Retry-After")
+
+
+def _log_indexer_exception(prefix: str, operation: str, exc: Exception) -> None:
+    log_event(
+        _indexer_exception_severity(exc),
+        f"{prefix} {operation}: {_indexer_exception_detail(exc)}",
+    )
+
+
+def _response_failure_severity(status: int) -> Literal["warning", "error"]:
+    return "warning" if status == 429 or 500 <= status < 600 else "error"
+
+
+def _log_indexer_response_failure(
+    prefix: str, operation: str, *, status: int, reason: str, retry_in: int
+) -> None:
+    log_event(
+        _response_failure_severity(status),
+        f"{prefix} {operation}: {reason}; retry delayed by backoff "
+        f"({max(0, retry_in)}s)",
+    )
 
 
 def _parse_retry_after(raw: str | None) -> float | None:
@@ -43,7 +189,8 @@ def _parse_retry_after(raw: str | None) -> float | None:
         return None
     raw = raw.strip()
     try:
-        return float(raw)
+        seconds = float(raw)
+        return seconds if math.isfinite(seconds) and seconds >= 0 else None
     except ValueError:
         pass
     try:
@@ -116,6 +263,16 @@ def _should_backoff_on_response(r: httpx.Response) -> tuple[bool, str]:
     if 500 <= r.status_code < 600:
         return True, f"server error ({r.status_code})"
     return False, ""
+
+
+def _response_failure_reason(r: httpx.Response) -> str | None:
+    """Return a safe failure reason for any non-success indexer response."""
+    should_backoff, reason = _should_backoff_on_response(r)
+    if should_backoff:
+        return reason
+    if r.status_code != 200:
+        return f"unexpected HTTP status ({r.status_code})"
+    return None
 
 
 def _row_decrypted(row) -> dict:
@@ -856,7 +1013,7 @@ async def _test_indexer(idx: dict) -> tuple[bool, str]:
 
 
 # ── Fetch RSS from all enabled indexers ──────────────────────────────────────
-async def fetch_all_rss(db) -> list[dict]:
+async def fetch_all_rss(db) -> list[dict[str, Any]]:
     """
     Fetch RSS from all enabled indexers that have RSS sync enabled, returning
     a deduplicated list of items.
@@ -868,11 +1025,7 @@ async def fetch_all_rss(db) -> list[dict]:
     that pre-date the column default to RSS-on. New rows default to 1
     via the column DEFAULT.
     """
-    indexers = db.execute(
-        "SELECT * FROM indexers WHERE enabled=1"
-        " AND (use_rss=1 OR use_rss IS NULL)"
-        " ORDER BY priority"
-    ).fetchall()
+    indexers = _active_indexer_rows(db, "rss")
     if not indexers:
         return []
 
@@ -883,10 +1036,23 @@ async def fetch_all_rss(db) -> list[dict]:
     import asyncio
 
     idx_list = [_row_decrypted(idx) for idx in indexers]
-    results = await asyncio.gather(*[_fetch_rss_for_indexer(idx) for idx in idx_list])
+    child_ownership = _prowlarr_child_ownership(idx_list)
+    results = await asyncio.gather(
+        *[
+            _fetch_rss_for_indexer(
+                idx,
+                excluded_prowlarr_ids=child_ownership.get(
+                    int(idx["id"]), _NO_PROWLARR_IDS
+                ),
+            )
+            if idx.get("type") == "prowlarr"
+            else _fetch_rss_for_indexer(idx)
+            for idx in idx_list
+        ]
+    )
 
     seen: set[str] = set()
-    all_items: list[dict] = []
+    all_items: list[dict[str, Any]] = []
     # iterate in priority order (already ordered by query)
     for idx, batch in zip(idx_list, results):
         min_seeders = idx.get("min_seeders") or 0
@@ -928,7 +1094,11 @@ async def fetch_all_rss(db) -> list[dict]:
     return all_items
 
 
-async def _fetch_rss_for_indexer(idx: dict) -> list[dict]:
+async def _fetch_rss_for_indexer(
+    idx: dict[str, Any],
+    *,
+    excluded_prowlarr_ids: frozenset[int] = _NO_PROWLARR_IDS,
+) -> list[dict[str, Any]]:
     """Fetch RSS for a single indexer."""
     t = idx["type"]
     cats = from_json(idx.get("categories"), [7000, 7010, 7020])
@@ -956,23 +1126,25 @@ async def _fetch_rss_for_indexer(idx: dict) -> list[dict]:
 
     try:
         if t == "prowlarr":
-            # Use Prowlarr per-indexer RSS
-            sub_indexers = await _get_prowlarr_indexers(url, key, cats)
-            import asyncio as _asyncio
-
-            batches = await _asyncio.gather(
-                *[
-                    _fetch_prowlarr_rss(url, key, iid, iname, proto, cats)
-                    for iid, iname, proto in sub_indexers
-                ]
+            items, failures = await _fetch_prowlarr_fanout(
+                url,
+                key,
+                cats,
+                excluded_prowlarr_ids=excluded_prowlarr_ids,
+                query="",
+                operation="RSS",
             )
-            items: list[dict] = []
-            for b in batches:
-                items.extend(b)
-            # Consider 'success' when we got any meaningful response — the
-            # sub-indexer calls handle their own failures, but an overall
-            # no-error path clears the parent's backoff counter.
-            _indexer_record_success(idx_id)
+            if failures:
+                recorded_failure = _preferred_indexer_failure(failures)
+                status, retry_after = _indexer_exception_response(recorded_failure)
+                _indexer_record_failure(
+                    idx_id,
+                    status=status,
+                    retry_after_header=retry_after,
+                    reason=_indexer_exception_detail(recorded_failure)[:200],
+                )
+            else:
+                _indexer_record_success(idx_id)
             return items
 
         elif t in ("torznab", "newznab"):
@@ -982,93 +1154,171 @@ async def _fetch_rss_for_indexer(idx: dict) -> list[dict]:
                     f"{url}/api",
                     params={"t": "search", "cat": cat_str, "apikey": key, "q": ""},
                 )
-            should_off, reason = _should_backoff_on_response(r)
-            if should_off:
+            reason = _response_failure_reason(r)
+            if reason is not None:
                 dl = _indexer_record_failure(
                     idx_id,
                     status=r.status_code,
                     retry_after_header=r.headers.get("Retry-After"),
                     reason=reason,
                 )
-                log_event(
-                    "info",
-                    f"[Indexer:{name}] backoff set — {reason}; next retry at "
-                    f"{int(dl)} ({int(dl - time.time())}s from now)",
+                _log_indexer_response_failure(
+                    f"[Indexer:{name}]",
+                    "RSS request failed",
+                    status=r.status_code,
+                    reason=reason,
+                    retry_in=int(dl - time.time()),
                 )
                 return []
-            _indexer_record_success(idx_id)
-            return _parse_torznab_rss(
+            items = _parse_torznab_rss(
                 r.text, name, "torrent" if t == "torznab" else "nzb"
             )
+            _indexer_record_success(idx_id)
+            return items
 
     except Exception as e:
-        log_event("error", f"[Indexer:{name}] RSS error: {e}")
-        # Unknown failure — increment counter but with shorter backoff
+        _log_indexer_exception(f"[Indexer:{name}]", "RSS request failed", e)
+        status, retry_after = _indexer_exception_response(e)
         _indexer_record_failure(
             idx_id,
-            status=None,
-            retry_after_header=None,
-            reason=f"{type(e).__name__}: {str(e)[:120]}",
+            status=status,
+            retry_after_header=retry_after,
+            reason=_indexer_exception_detail(e)[:200],
         )
     return []
 
 
-async def _get_prowlarr_indexers(url: str, key: str, cats: list) -> list[tuple]:
+async def _get_prowlarr_indexers(
+    url: str, key: str, cats: list[int]
+) -> list[tuple[int, str, Literal["torrent", "nzb"]]]:
     """Get list of (id, name, protocol) from Prowlarr."""
-    try:
-        async with httpx.AsyncClient(timeout=10) as cli:
-            r = await cli.get(f"{url}/api/v1/indexer", headers={"X-Api-Key": key})
-        indexers = r.json() if r.status_code == 200 else []
-        result = []
-        for idx in indexers:
-            if not idx.get("enable", True):
-                continue
-            idx_cats = {
-                int(c.get("id", 0))
-                for c in idx.get("capabilities", {}).get("categories", [])
-            }
-            if idx_cats and not (idx_cats & set(cats)):
-                continue
-            proto = (
-                "torrent"
-                if idx.get("protocol", "torrent").lower() == "torrent"
-                else "nzb"
+    async with httpx.AsyncClient(timeout=10) as cli:
+        r = await cli.get(f"{url}/api/v1/indexer", headers={"X-Api-Key": key})
+    if r.status_code != 200:
+        r.raise_for_status()
+    indexers = r.json()
+    result: list[tuple[int, str, Literal["torrent", "nzb"]]] = []
+    for idx in indexers:
+        if not idx.get("enable", True):
+            continue
+        idx_cats = {
+            int(c.get("id", 0))
+            for c in idx.get("capabilities", {}).get("categories", [])
+        }
+        if idx_cats and not (idx_cats & set(cats)):
+            continue
+        proto: Literal["torrent", "nzb"] = (
+            "torrent"
+            if idx.get("protocol", "torrent").lower() == "torrent"
+            else "nzb"
+        )
+        indexer_id = int(idx["id"])
+        result.append((indexer_id, str(idx.get("name", indexer_id)), proto))
+    return result
+
+
+def _preferred_indexer_failure(failures: list[Exception]) -> Exception:
+    """Choose the failure carrying the strongest useful backoff metadata."""
+    retry_failures: list[tuple[float, Exception]] = []
+    for failure in failures:
+        _, retry_header = _indexer_exception_response(failure)
+        retry_seconds = _parse_retry_after(retry_header)
+        if retry_seconds is not None:
+            retry_failures.append((retry_seconds, failure))
+    if retry_failures:
+        return max(retry_failures, key=lambda candidate: candidate[0])[1]
+    return next(
+        (
+            failure
+            for failure in failures
+            if _indexer_exception_response(failure)[0] is not None
+        ),
+        failures[0],
+    )
+
+
+async def _fetch_prowlarr_fanout(
+    url: str,
+    key: str,
+    cats: list[int],
+    *,
+    excluded_prowlarr_ids: frozenset[int],
+    query: str,
+    operation: Literal["RSS", "search"],
+) -> tuple[list[dict[str, Any]], list[Exception]]:
+    """Query each live, unowned Prowlarr source through its API façade."""
+    import asyncio
+
+    sub_indexers = [
+        sub_indexer
+        for sub_indexer in await _get_prowlarr_indexers(url, key, cats)
+        if sub_indexer[0] not in excluded_prowlarr_ids
+    ]
+    batches = await asyncio.gather(
+        *[
+            _fetch_prowlarr_results(
+                url, key, iid, iname, proto, cats, query=query
             )
-            result.append((idx["id"], idx.get("name", str(idx["id"])), proto))
-        return result
-    except Exception as e:
-        log_event("error", f"[Prowlarr] Failed to list indexers: {e}")
-        return []
+            for iid, iname, proto in sub_indexers
+        ],
+        return_exceptions=True,
+    )
+    items: list[dict[str, Any]] = []
+    failures: list[Exception] = []
+    for sub_indexer, batch in zip(sub_indexers, batches):
+        if isinstance(batch, BaseException):
+            if isinstance(batch, asyncio.CancelledError):
+                raise batch
+            if not isinstance(batch, Exception):
+                raise batch
+            _, sub_name, _ = sub_indexer
+            _log_indexer_exception(
+                f"[Prowlarr:{sub_name}]", f"{operation} request failed", batch
+            )
+            failures.append(batch)
+            continue
+        items.extend(batch)
+    return items, failures
 
 
-async def _fetch_prowlarr_rss(url, key, indexer_id, name, protocol, cats) -> list[dict]:
+async def _fetch_prowlarr_results(
+    url: str,
+    key: str,
+    indexer_id: int,
+    name: str,
+    protocol: Literal["torrent", "nzb"],
+    cats: list[int],
+    *,
+    query: str,
+) -> list[dict[str, Any]]:
     cat_str = ",".join(str(c) for c in cats)
-    try:
-        async with httpx.AsyncClient(timeout=30) as cli:
-            r = await cli.get(
-                f"{url}/api/v1/indexer/{indexer_id}/newznab",
-                headers={"X-Api-Key": key},
-                params={"t": "search", "cat": cat_str, "q": ""},
-            )
-        return _parse_torznab_rss(r.text, name, protocol)
-    except Exception as e:
-        log_event("error", f"[Prowlarr:{name}] RSS error: {e}")
-        return []
+    async with httpx.AsyncClient(timeout=30) as cli:
+        r = await cli.get(
+            f"{url}/api/v1/indexer/{indexer_id}/newznab",
+            headers={"X-Api-Key": key},
+            params={"t": "search", "cat": cat_str, "q": query},
+        )
+    if r.status_code != 200:
+        r.raise_for_status()
+    return _parse_torznab_rss(r.text, name, protocol)
 
 
 def _parse_torznab_rss(
     xml_text: str, indexer: str, default_protocol: str = "torrent"
-) -> list[dict]:
+) -> list[dict[str, Any]]:
+    from defusedxml.common import DefusedXmlException
     from defusedxml.ElementTree import fromstring as _safe_fromstring
 
-    items: list[dict] = []
+    items: list[dict[str, Any]] = []
     ns = {
         "torznab": "http://torznab.com/api/2015/feed",
         "newznab": "http://www.newznab.com/DTD/2010/feeds/attributes/",
     }
     try:
         root = _safe_fromstring(xml_text)
-    except Exception:
+    except DefusedXmlException:
+        # Security-policy rejections remain fail-closed. Ordinary malformed
+        # upstream XML propagates so polling records an actionable parser error.
         return items
 
     def _attr(item, name):
@@ -1155,7 +1405,7 @@ def _indexer_allowed_for_series(db, indexer_id: int, series_id: int | None) -> b
 # ── Search across all enabled indexers ───────────────────────────────────────
 async def search_all_indexers(
     db, query: str, purpose: str = "auto", series_id: int | None = None
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """
     Search across all enabled indexers that participate in `purpose` and return
     deduplicated results.
@@ -1175,29 +1425,10 @@ async def search_all_indexers(
 
     NULL-tolerant: rows that predate the toggle columns default to participating.
     """
-    if purpose == "interactive":
-        toggle_clause = "(use_interactive_search=1 OR use_interactive_search IS NULL)"
-    else:
-        # 'auto' or any unknown purpose → default to auto-search filter.
-        toggle_clause = "(use_auto_search=1 OR use_auto_search IS NULL)"
-    if series_id is not None:
-        # Sonarr-style indexer-tag filter: indexer with no tags OR series shares
-        # at least one tag with this indexer.
-        tag_clause = (
-            " AND (NOT EXISTS (SELECT 1 FROM indexer_tags WHERE indexer_id=indexers.id)"
-            "      OR EXISTS (SELECT 1 FROM indexer_tags it"
-            "                 JOIN series_tags st ON it.tag = st.tag"
-            "                 WHERE it.indexer_id=indexers.id AND st.series_id=?))"
-        )
-        indexers = db.execute(
-            f"SELECT * FROM indexers WHERE enabled=1 AND {toggle_clause}"
-            f"{tag_clause} ORDER BY priority",
-            (series_id,),
-        ).fetchall()
-    else:
-        indexers = db.execute(
-            f"SELECT * FROM indexers WHERE enabled=1 AND {toggle_clause} ORDER BY priority"
-        ).fetchall()
+    normalized_purpose: Literal["auto", "interactive"] = (
+        "interactive" if purpose == "interactive" else "auto"
+    )
+    indexers = _active_indexer_rows(db, normalized_purpose, series_id)
     if not indexers:
         return []
 
@@ -1207,10 +1438,24 @@ async def search_all_indexers(
     import asyncio
 
     idx_list = [_row_decrypted(idx) for idx in indexers]
-    results = await asyncio.gather(*[_search_indexer(idx, query) for idx in idx_list])
+    child_ownership = _prowlarr_child_ownership(idx_list)
+    results = await asyncio.gather(
+        *[
+            _search_indexer(
+                idx,
+                query,
+                excluded_prowlarr_ids=child_ownership.get(
+                    int(idx["id"]), _NO_PROWLARR_IDS
+                ),
+            )
+            if idx.get("type") == "prowlarr"
+            else _search_indexer(idx, query)
+            for idx in idx_list
+        ]
+    )
 
     seen: set[str] = set()
-    all_items: list[dict] = []
+    all_items: list[dict[str, Any]] = []
     for idx, batch in zip(idx_list, results):
         min_seeders = idx.get("min_seeders") or 0
         preferred_client = idx.get("client_id")
@@ -1241,7 +1486,12 @@ async def search_all_indexers(
     return all_items
 
 
-async def _search_indexer(idx: dict, query: str) -> list[dict]:
+async def _search_indexer(
+    idx: dict[str, Any],
+    query: str,
+    *,
+    excluded_prowlarr_ids: frozenset[int] = _NO_PROWLARR_IDS,
+) -> list[dict[str, Any]]:
     t = idx["type"]
     url = (idx["url"] or "").rstrip("/")
     key = idx["api_key"] or ""
@@ -1258,24 +1508,26 @@ async def _search_indexer(idx: dict, query: str) -> list[dict]:
 
     try:
         if t == "prowlarr":
-            async with httpx.AsyncClient(timeout=30) as cli:
-                r = await cli.get(
-                    f"{url}/api/v1/search",
-                    headers={"X-Api-Key": key},
-                    params={"query": query, "categories": cats, "type": "search"},
-                )
-            should_off, reason = _should_backoff_on_response(r)
-            if should_off:
+            items, failures = await _fetch_prowlarr_fanout(
+                url,
+                key,
+                cats,
+                excluded_prowlarr_ids=excluded_prowlarr_ids,
+                query=query,
+                operation="search",
+            )
+            if failures:
+                recorded_failure = _preferred_indexer_failure(failures)
+                status, retry_after = _indexer_exception_response(recorded_failure)
                 _indexer_record_failure(
                     idx_id,
-                    status=r.status_code,
-                    retry_after_header=r.headers.get("Retry-After"),
-                    reason=reason,
+                    status=status,
+                    retry_after_header=retry_after,
+                    reason=_indexer_exception_detail(recorded_failure)[:200],
                 )
-                return []
-            if r.status_code == 200:
+            else:
                 _indexer_record_success(idx_id)
-                return _parse_prowlarr_response(r.json(), name)
+            return items
 
         elif t in ("torznab", "newznab"):
             proto = "torrent" if t == "torznab" else "nzb"
@@ -1284,30 +1536,34 @@ async def _search_indexer(idx: dict, query: str) -> list[dict]:
                     f"{url}/api",
                     params={"t": "search", "q": query, "cat": cat_str, "apikey": key},
                 )
-            should_off, reason = _should_backoff_on_response(r)
-            if should_off:
-                _indexer_record_failure(
+            reason = _response_failure_reason(r)
+            if reason is not None:
+                dl = _indexer_record_failure(
                     idx_id,
                     status=r.status_code,
                     retry_after_header=r.headers.get("Retry-After"),
                     reason=reason,
                 )
+                _log_indexer_response_failure(
+                    f"[Indexer:{name}]",
+                    "search request failed",
+                    status=r.status_code,
+                    reason=reason,
+                    retry_in=int(dl - time.time()),
+                )
                 return []
+            items = _parse_torznab_rss(r.text, name, proto)
             _indexer_record_success(idx_id)
-            return _parse_torznab_rss(r.text, name, proto)
+            return items
 
     except Exception as e:
-        # Include the exception class name. Some httpx errors (and other
-        # network exceptions) have an empty str(e), which previously
-        # produced uninformative logs like "[Indexer:Prowlarr] search
-        # error:" with nothing after the colon. The recorded failure
-        # reason already includes the class name; the print should too.
-        log_event("error", f"[Indexer:{name}] search error: {type(e).__name__}: {e}")
+        _log_indexer_exception(f"[Indexer:{name}]", "search request failed", e)
+        status, retry_after = _indexer_exception_response(e)
         _indexer_record_failure(
             idx_id,
-            status=None,
-            retry_after_header=None,
-            reason=f"{type(e).__name__}: {str(e)[:120]}",
+            status=status,
+            retry_after_header=retry_after,
+            reason=_indexer_exception_detail(e)[:200],
         )
     return []
 
