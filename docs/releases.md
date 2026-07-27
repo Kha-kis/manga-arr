@@ -37,6 +37,7 @@ The release workflow publishes `ghcr.io/kha-kis/manga-arr` with these tags:
 
 | Release | Image tags |
 | --- | --- |
+| `1.2.0-rc.7` | `1.2.0-rc.7` |
 | `1.2.0-rc.6` | `1.2.0-rc.6` |
 | `1.2.0-rc.5` | `1.2.0-rc.5` |
 | `1.2.0-rc.4` | `1.2.0-rc.4` |

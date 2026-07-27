@@ -5,10 +5,10 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## Release Under Test
 
-- Release candidate: `1.2.0-rc.6`
+- Release candidate: `1.2.0-rc.7`
 - Stable target: `1.2.0`
 - Qualified base: `1.1.0`
-- Candidate image: `ghcr.io/kha-kis/manga-arr:1.2.0-rc.6`
+- Candidate image: `ghcr.io/kha-kis/manga-arr:1.2.0-rc.7`
 - Platforms: `linux/amd64`, `linux/arm64`
 
 ## Production Evidence
@@ -39,7 +39,14 @@ can become a stable release. Passing unit tests alone is not sufficient.
   as failures and retried every five minutes. Two polls created 100 false
   failure records without changing canonical files. The candidate was stopped
   and rejected.
-- The `1.2.0-rc.6` candidate must complete a fresh operational soak with hourly
+- The `1.2.0-rc.6` import receipt fix remained stable, but its soak exposed
+  duplicate Prowlarr polling and an observability defect. Imported child rows
+  polled directly while the enabled parent fanned out to the same Prowlarr IDs.
+  Intermittent upstream timeouts were therefore recorded in pairs, and empty
+  `httpx` exception strings produced blank application-error events. The
+  candidate was rejected even though the container, database, canonical files,
+  and import receipts remained stable.
+- The `1.2.0-rc.7` candidate must complete a fresh operational soak with hourly
   health, restart, log, integrity, import-path, and backlog-search evidence.
   Recurring configuration errors, inaccessible completed downloads, unrelated
   automatic grabs, malformed volume numbers, or download-client
@@ -113,7 +120,7 @@ operational soak before stable promotion. Qualification evidence includes:
   transitions during the production soak;
 - public support, security, contribution, and conduct policies;
 - a protected default branch and immutable annotated release tags;
-- candidate publication verification that `1.2.0-rc.6` resolves to the tested
+- candidate publication verification that `1.2.0-rc.7` resolves to the tested
   multi-platform image digest without moving stable aliases;
 - stable publication verification that `1.2.0`, `1.2`, `1`, and `latest`
   resolve to the same stable image digest.
