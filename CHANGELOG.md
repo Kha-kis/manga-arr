@@ -5,6 +5,42 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.2.0-rc.7 - 2026-07-27
+
+Seventh release candidate for the 1.2.0 import-review and metadata-provenance
+release. This candidate replaces `rc.6`, whose production soak was invalidated
+when recoverable Prowlarr and tracker timeouts were recorded as blank
+application errors.
+
+### Fixed
+
+- Imported Prowlarr child indexers now own their individual Prowlarr IDs, so an
+  enabled parent does not query the same source a second time.
+- Selectively imported configurations retain unimported Prowlarr sources
+  through the parent instead of disabling the entire parent path.
+- Transport failures and upstream 429/5xx responses are recorded as actionable
+  warnings while authentication, parser, and application failures remain
+  errors.
+- Empty `httpx` exception messages now include a sanitized exception class and
+  useful guidance without exposing API keys or request URLs.
+- Parent fan-out preserves status and the longest valid `Retry-After`; malformed
+  responses retain their exponential failure streak.
+- Warning events can be filtered and identified correctly on the system Logs
+  page.
+
+### Validation
+
+- Production evidence showed paired child/parent failures approximately ten
+  seconds apart and confirmed that all affected indexers later recovered.
+- The live configuration has 13 imported Prowlarr children and three remaining
+  parent-only manga sources; per-ID ownership preserves both sets without
+  duplicate source requests.
+- Regression coverage includes selective imports, purpose and tag eligibility,
+  timeouts, secret-bearing request errors, HTTP backoff, cancellation, malformed
+  XML, and warning-log filtering.
+- 1,778 Python tests, 13 confirmation-flow checks, and 10 route-sweep checks
+  pass after the polling fix.
+
 ## 1.2.0-rc.6 - 2026-07-24
 
 Sixth release candidate for the 1.2.0 import-review and metadata-provenance
