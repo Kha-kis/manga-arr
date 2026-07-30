@@ -11,11 +11,15 @@ creates, alters, or reshapes the SQLite schema at startup:
                                    pattern, gated by PRAGMA user_version
   - _SCHEMA_VERSION_FK_CONSTRAINTS — current migration version
 
-Pure move — no behaviour changes. Callers in main.py still see
-`init_db()`, `_bootstrap_root_folders()`, and `_migrate_schema_constraints()`
-via a re-export.
+Callers in main.py see `init_db()`, `_bootstrap_root_folders()`, and
+`_migrate_schema_constraints()` via a re-export.
 """
 from __future__ import annotations
+
+import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import cast
 
 from events import log_event
 from parsing import extract_volume_num
@@ -26,10 +30,63 @@ from shared import (
     validate_sql_typedef,
 )
 
+_SCHEMA_VERSION_FK_CONSTRAINTS = 1
+_SCHEMA_VERSION_STATUS_CONSTRAINTS = 2
 
-def init_db():
+
+@contextmanager
+def _schema_write_transaction() -> Iterator[sqlite3.Connection]:
+    """Hold one SQLite writer lock across schema validation and every write."""
     with get_db() as db:
-        db.executescript("""
+        # Rebuild migrations must drop referenced tables, so foreign-key
+        # enforcement has to be disabled before the transaction begins.
+        db.execute("PRAGMA foreign_keys=OFF")
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            yield db
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+        finally:
+            db.execute("PRAGMA foreign_keys=ON")
+
+
+def _execute_script_in_transaction(db: sqlite3.Connection, script: str) -> None:
+    """Execute a script without ``executescript()`` releasing the writer lock.
+
+    Python's sqlite3 ``executescript()`` implicitly commits a pending
+    transaction before running its script. Execute one complete statement at
+    a time so ``BEGIN IMMEDIATE`` remains active for the entire schema pass.
+    """
+    statement = ""
+    for line in script.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            db.execute(statement)
+            statement = ""
+    if statement.strip():
+        raise RuntimeError("incomplete SQL statement in schema initialization")
+
+
+def _validate_schema_version(db: sqlite3.Connection) -> int:
+    """Return the DB schema version, rejecting versions this binary cannot read."""
+    version = cast(int, db.execute("PRAGMA user_version").fetchone()[0])
+    if version > _SCHEMA_VERSION_STATUS_CONSTRAINTS:
+        message = (
+            f"database schema version {version} is newer than this Mangarr version"
+        )
+        message += (
+            f" supports ({_SCHEMA_VERSION_STATUS_CONSTRAINTS}); refusing to modify it"
+        )
+        raise RuntimeError(message)
+    return version
+
+
+def init_db() -> None:
+    with _schema_write_transaction() as db:
+        _validate_schema_version(db)
+        _execute_script_in_transaction(db, """
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -329,7 +386,7 @@ def init_db():
         add_col('series',             'vol_count_source', 'TEXT DEFAULT "anilist"')  # anilist|mangaupdates|wikipedia|google_books|local|manual
 
         # ── chapters table ────────────────────────────────────────────────────
-        db.executescript("""
+        _execute_script_in_transaction(db, """
             CREATE TABLE IF NOT EXISTS chapters (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 series_id     INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
@@ -379,7 +436,7 @@ def init_db():
         """)
 
         # ── Sonarr-parity tables ──────────────────────────────────────────────
-        db.executescript("""
+        _execute_script_in_transaction(db, """
             -- Quality Profiles
             CREATE TABLE IF NOT EXISTS quality_profiles (
                 id                            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -856,7 +913,7 @@ def init_db():
         """)
 
         # ── DDL / Suwayomi tables ─────────────────────────────────────────────
-        db.executescript("""
+        _execute_script_in_transaction(db, """
             -- MangaDex chapter manifest: per-chapter UUID → num/vol mapping, metadata only
             CREATE TABLE IF NOT EXISTS mangadex_chapters (
                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1033,15 +1090,10 @@ def init_db():
               AND NOT EXISTS (SELECT 1 FROM volumes v WHERE v.id = chapters.volume_id)
         """)
 
-    # Schema constraint migrations (FK / CHECK). Run *after* init_db's
-    # main create-and-fill pass so the existing data is stable.
-    _migrate_schema_constraints()
-    # Library-destination model: root folders are the single mechanism,
-    # matching the Sonarr/Radarr convention. Bootstrap a root folder
-    # from the legacy save_path if none exists; auto-assign any series
-    # missing a root_folder_id. Runs every boot but is a no-op once
-    # both invariants hold, so it's safe to call idempotently.
-    _bootstrap_root_folders()
+        # Keep schema rebuilds and root-folder migration in this same writer
+        # transaction so no newer binary can claim the DB between phases.
+        _migrate_schema_constraints_locked(db)
+        _bootstrap_root_folders_locked(db)
 
 
 # ── Root-folder bootstrap ─────────────────────────────────────────────────────
@@ -1063,40 +1115,46 @@ def _bootstrap_root_folders() -> None:
     Idempotent: after the first successful boot, both queries return
     0 rows and this helper is a no-op.
     """
-    with get_db() as db:
-        # Step 1: create a root folder from save_path if no folders exist.
-        count = db.execute("SELECT COUNT(*) FROM root_folders").fetchone()[0]
-        if count == 0:
-            sp = (get_cfg('save_path', '') or '').strip()
-            if sp:
-                db.execute(
-                    "INSERT INTO root_folders(path, label, is_default)"
-                    " VALUES(?, 'Manga', 1)",
-                    (sp,)
-                )
-                log_event(
-                    'schema_migration',
-                    f"bootstrapped root folder from legacy save_path: {sp!r}",
-                    db=db,
-                )
-        # Step 2: assign orphan series (root_folder_id IS NULL) to the
-        # default root folder. If no default is flagged, pick the
-        # lowest-id folder as the fallback.
-        default = db.execute(
-            "SELECT id FROM root_folders ORDER BY is_default DESC, id LIMIT 1"
-        ).fetchone()
-        if default is not None:
-            cur = db.execute(
-                "UPDATE series SET root_folder_id=? WHERE root_folder_id IS NULL",
-                (default[0],)
+    with _schema_write_transaction() as db:
+        _validate_schema_version(db)
+        _bootstrap_root_folders_locked(db)
+
+
+def _bootstrap_root_folders_locked(db: sqlite3.Connection) -> None:
+    """Bootstrap root folders inside an existing schema writer transaction."""
+    # Step 1: create a root folder from save_path if no folders exist.
+    count = db.execute("SELECT COUNT(*) FROM root_folders").fetchone()[0]
+    if count == 0:
+        sp = (get_cfg('save_path', '') or '').strip()
+        if sp:
+            db.execute(
+                "INSERT INTO root_folders(path, label, is_default)"
+                " VALUES(?, 'Manga', 1)",
+                (sp,)
             )
-            assigned = cur.rowcount
-            if assigned > 0:
-                log_event(
-                    'schema_migration',
-                    f"assigned {assigned} orphan series to root_folder_id={default[0]}",
-                    db=db,
-                )
+            log_event(
+                'schema_migration',
+                f"bootstrapped root folder from legacy save_path: {sp!r}",
+                db=db,
+            )
+    # Step 2: assign orphan series (root_folder_id IS NULL) to the
+    # default root folder. If no default is flagged, pick the
+    # lowest-id folder as the fallback.
+    default = db.execute(
+        "SELECT id FROM root_folders ORDER BY is_default DESC, id LIMIT 1"
+    ).fetchone()
+    if default is not None:
+        cur = db.execute(
+            "UPDATE series SET root_folder_id=? WHERE root_folder_id IS NULL",
+            (default[0],)
+        )
+        assigned = cur.rowcount
+        if assigned > 0:
+            log_event(
+                'schema_migration',
+                f"assigned {assigned} orphan series to root_folder_id={default[0]}",
+                db=db,
+            )
 
 
 # ── Schema constraint migrations ──────────────────────────────────────────────
@@ -1106,9 +1164,6 @@ def _bootstrap_root_folders() -> None:
 # We use PRAGMA user_version as a migration flag so migrations run exactly
 # once per DB. Orphan rows (series_id pointing to a deleted series) are
 # dropped during the copy and logged so operators can see what went.
-
-_SCHEMA_VERSION_FK_CONSTRAINTS = 1
-_SCHEMA_VERSION_STATUS_CONSTRAINTS = 2
 
 
 _OWNED_STATUS_CHECK = "status IN ('wanted','grabbed','downloaded')"
@@ -1144,17 +1199,22 @@ def _migrate_schema_constraints() -> None:
     desired shape, then still flow through these rebuilds once so the
     version stamp is consistent.
     """
-    with get_db() as db:
-        version = db.execute("PRAGMA user_version").fetchone()[0]
-        if version >= _SCHEMA_VERSION_STATUS_CONSTRAINTS:
-            return
+    with _schema_write_transaction() as db:
+        _migrate_schema_constraints_locked(db)
 
-        if version < _SCHEMA_VERSION_FK_CONSTRAINTS:
-            _migrate_series_fk_constraints(db)
-            version = _SCHEMA_VERSION_FK_CONSTRAINTS
 
-        if version < _SCHEMA_VERSION_STATUS_CONSTRAINTS:
-            _migrate_owned_status_constraints(db)
+def _migrate_schema_constraints_locked(db: sqlite3.Connection) -> None:
+    """Run pending constraint migrations inside a writer transaction."""
+    version = _validate_schema_version(db)
+    if version == _SCHEMA_VERSION_STATUS_CONSTRAINTS:
+        return
+
+    if version < _SCHEMA_VERSION_FK_CONSTRAINTS:
+        _migrate_series_fk_constraints(db)
+        version = _SCHEMA_VERSION_FK_CONSTRAINTS
+
+    if version < _SCHEMA_VERSION_STATUS_CONSTRAINTS:
+        _migrate_owned_status_constraints(db)
 
 
 def _migrate_series_fk_constraints(db) -> None:
@@ -1214,29 +1274,25 @@ def _migrate_series_fk_constraints(db) -> None:
         """),
     ]
 
-    db.execute("PRAGMA foreign_keys=OFF")
-    try:
-        for name, ddl in tables:
-            orphan_count = db.execute(
-                f"SELECT COUNT(*) FROM {name}"
-                f" WHERE series_id IS NOT NULL"
-                f"   AND series_id NOT IN (SELECT id FROM series)"
-            ).fetchone()[0]
-            if orphan_count:
-                log_event(
-                    'schema_migration',
-                    f'{name}: {orphan_count} orphan row(s) with stale '
-                    f'series_id will be dropped during FK migration',
-                    db=db,
-                )
-            _rebuild_table_copying_known_columns(
-                db,
-                name=name,
-                ddl=ddl,
-                where="series_id IS NULL OR series_id IN (SELECT id FROM series)",
+    for name, ddl in tables:
+        orphan_count = db.execute(
+            f"SELECT COUNT(*) FROM {name}"
+            f" WHERE series_id IS NOT NULL"
+            f"   AND series_id NOT IN (SELECT id FROM series)"
+        ).fetchone()[0]
+        if orphan_count:
+            log_event(
+                'schema_migration',
+                f'{name}: {orphan_count} orphan row(s) with stale '
+                f'series_id will be dropped during FK migration',
+                db=db,
             )
-    finally:
-        db.execute("PRAGMA foreign_keys=ON")
+        _rebuild_table_copying_known_columns(
+            db,
+            name=name,
+            ddl=ddl,
+            where="series_id IS NULL OR series_id IN (SELECT id FROM series)",
+        )
 
     db.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_FK_CONSTRAINTS}")
     log_event(
@@ -1358,30 +1414,26 @@ def _migrate_owned_status_constraints(db) -> None:
         "CASE WHEN status IN ('wanted','grabbed','downloaded')"
         " THEN status ELSE 'wanted' END"
     )
-    db.execute("PRAGMA foreign_keys=OFF")
-    try:
-        for name, ddl in tables:
-            invalid = db.execute(
-                f"SELECT COUNT(*) FROM {name}"
-                f" WHERE status IS NULL OR status NOT IN "
-                f"('wanted','grabbed','downloaded')"
-            ).fetchone()[0]
-            if invalid:
-                log_event(
-                    'schema_migration',
-                    f'{name}: normalized {invalid} invalid status value(s) '
-                    f"to 'wanted' during CHECK migration",
-                    db=db,
-                )
-            _rebuild_table_copying_known_columns(
-                db,
-                name=name,
-                ddl=ddl,
-                where="series_id IN (SELECT id FROM series)",
-                transforms={'status': status_expr},
+    for name, ddl in tables:
+        invalid = db.execute(
+            f"SELECT COUNT(*) FROM {name}"
+            f" WHERE status IS NULL OR status NOT IN "
+            f"('wanted','grabbed','downloaded')"
+        ).fetchone()[0]
+        if invalid:
+            log_event(
+                'schema_migration',
+                f'{name}: normalized {invalid} invalid status value(s) '
+                f"to 'wanted' during CHECK migration",
+                db=db,
             )
-    finally:
-        db.execute("PRAGMA foreign_keys=ON")
+        _rebuild_table_copying_known_columns(
+            db,
+            name=name,
+            ddl=ddl,
+            where="series_id IN (SELECT id FROM series)",
+            transforms={'status': status_expr},
+        )
 
     _restore_volume_chapter_artifacts(db)
     db.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_STATUS_CONSTRAINTS}")
