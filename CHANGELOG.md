@@ -5,6 +5,59 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.2.0-rc.8 - 2026-07-30
+
+Eighth release candidate for the 1.2.0 import-review and metadata-provenance
+release. RC7 completed its 72-hour production soak without application errors,
+database-lock failures, HTTP 5xx responses, or container restarts. RC8 builds
+on that stable baseline with crash-safe import recovery and exact downloader
+ownership.
+
+### Added
+
+- Durable publication journals recover interrupted copy, move, and hardlink
+  imports without holding a SQLite writer transaction during file I/O.
+- Durable outboxes retry per-provider notifications and post-import effects
+  without repeating providers or effects that already completed.
+- Pack cleanup and volume-file deletion journals use leases, no-clobber
+  filesystem transitions, ownership markers, and startup/runtime recovery.
+- Download identities now include the exact configured client and protocol
+  throughout grab, queue, import, history, status, and destructive actions.
+
+### Changed
+
+- Import workers use short database claims, DB-clock leases, heartbeats, and
+  ownership checks; graceful shutdown waits for tracked workers to settle.
+- Library rescans snapshot database state, perform filesystem work without a
+  writer lock, then commit guarded results in short transactions.
+- Settings partial saves preserve unrelated values, and fresh installations
+  create required root-folder state after configuration is loaded.
+- Schema version 5 enforces downloader protocol constraints, rejects unsupported
+  future schemas, restores migration indexes, and fails closed when legacy
+  downloader ownership is ambiguous.
+
+### Fixed
+
+- Hardlink imports use copy-on-write before injecting `ComicInfo.xml`, so
+  torrent source inodes are never modified.
+- Concurrent or stale workers can no longer remove a successor's staging tree,
+  publish after losing their lease, or clean up another client's download.
+- Newly created destination directory entries and pack attachment state are
+  persisted before source cleanup, closing power-loss data-loss windows.
+- qBittorrent hashes remain case-insensitive while SABnzbd IDs remain exact,
+  including collisions across multiple configured clients.
+
+### Validation
+
+- Two independent Python/LSP audits found seven durability, migration, and
+  ownership issues; every finding was fixed and covered by a regression test.
+- 2,155 Python tests, 13 confirmation-flow checks, and 10 route-sweep checks
+  pass.
+- Isolated browser smoke, integration, E2E, and settings suites pass 32/32,
+  22/22, 29/29, and 12/12 respectively.
+- `make test-release-safe`, Ruff, Python compilation, and repository whitespace
+  checks pass on the reviewed release base.
+
 ## 1.2.0-rc.7 - 2026-07-27
 
 Seventh release candidate for the 1.2.0 import-review and metadata-provenance
