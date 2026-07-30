@@ -104,20 +104,25 @@ def _parse_chapter_ranges(text: str) -> dict[str, int] | None:
     return mapping if mapping else None
 
 
-async def _rescan_all_impl():
+async def _rescan_all_impl() -> None:
     """Core logic for full library rescan — shared by route and periodic loop."""
     import main as _m
 
     with get_db() as db:
-        series_ids = [r["id"] for r in db.execute("SELECT id FROM series").fetchall()]
-        total = {"found": 0, "recovered": 0, "missing": 0, "lost": 0, "created": 0}
-        for sid in series_ids:
-            r = _m.rescan_series_folder(db, sid)
-            total["found"] += r["found"]
-            total["recovered"] += r["recovered"]
-            total["missing"] += r["missing"]
-            total["lost"] += r["lost"]
-            total["created"] += r.get("created", 0)
+        series_ids = [
+            r["id"]
+            for r in db.execute(
+                "SELECT id FROM series WHERE deleted_at IS NULL"
+            ).fetchall()
+        ]
+    total = {"found": 0, "recovered": 0, "missing": 0, "lost": 0, "created": 0}
+    for sid in series_ids:
+        result = await asyncio.to_thread(_m.rescan_series_folder, sid)
+        total["found"] += result["found"]
+        total["recovered"] += result["recovered"]
+        total["missing"] += result["missing"]
+        total["lost"] += result["lost"]
+        total["created"] += result.get("created", 0)
     _m.log_event(
         "rescan",
         f"Full library rescan: {total['found']} files, "
@@ -3223,8 +3228,7 @@ async def grab_volume_release(series_id: int, volume_id: int, request: Request):
 async def rescan_series(request: Request, series_id: int):
     import main as _m
 
-    with get_db() as db:
-        result = _m.rescan_series_folder(db, series_id)
+    result = await asyncio.to_thread(_m.rescan_series_folder, series_id)
     parts = []
     if result["found"]:
         parts.append(f"{result['found']} file(s) on disk")
