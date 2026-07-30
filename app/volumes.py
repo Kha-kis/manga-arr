@@ -21,6 +21,8 @@ the caller's transaction. Pure SQL — no file I/O, no HTTP.
 from __future__ import annotations
 
 import json
+import sqlite3
+from typing import Any
 
 
 def create_volume_stubs(db, series_id: int, total_volumes: int):
@@ -85,7 +87,7 @@ def populate_chapters(db, series_id: int) -> int:
     if not row or not row['chapter_vol_map']:
         return 0
     try:
-        ch_map: dict = json.loads(row['chapter_vol_map'])
+        ch_map: dict[str, Any] = json.loads(row['chapter_vol_map'])
     except Exception:
         return 0
     if not ch_map:
@@ -180,22 +182,25 @@ def _check_volume_completion(db, series_id: int, volume_id: int) -> bool:
     return False
 
 
-def _cascade_chapters(db, series_id: int,
-                      volume_ids: list[int] | None,
-                      status: str,
-                      **kwargs) -> int:
+def _cascade_chapters(
+    db: sqlite3.Connection,
+    series_id: int,
+    volume_ids: list[int] | None,
+    status: str,
+    **kwargs: Any,
+) -> int:
     """Cascade a status change to chapters belonging to the given volume IDs.
     volume_ids=None cascades to ALL chapters for the series.
     kwargs: optional column=value pairs (grabbed_at, torrent_name,
-    torrent_url, indexer, protocol, client, download_id, release_group,
-    size_bytes). Only updates monitored=1 chapters. Returns count of
-    updated rows."""
+    torrent_url, indexer, protocol, client, download_id, download_client_id,
+    release_group, size_bytes). Only updates monitored=1 chapters. Returns
+    count of updated rows."""
     # NOTE: chapters table uses 'torrent_url' (volumes uses 'source_url').
     # Callers should pass torrent_url; source_url alias is intentionally NOT allowed.
     allowed_cols = {
         'grabbed_at', 'torrent_name', 'torrent_url', 'indexer',
-        'protocol', 'client', 'download_id', 'release_group', 'size_bytes',
-        'import_path', 'quality', 'imported_at',
+        'protocol', 'client', 'download_id', 'download_client_id',
+        'release_group', 'size_bytes', 'import_path', 'quality', 'imported_at',
     }
     extra_cols = [c for c in kwargs if c in allowed_cols]
     extra_vals = [kwargs[c] for c in extra_cols]

@@ -8,6 +8,9 @@ cleanup / backoff helpers:
   periodic loops
     rss_loop                       — poll enabled indexers
     status_loop                    — check download completion
+    pack_cleanup_recovery_loop     — retry generated-pack journals
+    publication_replay_loop        — retry durable import publications
+    volume_deletion_replay_loop    — retry durable volume deletions
     refresh_ongoing_loop           — daily AniList refresh for
                                      RELEASING / HIATUS series
     _metadata_retry_loop           — retry due provider failures
@@ -62,6 +65,11 @@ import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+from download_identity import (
+    coerce_download_client_id,
+    normalize_download_protocol,
+    resolve_download_protocol,
+)
 from events import log_event
 from grab import grab_existing, poll_rss
 from import_pipeline import check_download_status
@@ -117,6 +125,142 @@ async def status_loop():
             await asyncio.sleep(300)
         except asyncio.CancelledError:
             log_event('info', '[StatusLoop] Loop cancelled during shutdown')
+            raise
+
+
+async def pack_cleanup_recovery_loop() -> None:
+    """Recover bounded generated-pack journals with cancellation-safe backoff."""
+    from import_pack_cleanup import recover_pack_cleanup_state
+
+    delay = 1.0
+    await asyncio.sleep(delay)
+    while True:
+        operation = asyncio.create_task(
+            asyncio.to_thread(
+                recover_pack_cleanup_state,
+                max_rows=100,
+            )
+        )
+        try:
+            summary = await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            try:
+                await asyncio.shield(operation)
+            except Exception as exc:
+                log_event(
+                    "error",
+                    "[PackCleanupReplay] recovery failed during shutdown "
+                    f"({type(exc).__name__})",
+                )
+            log_event(
+                "info",
+                "[PackCleanupReplay] Loop cancelled during shutdown",
+            )
+            raise
+        except Exception as exc:
+            log_event(
+                "error",
+                f"[PackCleanupReplay] recovery failed ({type(exc).__name__})",
+            )
+            delay = min(60.0, max(2.0, delay * 2))
+        else:
+            progress = (
+                summary.reservations_recovered
+                + summary.tombstones_removed
+            )
+            if progress:
+                delay = 1.0
+            elif summary.tombstones_retained:
+                delay = min(60.0, max(2.0, delay * 2))
+            else:
+                delay = min(60.0, max(5.0, delay * 2))
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            log_event(
+                "info",
+                "[PackCleanupReplay] Loop cancelled during shutdown",
+            )
+            raise
+
+
+async def publication_replay_loop() -> None:
+    """Replay bounded journal batches with keyset fairness and idle backoff."""
+    from import_publication import replay_import_publications
+
+    cursor = 0
+    delay = 1.0
+    await asyncio.sleep(delay)
+    while True:
+        try:
+            summary = await replay_import_publications(
+                max_rows=100,
+                after_id=cursor,
+            )
+        except asyncio.CancelledError:
+            # replay_import_publications settles only its one in-flight journal
+            # operation and exposes cancellation before starting the next ID.
+            log_event("info", "[ImportReplay] Loop cancelled during shutdown")
+            raise
+        except Exception as exc:
+            log_event(
+                "error",
+                f"[ImportReplay] journal replay failed ({type(exc).__name__})",
+            )
+            cursor = 0
+            delay = min(60.0, max(2.0, delay * 2))
+        else:
+            cursor = summary.last_id if summary.examined else 0
+            progress = summary.completed + summary.aborted_staging
+            if progress:
+                delay = 1.0
+            elif summary.examined:
+                delay = min(60.0, max(2.0, delay * 2))
+            else:
+                delay = min(60.0, max(5.0, delay * 2))
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            log_event("info", "[ImportReplay] Loop cancelled during shutdown")
+            raise
+
+
+async def volume_deletion_replay_loop() -> None:
+    """Retry bounded active volume-deletion journals with idle backoff."""
+    from volume_file_deletion import replay_volume_file_deletions
+
+    cursor = 0
+    delay = 1.0
+    await asyncio.sleep(delay)
+    while True:
+        try:
+            summary = await replay_volume_file_deletions(
+                max_rows=100,
+                after_id=cursor,
+            )
+        except asyncio.CancelledError:
+            log_event("info", "[VolumeDeleteReplay] Loop cancelled during shutdown")
+            raise
+        except Exception as exc:
+            log_event(
+                "error",
+                "[VolumeDeleteReplay] journal replay failed "
+                f"({type(exc).__name__})",
+            )
+            cursor = 0
+            delay = min(60.0, max(2.0, delay * 2))
+        else:
+            cursor = summary.last_id if summary.examined else 0
+            if summary.completed:
+                delay = 1.0
+            elif summary.examined:
+                delay = min(60.0, max(2.0, delay * 2))
+            else:
+                delay = min(60.0, max(5.0, delay * 2))
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            log_event("info", "[VolumeDeleteReplay] Loop cancelled during shutdown")
             raise
 
 
@@ -370,7 +514,9 @@ def _fail_stale_queue_and_reset_volume(
     queue_id: int,
     observed_status: RetryableImportQueueStatus,
     download_id: str | None,
+    download_client_id: int | None = None,
     series_id: int,
+    download_protocol: str | None = None,
 ) -> bool:
     """Fail one stale parent and reset only its unshared series download.
 
@@ -388,15 +534,36 @@ def _fail_stale_queue_and_reset_volume(
         db,
         queue_id=queue_id,
         download_id=download_id,
+        download_client_id=download_client_id,
         series_id=series_id,
+        protocol=normalize_download_protocol(download_protocol),
     ):
         return True
+    owner_id = coerce_download_client_id(download_client_id)
+    protocol = normalize_download_protocol(
+        download_protocol
+    ) or resolve_download_protocol(
+        db,
+        download_client_id=owner_id,
+        series_id=series_id,
+        download_id=str(download_id or ""),
+    )
+    id_filter = (
+        "download_id=? COLLATE NOCASE" if protocol == "torrent" else "download_id=?"
+    )
     db.execute(
         "UPDATE volumes SET status='wanted', grabbed_at=NULL,"
         " download_id=NULL, torrent_name=NULL, indexer=NULL,"
-        " protocol=NULL, client=NULL, release_group=NULL"
-        " WHERE series_id=? AND download_id=? AND status='grabbed'",
-        (series_id, download_id),
+        " protocol=NULL, client=NULL, download_client_id=NULL,"
+        " release_group=NULL"
+        " WHERE id IN (SELECT id FROM volumes WHERE " + id_filter + ")"
+        " AND series_id=? AND download_client_id IS ?"
+        " AND status='grabbed'",
+        (
+            download_id,
+            series_id,
+            owner_id,
+        ),
     )
     return True
 
@@ -511,7 +678,8 @@ def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
     # ── Phase 3: import_queue stuck in pending/partial ──
     with get_db() as db:
         stale_queue = db.execute(
-            "SELECT id, series_id, torrent_name, download_id, status, lease_owner"
+            "SELECT id, series_id, torrent_name, download_id,"
+            " download_client_id, download_protocol, status, lease_owner"
             "  FROM import_queue"
             " WHERE status IN ('pending', 'partial')"
             "   AND lease_owner IS NULL"
@@ -525,6 +693,8 @@ def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
                 queue_id=row['id'],
                 observed_status=row['status'],
                 download_id=row['download_id'],
+                download_client_id=row['download_client_id'],
+                download_protocol=row['download_protocol'],
                 series_id=row['series_id'],
             )
             if not transitioned:
@@ -922,10 +1092,10 @@ async def _recycle_bin_reaper_loop():
 
 
 # ── Background task lifecycle ────────────────────────────────────────────────
-# All long-running asyncio loops (rss, status, refresh, backfill, backlog,
-# suwayomi, rescan, import-list, backup, stuck-retry) are registered here so
-# lifespan shutdown can cancel them, and so an unexpected exit from one
-# surfaces in the log instead of silently dying.
+# All long-running asyncio loops (rss, status, journal replay, refresh,
+# backfill, backlog, suwayomi, rescan, import-list, backup, stuck-retry) are
+# registered here so lifespan shutdown can cancel them, and so an unexpected
+# exit from one surfaces in the log instead of silently dying.
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 

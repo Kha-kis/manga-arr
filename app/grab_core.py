@@ -20,8 +20,9 @@ import difflib
 import json
 import re
 from datetime import datetime
+from typing import cast
 
-from clients import grab_url
+from clients import GrabResult, grab_url
 from files import (
     build_volume_label,
     detect_edition_type,
@@ -400,11 +401,36 @@ async def grab_item(
     # retry for minutes.
     try:
         try:
-            ok, client_name, dl_id, client_healthy = await asyncio.wait_for(
-                grab_url(
-                    item["url"], protocol, save_path=save_path, torrent_name=title
+            grab_result = cast(
+                GrabResult | tuple[bool, str, str | None, bool],
+                await asyncio.wait_for(
+                    grab_url(
+                        item["url"],
+                        protocol,
+                        save_path=save_path,
+                        torrent_name=title,
+                        series_id=series_id,
+                    ),
+                    timeout=45,
                 ),
-                timeout=45,
+            )
+            if isinstance(grab_result, GrabResult):
+                ok = grab_result.success
+                client_name = grab_result.client_name
+                dl_id = grab_result.download_id
+                client_healthy = grab_result.client_healthy
+                raw_download_client_id = grab_result.download_client_id
+            else:
+                # Compatibility for callers/tests still replacing grab_url with
+                # the historical four-tuple contract.
+                ok, client_name, dl_id, client_healthy = grab_result
+                raw_download_client_id = None
+            download_client_id = (
+                raw_download_client_id
+                if isinstance(raw_download_client_id, int)
+                and not isinstance(raw_download_client_id, bool)
+                and raw_download_client_id > 0
+                else None
             )
         except asyncio.TimeoutError:
             log_event(
@@ -431,8 +457,8 @@ async def grab_item(
                 "INSERT OR IGNORE INTO seen"
                 "(torrent_url, torrent_name, series_id, volume_num, grabbed_at,"
                 " indexer, protocol, client, download_id, release_group, size_bytes,"
-                " release_guid)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                " release_guid, download_client_id)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     item["url"],
                     title,
@@ -446,6 +472,7 @@ async def grab_item(
                     parse_release_group(title),
                     item.get("size_bytes", 0),
                     _release_guid,
+                    download_client_id,
                 ),
             )
         log_event(
@@ -469,8 +496,8 @@ async def grab_item(
             "INSERT OR IGNORE INTO seen"
             "(torrent_url, torrent_name, series_id, volume_num, grabbed_at,"
             " indexer, protocol, client, download_id, release_group, size_bytes,"
-            " release_guid)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            " release_guid, download_client_id)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 item["url"],
                 title,
@@ -484,6 +511,7 @@ async def grab_item(
                 rgroup,
                 size,
                 _release_guid,
+                download_client_id,
             ),
         )
 
@@ -773,6 +801,26 @@ async def grab_item(
                         db, series_id, covered_vol_ids, "grabbed", **_ch_cascade_kw
                     )
 
+        if download_client_id is not None:
+            db.execute(
+                """
+                UPDATE volumes
+                SET download_client_id=?
+                WHERE series_id=? AND source_url=? AND download_id=?
+                  AND status='grabbed'
+                """,
+                (download_client_id, series_id, item["url"], dl_id),
+            )
+            db.execute(
+                """
+                UPDATE chapters
+                SET download_client_id=?
+                WHERE series_id=? AND torrent_url=? AND download_id=?
+                  AND status='grabbed'
+                """,
+                (download_client_id, series_id, item["url"], dl_id),
+            )
+
     vol_label = build_volume_label(
         vol_num, vol_rng, pack_type if vol_num is None else None
     )
@@ -796,6 +844,7 @@ async def grab_item(
             protocol=protocol,
             client=client_name,
             download_id=dl_id or "",
+            download_client_id=download_client_id,
             size_bytes=size,
             release_group=rgroup,
             data=_grab_data,

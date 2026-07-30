@@ -746,11 +746,13 @@ def test_notification_test_form_accepts_structured_fields(fresh_env):
 def test_wrong_key_disables_only_that_connection_in_fanout(fresh_env, monkeypatch):
     """Two Discord connections, one whose ciphertext can't be decrypted
     with the active cipher. Fire a fanout — the good one sends; the bad
-    one fails cleanly; the send returns (ok=False, msg=<reason>) for the
-    bad one but the gather doesn't abort."""
+    one fails cleanly; fanout raises only after every provider is attempted."""
     import asyncio
     import main, security
-    from routers.notification_connections import fire_notifications
+    from routers.notification_connections import (
+        NotificationDeliveryError,
+        fire_notifications,
+    )
     canary_bad = "https://CANARY-BAD-MUST-NOT-LEAK/x"
     cid_bad = _seed(fresh_env["db_path"], name="bad-disc", type="discord",
                     settings={"webhook_url": canary_bad})
@@ -791,11 +793,12 @@ def test_wrong_key_disables_only_that_connection_in_fanout(fresh_env, monkeypatc
     with patch("routers.notification_connections.httpx.AsyncClient", _AsyncCli), \
          patch("routers.notification_connections.validate_outbound_url",
                lambda *a, **kw: None):
-        asyncio.run(fire_notifications("on_grab", "hello"))
+        with pytest.raises(NotificationDeliveryError):
+            asyncio.run(fire_notifications("on_grab", "hello"))
 
-    # The good connection posted; the bad one was silently disabled
-    # (empty webhook_url → sender returns "No webhook URL"). No post
-    # went to the bad canary URL.
+    # The good connection posted; the bad one was disabled cleanly (empty
+    # webhook_url → sender returns "No webhook URL"). No post went to the bad
+    # canary URL even though the aggregate result reports its failure.
     assert "https://GOOD-WEBHOOK/x" in posted
     assert canary_bad not in posted
     assert enc_bad_before not in posted

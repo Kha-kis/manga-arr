@@ -144,6 +144,266 @@ def _csrf_kwargs(tag: str = "test"):
     }
 
 
+def _seed_history_publication(
+    db_path: str,
+    state: str,
+    *,
+    publication_series_id: int = 1,
+) -> None:
+    """Seed one grabbed history domain and its publication journal."""
+    with sqlite3.connect(db_path) as c:
+        c.execute(
+            "INSERT INTO volumes(id, series_id, volume_num, status, monitored,"
+            " download_id, source_url, torrent_name, indexer, protocol, client)"
+            " VALUES(901, 1, 9.0, 'grabbed', 1, 'HISTORY-DOWNLOAD',"
+            " 'http://stub/history.torrent', 'AlphaSeries v09',"
+            " 'Indexer', 'torrent', 'Qbit')"
+        )
+        c.execute(
+            "INSERT INTO seen(torrent_url, torrent_name, series_id, volume_num,"
+            " indexer, protocol, client, download_id)"
+            " VALUES('http://stub/history.torrent', 'AlphaSeries v09', 1, 9.0,"
+            " 'Indexer', 'torrent', 'Qbit', 'HISTORY-DOWNLOAD')"
+        )
+        c.execute(
+            "INSERT INTO history(id, event_type, series_id, source_title,"
+            " torrent_url, download_id, indexer, protocol, size_bytes)"
+            " VALUES(901, 'grabbed', 1, 'AlphaSeries v09',"
+            " 'http://stub/history.torrent', 'HISTORY-DOWNLOAD',"
+            " 'Indexer', 'torrent', 9001)"
+        )
+        queue_status = (
+            "pending"
+            if state in {"staging", "prepared", "publishing", "published",
+                         "db_committed", "cleaning"}
+            else "imported"
+        )
+        c.execute(
+            "INSERT INTO import_queue(id, series_id, download_id, torrent_name,"
+            " torrent_url, status, lease_owner)"
+            " VALUES(901, ?, 'history-download', 'AlphaSeries v09',"
+            " 'http://stub/history.torrent', ?, NULL)",
+            (publication_series_id, queue_status),
+        )
+        c.execute(
+            """
+            INSERT INTO import_publications(
+                queue_id, state, owner_token, series_id, dst_dir, import_mode,
+                staging_dir, queue_snapshot_json, series_tags_json, queue_status
+            ) VALUES(
+                901, ?, 'history-owner', ?, '/library/AlphaSeries', 'copy',
+                '/library/AlphaSeries/.mangarr-publication-901',
+                '{}', '[]', 'pending'
+            )
+            """,
+            (state, publication_series_id),
+        )
+
+
+def _history_failure_domain(db_path: str) -> dict[str, object]:
+    with sqlite3.connect(db_path) as c:
+        return {
+            "history": c.execute(
+                "SELECT event_type FROM history WHERE id=901"
+            ).fetchone(),
+            "blocklist": c.execute(
+                "SELECT COUNT(*) FROM blocklist"
+                " WHERE torrent_url='http://stub/history.torrent'"
+            ).fetchone()[0],
+            "volume": c.execute(
+                "SELECT status, download_id, source_url, indexer"
+                " FROM volumes WHERE id=901"
+            ).fetchone(),
+            "seen": c.execute(
+                "SELECT COUNT(*) FROM seen"
+                " WHERE torrent_url='http://stub/history.torrent'"
+            ).fetchone()[0],
+        }
+
+
+# ───────────────────── history mark-failed ─────────────────────
+
+
+def test_mark_history_failed_helper_blocks_active_publication_without_mutation(env):
+    """A journal remains authoritative after queue status/lease become stale."""
+    from routers.history_ import mark_history_failed
+
+    _seed_history_publication(env["db_path"], "published")
+    before = _history_failure_domain(env["db_path"])
+
+    result = mark_history_failed(901)
+
+    assert result == {"ok": False, "status": "in_progress"}
+    assert _history_failure_domain(env["db_path"]) == before
+
+
+def test_mark_history_failed_allows_active_publication_for_other_series(env):
+    """A matching download identity in another series does not over-block."""
+    from routers.history_ import mark_history_failed
+
+    _seed_history_publication(
+        env["db_path"],
+        "published",
+        publication_series_id=2,
+    )
+
+    result = mark_history_failed(901)
+
+    assert result == {"ok": True, "status": "marked_failed"}
+    assert _history_failure_domain(env["db_path"]) == {
+        "history": ("grab_failed",),
+        "blocklist": 1,
+        "volume": ("wanted", None, None, None),
+        "seen": 0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("protocol", "target_id", "other_id", "target_owner", "other_owner"),
+    (
+        ("torrent", "ABCDEF", "abcdef", 101, 102),
+        ("nzb", "NZO-Case", "nzo-case", 201, 201),
+    ),
+)
+def test_history_mark_failed_route_resets_only_exact_owned_identity(
+    env,
+    protocol,
+    target_id,
+    other_id,
+    target_owner,
+    other_owner,
+):
+    with sqlite3.connect(env["db_path"]) as db:
+        db.executemany(
+            "INSERT INTO volumes("
+            "id,series_id,volume_num,status,monitored,download_id,"
+            "download_client_id,source_url,protocol"
+            ") VALUES(?,1,?,'grabbed',1,?,?,?,?)",
+            (
+                (910, 10.0, target_id, target_owner, "owned:target", protocol),
+                (911, 11.0, other_id, other_owner, "owned:other", protocol),
+            ),
+        )
+        db.executemany(
+            "INSERT INTO seen("
+            "torrent_url,torrent_name,series_id,volume_num,protocol,"
+            "download_id,download_client_id"
+            ") VALUES(?,?,1,?,?,?,?)",
+            (
+                ("owned:target", "Target", 10.0, protocol, target_id, target_owner),
+                ("owned:other", "Other", 11.0, protocol, other_id, other_owner),
+            ),
+        )
+        db.execute(
+            "INSERT INTO history("
+            "id,event_type,series_id,source_title,torrent_url,protocol,"
+            "download_id,download_client_id"
+            ") VALUES(910,'grabbed',1,'Target','owned:target',?,?,?)",
+            (protocol, target_id, target_owner),
+        )
+
+    response = _client().post(
+        "/history/910/mark-failed",
+        follow_redirects=False,
+        **_csrf_kwargs(f"owned-history-{protocol}"),
+    )
+
+    assert response.status_code == 303
+    with sqlite3.connect(env["db_path"]) as db:
+        assert db.execute(
+            "SELECT status,download_id,download_client_id"
+            " FROM volumes WHERE id=910"
+        ).fetchone() == ("wanted", None, None)
+        assert db.execute(
+            "SELECT status,download_id,download_client_id"
+            " FROM volumes WHERE id=911"
+        ).fetchone() == ("grabbed", other_id, other_owner)
+        assert db.execute(
+            "SELECT torrent_url FROM seen ORDER BY torrent_url"
+        ).fetchall() == [("owned:other",)]
+
+
+@pytest.mark.parametrize(
+    ("status", "lease_owner"),
+    [("importing", None), ("pending", "pre-journal-owner")],
+)
+def test_mark_history_failed_blocks_prejournal_import_without_mutation(
+    env,
+    status,
+    lease_owner,
+):
+    """History failure cannot reset a release owned before journal creation."""
+    from routers.history_ import mark_history_failed
+
+    _seed_history_publication(env["db_path"], "deleted")
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute("DELETE FROM import_publications")
+        c.execute(
+            "UPDATE import_queue SET status=?, lease_owner=? WHERE id=901",
+            (status, lease_owner),
+        )
+    before = _history_failure_domain(env["db_path"])
+
+    result = mark_history_failed(901)
+
+    assert result == {"ok": False, "status": "in_progress"}
+    assert _history_failure_domain(env["db_path"]) == before
+
+
+@pytest.mark.parametrize("state", ["staging", "finalized", "deleted"])
+@pytest.mark.parametrize("htmx", [False, True], ids=["plain", "htmx"])
+def test_history_mark_failed_route_surfaces_publication_outcome(
+    env,
+    state,
+    htmx,
+):
+    """The route reports journal blocks and allows both terminal states."""
+    _seed_history_publication(env["db_path"], state)
+    before = _history_failure_domain(env["db_path"])
+    csrf = _csrf_kwargs(f"history-publication-{state}-{htmx}")
+    headers = dict(csrf["headers"])
+    if htmx:
+        headers["HX-Request"] = "true"
+
+    response = _client().post(
+        "/history/901/mark-failed",
+        cookies=csrf["cookies"],
+        headers=headers,
+        follow_redirects=False,
+    )
+
+    blocked = state == "staging"
+    if htmx:
+        assert response.status_code == 200
+        assert response.headers["HX-Refresh"] == "true"
+        toast = json.loads(response.headers["HX-Trigger"])["showToast"]
+        assert toast["type"] == ("warning" if blocked else "success")
+        assert (
+            "Import is in progress"
+            if blocked
+            else "Marked failed and added to blocklist"
+        ) in toast["msg"]
+    else:
+        assert response.status_code == 303
+        assert response.headers["location"].startswith("/history?")
+        assert (
+            "flash_type=warning"
+            if blocked
+            else "flash_type=success"
+        ) in response.headers["location"]
+
+    after = _history_failure_domain(env["db_path"])
+    if blocked:
+        assert after == before
+    else:
+        assert after == {
+            "history": ("grab_failed",),
+            "blocklist": 1,
+            "volume": ("wanted", None, None, None),
+            "seen": 0,
+        }
+
+
 # ───────────────────── series delete ─────────────────────
 
 

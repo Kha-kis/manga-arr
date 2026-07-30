@@ -4,6 +4,7 @@ import asyncio
 import os
 import platform
 import shutil
+import sqlite3
 import sys
 from datetime import datetime, timezone
 from itertools import count
@@ -17,6 +18,12 @@ from fastapi.responses import (
     RedirectResponse,
 )
 
+from download_identity import (
+    DownloadIdentity,
+    coerce_download_client_id,
+    download_identities_match,
+    normalize_download_protocol,
+)
 from routers._templates import templates
 from backups import (
     BackupArchiveError,
@@ -34,6 +41,142 @@ LATEST_RELEASE_URL = "https://github.com/Kha-kis/manga-arr/releases/latest"
 RELEASES_URL = "https://github.com/Kha-kis/manga-arr/releases"
 
 BACKUP_DIR = "/config/backups"
+
+
+def _persisted_download_identity(
+    row: sqlite3.Row,
+    *,
+    protocol_column: str,
+) -> DownloadIdentity | None:
+    download_id = str(row["download_id"] or "")
+    if not download_id:
+        return None
+    return DownloadIdentity(
+        coerce_download_client_id(row["download_client_id"]),
+        normalize_download_protocol(row[protocol_column]),
+        download_id,
+    )
+
+
+def _same_persisted_download(
+    left: DownloadIdentity,
+    right: DownloadIdentity,
+) -> bool:
+    """Match IDs conservatively without assigning a legacy row an owner."""
+    return download_identities_match(left, right)
+
+
+def _active_import_uses_identity(
+    db: sqlite3.Connection,
+    identity: DownloadIdentity,
+) -> bool:
+    rows = db.execute(
+        """
+        SELECT import_queue.*
+        FROM import_queue
+        WHERE download_id IS NOT NULL
+          AND download_id=? COLLATE NOCASE
+          AND (
+              status IN ('pending','partial','importing')
+              OR lease_owner IS NOT NULL
+              OR EXISTS (
+                  SELECT 1
+                  FROM import_publications publication
+                  WHERE publication.queue_id=import_queue.id
+                    AND publication.state IN (
+                        'staging','prepared','publishing','published',
+                        'db_committed','cleaning'
+                    )
+              )
+          )
+        """,
+        (identity.download_id,),
+    ).fetchall()
+    return any(
+        (
+            candidate := _persisted_download_identity(
+                row,
+                protocol_column="download_protocol",
+            )
+        )
+        is not None
+        and _same_persisted_download(candidate, identity)
+        for row in rows
+    )
+
+
+def _tracked_volume_uses_identity(
+    db: sqlite3.Connection,
+    identity: DownloadIdentity,
+) -> bool:
+    rows = db.execute(
+        "SELECT * FROM volumes"
+        " WHERE download_id IS NOT NULL AND download_id=? COLLATE NOCASE"
+        " AND status IN ('grabbed','wanted')",
+        (identity.download_id,),
+    ).fetchall()
+    return any(
+        (
+            candidate := _persisted_download_identity(
+                row,
+                protocol_column="protocol",
+            )
+        )
+        is not None
+        and _same_persisted_download(candidate, identity)
+        for row in rows
+    )
+
+
+def _cleanup_stale_seen_rows(db: sqlite3.Connection) -> int:
+    """Delete only stale identities unused by exact domain or import work."""
+    db.execute("BEGIN IMMEDIATE")
+    deleted = 0
+    rows = db.execute(
+        "SELECT * FROM seen WHERE grabbed_at < datetime('now', '-90 days')"
+    ).fetchall()
+    for row in rows:
+        identity = _persisted_download_identity(
+            row,
+            protocol_column="protocol",
+        )
+        if identity is not None and (
+            _tracked_volume_uses_identity(db, identity)
+            or _active_import_uses_identity(db, identity)
+        ):
+            continue
+        deleted += db.execute(
+            "DELETE FROM seen WHERE torrent_url=?",
+            (row["torrent_url"],),
+        ).rowcount
+    return deleted
+
+
+def _reset_stuck_grabs(db: sqlite3.Connection) -> int:
+    """Reset stale grabbed rows only when their exact import identity is idle."""
+    db.execute("BEGIN IMMEDIATE")
+    reset = 0
+    rows = db.execute(
+        "SELECT * FROM volumes"
+        " WHERE status='grabbed'"
+        " AND grabbed_at < datetime('now', '-2 days')"
+    ).fetchall()
+    for row in rows:
+        identity = _persisted_download_identity(
+            row,
+            protocol_column="protocol",
+        )
+        if identity is not None and _active_import_uses_identity(db, identity):
+            continue
+        reset += db.execute(
+            "UPDATE volumes SET status='wanted', grabbed_at=NULL, download_id=NULL,"
+            " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
+            " client=NULL, download_client_id=NULL, release_group=NULL,"
+            " import_path=NULL"
+            " WHERE id=? AND status='grabbed'",
+            (row["id"],),
+        ).rowcount
+    return reset
 
 
 def build_update_status() -> dict:
@@ -485,16 +628,7 @@ async def run_command(request: Request):
     elif name == "CleanupSeen":
         _start_command(record)
         with get_db() as db:
-            # Delete seen entries older than 90 days where the volume was never downloaded
-            # Keep entries tied to volumes still in grabbed/wanted so dedup still works
-            result = db.execute(
-                "DELETE FROM seen WHERE grabbed_at < datetime('now', '-90 days')"
-                " AND (series_id IS NULL OR NOT EXISTS ("
-                "   SELECT 1 FROM volumes v WHERE v.download_id = seen.download_id"
-                "   AND v.status IN ('grabbed','wanted')"
-                "))"
-            )
-            count = result.rowcount
+            count = _cleanup_stale_seen_rows(db)
         try:
             import main as _m
 
@@ -510,18 +644,7 @@ async def run_command(request: Request):
     elif name == "ResetStuckGrabs":
         _start_command(record)
         with get_db() as db:
-            result = db.execute(
-                "UPDATE volumes SET status='wanted', grabbed_at=NULL, download_id=NULL,"
-                " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
-                " client=NULL, release_group=NULL, import_path=NULL"
-                " WHERE status='grabbed'"
-                "   AND grabbed_at < datetime('now', '-2 days')"
-                "   AND NOT EXISTS ("
-                "     SELECT 1 FROM import_queue iq WHERE iq.download_id = volumes.download_id"
-                "     AND iq.status IN ('pending','partial')"
-                "   )"
-            )
-            count = result.rowcount
+            count = _reset_stuck_grabs(db)
         try:
             import main as _m
 

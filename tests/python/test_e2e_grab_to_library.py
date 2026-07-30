@@ -428,7 +428,9 @@ def test_full_pipeline_grabbed_to_downloaded(env):
 
     # 1. Stub the download client to "accept" the grab and return a download_id
     async def _fake_grab_url(*a, **kw):
-        return (True, 'TestQbit', 'dl-e2e-1', True)
+        from clients import GrabResult
+
+        return GrabResult(True, 'qbittorrent', 'dl-e2e-1', True, 77)
 
     async def _grab():
         import grab_core
@@ -441,11 +443,17 @@ def test_full_pipeline_grabbed_to_downloaded(env):
     with sqlite3.connect(env['db_path']) as c:
         c.row_factory = sqlite3.Row
         v = c.execute(
-            "SELECT status, download_id FROM volumes"
+            "SELECT status, download_id, download_client_id FROM volumes"
             " WHERE series_id=1 AND volume_num=1.0"
         ).fetchone()
         assert v['status'] == 'grabbed'
         assert v['download_id'] == 'dl-e2e-1'
+        assert v['download_client_id'] == 77
+        seen = c.execute(
+            "SELECT download_client_id FROM seen WHERE torrent_url=?",
+            (item["url"],),
+        ).fetchone()
+        assert seen["download_client_id"] == 77
 
     # 2. Place a "completed download" file on disk where qBit would have
     #    saved it. Use the volume number in the filename so the parser
@@ -470,6 +478,11 @@ def test_full_pipeline_grabbed_to_downloaded(env):
         )
 
     assert queue_id is not None, "import queue row must be created"
+    with sqlite3.connect(env["db_path"]) as c:
+        assert c.execute(
+            "SELECT download_client_id FROM import_queue WHERE id=?",
+            (queue_id,),
+        ).fetchone() == (77,)
 
     # 4. Auto-process the queue (no review needed if parser mapped cleanly)
     if not needs_review:
@@ -479,7 +492,7 @@ def test_full_pipeline_grabbed_to_downloaded(env):
     with sqlite3.connect(env['db_path']) as c:
         c.row_factory = sqlite3.Row
         v = c.execute(
-            "SELECT status, import_path FROM volumes"
+            "SELECT status, import_path, download_client_id FROM volumes"
             " WHERE series_id=1 AND volume_num=1.0"
         ).fetchone()
 
@@ -501,6 +514,7 @@ def test_full_pipeline_grabbed_to_downloaded(env):
         f"got {v['status']!r}"
     )
     assert v['import_path'] is not None, "import_path must be recorded"
+    assert v['download_client_id'] == 77
     assert os.path.isfile(v['import_path']), (
         f"file should exist at import_path={v['import_path']!r}"
     )
@@ -509,3 +523,9 @@ def test_full_pipeline_grabbed_to_downloaded(env):
         f"import_path {v['import_path']!r} must live under root "
         f"{env['library_root']!r}"
     )
+    with sqlite3.connect(env["db_path"]) as c:
+        assert c.execute(
+            "SELECT queue_download_client_id FROM import_publications"
+            " WHERE queue_id=?",
+            (queue_id,),
+        ).fetchone() == (77,)

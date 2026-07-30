@@ -1,8 +1,16 @@
-"""Import download: mark volumes as downloaded + auto-import."""
+"""Import download: mark volumes as downloaded + post-commit notification intent."""
 
 import asyncio
 import logging
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
 
+from download_identity import (
+    DownloadProtocol,
+    coerce_download_client_id,
+    resolve_download_protocol,
+)
 from events import log_event
 from notifications import notify_discord, make_complete_embed
 from volumes import _cascade_chapters
@@ -10,8 +18,50 @@ from volumes import _cascade_chapters
 log = logging.getLogger(__name__)
 
 
-def _mark_downloaded(db, series_id, volume_num, torrent_url) -> bool:
-    """Mark volume(s) as downloaded. Returns True if any rows updated."""
+@dataclass(frozen=True, slots=True)
+class DownloadNotificationIntent:
+    """External notification payload safe to dispatch after DB commit."""
+
+    title: str
+    label: str
+    cover_url: str
+
+
+async def dispatch_download_notification(intent: DownloadNotificationIntent) -> None:
+    """Dispatch one download notification after its domain transaction commits."""
+    await notify_discord(
+        "",
+        embed=make_complete_embed(intent.title, intent.label, intent.cover_url),
+        event="on_download",
+    )
+
+
+def _notification_intent(db, series_id: int, label: str):
+    row = db.execute(
+        "SELECT title, cover_url FROM series WHERE id=?",
+        (series_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return DownloadNotificationIntent(
+        title=str(row["title"] or ""),
+        label=label,
+        cover_url=str(row["cover_url"] or ""),
+    )
+
+
+def _mark_downloaded(
+    db,
+    series_id,
+    volume_num,
+    torrent_url,
+    *,
+    download_id: str | None = None,
+    download_client_id: int | None = None,
+    protocol: DownloadProtocol | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> DownloadNotificationIntent | None:
+    """Mark volume(s) downloaded and return an external post-commit intent."""
     if volume_num is not None:
         cur = db.execute(
             "UPDATE volumes SET status='downloaded' WHERE series_id=? AND volume_num=? AND status='grabbed'",
@@ -24,53 +74,85 @@ def _mark_downloaded(db, series_id, volume_num, torrent_url) -> bool:
                 series_id,
                 db=db,
             )
-            s = db.execute(
-                "SELECT title, cover_url FROM series WHERE id=?", (series_id,)
-            ).fetchone()
-            if s:
-                asyncio.create_task(
-                    notify_discord(
-                        "",
-                        embed=make_complete_embed(
-                            s["title"], f"Vol {volume_num:g}", s["cover_url"] or ""
-                        ),
-                        event="on_download",
-                    )
-                )
             vol_row = db.execute(
                 "SELECT id FROM volumes WHERE series_id=? AND volume_num=?",
                 (series_id, volume_num),
             ).fetchone()
             if vol_row:
                 _cascade_chapters(db, series_id, [vol_row["id"]], "downloaded")
-            return True
+            return _notification_intent(db, series_id, f"Vol {volume_num:g}")
     else:
-        pack = db.execute(
-            "SELECT * FROM volumes WHERE series_id=? AND source_url=? AND volume_num IS NULL",
-            (series_id, torrent_url),
-        ).fetchone()
+        owner_id = coerce_download_client_id(download_client_id)
+        resolved_protocol = protocol or resolve_download_protocol(
+            db,
+            download_client_id=owner_id,
+            series_id=series_id,
+            download_id=str(download_id or ""),
+            source_url=str(torrent_url or ""),
+        )
+        if download_id:
+            pack = db.execute(
+                "SELECT * FROM volumes"
+                " WHERE series_id=? AND source_url=? AND volume_num IS NULL"
+                " AND download_client_id IS ? AND download_id IS NOT NULL"
+                " AND ("
+                "   (?='torrent' AND lower(download_id)=lower(?))"
+                "   OR (COALESCE(?,'')!='torrent' AND download_id=?)"
+                " )"
+                " ORDER BY id DESC LIMIT 1",
+                (
+                    series_id,
+                    torrent_url,
+                    owner_id,
+                    resolved_protocol,
+                    download_id,
+                    resolved_protocol,
+                    download_id,
+                ),
+            ).fetchone()
+        else:
+            pack = db.execute(
+                "SELECT * FROM volumes"
+                " WHERE series_id=? AND source_url=? AND volume_num IS NULL"
+                " ORDER BY id DESC LIMIT 1",
+                (series_id, torrent_url),
+            ).fetchone()
         if not pack:
-            return False
+            return None
 
         pt = pack["pack_type"]
-        seen_meta = db.execute(
-            "SELECT torrent_name, indexer, protocol, client, release_group, size_bytes"
-            " FROM seen WHERE (download_id=? AND download_id IS NOT NULL)"
-            " OR torrent_url=? LIMIT 1",
-            (pack["download_id"], torrent_url),
-        ).fetchone()
-        m = dict(seen_meta) if seen_meta else {}
+        if metadata is not None:
+            m = dict(metadata)
+        else:
+            seen_meta = db.execute(
+                "SELECT torrent_name, indexer, protocol, client, release_group,"
+                " size_bytes FROM seen"
+                " WHERE series_id=? AND download_client_id IS ?"
+                " AND ("
+                "   (download_id=? AND download_id IS NOT NULL)"
+                "   OR torrent_url=?"
+                " )"
+                " LIMIT 1",
+                (
+                    series_id,
+                    owner_id,
+                    pack["download_id"],
+                    torrent_url,
+                ),
+            ).fetchone()
+            m = dict(seen_meta) if seen_meta else {}
 
         if pt == "complete":
             cur = db.execute(
                 "UPDATE volumes SET status='downloaded', torrent_name=?, indexer=?, protocol=?,"
-                " client=?, release_group=?, size_bytes=?"
+                " client=?, download_client_id=?, release_group=?, size_bytes=?"
                 " WHERE series_id=? AND volume_num IS NOT NULL AND status != 'downloaded'",
                 (
                     m.get("torrent_name"),
                     m.get("indexer"),
                     m.get("protocol"),
                     m.get("client"),
+                    owner_id,
                     m.get("release_group"),
                     m.get("size_bytes"),
                     series_id,
@@ -79,7 +161,7 @@ def _mark_downloaded(db, series_id, volume_num, torrent_url) -> bool:
         elif pt == "volume" and pack["vol_range_start"] and pack["vol_range_end"]:
             cur = db.execute(
                 "UPDATE volumes SET status='downloaded', torrent_name=?, indexer=?, protocol=?,"
-                " client=?, release_group=?, size_bytes=?"
+                " client=?, download_client_id=?, release_group=?, size_bytes=?"
                 " WHERE series_id=? AND volume_num IS NOT NULL AND status != 'downloaded'"
                 " AND volume_num >= ? AND volume_num <= ?",
                 (
@@ -87,6 +169,7 @@ def _mark_downloaded(db, series_id, volume_num, torrent_url) -> bool:
                     m.get("indexer"),
                     m.get("protocol"),
                     m.get("client"),
+                    owner_id,
                     m.get("release_group"),
                     m.get("size_bytes"),
                     series_id,
@@ -97,20 +180,21 @@ def _mark_downloaded(db, series_id, volume_num, torrent_url) -> bool:
         elif pt == "chapter":
             cur = db.execute(
                 "UPDATE volumes SET status='downloaded', torrent_name=?, indexer=?, protocol=?,"
-                " client=?, release_group=?, size_bytes=?"
+                " client=?, download_client_id=?, release_group=?, size_bytes=?"
                 " WHERE id=? AND status != 'downloaded'",
                 (
                     m.get("torrent_name"),
                     m.get("indexer"),
                     m.get("protocol"),
                     m.get("client"),
+                    owner_id,
                     m.get("release_group"),
                     m.get("size_bytes"),
                     pack["id"],
                 ),
             )
         else:
-            return False
+            return None
 
         if cur.rowcount > 0:
             label = (
@@ -128,21 +212,12 @@ def _mark_downloaded(db, series_id, volume_num, torrent_url) -> bool:
                 series_id,
                 db=db,
             )
-            s = db.execute(
-                "SELECT title, cover_url FROM series WHERE id=?", (series_id,)
-            ).fetchone()
-            if s:
-                asyncio.create_task(
-                    notify_discord(
-                        "",
-                        embed=make_complete_embed(
-                            s["title"], label, s["cover_url"] or ""
-                        ),
-                        event="on_download",
-                    )
-                )
             if pt == "complete":
                 _cascade_chapters(db, series_id, None, "downloaded")
+                db.execute(
+                    "UPDATE chapters SET download_client_id=? WHERE series_id=?",
+                    (owner_id, series_id),
+                )
             elif pt == "volume":
                 rng_ids = [
                     r["id"]
@@ -153,8 +228,15 @@ def _mark_downloaded(db, series_id, volume_num, torrent_url) -> bool:
                     ).fetchall()
                 ]
                 _cascade_chapters(db, series_id, rng_ids, "downloaded")
-            return True
-    return False
+                if rng_ids:
+                    placeholders = ",".join("?" for _ in rng_ids)
+                    db.execute(
+                        "UPDATE chapters SET download_client_id=?"
+                        f" WHERE series_id=? AND volume_id IN ({placeholders})",
+                        (owner_id, series_id, *rng_ids),
+                    )
+            return _notification_intent(db, series_id, label)
+    return None
 
 
 async def _process_auto_import(queue_id: int):

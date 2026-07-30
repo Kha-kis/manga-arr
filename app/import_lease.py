@@ -6,6 +6,14 @@ import math
 import sqlite3
 from typing import Literal, cast
 
+from download_identity import (
+    DownloadIdentity,
+    DownloadProtocol,
+    coerce_download_client_id,
+    download_identities_match,
+    normalize_download_protocol,
+)
+
 IMPORT_LEASE_SECONDS = 5 * 60
 IMPORT_LEASE_REFRESH_SECONDS = 60
 
@@ -55,6 +63,11 @@ def claim_import_queue_row(
         raise ValueError("allowed_statuses must be non-empty")
     if not set(allowed_statuses) <= _RETRYABLE_IMPORT_STATUSES:
         raise ValueError("allowed_statuses may contain only pending/partial")
+    identity_row = db.execute(
+        "SELECT download_id FROM import_queue WHERE id=?",
+        (queue_id,),
+    ).fetchone()
+    observed_download_id = identity_row[0] if identity_row is not None else None
     placeholders = ",".join("?" for _ in allowed_statuses)
     cur = db.execute(
         f"""
@@ -63,12 +76,55 @@ def claim_import_queue_row(
             lease_expires_at=datetime('now', ?), failed_at=NULL
         WHERE id=? AND status IN ({placeholders})
           AND lease_owner IS NULL
+          AND download_id IS ?
+          AND NOT EXISTS (
+              SELECT 1 FROM import_pack_cleanup_reservations reservation
+              WHERE reservation.purpose='cleanup'
+                AND reservation.expires_at > CURRENT_TIMESTAMP
+                AND (
+                    reservation.download_client_id IS NULL
+                    OR import_queue.download_client_id IS NULL
+                    OR reservation.download_client_id=
+                       import_queue.download_client_id
+                )
+                AND (
+                    reservation.protocol IS NULL
+                    OR import_queue.download_protocol IS NULL
+                    OR reservation.protocol=import_queue.download_protocol
+                )
+                AND (
+                    CASE
+                        WHEN COALESCE(
+                            reservation.protocol,
+                            import_queue.download_protocol
+                        )='nzb'
+                        THEN reservation.normalized_download_id=
+                             import_queue.download_id
+                        ELSE reservation.normalized_download_id=
+                             lower(trim(import_queue.download_id))
+                    END
+                )
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM import_publications publication
+              WHERE publication.queue_id=import_queue.id
+                AND publication.state IN (
+                    'staging','prepared','publishing','published',
+                    'db_committed','cleaning'
+                )
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM volume_file_deletions deletion
+              WHERE deletion.series_id=import_queue.series_id
+                AND deletion.state='active'
+          )
         """,
         (
             lease_owner,
             _lease_modifier(lease_seconds),
             queue_id,
             *allowed_statuses,
+            observed_download_id,
         ),
     )
     return cur.rowcount == 1
@@ -141,6 +197,14 @@ def transition_import_queue_row(
             END
         WHERE id=? AND status='importing' AND lease_owner=?
           AND lease_expires_at > datetime('now')
+          AND NOT EXISTS (
+              SELECT 1 FROM import_publications publication
+              WHERE publication.queue_id=import_queue.id
+                AND publication.state IN (
+                    'staging','prepared','publishing','published',
+                    'db_committed','cleaning'
+                )
+          )
         """,
         (new_status, new_status, queue_id, lease_owner),
     )
@@ -185,44 +249,72 @@ def has_import_sibling_that_may_use_download(
     *,
     queue_id: int,
     download_id: str | None,
+    download_client_id: int | None,
     series_id: int | None = None,
+    protocol: DownloadProtocol | None = None,
 ) -> bool:
     """Return whether another queue row may still use this download.
 
     Retryable siblings are included so cleanup/reset cannot win immediately
     before their claim. Importing rows block even with an expired or NULL
-    lease, preserving legacy and expired-but-unrecovered workers.
+    lease, preserving legacy and expired-but-unrecovered workers. Concrete
+    client owners are independent; a legacy NULL owner blocks conservatively.
     """
     if not download_id:
         return False
-    series_filter = "" if series_id is None else " AND series_id=?"
-    params: tuple[object, ...] = (
-        (queue_id, download_id)
-        if series_id is None
-        else (queue_id, download_id, series_id)
+    owner_id = coerce_download_client_id(download_client_id)
+    target_protocol = normalize_download_protocol(protocol)
+    if target_protocol is None:
+        target_row = db.execute(
+            "SELECT download_protocol FROM import_queue WHERE id=?",
+            (queue_id,),
+        ).fetchone()
+        if target_row is not None:
+            target_protocol = normalize_download_protocol(target_row[0])
+
+    id_filter = (
+        " AND download_id=?"
+        if target_protocol == "nzb"
+        else " AND download_id=? COLLATE NOCASE"
     )
-    row = cast(
-        object | None,
-        db.execute(
-            """
-            SELECT 1
+    rows = db.execute(
+        """
+            SELECT download_id, download_client_id, download_protocol, series_id
             FROM import_queue
             WHERE id != ?
               AND download_id IS NOT NULL
-              AND download_id=?
-            """
-            + series_filter
-            + """
+        """
+        + id_filter
+        + """
               AND (
                   status IN ('pending','partial','importing')
                   OR lease_owner IS NOT NULL
+                  OR EXISTS (
+                      SELECT 1 FROM import_publications publication
+                      WHERE publication.queue_id=import_queue.id
+                        AND publication.state IN (
+                            'staging','prepared','publishing','published',
+                            'db_committed','cleaning'
+                        )
+                  )
               )
-            LIMIT 1
-            """,
-            params,
-        ).fetchone(),
-    )
-    return row is not None
+        """,
+        (queue_id, download_id),
+    ).fetchall()
+    target = DownloadIdentity(owner_id, target_protocol, download_id)
+    for row in rows:
+        if series_id is not None and row[3] != series_id:
+            continue
+        sibling_owner = coerce_download_client_id(row[1])
+        sibling_protocol = normalize_download_protocol(row[2])
+        sibling = DownloadIdentity(
+            sibling_owner,
+            sibling_protocol,
+            str(row[0] or ""),
+        )
+        if download_identities_match(target, sibling):
+            return True
+    return False
 
 
 def recover_expired_import_leases(
@@ -244,6 +336,14 @@ def recover_expired_import_leases(
                    ) THEN 'partial' ELSE 'pending' END AS retry_status
             FROM import_queue iq
             WHERE iq.status='importing'
+              AND NOT EXISTS (
+                  SELECT 1 FROM import_publications publication
+                  WHERE publication.queue_id=iq.id
+                    AND publication.state IN (
+                        'staging','prepared','publishing','published',
+                        'db_committed','cleaning'
+                    )
+              )
               AND (
                   iq.lease_owner IS NULL
                   OR iq.lease_expires_at IS NULL
@@ -262,6 +362,14 @@ def recover_expired_import_leases(
             UPDATE import_queue
             SET status=?, lease_owner=NULL, lease_expires_at=NULL
             WHERE id=? AND status='importing' AND lease_owner IS ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM import_publications publication
+                  WHERE publication.queue_id=import_queue.id
+                    AND publication.state IN (
+                        'staging','prepared','publishing','published',
+                        'db_committed','cleaning'
+                    )
+              )
               AND (
                   lease_owner IS NULL
                   OR lease_expires_at IS NULL
@@ -288,6 +396,14 @@ def fail_stale_pending_import_queue_row(
         SET status='failed', failed_at=datetime('now'),
             lease_owner=NULL, lease_expires_at=NULL
         WHERE id=? AND status=? AND lease_owner IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM import_publications publication
+              WHERE publication.queue_id=import_queue.id
+                AND publication.state IN (
+                    'staging','prepared','publishing','published',
+                    'db_committed','cleaning'
+                )
+          )
         """,
         (queue_id, observed_status),
     )

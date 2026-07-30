@@ -9,6 +9,7 @@ These were the last gaps in the production-readiness coverage matrix:
     most failure-prone path for new users."
 """
 import io
+import json
 import os
 import sqlite3
 import sys
@@ -123,6 +124,54 @@ def _csrf(tag: str = "test"):
         'cookies': {'csrftoken': tok},
         'headers': {'X-CSRFToken': tok},
     }
+
+
+def _insert_queue_publication(
+    db: sqlite3.Connection,
+    queue_id: int,
+    state: str,
+) -> None:
+    queue_status = db.execute(
+        "SELECT status FROM import_queue WHERE id=?",
+        (queue_id,),
+    ).fetchone()[0]
+    db.execute(
+        """
+        INSERT INTO import_publications(
+            queue_id, state, owner_token, series_id, dst_dir, import_mode,
+            staging_dir, queue_snapshot_json, series_tags_json, queue_status
+        ) VALUES(
+            ?, ?, 'queue-owner', 1, '/library/IQSeries', 'copy',
+            ?, '{}', '[]', ?
+        )
+        """,
+        (
+            queue_id,
+            state,
+            f"/library/IQSeries/.mangarr-publication-{queue_id}",
+            queue_status,
+        ),
+    )
+
+
+def _dismiss_domain(db_path: str) -> dict[str, object]:
+    with sqlite3.connect(db_path) as c:
+        return {
+            "queue": c.execute(
+                "SELECT status, download_id FROM import_queue WHERE id=200"
+            ).fetchone(),
+            "files": c.execute(
+                "SELECT status FROM import_queue_files"
+                " WHERE queue_id=200 ORDER BY id"
+            ).fetchall(),
+            "volume": c.execute(
+                "SELECT status, download_id, source_url, indexer"
+                " FROM volumes WHERE id=11"
+            ).fetchone(),
+            "seen": c.execute(
+                "SELECT COUNT(*) FROM seen WHERE download_id='dl-pending'"
+            ).fetchone()[0],
+        }
 
 
 # ───────────────────── backup create ─────────────────────
@@ -397,6 +446,103 @@ def test_import_skip_no_op_on_failed(env):
 
 
 # ───────────────────── import queue: dismiss ─────────────────────
+
+
+def test_queue_action_failure_detects_active_sibling_publication(env):
+    """Journal ownership is stronger than stale sibling queue state and lease."""
+    import routers.import_ as import_router
+    import shared
+
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute(
+            "INSERT INTO import_queue(id, series_id, download_id, torrent_name,"
+            " status, lease_owner)"
+            " VALUES(203, 1, 'DL-PENDING', 'IQSeries sibling', 'pending', NULL)"
+        )
+        _insert_queue_publication(c, 203, "db_committed")
+
+    with shared.get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        result = import_router._queue_action_failure(
+            db,
+            200,
+            "not_dismissible",
+            protect_download=True,
+        )
+
+    assert result == {"ok": False, "status": "in_progress"}
+
+
+@pytest.mark.parametrize("scope", ["own", "sibling"])
+@pytest.mark.parametrize("htmx", [False, True], ids=["plain", "htmx"])
+def test_import_dismiss_route_blocks_active_publication_without_mutation(
+    env,
+    scope,
+    htmx,
+):
+    """Dismiss preserves its own guard and recognizes a journal-only sibling."""
+    with sqlite3.connect(env["db_path"]) as c:
+        publication_queue_id = 200
+        if scope == "sibling":
+            c.execute(
+                "INSERT INTO import_queue(id, series_id, download_id, torrent_name,"
+                " status, lease_owner)"
+                " VALUES(203, 1, 'DL-PENDING', 'IQSeries sibling',"
+                " 'pending', NULL)"
+            )
+            publication_queue_id = 203
+        _insert_queue_publication(c, publication_queue_id, "cleaning")
+
+    before = _dismiss_domain(env["db_path"])
+    csrf = _csrf(f"dismiss-publication-{scope}-{htmx}")
+    headers = dict(csrf["headers"])
+    if htmx:
+        headers["HX-Request"] = "true"
+
+    response = _client().post(
+        "/import/200/dismiss",
+        cookies=csrf["cookies"],
+        headers=headers,
+        follow_redirects=False,
+    )
+
+    if htmx:
+        assert response.status_code == 200
+        toast = json.loads(response.headers["HX-Trigger"])["showToast"]
+        assert toast["type"] == "warning"
+        assert "Import is in progress" in toast["msg"]
+    else:
+        assert response.status_code == 303
+        assert response.headers["location"].startswith("/import?")
+        assert "flash_type=warning" in response.headers["location"]
+        assert "Import+is+in+progress" in response.headers["location"]
+
+    assert _dismiss_domain(env["db_path"]) == before
+
+
+@pytest.mark.parametrize("state", ["finalized", "deleted"])
+def test_import_dismiss_allows_terminal_sibling_publication(env, state):
+    """Terminal sibling journals no longer own the shared download identity."""
+    from routers.import_ import dismiss_import_queue_entry
+
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute(
+            "INSERT INTO import_queue(id, series_id, download_id, torrent_name,"
+            " status, lease_owner)"
+            " VALUES(203, 1, 'DL-PENDING', 'IQSeries sibling', 'pending', NULL)"
+        )
+        _insert_queue_publication(c, 203, state)
+
+    result = dismiss_import_queue_entry(200)
+
+    assert result == {"ok": True, "status": "dismissed"}
+    with sqlite3.connect(env["db_path"]) as c:
+        assert c.execute(
+            "SELECT 1 FROM import_queue WHERE id=200"
+        ).fetchone() is None
+        assert c.execute(
+            "SELECT 1 FROM import_queue WHERE id=203"
+        ).fetchone() is not None
 
 
 def test_import_dismiss_resets_grabbed_volumes_and_clears_seen(env):

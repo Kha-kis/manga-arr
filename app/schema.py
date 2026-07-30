@@ -9,7 +9,7 @@ creates, alters, or reshapes the SQLite schema at startup:
                                    migration
   - _migrate_schema_constraints  — add FK constraints via rebuild
                                    pattern, gated by PRAGMA user_version
-  - _SCHEMA_VERSION_FK_CONSTRAINTS — current migration version
+  - _SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP — current migration version
 
 Callers in main.py see `init_db()`, `_bootstrap_root_folders()`, and
 `_migrate_schema_constraints()` via a re-export.
@@ -32,6 +32,10 @@ from shared import (
 
 _SCHEMA_VERSION_FK_CONSTRAINTS = 1
 _SCHEMA_VERSION_STATUS_CONSTRAINTS = 2
+_SCHEMA_VERSION_IMPORT_PUBLICATIONS = 3
+_SCHEMA_VERSION_DURABLE_PUBLICATION_SAFETY = 4
+_SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP = 5
+_SUPPORTED_SCHEMA_VERSION = _SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP
 
 
 @contextmanager
@@ -72,12 +76,12 @@ def _execute_script_in_transaction(db: sqlite3.Connection, script: str) -> None:
 def _validate_schema_version(db: sqlite3.Connection) -> int:
     """Return the DB schema version, rejecting versions this binary cannot read."""
     version = cast(int, db.execute("PRAGMA user_version").fetchone()[0])
-    if version > _SCHEMA_VERSION_STATUS_CONSTRAINTS:
+    if version > _SUPPORTED_SCHEMA_VERSION:
         message = (
             f"database schema version {version} is newer than this Mangarr version"
         )
         message += (
-            f" supports ({_SCHEMA_VERSION_STATUS_CONSTRAINTS}); refusing to modify it"
+            f" supports ({_SUPPORTED_SCHEMA_VERSION}); refusing to modify it"
         )
         raise RuntimeError(message)
     return version
@@ -132,7 +136,8 @@ def init_db() -> None:
                 torrent_name TEXT,
                 indexer      TEXT,
                 protocol     TEXT,
-                client       TEXT
+                client       TEXT,
+                download_client_id INTEGER
             );
             CREATE TABLE IF NOT EXISTS seen (
                 torrent_url  TEXT PRIMARY KEY,
@@ -142,7 +147,8 @@ def init_db() -> None:
                 grabbed_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 indexer      TEXT,
                 protocol     TEXT,
-                client       TEXT
+                client       TEXT,
+                download_client_id INTEGER
             );
             CREATE TABLE IF NOT EXISTS events (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -179,15 +185,21 @@ def init_db() -> None:
                 protocol      TEXT,
                 client        TEXT,
                 download_id   TEXT,
+                download_client_id INTEGER,
                 size_bytes    INTEGER,
                 release_group TEXT,
                 data          TEXT,
                 created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
-             CREATE TABLE IF NOT EXISTS import_queue (
+            CREATE TABLE IF NOT EXISTS import_queue (
                  id           INTEGER PRIMARY KEY AUTOINCREMENT,
                  series_id    INTEGER REFERENCES series(id),
                  download_id  TEXT,
+                 download_client_id INTEGER,
+                 download_protocol TEXT
+                                      CHECK(download_protocol IN (
+                                          'torrent','nzb'
+                                      ) OR download_protocol IS NULL),
                  torrent_name TEXT,
                  torrent_url  TEXT,
                  volume_num   REAL,
@@ -209,6 +221,277 @@ def init_db() -> None:
                 proposed_special_title TEXT,
                 status           TEXT DEFAULT 'pending'
             );
+            CREATE TABLE IF NOT EXISTS import_publications (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                queue_id              INTEGER NOT NULL UNIQUE,
+                state                 TEXT NOT NULL
+                                      CHECK(state IN (
+                                          'staging','prepared','publishing',
+                                          'published','db_committed','cleaning',
+                                          'finalized','deleted'
+                                      )),
+                owner_token           TEXT NOT NULL,
+                operation_owner       TEXT,
+                operation_expires_at  TEXT,
+                series_id             INTEGER NOT NULL,
+                dst_dir               TEXT NOT NULL,
+                import_mode           TEXT NOT NULL
+                                      CHECK(import_mode IN ('copy','move','hardlink')),
+                staging_dir           TEXT NOT NULL,
+                queue_snapshot_json   TEXT NOT NULL,
+                series_snapshot_json  TEXT,
+                series_tags_json      TEXT NOT NULL,
+                queue_status          TEXT NOT NULL,
+                queue_download_id     TEXT,
+                queue_download_client_id INTEGER,
+                queue_torrent_name    TEXT,
+                queue_torrent_url     TEXT,
+                queue_volume_num      REAL,
+                queue_src_dir         TEXT,
+                queue_failed_at       TEXT,
+                queue_lease_owner     TEXT,
+                queue_lease_expires_at TEXT,
+                queue_created_at      TEXT,
+                result_ok             INTEGER CHECK(result_ok IN (0,1)),
+                result_imported_count INTEGER,
+                result_queue_status   TEXT,
+                diagnostic            TEXT NOT NULL DEFAULT '',
+                notification_state    TEXT NOT NULL DEFAULT 'none'
+                                      CHECK(notification_state IN (
+                                          'none','pending','dispatched','suppressed'
+                                      )),
+                notification_title    TEXT,
+                notification_label    TEXT,
+                notification_cover_url TEXT,
+                pack_cleanup_state    TEXT NOT NULL DEFAULT 'retained'
+                                      CHECK(pack_cleanup_state IN (
+                                          'pending','complete','retained'
+                                      )),
+                pack_cleanup_completed_at TEXT,
+                created_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                prepared_at           TEXT,
+                publishing_at         TEXT,
+                published_at          TEXT,
+                db_committed_at       TEXT,
+                cleaning_at           TEXT,
+                finalized_at          TEXT,
+                deleted_at            TEXT
+            );
+            CREATE TABLE IF NOT EXISTS import_publication_files (
+                id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                publication_id           INTEGER NOT NULL
+                                             REFERENCES import_publications(id)
+                                             ON DELETE CASCADE,
+                ordinal                  INTEGER NOT NULL,
+                file_id                  INTEGER NOT NULL,
+                src_path                 TEXT NOT NULL,
+                filename                 TEXT NOT NULL,
+                dst_path                 TEXT NOT NULL,
+                import_kind              TEXT NOT NULL,
+                file_type                TEXT NOT NULL,
+                proposed_vol             REAL,
+                proposed_chap            REAL,
+                chap_range_end           REAL,
+                vol_range_start          REAL,
+                vol_range_end            REAL,
+                pack_type                TEXT,
+                is_special               INTEGER NOT NULL CHECK(is_special IN (0,1)),
+                special_title            TEXT,
+                has_volume_range         INTEGER NOT NULL
+                                             CHECK(has_volume_range IN (0,1)),
+                is_legacy_chapter_stub   INTEGER NOT NULL
+                                             CHECK(is_legacy_chapter_stub IN (0,1)),
+                is_legacy_chapter_recheck INTEGER NOT NULL
+                                             CHECK(is_legacy_chapter_recheck IN (0,1)),
+                plan_status              TEXT NOT NULL
+                                             CHECK(plan_status IN (
+                                                 'ready','skip','needs_review',
+                                                 'pre_failed'
+                                             )),
+                plan_failure_reason      TEXT NOT NULL DEFAULT '',
+                stage_ok                 INTEGER CHECK(stage_ok IN (0,1)),
+                stage_error              TEXT NOT NULL DEFAULT '',
+                stage_path               TEXT,
+                final_path               TEXT,
+                source_dev               INTEGER,
+                source_inode             INTEGER,
+                source_size              INTEGER,
+                source_mtime_ns          INTEGER,
+                source_sha256            TEXT,
+                source_claim_path        TEXT,
+                staged_dev               INTEGER,
+                staged_inode             INTEGER,
+                staged_size              INTEGER,
+                staged_mtime_ns          INTEGER,
+                staged_sha256            TEXT,
+                final_expected_absent    INTEGER
+                                                 CHECK(final_expected_absent IN (0,1)),
+                prepared_final_dev       INTEGER,
+                prepared_final_inode     INTEGER,
+                prepared_final_size      INTEGER,
+                prepared_final_mtime_ns  INTEGER,
+                prepared_final_sha256    TEXT,
+                final_claim_path         TEXT,
+                stage_state              TEXT NOT NULL DEFAULT 'pending'
+                                             CHECK(stage_state IN (
+                                                 'pending','staged','skipped','failed'
+                                             )),
+                publish_state            TEXT NOT NULL DEFAULT 'pending'
+                                             CHECK(publish_state IN (
+                                                 'pending','published',
+                                                 'not_applicable','blocked'
+                                             )),
+                cleanup_state            TEXT NOT NULL DEFAULT 'pending'
+                                             CHECK(cleanup_state IN (
+                                                 'pending','deleted','missing',
+                                                 'replaced','not_applicable','blocked'
+                                             )),
+                diagnostic               TEXT NOT NULL DEFAULT '',
+                staged_at                TEXT,
+                published_at             TEXT,
+                cleaned_at               TEXT,
+                UNIQUE(publication_id, ordinal),
+                UNIQUE(publication_id, file_id)
+            );
+            CREATE TABLE IF NOT EXISTS import_publication_notifications (
+                publication_id       INTEGER PRIMARY KEY,
+                state                TEXT NOT NULL
+                                         CHECK(state IN (
+                                             'pending','dispatching','dispatched'
+                                         )),
+                idempotency_key      TEXT NOT NULL UNIQUE,
+                title                TEXT NOT NULL,
+                label                TEXT NOT NULL,
+                cover_url            TEXT NOT NULL DEFAULT '',
+                operation_owner      TEXT,
+                operation_expires_at TEXT,
+                attempt_count        INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at      TEXT,
+                last_error           TEXT NOT NULL DEFAULT '',
+                created_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                dispatched_at        TEXT
+            );
+            CREATE TABLE IF NOT EXISTS import_publication_notification_deliveries (
+                publication_id       INTEGER NOT NULL,
+                connection_id        INTEGER NOT NULL,
+                connection_name      TEXT NOT NULL,
+                connection_type      TEXT NOT NULL,
+                state                TEXT NOT NULL
+                                         CHECK(state IN (
+                                             'pending','dispatching','completed'
+                                         )),
+                completion_reason    TEXT
+                                         CHECK(
+                                             completion_reason IS NULL
+                                             OR completion_reason IN (
+                                                 'delivered',
+                                                 'connection_deleted',
+                                                 'connection_disabled'
+                                             )
+                                         ),
+                operation_owner      TEXT,
+                operation_expires_at TEXT,
+                attempt_count        INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at      TEXT,
+                last_error           TEXT NOT NULL DEFAULT '',
+                created_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at         TEXT,
+                PRIMARY KEY(publication_id, connection_id)
+            );
+            CREATE TABLE IF NOT EXISTS import_publication_success_effects (
+                publication_id       INTEGER NOT NULL,
+                effect_type          TEXT NOT NULL
+                                         CHECK(effect_type IN (
+                                             'cover','komga_scan',
+                                             'remove_completed'
+                                         )),
+                state                TEXT NOT NULL
+                                         CHECK(state IN (
+                                             'pending','dispatching','completed'
+                                         )),
+                idempotency_key      TEXT NOT NULL UNIQUE,
+                payload_json         TEXT NOT NULL,
+                operation_owner      TEXT,
+                operation_expires_at TEXT,
+                attempt_count        INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at      TEXT,
+                last_error           TEXT NOT NULL DEFAULT '',
+                created_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at         TEXT,
+                PRIMARY KEY(publication_id, effect_type)
+            );
+            CREATE TABLE IF NOT EXISTS import_pack_cleanup_reservations (
+                download_identity_key  TEXT NOT NULL PRIMARY KEY,
+                download_client_id     INTEGER
+                                           CHECK(download_client_id IS NULL
+                                                 OR download_client_id > 0),
+                protocol               TEXT
+                                           CHECK(protocol IN ('torrent','nzb')
+                                                 OR protocol IS NULL),
+                normalized_download_id TEXT NOT NULL
+                                           CHECK(normalized_download_id != ''),
+                download_id            TEXT NOT NULL,
+                purpose                TEXT NOT NULL
+                                           CHECK(purpose IN ('queueing','cleanup')),
+                owner_token            TEXT NOT NULL,
+                queue_id               INTEGER,
+                publication_id         INTEGER,
+                pack_path              TEXT NOT NULL,
+                tombstone_path         TEXT,
+                expires_at             TEXT NOT NULL,
+                created_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS import_pack_cleanup_tombstones (
+                tombstone_path         TEXT PRIMARY KEY,
+                download_identity_key  TEXT NOT NULL,
+                download_client_id     INTEGER
+                                           CHECK(download_client_id IS NULL
+                                                 OR download_client_id > 0),
+                protocol               TEXT
+                                           CHECK(protocol IN ('torrent','nzb')
+                                                 OR protocol IS NULL),
+                normalized_download_id TEXT NOT NULL,
+                download_id            TEXT NOT NULL,
+                queue_id               INTEGER NOT NULL,
+                publication_id         INTEGER,
+                pack_path              TEXT NOT NULL,
+                created_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS volume_file_deletions (
+                id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                volume_id            INTEGER NOT NULL,
+                series_id            INTEGER NOT NULL,
+                state                TEXT NOT NULL
+                                          CHECK(state IN ('active','completed')),
+                target_path          TEXT NOT NULL,
+                parent_path          TEXT NOT NULL,
+                claim_path           TEXT NOT NULL,
+                target_present       INTEGER NOT NULL
+                                             CHECK(target_present IN (0,1)),
+                target_dev           INTEGER,
+                target_inode         INTEGER,
+                target_size          INTEGER,
+                target_mtime_ns      INTEGER,
+                target_sha256        TEXT,
+                series_title         TEXT NOT NULL,
+                volume_num           REAL,
+                source_title         TEXT NOT NULL DEFAULT '',
+                original_import_path TEXT NOT NULL DEFAULT '',
+                diagnostic           TEXT NOT NULL DEFAULT '',
+                created_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at         TEXT
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_volume_file_deletions_active_volume
+                ON volume_file_deletions(volume_id) WHERE state='active';
+            CREATE INDEX IF NOT EXISTS idx_volume_file_deletions_active_series
+                ON volume_file_deletions(series_id, id) WHERE state='active';
             CREATE TABLE IF NOT EXISTS series_aliases (
                 id        INTEGER PRIMARY KEY AUTOINCREMENT,
                 series_id INTEGER NOT NULL REFERENCES series(id),
@@ -275,6 +558,56 @@ def init_db() -> None:
             if col not in cols:
                 db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typedef}")
 
+        add_col("import_publication_files", "source_sha256", "TEXT")
+        add_col("import_publication_files", "source_claim_path", "TEXT")
+        add_col(
+            "import_publication_files",
+            "final_expected_absent",
+            "INTEGER",
+        )
+        add_col("import_publication_files", "prepared_final_dev", "INTEGER")
+        add_col("import_publication_files", "prepared_final_inode", "INTEGER")
+        add_col("import_publication_files", "prepared_final_size", "INTEGER")
+        add_col("import_publication_files", "prepared_final_mtime_ns", "INTEGER")
+        add_col("import_publication_files", "prepared_final_sha256", "TEXT")
+        add_col("import_publication_files", "final_claim_path", "TEXT")
+        add_col(
+            "import_publications",
+            "pack_cleanup_state",
+            "TEXT DEFAULT 'retained'",
+        )
+        add_col(
+            "import_publications",
+            "pack_cleanup_completed_at",
+            "TEXT",
+        )
+        add_col(
+            "import_publications",
+            "queue_download_client_id",
+            "INTEGER",
+        )
+        db.execute(
+            """
+            UPDATE import_publications
+            SET pack_cleanup_state='pending'
+            WHERE state IN ('finalized','deleted')
+              AND result_queue_status IN ('imported','failed','skipped')
+              AND queue_download_id IS NOT NULL
+              AND trim(queue_download_id)!=''
+              AND pack_cleanup_state='retained'
+              AND pack_cleanup_completed_at IS NULL
+            """
+        )
+        db.execute(
+            """
+            UPDATE import_publications
+            SET pack_cleanup_state='retained'
+            WHERE state IN ('finalized','deleted')
+              AND result_queue_status NOT IN ('imported','failed','skipped')
+              AND pack_cleanup_state='pending'
+            """
+        )
+
         add_col('series',  'total_volumes',   'INTEGER')
         add_col('series',  'total_chapters',  'INTEGER')
         add_col('series',  'monitored',       'INTEGER DEFAULT 1')
@@ -283,9 +616,11 @@ def init_db() -> None:
         add_col('seen',    'indexer',         'TEXT')
         add_col('seen',    'protocol',        'TEXT')
         add_col('seen',    'client',          'TEXT')
+        add_col('seen',    'download_client_id', 'INTEGER')
         add_col('volumes', 'indexer',         'TEXT')
         add_col('volumes', 'protocol',        'TEXT')
         add_col('volumes', 'client',          'TEXT')
+        add_col('volumes', 'download_client_id', 'INTEGER')
 
         # ── Backfill defaults for old seen records ────────────────────────────
         db.execute("""
@@ -378,12 +713,15 @@ def init_db() -> None:
         add_col('import_queue',            'failed_at',                'TIMESTAMP')
         add_col('import_queue',            'lease_owner',              'TEXT')
         add_col('import_queue',            'lease_expires_at',         'TIMESTAMP')
+        add_col('import_queue',            'download_client_id',       'INTEGER')
+        add_col('import_queue',            'download_protocol',        'TEXT')
         # Side-story / oneshot persistence on the final volumes row.
         # Stage 2 only stores this flag; Stage 3 adds the coverage
         # exclusion that makes it load-bearing. Non-null default so
         # existing WHERE is_special=0 filters work without a NULL check.
         add_col('volumes',            'is_special',                   'INTEGER DEFAULT 0')
         add_col('history',            'torrent_url',      'TEXT')
+        add_col('history',            'download_client_id', 'INTEGER')
         add_col('volumes',            'imported_at',      'TEXT')
         add_col('volumes',            'edition_type',     'TEXT')   # standard|deluxe|omnibus|special|collector|digital
         add_col('volumes',            'language',         'TEXT')   # en|ja|fr|etc — detected from release title
@@ -405,6 +743,7 @@ def init_db() -> None:
                 indexer       TEXT,
                 protocol      TEXT,
                 client        TEXT,
+                download_client_id INTEGER,
                 size_bytes    INTEGER DEFAULT 0,
                 import_path   TEXT,
                 download_id   TEXT,
@@ -421,6 +760,7 @@ def init_db() -> None:
         add_col('chapters',           'pages',            'INTEGER')
         add_col('chapters',           'metadata_source',  'TEXT')
         add_col('chapters',           'metadata_updated_at', 'TEXT')
+        add_col('chapters',           'download_client_id', 'INTEGER')
         # Multi-chapter file support (e.g. c001-002 packs in one CBZ).
         # When set, this row covers chapter_num..chapter_range_end inclusive
         # via a single import_path. NULL preserves the original one-row-per-
@@ -882,15 +1222,44 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_volumes_series_status ON volumes(series_id, status)",
             "CREATE INDEX IF NOT EXISTS idx_volumes_series_volnum ON volumes(series_id, volume_num)",
             "CREATE INDEX IF NOT EXISTS idx_volumes_download_id   ON volumes(download_id)",
+            "CREATE INDEX IF NOT EXISTS idx_volumes_download_id_nocase"
+            " ON volumes(download_id COLLATE NOCASE)",
             "CREATE INDEX IF NOT EXISTS idx_seen_series           ON seen(series_id)",
             "CREATE INDEX IF NOT EXISTS idx_seen_dlid             ON seen(download_id)",
+            "CREATE INDEX IF NOT EXISTS idx_seen_dlid_nocase"
+            " ON seen(download_id COLLATE NOCASE)",
             "CREATE INDEX IF NOT EXISTS idx_seen_guid             ON seen(release_guid) WHERE release_guid IS NOT NULL",
             "CREATE INDEX IF NOT EXISTS idx_chapters_series       ON chapters(series_id)",
             "CREATE INDEX IF NOT EXISTS idx_chapters_volid        ON chapters(volume_id)",
+            "CREATE INDEX IF NOT EXISTS idx_chapters_dlid_nocase"
+            " ON chapters(download_id COLLATE NOCASE)",
             "CREATE INDEX IF NOT EXISTS idx_import_queue_dlid     ON import_queue(download_id)",
+            "CREATE INDEX IF NOT EXISTS idx_import_queue_dlid_nocase"
+            " ON import_queue(download_id COLLATE NOCASE)",
             "CREATE INDEX IF NOT EXISTS idx_import_queue_status   ON import_queue(status)",
             "CREATE INDEX IF NOT EXISTS idx_import_queue_importing_expiry"
             " ON import_queue(lease_expires_at) WHERE status='importing'",
+            "CREATE INDEX IF NOT EXISTS idx_import_publications_state"
+            " ON import_publications(state, id)",
+            "CREATE INDEX IF NOT EXISTS idx_import_publication_files_publication"
+            " ON import_publication_files(publication_id, ordinal)",
+            "CREATE INDEX IF NOT EXISTS idx_import_publication_notifications_due"
+            " ON import_publication_notifications(state, next_attempt_at,"
+            " operation_expires_at, publication_id)",
+            "CREATE INDEX IF NOT EXISTS idx_import_publication_notification_deliveries_due"
+            " ON import_publication_notification_deliveries(state,"
+            " next_attempt_at, operation_expires_at, publication_id,"
+            " connection_id)",
+            "CREATE INDEX IF NOT EXISTS idx_import_publication_success_effects_due"
+            " ON import_publication_success_effects(state, next_attempt_at,"
+            " operation_expires_at, publication_id, effect_type)",
+            "CREATE INDEX IF NOT EXISTS idx_import_pack_reservations_expiry"
+            " ON import_pack_cleanup_reservations(expires_at,"
+            " normalized_download_id)",
+            "CREATE INDEX IF NOT EXISTS idx_import_pack_tombstones_publication"
+            " ON import_pack_cleanup_tombstones(publication_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_volume_file_deletions_active_series"
+            " ON volume_file_deletions(series_id, id) WHERE state='active'",
             "CREATE INDEX IF NOT EXISTS idx_events_series         ON events(series_id)",
             "CREATE INDEX IF NOT EXISTS idx_history_series        ON history(series_id)",
             "CREATE INDEX IF NOT EXISTS idx_remote_path_host      ON remote_path_mappings(host)",
@@ -1100,6 +1469,7 @@ def init_db() -> None:
         # Keep schema rebuilds and root-folder migration in this same writer
         # transaction so no newer binary can claim the DB between phases.
         _migrate_schema_constraints_locked(db)
+        _backfill_import_notification_deliveries(db)
         _bootstrap_root_folders_locked(db)
 
 
@@ -1175,16 +1545,47 @@ def _bootstrap_root_folders_locked(db: sqlite3.Connection) -> None:
 
 _OWNED_STATUS_CHECK = "status IN ('wanted','grabbed','downloaded')"
 
+_IMPORT_QUEUE_CONSTRAINED_DDL = """
+    CREATE TABLE import_queue_new (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        series_id            INTEGER REFERENCES series(id),
+        download_id          TEXT,
+        download_client_id   INTEGER,
+        download_protocol    TEXT
+                               CHECK(download_protocol IN ('torrent','nzb')
+                                     OR download_protocol IS NULL),
+        torrent_name         TEXT,
+        torrent_url          TEXT,
+        volume_num           REAL,
+        src_dir              TEXT,
+        status               TEXT DEFAULT 'pending',
+        failed_at            TIMESTAMP,
+        lease_owner          TEXT,
+        lease_expires_at     TIMESTAMP,
+        created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+"""
 
-def _restore_volume_chapter_artifacts(db) -> None:
-    """Recreate indexes/triggers dropped by SQLite table rebuilds."""
+
+def _restore_volume_chapter_artifacts(db: sqlite3.Connection) -> None:
+    """Recreate hot-path indexes/triggers dropped by SQLite table rebuilds."""
     for stmt in [
+        "CREATE INDEX IF NOT EXISTS idx_seen_series ON seen(series_id)",
+        "CREATE INDEX IF NOT EXISTS idx_seen_dlid ON seen(download_id)",
+        "CREATE INDEX IF NOT EXISTS idx_seen_dlid_nocase"
+        " ON seen(download_id COLLATE NOCASE)",
+        "CREATE INDEX IF NOT EXISTS idx_seen_guid"
+        " ON seen(release_guid) WHERE release_guid IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_volumes_series        ON volumes(series_id)",
         "CREATE INDEX IF NOT EXISTS idx_volumes_series_status ON volumes(series_id, status)",
         "CREATE INDEX IF NOT EXISTS idx_volumes_series_volnum ON volumes(series_id, volume_num)",
         "CREATE INDEX IF NOT EXISTS idx_volumes_download_id   ON volumes(download_id)",
+        "CREATE INDEX IF NOT EXISTS idx_volumes_download_id_nocase"
+        " ON volumes(download_id COLLATE NOCASE)",
         "CREATE INDEX IF NOT EXISTS idx_chapters_series       ON chapters(series_id)",
         "CREATE INDEX IF NOT EXISTS idx_chapters_volid        ON chapters(volume_id)",
+        "CREATE INDEX IF NOT EXISTS idx_chapters_dlid_nocase"
+        " ON chapters(download_id COLLATE NOCASE)",
     ]:
         db.execute(stmt)
     db.execute("""
@@ -1198,6 +1599,70 @@ def _restore_volume_chapter_artifacts(db) -> None:
               AND status != 'downloaded';
         END
     """)
+
+
+def _restore_import_queue_artifacts(db: sqlite3.Connection) -> None:
+    """Recreate import-queue indexes dropped by its constraint rebuild."""
+    for stmt in [
+        "CREATE INDEX IF NOT EXISTS idx_import_queue_dlid"
+        " ON import_queue(download_id)",
+        "CREATE INDEX IF NOT EXISTS idx_import_queue_dlid_nocase"
+        " ON import_queue(download_id COLLATE NOCASE)",
+        "CREATE INDEX IF NOT EXISTS idx_import_queue_status"
+        " ON import_queue(status)",
+        "CREATE INDEX IF NOT EXISTS idx_import_queue_importing_expiry"
+        " ON import_queue(lease_expires_at) WHERE status='importing'",
+    ]:
+        db.execute(stmt)
+
+
+def _import_queue_protocol_is_constrained(db: sqlite3.Connection) -> bool:
+    """Return whether the table has the current download-protocol CHECK."""
+    row = db.execute(
+        "SELECT sql FROM sqlite_master"
+        " WHERE type='table' AND name='import_queue'"
+    ).fetchone()
+    normalized_sql = "".join(str(row[0] if row else "").lower().split())
+    expected = (
+        "check(download_protocolin('torrent','nzb')"
+        "ordownload_protocolisnull)"
+    )
+    return expected in normalized_sql
+
+
+def _enforce_import_queue_protocol_constraint(
+    db: sqlite3.Connection,
+) -> bool:
+    """Rebuild a legacy queue so invalid protocols fail at the DB boundary."""
+    if _import_queue_protocol_is_constrained(db):
+        return False
+
+    columns = {
+        str(row[1])
+        for row in db.execute("PRAGMA table_info(import_queue)").fetchall()
+    }
+    if "download_protocol" in columns:
+        invalid = cast(
+            int,
+            db.execute(
+                "SELECT COUNT(*) FROM import_queue"
+                " WHERE download_protocol IS NOT NULL"
+                " AND download_protocol NOT IN ('torrent','nzb')"
+            ).fetchone()[0],
+        )
+        if invalid:
+            raise RuntimeError(
+                "cannot enforce import_queue.download_protocol CHECK while "
+                f"{invalid} invalid value(s) exist; expected torrent, nzb, or NULL"
+            )
+
+    _rebuild_table_copying_known_columns(
+        db,
+        name="import_queue",
+        ddl=_IMPORT_QUEUE_CONSTRAINED_DDL,
+    )
+    _restore_import_queue_artifacts(db)
+    return True
 
 
 def _migrate_schema_constraints() -> None:
@@ -1214,7 +1679,11 @@ def _migrate_schema_constraints() -> None:
 def _migrate_schema_constraints_locked(db: sqlite3.Connection) -> None:
     """Run pending constraint migrations inside a writer transaction."""
     version = _validate_schema_version(db)
-    if version == _SCHEMA_VERSION_STATUS_CONSTRAINTS:
+    if version == _SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP:
+        # Schema v5 existed briefly with only history ownership. Keep the v5
+        # migration idempotent so those unreleased databases also receive the
+        # ownership-qualified pack journal shape.
+        _migrate_history_download_ownership(db)
         return
 
     if version < _SCHEMA_VERSION_FK_CONSTRAINTS:
@@ -1223,6 +1692,655 @@ def _migrate_schema_constraints_locked(db: sqlite3.Connection) -> None:
 
     if version < _SCHEMA_VERSION_STATUS_CONSTRAINTS:
         _migrate_owned_status_constraints(db)
+        version = _SCHEMA_VERSION_STATUS_CONSTRAINTS
+
+    if version < _SCHEMA_VERSION_IMPORT_PUBLICATIONS:
+        _migrate_import_publication_journal(db)
+        version = _SCHEMA_VERSION_IMPORT_PUBLICATIONS
+
+    if version < _SCHEMA_VERSION_DURABLE_PUBLICATION_SAFETY:
+        _migrate_durable_publication_safety(db)
+        version = _SCHEMA_VERSION_DURABLE_PUBLICATION_SAFETY
+
+    if version < _SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP:
+        _migrate_history_download_ownership(db)
+
+
+def _migrate_history_download_ownership(db: sqlite3.Connection) -> None:
+    """Complete the schema-v5 downloader ownership and pack namespace contract."""
+    starting_version = cast(int, db.execute("PRAGMA user_version").fetchone()[0])
+    changed = False
+    history_columns = {
+        str(row[1])
+        for row in db.execute("PRAGMA table_info(history)").fetchall()
+    }
+    if "download_client_id" not in history_columns:
+        db.execute("ALTER TABLE history ADD COLUMN download_client_id INTEGER")
+        changed = True
+
+    queue_columns = {
+        str(row[1])
+        for row in db.execute("PRAGMA table_info(import_queue)").fetchall()
+    }
+    if "download_protocol" not in queue_columns:
+        db.execute("ALTER TABLE import_queue ADD COLUMN download_protocol TEXT")
+        changed = True
+    if _enforce_import_queue_protocol_constraint(db):
+        changed = True
+
+    reservation_columns = {
+        str(row[1])
+        for row in db.execute(
+            "PRAGMA table_info(import_pack_cleanup_reservations)"
+        ).fetchall()
+    }
+    tombstone_columns = {
+        str(row[1])
+        for row in db.execute(
+            "PRAGMA table_info(import_pack_cleanup_tombstones)"
+        ).fetchall()
+    }
+    reservation_v5_columns = {
+        "download_identity_key",
+        "download_client_id",
+        "protocol",
+        "normalized_download_id",
+    }
+    tombstone_v5_columns = reservation_v5_columns | {"tombstone_path"}
+    pack_tables_are_v5 = (
+        reservation_v5_columns <= reservation_columns
+        and tombstone_v5_columns <= tombstone_columns
+    )
+    retained_publications = 0
+    if not pack_tables_are_v5:
+        reservation_count = cast(
+            int,
+            db.execute(
+                "SELECT COUNT(*) FROM import_pack_cleanup_reservations"
+            ).fetchone()[0],
+        )
+        tombstone_count = cast(
+            int,
+            db.execute(
+                "SELECT COUNT(*) FROM import_pack_cleanup_tombstones"
+            ).fetchone()[0],
+        )
+        if reservation_count or tombstone_count:
+            raise RuntimeError(
+                "cannot migrate database schema from the unreleased v4/v5 "
+                "pack journal shape while import-pack cleanup work exists: "
+                f"{reservation_count} reservation(s), "
+                f"{tombstone_count} tombstone(s). Finish recovery with the "
+                "matching build before starting this version; downloader "
+                "ownership cannot be guessed safely"
+            )
+
+        retained_publications = db.execute(
+            """
+            UPDATE import_publications
+            SET pack_cleanup_state='retained', updated_at=CURRENT_TIMESTAMP
+            WHERE pack_cleanup_state='pending'
+            """
+        ).rowcount
+        _execute_script_in_transaction(db, """
+            DROP TABLE import_pack_cleanup_tombstones;
+            DROP TABLE import_pack_cleanup_reservations;
+            CREATE TABLE import_pack_cleanup_reservations (
+                download_identity_key  TEXT NOT NULL PRIMARY KEY,
+                download_client_id     INTEGER
+                                           CHECK(download_client_id IS NULL
+                                                 OR download_client_id > 0),
+                protocol               TEXT
+                                           CHECK(protocol IN ('torrent','nzb')
+                                                 OR protocol IS NULL),
+                normalized_download_id TEXT NOT NULL
+                                           CHECK(normalized_download_id != ''),
+                download_id            TEXT NOT NULL,
+                purpose                TEXT NOT NULL
+                                           CHECK(purpose IN ('queueing','cleanup')),
+                owner_token            TEXT NOT NULL,
+                queue_id               INTEGER,
+                publication_id         INTEGER,
+                pack_path              TEXT NOT NULL,
+                tombstone_path         TEXT,
+                expires_at             TEXT NOT NULL,
+                created_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE import_pack_cleanup_tombstones (
+                tombstone_path         TEXT PRIMARY KEY,
+                download_identity_key  TEXT NOT NULL,
+                download_client_id     INTEGER
+                                           CHECK(download_client_id IS NULL
+                                                 OR download_client_id > 0),
+                protocol               TEXT
+                                           CHECK(protocol IN ('torrent','nzb')
+                                                 OR protocol IS NULL),
+                normalized_download_id TEXT NOT NULL,
+                download_id            TEXT NOT NULL,
+                queue_id               INTEGER NOT NULL,
+                publication_id         INTEGER,
+                pack_path              TEXT NOT NULL,
+                created_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX idx_import_pack_reservations_expiry
+                ON import_pack_cleanup_reservations(
+                    expires_at, normalized_download_id
+                );
+            CREATE INDEX idx_import_pack_tombstones_publication
+                ON import_pack_cleanup_tombstones(publication_id, created_at);
+        """)
+        changed = True
+
+    db.execute(
+        f"PRAGMA user_version = {_SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP}"
+    )
+    if changed or starting_version < _SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP:
+        retained_note = (
+            f"; retained {retained_publications} legacy pack cleanup "
+            "publication(s)"
+            if retained_publications
+            else ""
+        )
+        log_event(
+            "schema_migration",
+            "nullable history/queue download ownership and qualified pack "
+            f"namespaces added{retained_note} "
+            f"(schema version -> {_SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP})",
+            db=db,
+        )
+
+
+def _backfill_import_notification_deliveries(db: sqlite3.Connection) -> None:
+    """Convert legacy publication-level pending work to connection snapshots.
+
+    This also covers databases initialized by an earlier schema-v4 build:
+    publication rows that already have any child delivery rows are left alone,
+    so newly enabled providers are never added to an accepted notification.
+    """
+    db.execute(
+        """
+        INSERT OR IGNORE INTO import_publication_notification_deliveries(
+            publication_id, connection_id, connection_name, connection_type,
+            state
+        )
+        SELECT n.publication_id, c.id, c.name, c.type, 'pending'
+        FROM import_publication_notifications AS n
+        JOIN notification_connections AS c
+          ON c.enabled=1 AND c.on_download=1
+        WHERE n.state IN ('pending','dispatching')
+          AND NOT EXISTS (
+              SELECT 1
+              FROM import_publication_notification_deliveries AS existing
+              WHERE existing.publication_id=n.publication_id
+          )
+        """
+    )
+    db.execute(
+        """
+        UPDATE import_publication_notifications
+        SET state='pending', operation_owner=NULL, operation_expires_at=NULL,
+            next_attempt_at=NULL, updated_at=CURRENT_TIMESTAMP
+        WHERE state='dispatching'
+          AND EXISTS (
+              SELECT 1
+              FROM import_publication_notification_deliveries AS delivery
+              WHERE delivery.publication_id=
+                    import_publication_notifications.publication_id
+          )
+        """
+    )
+    db.execute(
+        """
+        UPDATE import_publication_notifications
+        SET state='dispatched', operation_owner=NULL,
+            operation_expires_at=NULL, next_attempt_at=NULL, last_error='',
+            dispatched_at=COALESCE(dispatched_at, CURRENT_TIMESTAMP),
+            updated_at=CURRENT_TIMESTAMP
+        WHERE state!='dispatched'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM import_publication_notification_deliveries AS delivery
+              WHERE delivery.publication_id=
+                    import_publication_notifications.publication_id
+          )
+        """
+    )
+    db.execute(
+        """
+        UPDATE import_publications
+        SET notification_state='dispatched', updated_at=CURRENT_TIMESTAMP
+        WHERE notification_state='pending'
+          AND EXISTS (
+              SELECT 1
+              FROM import_publication_notifications AS notification
+              WHERE notification.publication_id=import_publications.id
+                AND notification.state='dispatched'
+          )
+        """
+    )
+
+
+def _migrate_import_publication_journal(db: sqlite3.Connection) -> None:
+    """Create the durable import publication journal for schema version 3."""
+    _execute_script_in_transaction(db, """
+        CREATE TABLE IF NOT EXISTS import_publications (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            queue_id              INTEGER NOT NULL UNIQUE,
+            state                 TEXT NOT NULL
+                                  CHECK(state IN (
+                                      'staging','prepared','publishing',
+                                      'published','db_committed','cleaning',
+                                      'finalized','deleted'
+                                  )),
+            owner_token           TEXT NOT NULL,
+            operation_owner       TEXT,
+            operation_expires_at  TEXT,
+            series_id             INTEGER NOT NULL,
+            dst_dir               TEXT NOT NULL,
+            import_mode           TEXT NOT NULL
+                                  CHECK(import_mode IN ('copy','move','hardlink')),
+            staging_dir           TEXT NOT NULL,
+            queue_snapshot_json   TEXT NOT NULL,
+            series_snapshot_json  TEXT,
+            series_tags_json      TEXT NOT NULL,
+            queue_status          TEXT NOT NULL,
+            queue_download_id     TEXT,
+            queue_torrent_name    TEXT,
+            queue_torrent_url     TEXT,
+            queue_volume_num      REAL,
+            queue_src_dir         TEXT,
+            queue_failed_at       TEXT,
+            queue_lease_owner     TEXT,
+            queue_lease_expires_at TEXT,
+            queue_created_at      TEXT,
+            result_ok             INTEGER CHECK(result_ok IN (0,1)),
+            result_imported_count INTEGER,
+            result_queue_status   TEXT,
+            diagnostic            TEXT NOT NULL DEFAULT '',
+            notification_state    TEXT NOT NULL DEFAULT 'none'
+                                  CHECK(notification_state IN (
+                                      'none','pending','dispatched','suppressed'
+                                  )),
+            notification_title    TEXT,
+            notification_label    TEXT,
+            notification_cover_url TEXT,
+            pack_cleanup_state    TEXT NOT NULL DEFAULT 'retained'
+                                  CHECK(pack_cleanup_state IN (
+                                      'pending','complete','retained'
+                                  )),
+            pack_cleanup_completed_at TEXT,
+            created_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            prepared_at           TEXT,
+            publishing_at         TEXT,
+            published_at          TEXT,
+            db_committed_at       TEXT,
+            cleaning_at           TEXT,
+            finalized_at          TEXT,
+            deleted_at            TEXT
+        );
+        CREATE TABLE IF NOT EXISTS import_publication_files (
+            id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+            publication_id           INTEGER NOT NULL
+                                         REFERENCES import_publications(id)
+                                         ON DELETE CASCADE,
+            ordinal                  INTEGER NOT NULL,
+            file_id                  INTEGER NOT NULL,
+            src_path                 TEXT NOT NULL,
+            filename                 TEXT NOT NULL,
+            dst_path                 TEXT NOT NULL,
+            import_kind              TEXT NOT NULL,
+            file_type                TEXT NOT NULL,
+            proposed_vol             REAL,
+            proposed_chap            REAL,
+            chap_range_end           REAL,
+            vol_range_start          REAL,
+            vol_range_end            REAL,
+            pack_type                TEXT,
+            is_special               INTEGER NOT NULL CHECK(is_special IN (0,1)),
+            special_title            TEXT,
+            has_volume_range         INTEGER NOT NULL
+                                         CHECK(has_volume_range IN (0,1)),
+            is_legacy_chapter_stub   INTEGER NOT NULL
+                                         CHECK(is_legacy_chapter_stub IN (0,1)),
+            is_legacy_chapter_recheck INTEGER NOT NULL
+                                         CHECK(is_legacy_chapter_recheck IN (0,1)),
+            plan_status              TEXT NOT NULL
+                                         CHECK(plan_status IN (
+                                             'ready','skip','needs_review',
+                                             'pre_failed'
+                                         )),
+            plan_failure_reason      TEXT NOT NULL DEFAULT '',
+            stage_ok                 INTEGER CHECK(stage_ok IN (0,1)),
+            stage_error              TEXT NOT NULL DEFAULT '',
+            stage_path               TEXT,
+            final_path               TEXT,
+            source_dev               INTEGER,
+            source_inode             INTEGER,
+            source_size              INTEGER,
+            source_mtime_ns          INTEGER,
+            source_sha256            TEXT,
+            source_claim_path        TEXT,
+            staged_dev               INTEGER,
+            staged_inode             INTEGER,
+            staged_size              INTEGER,
+            staged_mtime_ns          INTEGER,
+            staged_sha256            TEXT,
+            final_expected_absent    INTEGER
+                                             CHECK(final_expected_absent IN (0,1)),
+            prepared_final_dev       INTEGER,
+            prepared_final_inode     INTEGER,
+            prepared_final_size      INTEGER,
+            prepared_final_mtime_ns  INTEGER,
+            prepared_final_sha256    TEXT,
+            final_claim_path         TEXT,
+            stage_state              TEXT NOT NULL DEFAULT 'pending'
+                                         CHECK(stage_state IN (
+                                             'pending','staged','skipped','failed'
+                                         )),
+            publish_state            TEXT NOT NULL DEFAULT 'pending'
+                                         CHECK(publish_state IN (
+                                             'pending','published',
+                                             'not_applicable','blocked'
+                                         )),
+            cleanup_state            TEXT NOT NULL DEFAULT 'pending'
+                                         CHECK(cleanup_state IN (
+                                             'pending','deleted','missing',
+                                             'replaced','not_applicable','blocked'
+                                         )),
+            diagnostic               TEXT NOT NULL DEFAULT '',
+            staged_at                TEXT,
+            published_at             TEXT,
+            cleaned_at               TEXT,
+            UNIQUE(publication_id, ordinal),
+            UNIQUE(publication_id, file_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_import_publications_state
+            ON import_publications(state, id);
+        CREATE INDEX IF NOT EXISTS idx_import_publication_files_publication
+            ON import_publication_files(publication_id, ordinal);
+        CREATE TABLE IF NOT EXISTS import_pack_cleanup_reservations (
+            normalized_download_id TEXT PRIMARY KEY,
+            download_id            TEXT NOT NULL,
+            purpose                TEXT NOT NULL
+                                       CHECK(purpose IN ('queueing','cleanup')),
+            owner_token            TEXT NOT NULL,
+            queue_id               INTEGER,
+            publication_id         INTEGER,
+            pack_path              TEXT NOT NULL,
+            tombstone_path         TEXT,
+            expires_at             TEXT NOT NULL,
+            created_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS import_pack_cleanup_tombstones (
+            tombstone_path         TEXT PRIMARY KEY,
+            normalized_download_id TEXT NOT NULL,
+            download_id            TEXT NOT NULL,
+            queue_id               INTEGER NOT NULL,
+            publication_id         INTEGER,
+            pack_path              TEXT NOT NULL,
+            created_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_import_pack_reservations_expiry
+            ON import_pack_cleanup_reservations(
+                expires_at, normalized_download_id
+            );
+        CREATE INDEX IF NOT EXISTS idx_import_pack_tombstones_publication
+            ON import_pack_cleanup_tombstones(publication_id, created_at);
+    """)
+    db.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_IMPORT_PUBLICATIONS}")
+    log_event(
+        "schema_migration",
+        "durable import publication journal added "
+        f"(schema version -> {_SCHEMA_VERSION_IMPORT_PUBLICATIONS})",
+        db=db,
+    )
+
+
+def _migrate_durable_publication_safety(db: sqlite3.Connection) -> None:
+    """Add fail-closed destination/source preconditions for schema version 4."""
+    active_journals = db.execute(
+        """
+        SELECT state, COUNT(*) AS journal_count
+        FROM import_publications
+        WHERE state IN (
+            'staging','prepared','publishing',
+            'published','db_committed','cleaning'
+        )
+        GROUP BY state
+        ORDER BY state
+        """
+    ).fetchall()
+    if active_journals:
+        state_summary = ", ".join(
+            f"{row['state']} ({row['journal_count']})"
+            for row in active_journals
+        )
+        raise RuntimeError(
+            "cannot migrate database schema from version 3 to 4 while active "
+            f"v3 import publication journals exist: {state_summary}. "
+            "Schema version 3 was an unreleased intermediate and its active "
+            "journals cannot be safely backfilled; finish or remove them with "
+            "the matching v3 build before starting this version"
+        )
+
+    columns = {
+        str(row[1])
+        for row in db.execute(
+            "PRAGMA table_info(import_publication_files)"
+        ).fetchall()
+    }
+    additions = (
+        ("source_sha256", "TEXT"),
+        ("source_claim_path", "TEXT"),
+        ("final_expected_absent", "INTEGER"),
+        ("prepared_final_dev", "INTEGER"),
+        ("prepared_final_inode", "INTEGER"),
+        ("prepared_final_size", "INTEGER"),
+        ("prepared_final_mtime_ns", "INTEGER"),
+        ("prepared_final_sha256", "TEXT"),
+        ("final_claim_path", "TEXT"),
+    )
+    for column, typedef in additions:
+        if column not in columns:
+            db.execute(
+                f"ALTER TABLE import_publication_files ADD COLUMN {column} {typedef}"
+            )
+    publication_columns = {
+        str(row[1])
+        for row in db.execute(
+            "PRAGMA table_info(import_publications)"
+        ).fetchall()
+    }
+    publication_additions = (
+        ("pack_cleanup_state", "TEXT NOT NULL DEFAULT 'retained'"),
+        ("pack_cleanup_completed_at", "TEXT"),
+        ("queue_download_client_id", "INTEGER"),
+    )
+    for column, typedef in publication_additions:
+        if column not in publication_columns:
+            db.execute(
+                f"ALTER TABLE import_publications ADD COLUMN {column} {typedef}"
+            )
+    _execute_script_in_transaction(db, """
+        CREATE TABLE IF NOT EXISTS import_publication_notifications (
+            publication_id       INTEGER PRIMARY KEY,
+            state                TEXT NOT NULL
+                                     CHECK(state IN (
+                                         'pending','dispatching','dispatched'
+                                     )),
+            idempotency_key      TEXT NOT NULL UNIQUE,
+            title                TEXT NOT NULL,
+            label                TEXT NOT NULL,
+            cover_url            TEXT NOT NULL DEFAULT '',
+            operation_owner      TEXT,
+            operation_expires_at TEXT,
+            attempt_count        INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at      TEXT,
+            last_error           TEXT NOT NULL DEFAULT '',
+            created_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            dispatched_at        TEXT
+        );
+        CREATE TABLE IF NOT EXISTS import_publication_notification_deliveries (
+            publication_id       INTEGER NOT NULL,
+            connection_id        INTEGER NOT NULL,
+            connection_name      TEXT NOT NULL,
+            connection_type      TEXT NOT NULL,
+            state                TEXT NOT NULL
+                                     CHECK(state IN (
+                                         'pending','dispatching','completed'
+                                     )),
+            completion_reason    TEXT
+                                     CHECK(
+                                         completion_reason IS NULL
+                                         OR completion_reason IN (
+                                             'delivered',
+                                             'connection_deleted',
+                                             'connection_disabled'
+                                         )
+                                     ),
+            operation_owner      TEXT,
+            operation_expires_at TEXT,
+            attempt_count        INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at      TEXT,
+            last_error           TEXT NOT NULL DEFAULT '',
+            created_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at         TEXT,
+            PRIMARY KEY(publication_id, connection_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_import_publication_notification_deliveries_due
+            ON import_publication_notification_deliveries(
+                state, next_attempt_at, operation_expires_at,
+                publication_id, connection_id
+            );
+        CREATE INDEX IF NOT EXISTS idx_import_publication_notifications_due
+            ON import_publication_notifications(
+                state, next_attempt_at, operation_expires_at, publication_id
+            );
+        CREATE TABLE IF NOT EXISTS import_publication_success_effects (
+            publication_id       INTEGER NOT NULL,
+            effect_type          TEXT NOT NULL
+                                     CHECK(effect_type IN (
+                                         'cover','komga_scan',
+                                         'remove_completed'
+                                     )),
+            state                TEXT NOT NULL
+                                     CHECK(state IN (
+                                         'pending','dispatching','completed'
+                                     )),
+            idempotency_key      TEXT NOT NULL UNIQUE,
+            payload_json         TEXT NOT NULL,
+            operation_owner      TEXT,
+            operation_expires_at TEXT,
+            attempt_count        INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at      TEXT,
+            last_error           TEXT NOT NULL DEFAULT '',
+            created_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at         TEXT,
+            PRIMARY KEY(publication_id, effect_type)
+        );
+        CREATE INDEX IF NOT EXISTS idx_import_publication_success_effects_due
+            ON import_publication_success_effects(
+                state, next_attempt_at, operation_expires_at,
+                publication_id, effect_type
+            );
+        CREATE TABLE IF NOT EXISTS import_pack_cleanup_reservations (
+            normalized_download_id TEXT PRIMARY KEY,
+            download_id            TEXT NOT NULL,
+            purpose                TEXT NOT NULL
+                                       CHECK(purpose IN ('queueing','cleanup')),
+            owner_token            TEXT NOT NULL,
+            queue_id               INTEGER,
+            publication_id         INTEGER,
+            pack_path              TEXT NOT NULL,
+            tombstone_path         TEXT,
+            expires_at             TEXT NOT NULL,
+            created_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS import_pack_cleanup_tombstones (
+            tombstone_path         TEXT PRIMARY KEY,
+            normalized_download_id TEXT NOT NULL,
+            download_id            TEXT NOT NULL,
+            queue_id               INTEGER NOT NULL,
+            publication_id         INTEGER,
+            pack_path              TEXT NOT NULL,
+            created_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_import_pack_reservations_expiry
+            ON import_pack_cleanup_reservations(
+                expires_at, normalized_download_id
+            );
+        CREATE INDEX IF NOT EXISTS idx_import_pack_tombstones_publication
+            ON import_pack_cleanup_tombstones(publication_id, created_at);
+        CREATE TABLE IF NOT EXISTS volume_file_deletions (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            volume_id            INTEGER NOT NULL,
+            series_id            INTEGER NOT NULL,
+            state                TEXT NOT NULL
+                                      CHECK(state IN ('active','completed')),
+            target_path          TEXT NOT NULL,
+            parent_path          TEXT NOT NULL,
+            claim_path           TEXT NOT NULL,
+            target_present       INTEGER NOT NULL
+                                         CHECK(target_present IN (0,1)),
+            target_dev           INTEGER,
+            target_inode         INTEGER,
+            target_size          INTEGER,
+            target_mtime_ns      INTEGER,
+            target_sha256        TEXT,
+            series_title         TEXT NOT NULL,
+            volume_num           REAL,
+            source_title         TEXT NOT NULL DEFAULT '',
+            original_import_path TEXT NOT NULL DEFAULT '',
+            diagnostic           TEXT NOT NULL DEFAULT '',
+            created_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at         TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_volume_file_deletions_active_volume
+            ON volume_file_deletions(volume_id) WHERE state='active';
+        CREATE INDEX IF NOT EXISTS idx_volume_file_deletions_active_series
+            ON volume_file_deletions(series_id, id) WHERE state='active';
+    """)
+    db.execute(
+        """
+        INSERT OR IGNORE INTO import_publication_notifications(
+            publication_id, state, idempotency_key, title, label, cover_url
+        )
+        SELECT id,
+               CASE
+                   WHEN notification_state='dispatched' THEN 'dispatched'
+                   ELSE 'pending'
+               END,
+               'mangarr-import-publication:' || id,
+               notification_title,
+               notification_label,
+               COALESCE(notification_cover_url, '')
+        FROM import_publications
+        WHERE notification_state IN ('pending','dispatched')
+          AND notification_title IS NOT NULL
+          AND notification_label IS NOT NULL
+        """
+    )
+    _backfill_import_notification_deliveries(db)
+    db.execute(
+        f"PRAGMA user_version = {_SCHEMA_VERSION_DURABLE_PUBLICATION_SAFETY}"
+    )
+    log_event(
+        "schema_migration",
+        "durable publication destination/source preconditions added "
+        f"(schema version -> {_SCHEMA_VERSION_DURABLE_PUBLICATION_SAFETY})",
+        db=db,
+    )
 
 
 def _migrate_series_fk_constraints(db) -> None:
@@ -1261,6 +2379,7 @@ def _migrate_series_fk_constraints(db) -> None:
                 indexer       TEXT,
                 protocol      TEXT,
                 client        TEXT,
+                download_client_id INTEGER,
                 download_id   TEXT,
                 release_group TEXT,
                 size_bytes    INTEGER,
@@ -1302,6 +2421,7 @@ def _migrate_series_fk_constraints(db) -> None:
             where="series_id IS NULL OR series_id IN (SELECT id FROM series)",
         )
 
+    _restore_volume_chapter_artifacts(db)
     db.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_FK_CONSTRAINTS}")
     log_event(
         'schema_migration',
@@ -1324,12 +2444,12 @@ def _rebuild_table_copying_known_columns(
     ``transforms`` maps an existing column name to a SQL expression used
     in the SELECT list, while preserving the original INSERT column list.
     """
-    old_cols = [r[1] for r in db.execute(
+    old_cols = [str(r[1]) for r in db.execute(
         f"PRAGMA table_info({name})"
     ).fetchall()]
 
     db.execute(ddl)
-    new_cols = [r[1] for r in db.execute(
+    new_cols = [str(r[1]) for r in db.execute(
         f"PRAGMA table_info({name}_new)"
     ).fetchall()]
 
@@ -1374,6 +2494,7 @@ def _migrate_owned_status_constraints(db) -> None:
                 indexer         TEXT,
                 protocol        TEXT,
                 client          TEXT,
+                download_client_id INTEGER,
                 download_id     TEXT,
                 vol_range_start REAL,
                 vol_range_end   REAL,
@@ -1403,6 +2524,7 @@ def _migrate_owned_status_constraints(db) -> None:
                 indexer           TEXT,
                 protocol          TEXT,
                 client            TEXT,
+                download_client_id INTEGER,
                 size_bytes        INTEGER DEFAULT 0,
                 import_path       TEXT,
                 download_id       TEXT,

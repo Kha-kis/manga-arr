@@ -8,6 +8,11 @@ import shutil
 from collections.abc import Callable
 from typing import TypeVar
 
+from download_identity import (
+    DownloadProtocol,
+    coerce_download_client_id,
+    normalize_download_protocol,
+)
 from shared import get_cfg, get_db
 from events import log_event, broadcast_queue_event
 from import_staging import _ImportStaging, _stage_files
@@ -15,11 +20,11 @@ from import_lease import (
     IMPORT_LEASE_REFRESH_SECONDS,
     IMPORT_LEASE_SECONDS,
     claim_import_queue_row,
-    has_import_sibling_that_may_use_download,
     refresh_import_queue_lease,
     release_import_queue_lease,
     transition_import_queue_row,
 )
+from import_pack_cleanup import cleanup_terminal_pack_staging
 from import_plan import (
     _FilePlan,
     _ImportPlan,
@@ -28,9 +33,16 @@ from import_plan import (
 )
 from import_commit import _commit_import as _split_commit_import
 from import_download import _mark_downloaded
-from cover_images import extract_cbz_cover, download_cover
-from notifications import trigger_komga_scan
-from clients import qbit_remove, sab_remove
+from import_publication import (
+    abort_staging_publication,
+    commit_prepared_barrier,
+    complete_publication,
+    create_publication,
+    ensure_durable_directory,
+    initialize_publication_filesystem,
+    load_publication,
+    prepare_staged_artifacts,
+)
 
 log = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -121,7 +133,7 @@ def _mark_plan_failed(plan: _ImportPlan, reason: str) -> None:
 def _prepare_plan_filesystem(plan: _ImportPlan) -> str:
     """Perform Phase 1 filesystem checks without holding its DB transaction."""
     try:
-        os.makedirs(plan.dst_dir, exist_ok=True)
+        ensure_durable_directory(plan.dst_dir)
     except OSError as exc:
         reason = f"Import: cannot create {plan.dst_dir}: {exc}"
         _mark_plan_failed(plan, reason)
@@ -238,69 +250,28 @@ def _cleanup_pack_staging_if_safe(
     download_id: str,
     lease_owner: str,
 ) -> bool:
-    """Detach shared pack staging only while a successor cannot own it.
-
-    The pack source path predates leases and is keyed only by download ID.
-    The writer lock covers the ownership proof and atomic rename, preventing a
-    successor claim between them. Recursive deletion happens after commit so
-    slow storage cannot hold the SQLite writer lock.
-    """
-    from import_pipeline import PACK_STAGING_ROOT
-
-    pack_dir = os.path.join(PACK_STAGING_ROOT, f"queue-{download_id}")
-    tombstone = f"{pack_dir}.cleanup-{secrets.token_urlsafe(18)}"
-    detached = False
+    """Compatibility wrapper for terminal-only durable pack cleanup."""
+    _ = lease_owner
     with get_db() as db:
-        db.execute("BEGIN IMMEDIATE")
-        row = db.execute(
-            "SELECT status, lease_owner,"
-            " lease_expires_at > datetime('now') AS lease_live"
+        queue = db.execute(
+            "SELECT download_client_id, download_protocol"
             " FROM import_queue WHERE id=?",
             (queue_id,),
         ).fetchone()
-        if row is not None:
-            exact_owner = (
-                row["status"] == "importing"
-                and row["lease_owner"] == lease_owner
-                and bool(row["lease_live"])
-            )
-            settled_unleased = (
-                row["status"] != "importing" and row["lease_owner"] is None
-            )
-            if not exact_owner and not settled_unleased:
-                return False
-        if has_import_sibling_that_may_use_download(
-            db,
-            queue_id=queue_id,
-            download_id=download_id,
-        ):
-            return False
-        try:
-            os.replace(pack_dir, tombstone)
-        except FileNotFoundError:
-            return True
-        except OSError as exc:
-            log.warning(
-                "Import queue %s could not detach pack staging %s: %s",
-                queue_id,
-                pack_dir,
-                exc,
-            )
-            return False
-        detached = True
-
-    if detached:
-        try:
-            shutil.rmtree(tombstone)
-        except OSError as exc:
-            log.warning(
-                "Import queue %s could not remove detached pack staging %s: %s",
-                queue_id,
-                tombstone,
-                exc,
-            )
-            return False
-    return True
+    return cleanup_terminal_pack_staging(
+        queue_id,
+        download_id,
+        download_client_id=(
+            coerce_download_client_id(queue["download_client_id"])
+            if queue is not None
+            else None
+        ),
+        protocol=(
+            normalize_download_protocol(queue["download_protocol"])
+            if queue is not None
+            else None
+        ),
+    )
 
 
 async def _guarded_execute_import(
@@ -312,6 +283,11 @@ async def _guarded_execute_import(
     """Acquire capacity, claim with an owner token, and execute with heartbeat."""
     async with _get_import_sem():
         lease_owner = secrets.token_urlsafe(32)
+        pack_cleanup_identity: tuple[
+            str,
+            int | None,
+            DownloadProtocol | None,
+        ] | None = None
         try:
             with get_db() as claim_db:
                 if not claim_import_queue_row(
@@ -326,6 +302,21 @@ async def _guarded_execute_import(
                         db=claim_db,
                     )
                     return False
+                identity = claim_db.execute(
+                    "SELECT download_id, download_client_id, download_protocol"
+                    " FROM import_queue WHERE id=?",
+                    (queue_id,),
+                ).fetchone()
+                if identity is not None and identity["download_id"]:
+                    pack_cleanup_identity = (
+                        str(identity["download_id"]),
+                        coerce_download_client_id(
+                            identity["download_client_id"]
+                        ),
+                        normalize_download_protocol(
+                            identity["download_protocol"]
+                        ),
+                    )
         except Exception as exc:
             log_event(
                 "error",
@@ -392,7 +383,7 @@ async def _guarded_execute_import(
             )
             try:
                 with get_db() as fail_db:
-                    transition_import_queue_row(
+                    transitioned = transition_import_queue_row(
                         fail_db,
                         queue_id,
                         lease_owner,
@@ -404,58 +395,52 @@ async def _guarded_execute_import(
                     f"[Import] queue {queue_id}: failure transition failed: "
                     f"{fail_exc}",
                 )
-            return False
-        return result
-
-
-async def _execute_import(
-    queue_id: int,
-    volume_overrides: dict[int, float] | None = None,
-    skip_ids: set[int] | None = None,
-    chapter_overrides: dict[int, float] | None = None,
-    *,
-    lease_owner: str | None = None,
-    ownership_lost: asyncio.Event | None = None,
-) -> bool:
-    """Wrapper around _execute_import_impl with auto-pack staging cleanup."""
-    if lease_owner is None:
-        return await _guarded_execute_import(
-            queue_id,
-            volume_overrides,
-            skip_ids,
-            chapter_overrides,
-        )
-
-    pack_cleanup_id: str | None = None
-    with get_db() as _db_init:
-        _qrow = _db_init.execute(
-            "SELECT download_id FROM import_queue WHERE id=?", (queue_id,)
-        ).fetchone()
-        if _qrow and _qrow["download_id"]:
-            pack_cleanup_id = _qrow["download_id"]
-    try:
-        try:
-            return await _execute_import_impl(
-                queue_id,
-                volume_overrides,
-                skip_ids,
-                chapter_overrides,
-                lease_owner=lease_owner,
-                ownership_lost=ownership_lost,
-            )
-        except asyncio.CancelledError:
-            log_event(
-                "info", f"[Import] _execute_import cancelled for queue {queue_id}"
-            )
-            raise
-    finally:
-        if pack_cleanup_id:
-            try:
-                _, cleanup_cancelled = await _run_blocking_uninterruptibly(
-                    lambda: _cleanup_pack_staging_if_safe(
+                transitioned = False
+            if transitioned and pack_cleanup_identity:
+                download_id, download_client_id, protocol = (
+                    pack_cleanup_identity
+                )
+                try:
+                    _, cleanup_cancelled = await _run_blocking_uninterruptibly(
+                        lambda: cleanup_terminal_pack_staging(
+                            queue_id,
+                            download_id,
+                            download_client_id=download_client_id,
+                            protocol=protocol,
+                        )
+                    )
+                    if cleanup_cancelled:
+                        raise asyncio.CancelledError
+                except asyncio.CancelledError:
+                    raise
+                except Exception as cleanup_exc:
+                    log.warning(
+                        "Import queue %s pack staging cleanup failed: %s",
                         queue_id,
-                        pack_cleanup_id,
-                        lease_owner,
+                        cleanup_exc,
+                    )
+            return False
+        if pack_cleanup_identity:
+            download_id, download_client_id, protocol = pack_cleanup_identity
+            try:
+                with get_db() as cleanup_db:
+                    publication_row = cleanup_db.execute(
+                        "SELECT id FROM import_publications"
+                        " WHERE queue_id=? ORDER BY id DESC LIMIT 1",
+                        (queue_id,),
+                    ).fetchone()
+                cleanup_publication_id = (
+                    int(publication_row["id"])
+                    if publication_row is not None
+                    else None
+                )
+                _, cleanup_cancelled = await _run_blocking_uninterruptibly(
+                    lambda: cleanup_terminal_pack_staging(
+                        queue_id,
+                        download_id,
+                        download_client_id=download_client_id,
+                        protocol=protocol,
+                        publication_id=cleanup_publication_id,
                     )
                 )
                 if cleanup_cancelled:
@@ -468,6 +453,41 @@ async def _execute_import(
                     queue_id,
                     exc,
                 )
+        return result
+
+
+async def _execute_import(
+    queue_id: int,
+    volume_overrides: dict[int, float] | None = None,
+    skip_ids: set[int] | None = None,
+    chapter_overrides: dict[int, float] | None = None,
+    *,
+    lease_owner: str | None = None,
+    ownership_lost: asyncio.Event | None = None,
+) -> bool:
+    """Run one already-owned import while preserving deferred cancellation."""
+    if lease_owner is None:
+        return await _guarded_execute_import(
+            queue_id,
+            volume_overrides,
+            skip_ids,
+            chapter_overrides,
+        )
+
+    try:
+        return await _execute_import_impl(
+            queue_id,
+            volume_overrides,
+            skip_ids,
+            chapter_overrides,
+            lease_owner=lease_owner,
+            ownership_lost=ownership_lost,
+        )
+    except asyncio.CancelledError:
+        log_event(
+            "info", f"[Import] _execute_import cancelled for queue {queue_id}"
+        )
+        raise
 
 
 async def _execute_import_impl(
@@ -550,143 +570,169 @@ async def _execute_import_impl(
             )
         return False
 
-    # ── Phase 2 — filesystem (no DB held) ───────────────────────────────
-    staging = _ImportStaging(plan.dst_dir, queue["id"], import_mode)
-    stage_task = asyncio.create_task(_stage_files(plan, staging))
-    stage_cancelled = await _wait_task_uninterruptibly(stage_task)
-    try:
-        outcomes = stage_task.result()
-    except Exception:
-        _, rollback_cancelled = await _run_blocking_uninterruptibly(staging.rollback)
-        if stage_cancelled or rollback_cancelled:
-            raise asyncio.CancelledError
-        raise
-    if stage_cancelled:
-        _, rollback_cancelled = await _run_blocking_uninterruptibly(staging.rollback)
-        if rollback_cancelled:
-            stage_cancelled = True
-        raise asyncio.CancelledError
-    outcomes_by_id = {o.file_id: o for o in outcomes}
-
-    has_pre_failed = any(fp.plan_status == "pre_failed" for fp in plan.files)
-    has_stage_fail = any(
-        fp.plan_status == "ready" and not outcomes_by_id[fp.file_id].ok
-        for fp in plan.files
-    )
-    would_be_imported = sum(
-        1
-        for fp in plan.files
-        if fp.plan_status == "ready" and outcomes_by_id[fp.file_id].ok
-    )
-
-    fs_committed = False
-    commit_failure_reason = ""
-    cancelled_after_publication = False
-    if (has_pre_failed or has_stage_fail) and would_be_imported > 0:
-        _, rollback_cancelled = await _run_blocking_uninterruptibly(staging.rollback)
-        if rollback_cancelled:
-            raise asyncio.CancelledError
-    elif would_be_imported > 0:
-        if ownership_lost.is_set():
-            _, rollback_cancelled = await _run_blocking_uninterruptibly(
-                staging.rollback
+    outcomes = []
+    publication_id: int | None = None
+    ready_count = sum(fp.plan_status == "ready" for fp in plan.files)
+    if ready_count == 0:
+        # All-skipped and wholly invalid plans have no publication boundary.
+        with get_db() as _db3:
+            ok, imported_count, new_status = _split_commit_import(
+                _db3,
+                plan,
+                [],
+                fs_committed=False,
+                commit_failure_reason="",
+                lease_owner=lease_owner,
+                lease_seconds=IMPORT_LEASE_SECONDS,
             )
-            if rollback_cancelled:
-                raise asyncio.CancelledError
-            return False
-        refresh_task = asyncio.create_task(
-            asyncio.to_thread(
-                _refresh_owned_import,
-                queue_id,
-                lease_owner,
-            )
-        )
-        refresh_cancelled = await _wait_task_uninterruptibly(refresh_task)
-        if refresh_cancelled:
-            await _run_blocking_uninterruptibly(staging.rollback)
-            raise asyncio.CancelledError
+    else:
+        # ── Phase 2 — filesystem + durable prepared barrier ─────────────
         try:
-            refresh_owned = refresh_task.result()
+            (
+                publication_fs,
+                init_cancelled,
+            ) = await _run_blocking_uninterruptibly(
+                lambda: initialize_publication_filesystem(plan, lease_owner)
+            )
         except Exception:
+            raise
+        if init_cancelled:
+            staging_dir, _ = publication_fs
+            await _run_blocking_uninterruptibly(
+                lambda: shutil.rmtree(staging_dir, ignore_errors=True)
+            )
+            raise asyncio.CancelledError
+        staging_dir, source_fingerprints = publication_fs
+
+        try:
+            with get_db() as journal_db:
+                publication_id = create_publication(
+                    journal_db,
+                    plan,
+                    lease_owner,
+                    staging_dir,
+                    source_fingerprints,
+                )
+        except Exception:
+            await _run_blocking_uninterruptibly(
+                lambda: shutil.rmtree(staging_dir, ignore_errors=True)
+            )
+            raise
+
+        staging = _ImportStaging(
+            plan.dst_dir,
+            queue["id"],
+            import_mode,
+            staging_dir=staging_dir,
+            journal_owned=True,
+        )
+
+        async def _abort_reversible_staging() -> bool:
             _, rollback_cancelled = await _run_blocking_uninterruptibly(
                 staging.rollback
             )
-            if rollback_cancelled:
+            abort_staging_publication(
+                publication_id,
+                release_queue=False,
+            )
+            return rollback_cancelled
+
+        stage_task = asyncio.create_task(_stage_files(plan, staging))
+        stage_cancelled = await _wait_task_uninterruptibly(stage_task)
+        try:
+            outcomes = stage_task.result()
+        except Exception:
+            rollback_cancelled = await _abort_reversible_staging()
+            if stage_cancelled or rollback_cancelled:
                 raise asyncio.CancelledError
             raise
-        if not refresh_owned:
-            ownership_lost.set()
-            _, rollback_cancelled = await _run_blocking_uninterruptibly(
-                staging.rollback
-            )
-            if rollback_cancelled:
-                raise asyncio.CancelledError
-            return False
-        commit_task = asyncio.create_task(asyncio.to_thread(staging.commit_all))
-        cancelled_after_publication = await _wait_task_uninterruptibly(commit_task)
-        try:
-            commit_task.result()
-            fs_committed = True
-        except Exception as e:
-            _, rollback_cancelled = await _run_blocking_uninterruptibly(
-                staging.rollback
-            )
-            cancelled_after_publication |= rollback_cancelled
-            commit_failure_reason = str(e)
-    else:
-        _, rollback_cancelled = await _run_blocking_uninterruptibly(staging.rollback)
-        if rollback_cancelled:
+        if stage_cancelled:
+            await _abort_reversible_staging()
             raise asyncio.CancelledError
 
-    # ── Phase 3 — short DB tx for replay ────────────────────────────────
-    with get_db() as _db3:
-        ok, imported_count, new_status = _split_commit_import(
-            _db3,
-            plan,
-            outcomes,
-            fs_committed=fs_committed,
-            commit_failure_reason=commit_failure_reason,
-            lease_owner=lease_owner,
-            lease_seconds=IMPORT_LEASE_SECONDS,
+        outcomes_by_id = {outcome.file_id: outcome for outcome in outcomes}
+        has_pre_failed = any(
+            file_plan.plan_status == "pre_failed" for file_plan in plan.files
         )
+        has_stage_fail = any(
+            file_plan.plan_status == "ready"
+            and not outcomes_by_id[file_plan.file_id].ok
+            for file_plan in plan.files
+        )
+        if has_pre_failed or has_stage_fail:
+            rollback_cancelled = await _abort_reversible_staging()
+            if rollback_cancelled:
+                raise asyncio.CancelledError
+            with get_db() as _db3:
+                ok, imported_count, new_status = _split_commit_import(
+                    _db3,
+                    plan,
+                    outcomes,
+                    fs_committed=False,
+                    commit_failure_reason="",
+                    lease_owner=lease_owner,
+                    lease_seconds=IMPORT_LEASE_SECONDS,
+                )
+        else:
+            if ownership_lost.is_set():
+                await _abort_reversible_staging()
+                return False
+            refresh_owned, refresh_cancelled = await _run_blocking_uninterruptibly(
+                lambda: _refresh_owned_import(queue_id, lease_owner)
+            )
+            if refresh_cancelled:
+                await _abort_reversible_staging()
+                raise asyncio.CancelledError
+            if not refresh_owned:
+                ownership_lost.set()
+                await _abort_reversible_staging()
+                return False
 
-    if cancelled_after_publication:
-        raise asyncio.CancelledError
+            try:
+                artifacts, artifact_cancelled = await _run_blocking_uninterruptibly(
+                    lambda: prepare_staged_artifacts(
+                        plan,
+                        staging_dir,
+                        outcomes,
+                    )
+                )
+                if artifact_cancelled:
+                    await _abort_reversible_staging()
+                    raise asyncio.CancelledError
+                commit_prepared_barrier(
+                    publication_id,
+                    outcomes,
+                    artifacts,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                await _abort_reversible_staging()
+                raise
 
-    # ── Post-import work ────────────────────────────────────────────────
-    if ok:
-        with get_db() as _cdb:
-            _series_id = queue["series_id"]
-            _cover_url = _cdb.execute(
-                "SELECT cover_url FROM series WHERE id=?", (_series_id,)
-            ).fetchone()
-        _local_cover = f"/config/covers/{_series_id}.jpg"
-        if not os.path.exists(_local_cover):
-            with get_db() as _cdb2:
-                _first_cbz = _cdb2.execute(
-                    "SELECT dst_path FROM import_queue_files"
-                    " WHERE queue_id=? AND status='imported' AND dst_path LIKE '%.cbz'",
-                    (queue_id,),
-                ).fetchone()
-            if _first_cbz and _first_cbz["dst_path"]:
-                extract_cbz_cover(_series_id, _first_cbz["dst_path"])
-            elif _cover_url and _cover_url["cover_url"]:
-                asyncio.create_task(download_cover(_series_id, _cover_url["cover_url"]))
-        await trigger_komga_scan()
-        if (
-            get_cfg("remove_completed", "false").lower() == "true"
-            and queue["download_id"]
-        ):
-            with get_db() as db2:
-                proto = db2.execute(
-                    "SELECT protocol FROM volumes WHERE download_id=? LIMIT 1",
-                    (queue["download_id"],),
-                ).fetchone()
-            protocol = (proto["protocol"] if proto else "") or "torrent"
-            if protocol == "torrent":
-                await qbit_remove(queue["download_id"])
-            else:
-                await sab_remove(queue["download_id"])
+            publication_task = asyncio.create_task(
+                complete_publication(publication_id, lease_owner)
+            )
+            cancelled_after_publication = await _wait_task_uninterruptibly(
+                publication_task
+            )
+            publication_task.result()
+            with get_db() as publication_db:
+                publication = load_publication(
+                    publication_db,
+                    publication_id=publication_id,
+                )
+            if publication is None:
+                return False
+            ok = bool(publication.result_ok) and publication.state in (
+                "finalized",
+                "deleted",
+            )
+            imported_count = publication.result_imported_count or 0
+            new_status = publication.result_queue_status or "importing"
+            if cancelled_after_publication:
+                raise asyncio.CancelledError
+
     asyncio.create_task(
         broadcast_queue_event("import_complete", {"queue_id": queue_id})
     )

@@ -74,7 +74,9 @@ def _queue(
                 f") VALUES(1, ?, ?, ?, ?, {expiry_sql})",
                 (download_id, download_id, status, owner),
             )
-        return int(cur.lastrowid)
+        queue_id = cur.lastrowid
+        assert queue_id is not None
+        return queue_id
 
 
 def _state(db_path: str, queue_id: int) -> tuple[str, str | None, str | None]:
@@ -86,6 +88,18 @@ def _state(db_path: str, queue_id: int) -> tuple[str, str | None, str | None]:
         ).fetchone()
     assert row is not None
     return row
+
+
+def _pack_dir(download_id: str) -> Path:
+    from import_pack_cleanup import pack_queue_creation_paths
+
+    canonical, _ = pack_queue_creation_paths(
+        download_id,
+        "test-owner",
+        download_client_id=None,
+        protocol=None,
+    )
+    return Path(canonical)
 
 
 def _ready_import(
@@ -120,10 +134,16 @@ def _ready_import(
 def test_cancellation_after_claim_preserves_children_and_review_state(
     lease_db: str,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     import import_execute
+    import import_pipeline
 
     queue_id = _queue(lease_db, download_id="cancel-owned")
+    monkeypatch.setattr(import_pipeline, "PACK_STAGING_ROOT", str(tmp_path))
+    pack_dir = _pack_dir("cancel-owned")
+    pack_dir.mkdir()
+    (pack_dir / "page.jpg").write_bytes(b"page")
     with sqlite3.connect(lease_db) as db:
         db.execute(
             "INSERT INTO import_queue_files(queue_id, filename, status)"
@@ -169,6 +189,31 @@ def test_cancellation_after_claim_preserves_children_and_review_state(
             ).fetchall()
         ]
     assert child_states == ["pending", "needs_review"]
+    assert pack_dir.is_dir()
+
+
+def test_ordinary_exception_cleans_pack_only_after_failed_transition(
+    lease_db: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import import_execute
+    import import_pipeline
+
+    monkeypatch.setattr(import_pipeline, "PACK_STAGING_ROOT", str(tmp_path))
+    queue_id = _queue(lease_db, download_id="ordinary-failure")
+    pack_dir = _pack_dir("ordinary-failure")
+    pack_dir.mkdir()
+    (pack_dir / "page.jpg").write_bytes(b"page")
+
+    async def _explode(*args: object, **kwargs: object) -> bool:
+        del args, kwargs
+        raise OSError("transient execution failure")
+
+    monkeypatch.setattr(import_execute, "_execute_import", _explode)
+    assert not asyncio.run(import_execute._guarded_execute_import(queue_id))
+    assert _state(lease_db, queue_id) == ("failed", None, None)
+    assert not pack_dir.exists()
 
 
 def test_double_cancel_waits_for_publication_and_phase3(
@@ -178,7 +223,7 @@ def test_double_cancel_waits_for_publication_and_phase3(
 ) -> None:
     """Two cancellations cannot release the lease ahead of commit/Phase 3."""
     import import_execute
-    import import_staging
+    import import_publication
     import shared
 
     queue_id, _ = _ready_import(
@@ -193,13 +238,13 @@ def test_double_cancel_waits_for_publication_and_phase3(
     worker_release = threading.Event()
     worker_finished = threading.Event()
     phase3_called = threading.Event()
-    original_commit_all = import_staging._ImportStaging.commit_all
-    original_phase3 = import_execute._split_commit_import
+    original_rename = import_publication._rename_noreplace
+    original_phase3 = import_publication.mark_publication_db_committed
 
-    def _blocking_commit_all(staging: object) -> None:
+    def _blocking_publish(source: str, destination: str) -> None:
         worker_started.set()
         assert worker_release.wait(timeout=5)
-        original_commit_all(staging)
+        original_rename(source, destination)
         worker_finished.set()
 
     def _observed_phase3(*args: object, **kwargs: object):
@@ -207,29 +252,16 @@ def test_double_cancel_waits_for_publication_and_phase3(
         phase3_called.set()
         return original_phase3(*args, **kwargs)
 
-    async def _loss_after_publication(
-        queue_id_arg: int,
-        owner: str,
-        stop: asyncio.Event,
-        ownership_lost: asyncio.Event,
-    ) -> None:
-        del queue_id_arg, owner
-        await asyncio.to_thread(worker_started.wait)
-        ownership_lost.set()
-        await stop.wait()
-
-    async def _no_scan() -> None:
-        return None
-
     monkeypatch.setattr(
-        import_staging._ImportStaging,
-        "commit_all",
-        _blocking_commit_all,
+        import_publication,
+        "_rename_noreplace",
+        _blocking_publish,
     )
-    monkeypatch.setattr(import_execute, "_split_commit_import", _observed_phase3)
-    monkeypatch.setattr(import_execute, "_lease_heartbeat", _loss_after_publication)
-    monkeypatch.setattr(import_execute, "trigger_komga_scan", _no_scan)
-
+    monkeypatch.setattr(
+        import_publication,
+        "mark_publication_db_committed",
+        _observed_phase3,
+    )
     async def _exercise() -> None:
         task = asyncio.create_task(
             import_execute._guarded_execute_import(queue_id)
@@ -261,6 +293,11 @@ def test_double_cancel_waits_for_publication_and_phase3(
             "SELECT 1 FROM import_queue WHERE id=?",
             (queue_id,),
         ).fetchone() is None
+        assert db.execute(
+            "SELECT state, pack_cleanup_state FROM import_publications"
+            " WHERE queue_id=?",
+            (queue_id,),
+        ).fetchone() == ("deleted", "complete")
 
 
 def test_heartbeat_retries_transient_sqlite_error(
@@ -418,7 +455,7 @@ def test_phase1_final_expiry_cas_rolls_back_child_changes(
     assert parent == ("importing", "owner-a", 1)
 
 
-def test_stale_owner_cannot_cleanup_successor_pack_staging(
+def test_pack_cleanup_requires_terminal_or_absent_queue(
     lease_db: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -431,7 +468,7 @@ def test_stale_owner_cannot_cleanup_successor_pack_staging(
     )
 
     monkeypatch.setattr(import_pipeline, "PACK_STAGING_ROOT", str(tmp_path))
-    pack_dir = tmp_path / "queue-pack-successor"
+    pack_dir = _pack_dir("pack-successor")
     pack_dir.mkdir()
     (pack_dir / "page.jpg").write_bytes(b"page")
     queue_id = _queue(lease_db, download_id="pack-successor")
@@ -461,12 +498,32 @@ def test_stale_owner_cannot_cleanup_successor_pack_staging(
         "owner-a",
     )
     assert pack_dir.is_dir()
+    assert not import_execute._cleanup_pack_staging_if_safe(
+        queue_id,
+        "pack-successor",
+        "owner-b",
+    )
+    with sqlite3.connect(lease_db) as db:
+        from import_lease import transition_import_queue_row
+
+        assert transition_import_queue_row(
+            db,
+            queue_id,
+            "owner-b",
+            "failed",
+        )
+
     assert import_execute._cleanup_pack_staging_if_safe(
         queue_id,
         "pack-successor",
         "owner-b",
     )
     assert not pack_dir.exists()
+    assert import_execute._cleanup_pack_staging_if_safe(
+        queue_id,
+        "pack-successor",
+        "owner-b",
+    )
 
 
 def test_absent_original_queue_cannot_cleanup_live_sibling_pack(
@@ -479,7 +536,7 @@ def test_absent_original_queue_cannot_cleanup_live_sibling_pack(
     from import_lease import claim_import_queue_row
 
     monkeypatch.setattr(import_pipeline, "PACK_STAGING_ROOT", str(tmp_path))
-    pack_dir = tmp_path / "queue-shared-pack"
+    pack_dir = _pack_dir("shared-pack")
     pack_dir.mkdir()
     (pack_dir / "page.jpg").write_bytes(b"page")
     original_id = _queue(lease_db, download_id="shared-pack")
@@ -502,27 +559,34 @@ def test_pack_cleanup_detaches_before_slow_delete_without_writer_lock(
     tmp_path: Path,
 ) -> None:
     import import_execute
+    import import_pack_cleanup
     import import_pipeline
-    from import_lease import claim_import_queue_row
+    from import_lease import claim_import_queue_row, transition_import_queue_row
 
     monkeypatch.setattr(import_pipeline, "PACK_STAGING_ROOT", str(tmp_path))
-    pack_dir = tmp_path / "queue-slow-pack"
+    pack_dir = _pack_dir("slow-pack")
     pack_dir.mkdir()
     (pack_dir / "page.jpg").write_bytes(b"page")
     queue_id = _queue(lease_db, download_id="slow-pack")
     with sqlite3.connect(lease_db) as db:
         assert claim_import_queue_row(db, queue_id, "owner-a")
+        assert transition_import_queue_row(
+            db,
+            queue_id,
+            "owner-a",
+            "failed",
+        )
 
     delete_started = threading.Event()
     delete_release = threading.Event()
-    original_rmtree = import_execute.shutil.rmtree
+    original_rmtree = import_pack_cleanup.shutil.rmtree
 
     def _slow_rmtree(path: str) -> None:
         delete_started.set()
         assert delete_release.wait(timeout=5)
         original_rmtree(path)
 
-    monkeypatch.setattr(import_execute.shutil, "rmtree", _slow_rmtree)
+    monkeypatch.setattr(import_pack_cleanup.shutil, "rmtree", _slow_rmtree)
 
     async def _exercise() -> float:
         cleanup = asyncio.create_task(
@@ -540,11 +604,11 @@ def test_pack_cleanup_detaches_before_slow_delete_without_writer_lock(
         started = loop.time()
         marker = asyncio.Event()
         loop.call_later(0.02, marker.set)
-        assert await asyncio.to_thread(
-            import_execute._refresh_owned_import,
-            queue_id,
-            "owner-a",
-        )
+        with sqlite3.connect(lease_db) as db:
+            db.execute(
+                "UPDATE series SET title='writer progressed' WHERE id=1"
+            )
+            db.commit()
         await marker.wait()
         elapsed = loop.time() - started
 
@@ -553,6 +617,188 @@ def test_pack_cleanup_detaches_before_slow_delete_without_writer_lock(
         return elapsed
 
     assert asyncio.run(_exercise()) < 0.15
+
+
+@pytest.mark.parametrize("status", ("pending", "partial", "importing"))
+def test_pack_cleanup_retains_nonterminal_queue(
+    lease_db: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    status: str,
+) -> None:
+    import import_execute
+    import import_pipeline
+
+    monkeypatch.setattr(import_pipeline, "PACK_STAGING_ROOT", str(tmp_path))
+    pack_dir = _pack_dir(f"retain-{status}")
+    pack_dir.mkdir()
+    (pack_dir / "page.jpg").write_bytes(b"page")
+    queue_id = _queue(
+        lease_db,
+        download_id=f"retain-{status}",
+        status=status,
+        owner="worker" if status == "importing" else None,
+        expiry_sql=(
+            "datetime('now', '+5 minutes')" if status == "importing" else None
+        ),
+    )
+
+    assert not import_execute._cleanup_pack_staging_if_safe(
+        queue_id,
+        f"retain-{status}",
+        "worker",
+    )
+    assert pack_dir.is_dir()
+
+
+def test_cleanup_reservation_blocks_normalized_successor_queue_creation(
+    lease_db: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import import_execute
+    import import_pack_cleanup
+    import import_pipeline
+    import main
+
+    monkeypatch.setattr(import_pipeline, "PACK_STAGING_ROOT", str(tmp_path))
+    library = tmp_path / "reservation-library"
+    library.mkdir()
+    source = tmp_path / "Race v01.cbz"
+    source.write_bytes(b"reservation")
+    with sqlite3.connect(lease_db) as db:
+        db.execute(
+            "INSERT OR REPLACE INTO root_folders(id,path,label,is_default)"
+            " VALUES(1,?,'Reservation',1)",
+            (str(library),),
+        )
+        db.execute("UPDATE series SET root_folder_id=1 WHERE id=1")
+
+    original_id = _queue(
+        lease_db,
+        download_id="pack-race",
+        status="failed",
+    )
+    pack_dir = _pack_dir("pack-race")
+    pack_dir.mkdir()
+    (pack_dir / "page.jpg").write_bytes(b"old")
+
+    reservation_ready = threading.Event()
+    reservation_release = threading.Event()
+    original_acquire = import_pack_cleanup._acquire_cleanup_reservation
+
+    def _pause_after_reservation(**kwargs: object):
+        reservation = original_acquire(**kwargs)
+        assert reservation is not None
+        reservation_ready.set()
+        assert reservation_release.wait(timeout=5)
+        return reservation
+
+    monkeypatch.setattr(
+        import_pack_cleanup,
+        "_acquire_cleanup_reservation",
+        _pause_after_reservation,
+    )
+    cleanup_result: list[bool] = []
+    cleanup_thread = threading.Thread(
+        target=lambda: cleanup_result.append(
+            import_execute._cleanup_pack_staging_if_safe(
+                original_id,
+                "pack-race",
+                "old-owner",
+            )
+        )
+    )
+    cleanup_thread.start()
+    assert reservation_ready.wait(timeout=5)
+    with sqlite3.connect(lease_db) as db:
+        db.execute("DELETE FROM import_queue WHERE id=?", (original_id,))
+
+    with main.get_db() as db:
+        successor = main._queue_import(
+            db,
+            1,
+            "PACK-RACE",
+            "Race v01",
+            "magnet:race",
+            1.0,
+            str(source),
+        )
+    assert successor == (None, False)
+    with sqlite3.connect(lease_db) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM import_queue",
+        ).fetchone() == (0,)
+
+    reservation_release.set()
+    cleanup_thread.join(timeout=5)
+    assert not cleanup_thread.is_alive()
+    assert cleanup_result == [True]
+    assert not pack_dir.exists()
+
+    with main.get_db() as db:
+        successor_id, needs_review = main._queue_import(
+            db,
+            1,
+            "PACK-RACE",
+            "Race v01",
+            "magnet:race",
+            1.0,
+            str(source),
+        )
+    assert successor_id is not None
+    assert not needs_review
+
+
+def test_expired_cleanup_reservation_recovers_and_no_longer_blocks_claim(
+    lease_db: str,
+    tmp_path: Path,
+) -> None:
+    from download_identity import (
+        DownloadIdentity,
+        download_identity_key,
+        normalize_download_id,
+    )
+    from import_lease import claim_import_queue_row
+    from import_pack_cleanup import recover_pack_cleanup_state
+
+    queue_id = _queue(lease_db, download_id="Case-Safe")
+    identity = DownloadIdentity(None, None, "CASE-SAFE")
+    pack_dir = _pack_dir(identity.download_id)
+    tombstone = Path(f"{pack_dir}.cleanup-crashed")
+    with sqlite3.connect(lease_db) as db:
+        db.execute(
+            """
+            INSERT INTO import_pack_cleanup_reservations(
+                download_identity_key, download_client_id, protocol,
+                normalized_download_id, download_id, purpose, owner_token,
+                queue_id, pack_path, tombstone_path, expires_at
+            ) VALUES(
+                ?, NULL, NULL, ?, 'CASE-SAFE', 'cleanup', 'crashed-cleaner',
+                ?, ?, ?, datetime('now', '+5 minutes')
+            )
+            """,
+            (
+                download_identity_key(identity),
+                normalize_download_id(identity.download_id, identity.protocol),
+                queue_id,
+                str(pack_dir),
+                str(tombstone),
+            ),
+        )
+        assert not claim_import_queue_row(db, queue_id, "worker")
+        db.execute(
+            "UPDATE import_pack_cleanup_reservations"
+            " SET expires_at=datetime('now', '-1 second')"
+        )
+
+    recovered = recover_pack_cleanup_state()
+    assert recovered.reservations_recovered == 1
+    with sqlite3.connect(lease_db) as db:
+        assert claim_import_queue_row(db, queue_id, "worker")
+        assert db.execute(
+            "SELECT COUNT(*) FROM import_pack_cleanup_reservations"
+        ).fetchone() == (0,)
 
 
 def test_missing_destination_failure_preserves_live_sibling_download(

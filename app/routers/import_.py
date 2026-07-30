@@ -11,6 +11,15 @@ from typing import NotRequired, TypedDict
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
+from download_identity import (
+    DownloadIdentity,
+    DownloadProtocol,
+    coerce_download_client_id,
+    download_identities_match,
+    normalize_download_protocol,
+    protocol_for_client_type,
+    resolve_download_protocol,
+)
 from routers._templates import templates
 from files import sanitize_filename
 from import_kinds import VALID_IMPORT_KINDS, infer_import_kind
@@ -110,6 +119,139 @@ def _parse_vol_input(raw: str) -> float | None:
     return _m._parse_vol_suffix(raw.strip())
 
 
+def _download_identity_for_row(
+    db: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    require_current_client_match: bool = False,
+) -> DownloadIdentity | None:
+    download_id = str(row["download_id"] or "")
+    if not download_id:
+        return None
+    owner_id = coerce_download_client_id(
+        row["download_client_id"] if "download_client_id" in row.keys() else None
+    )
+    persisted_protocols = {
+        protocol
+        for value in (
+            row["download_protocol"]
+            if "download_protocol" in row.keys()
+            else None,
+            row["protocol"] if "protocol" in row.keys() else None,
+        )
+        if (protocol := normalize_download_protocol(value)) is not None
+    }
+    if len(persisted_protocols) > 1:
+        return None
+    protocol = next(iter(persisted_protocols), None)
+    configured_protocol: DownloadProtocol | None = None
+    if owner_id is not None and require_current_client_match:
+        configured = db.execute(
+            "SELECT type FROM download_clients WHERE id=?",
+            (owner_id,),
+        ).fetchone()
+        if configured is None:
+            return None
+        configured_protocol = protocol_for_client_type(configured["type"])
+        if configured_protocol is None:
+            return None
+        if protocol is not None and configured_protocol != protocol:
+            return None
+    if protocol is None:
+        protocol = resolve_download_protocol(
+            db,
+            download_client_id=owner_id,
+            series_id=row["series_id"] if "series_id" in row.keys() else None,
+            download_id=download_id,
+            source_url=str(
+                (
+                    row["source_url"]
+                    if "source_url" in row.keys()
+                    else row["torrent_url"]
+                    if "torrent_url" in row.keys()
+                    else ""
+                )
+                or ""
+            ),
+            allow_client_configuration=require_current_client_match,
+        )
+    if (
+        require_current_client_match
+        and configured_protocol is not None
+        and protocol is not None
+        and configured_protocol != protocol
+    ):
+        return None
+    return DownloadIdentity(owner_id, protocol, download_id)
+
+
+def _same_owned_download(
+    db: sqlite3.Connection,
+    row: sqlite3.Row,
+    target: DownloadIdentity,
+) -> bool:
+    candidate = _download_identity_for_row(db, row)
+    return bool(
+        candidate is not None
+        and candidate.download_client_id == target.download_client_id
+        and download_identities_match(candidate, target)
+    )
+
+
+def _clear_chapter_download_owners(
+    db: sqlite3.Connection,
+    series_id: int,
+    volume_ids: list[int],
+) -> None:
+    if not volume_ids:
+        return
+    placeholders = ",".join("?" for _ in volume_ids)
+    db.execute(
+        "UPDATE chapters SET download_client_id=NULL"
+        f" WHERE series_id=? AND volume_id IN ({placeholders})"
+        " AND monitored=1",
+        [series_id, *volume_ids],
+    )
+
+
+def _active_import_uses_download(
+    db: sqlite3.Connection,
+    target: DownloadIdentity,
+    *,
+    exclude_queue_id: int,
+) -> bool:
+    rows = db.execute(
+        """
+        SELECT *
+        FROM import_queue
+        WHERE id != ?
+          AND download_id IS NOT NULL
+          AND lower(download_id)=lower(?)
+          AND (
+              status='importing'
+              OR lease_owner IS NOT NULL
+              OR EXISTS (
+                  SELECT 1
+                  FROM import_publications publication
+                  WHERE publication.queue_id=import_queue.id
+                    AND publication.state IN (
+                        'staging','prepared','publishing','published',
+                        'db_committed','cleaning'
+                    )
+              )
+          )
+        """,
+        (exclude_queue_id, target.download_id),
+    ).fetchall()
+    return any(
+        (
+            candidate := _download_identity_for_row(db, row)
+        ) is not None
+        and download_identities_match(candidate, target)
+        for row in rows
+    )
+
+
 def _queue_action_failure(
     db: sqlite3.Connection,
     queue_id: int,
@@ -119,23 +261,37 @@ def _queue_action_failure(
 ) -> ImportQueueActionResult:
     """Classify a failed parent CAS while the caller holds the writer tx."""
     row = db.execute(
-        "SELECT status, lease_owner, download_id FROM import_queue WHERE id=?",
+        "SELECT * FROM import_queue WHERE id=?",
         (queue_id,),
     ).fetchone()
     if row is None:
         return {"ok": False, "status": "not_found"}
-    if row["status"] == "importing" or row["lease_owner"] is not None:
+    active_publication = db.execute(
+        "SELECT 1 FROM import_publications"
+        " WHERE queue_id=?"
+        " AND state IN ('staging','prepared','publishing','published',"
+        " 'db_committed','cleaning') LIMIT 1",
+        (queue_id,),
+    ).fetchone()
+    if (
+        row["status"] == "importing"
+        or row["lease_owner"] is not None
+        or active_publication is not None
+    ):
         return {"ok": False, "status": "in_progress"}
     if protect_download and row["download_id"]:
-        active = db.execute(
-            "SELECT 1 FROM import_queue"
-            " WHERE id != ? AND download_id IS NOT NULL"
-            " AND lower(download_id)=lower(?)"
-            " AND (status='importing' OR lease_owner IS NOT NULL)"
-            " LIMIT 1",
-            (queue_id, row["download_id"]),
-        ).fetchone()
-        if active is not None:
+        identity = _download_identity_for_row(
+            db,
+            row,
+            require_current_client_match=True,
+        )
+        if identity is None:
+            return {"ok": False, "status": "identity_mismatch"}
+        if _active_import_uses_download(
+            db,
+            identity,
+            exclude_queue_id=queue_id,
+        ):
             return {"ok": False, "status": "in_progress"}
     return {"ok": False, "status": unavailable_status}
 
@@ -161,6 +317,12 @@ def _import_action_response(
     elif status == "needs_review":
         message = "Review is still required; there are no failed files to retry"
         toast_type = "warning"
+    elif status == "identity_mismatch":
+        message = (
+            "The persisted download protocol no longer matches its owning client; "
+            "restore the client configuration before dismissing this import"
+        )
+        toast_type = "warning"
     else:
         message = "Import queue entry is not eligible for this action"
         toast_type = "warning"
@@ -184,33 +346,48 @@ def _import_action_response(
 def dismiss_import_queue_entry(queue_id: int) -> ImportQueueActionResult:
     """Remove an import queue entry and reset its grabbed volumes to wanted."""
     with get_db() as db:
-        # This reservation is the transaction's first mutation. It both acquires
-        # SQLite's writer lock and proves that neither this row nor a sibling
-        # sharing its download is owned by an importer.
+        # Acquire SQLite's sole writer before checking the parent and every
+        # protocol-aware sibling. A worker claim and this reset cannot both win.
+        db.execute("BEGIN IMMEDIATE")
         q = db.execute(
-            """
-            UPDATE import_queue
-            SET status='skipped'
-            WHERE id=?
-              AND status != 'importing'
-              AND lease_owner IS NULL
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM import_queue active
-                  WHERE active.id != import_queue.id
-                    AND active.download_id IS NOT NULL
-                    AND import_queue.download_id IS NOT NULL
-                    AND lower(active.download_id)=lower(import_queue.download_id)
-                    AND (
-                        active.status='importing'
-                        OR active.lease_owner IS NOT NULL
-                    )
-              )
-            RETURNING series_id, download_id
-            """,
+            "SELECT * FROM import_queue WHERE id=?",
             (queue_id,),
         ).fetchone()
         if q is None:
+            return {"ok": False, "status": "not_found"}
+        target_identity = _download_identity_for_row(
+            db,
+            q,
+            require_current_client_match=True,
+        )
+        if q["download_id"] and target_identity is None:
+            return {"ok": False, "status": "identity_mismatch"}
+        active_publication = db.execute(
+            "SELECT 1 FROM import_publications WHERE queue_id=?"
+            " AND state IN ('staging','prepared','publishing','published',"
+            " 'db_committed','cleaning') LIMIT 1",
+            (queue_id,),
+        ).fetchone()
+        if (
+            q["status"] == "importing"
+            or q["lease_owner"] is not None
+            or active_publication is not None
+            or (
+                target_identity is not None
+                and _active_import_uses_download(
+                    db,
+                    target_identity,
+                    exclude_queue_id=queue_id,
+                )
+            )
+        ):
+            return {"ok": False, "status": "in_progress"}
+        reserved = db.execute(
+            "UPDATE import_queue SET status='skipped'"
+            " WHERE id=? AND status!='importing' AND lease_owner IS NULL",
+            (queue_id,),
+        )
+        if reserved.rowcount != 1:
             return _queue_action_failure(
                 db,
                 queue_id,
@@ -220,29 +397,56 @@ def dismiss_import_queue_entry(queue_id: int) -> ImportQueueActionResult:
 
         series_id = q["series_id"]
         dl_id = q["download_id"]
-        if dl_id:
-            others = db.execute(
-                "SELECT COUNT(*) FROM import_queue WHERE download_id=? AND id != ?",
-                (dl_id, queue_id),
-            ).fetchone()[0]
-            if others == 0:
-                db.execute("DELETE FROM seen WHERE download_id=?", (dl_id,))
-        grabbed = (
-            db.execute(
-                "SELECT id FROM volumes WHERE series_id=? AND download_id=? AND status='grabbed'",
-                (series_id, dl_id or ""),
+        if target_identity is not None:
+            other_rows = db.execute(
+                "SELECT * FROM import_queue WHERE id!=? AND download_id IS NOT NULL"
+                " AND lower(download_id)=lower(?)",
+                (queue_id, target_identity.download_id),
             ).fetchall()
+            others = any(
+                (
+                    candidate := _download_identity_for_row(db, row)
+                ) is not None
+                and download_identities_match(candidate, target_identity)
+                for row in other_rows
+            )
+            if not others:
+                seen_rows = [
+                    row
+                    for row in db.execute(
+                        "SELECT * FROM seen WHERE download_id IS NOT NULL"
+                        " AND lower(download_id)=lower(?)",
+                        (target_identity.download_id,),
+                    ).fetchall()
+                    if _same_owned_download(db, row, target_identity)
+                ]
+                db.executemany(
+                    "DELETE FROM seen WHERE torrent_url=?",
+                    ((row["torrent_url"],) for row in seen_rows),
+                )
+        grabbed = (
+            [
+                row
+                for row in db.execute(
+                    "SELECT * FROM volumes WHERE series_id=?"
+                    " AND download_id IS NOT NULL"
+                    " AND lower(download_id)=lower(?) AND status='grabbed'",
+                    (series_id, dl_id),
+                ).fetchall()
+                if target_identity is not None
+                and _same_owned_download(db, row, target_identity)
+            ]
             if dl_id
             else []
         )
         vol_ids = [r["id"] for r in grabbed]
         if vol_ids:
-            db.execute(
+            db.executemany(
                 "UPDATE volumes SET status='wanted', download_id=NULL, grabbed_at=NULL,"
                 " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
-                " client=NULL, release_group=NULL"
-                " WHERE series_id=? AND download_id=? AND status='grabbed'",
-                (series_id, dl_id),
+                " client=NULL, download_client_id=NULL, release_group=NULL"
+                " WHERE id=? AND status='grabbed'",
+                ((row["id"],) for row in grabbed),
             )
             cascade_chapters(
                 db,
@@ -255,9 +459,11 @@ def dismiss_import_queue_entry(queue_id: int) -> ImportQueueActionResult:
                 indexer=None,
                 protocol=None,
                 client=None,
+                download_client_id=None,
                 download_id=None,
                 release_group=None,
             )
+            _clear_chapter_download_owners(db, series_id, vol_ids)
         db.execute("DELETE FROM import_queue_files WHERE queue_id=?", (queue_id,))
         db.execute("DELETE FROM import_queue WHERE id=?", (queue_id,))
     return {"ok": True, "status": "dismissed"}
@@ -272,6 +478,12 @@ def skip_import_queue_entry(queue_id: int) -> ImportQueueActionResult:
             "UPDATE import_queue SET status='skipped'"
             " WHERE id=? AND status IN ('pending','partial')"
             " AND lease_owner IS NULL"
+            " AND NOT EXISTS ("
+            "   SELECT 1 FROM import_publications publication"
+            "   WHERE publication.queue_id=import_queue.id"
+            "   AND publication.state IN ('staging','prepared','publishing',"
+            "       'published','db_committed','cleaning')"
+            " )"
             " RETURNING id",
             (queue_id,),
         ).fetchone()
@@ -291,11 +503,23 @@ def clear_inactive_import_queue_entries() -> ImportQueueActionResult:
             "DELETE FROM import_queue_files WHERE queue_id IN ("
             "  SELECT id FROM import_queue WHERE status IN ('failed','skipped')"
             "  AND lease_owner IS NULL"
+            "  AND NOT EXISTS ("
+            "    SELECT 1 FROM import_publications publication"
+            "    WHERE publication.queue_id=import_queue.id"
+            "      AND publication.state IN ('staging','prepared','publishing',"
+            "          'published','db_committed','cleaning')"
+            "  )"
             ")"
         )
         queue_cur = db.execute(
             "DELETE FROM import_queue WHERE status IN ('failed','skipped')"
             " AND lease_owner IS NULL"
+            " AND NOT EXISTS ("
+            "   SELECT 1 FROM import_publications publication"
+            "   WHERE publication.queue_id=import_queue.id"
+            "     AND publication.state IN ('staging','prepared','publishing',"
+            "         'published','db_committed','cleaning')"
+            " )"
         )
         deleted_files = file_cur.rowcount
         deleted = queue_cur.rowcount
@@ -318,6 +542,12 @@ def retry_import_queue_entry(queue_id: int) -> ImportQueueActionResult:
             "UPDATE import_queue SET status=status"
             " WHERE id=? AND status IN ('failed','partial')"
             " AND lease_owner IS NULL"
+            " AND NOT EXISTS ("
+            "   SELECT 1 FROM import_publications publication"
+            "   WHERE publication.queue_id=import_queue.id"
+            "     AND publication.state IN ('staging','prepared','publishing',"
+            "         'published','db_committed','cleaning')"
+            " )"
             " RETURNING status",
             (queue_id,),
         ).fetchone()
@@ -384,6 +614,12 @@ async def process_import(queue_id: int, request: Request):
             "UPDATE import_queue SET status=status"
             " WHERE id=? AND status IN ('pending','partial')"
             " AND lease_owner IS NULL"
+            " AND NOT EXISTS ("
+            "   SELECT 1 FROM import_publications publication"
+            "   WHERE publication.queue_id=import_queue.id"
+            "     AND publication.state IN ('staging','prepared','publishing',"
+            "         'published','db_committed','cleaning')"
+            " )"
             " RETURNING status",
             (queue_id,),
         ).fetchone()

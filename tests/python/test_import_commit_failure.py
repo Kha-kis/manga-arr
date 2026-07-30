@@ -1,12 +1,4 @@
-"""Test commit-phase failure handling in import pipeline.
-
-Verifies that when staging.commit_all() fails, the import:
-1. Returns ok=False
-2. Sets queue status to 'failed'
-3. Preserves import_queue_files rows for review
-4. Does not delete the queue
-5. Resets volume stubs to 'wanted' for retry
-"""
+"""Failure and replay contracts around the durable publication boundary."""
 
 import asyncio
 import os
@@ -50,7 +42,6 @@ def test_env(tmp_path, monkeypatch):
         return None
 
     monkeypatch.setattr(import_download, "notify_discord", _noop)
-    monkeypatch.setattr(import_execute, "trigger_komga_scan", _noop)
     monkeypatch.setattr(import_execute, "broadcast_queue_event", _noop)
 
     # Setup directories
@@ -82,10 +73,13 @@ def test_env(tmp_path, monkeypatch):
             os.unlink(p)
 
 
-def test_commit_all_failure_marks_import_failed(test_env, monkeypatch):
-    """When staging.commit_all() fails, import should return False and mark queue failed."""
-    import import_staging
+def test_publish_boundary_failure_keeps_prepared_journal_recoverable(
+    test_env,
+    monkeypatch,
+):
+    """A transient publish call failure leaves Phase 3 untouched for replay."""
     import import_execute
+    import import_publication
     import main
 
     # Seed data: series + import queue
@@ -103,8 +97,17 @@ def test_commit_all_failure_marks_import_failed(test_env, monkeypatch):
 
         # Create queue
         c.execute(
-            "INSERT INTO import_queue(series_id, download_id, torrent_name, torrent_url, volume_num, src_dir, status) VALUES(?,?,?,?,?,?,'pending')",
-            (sid, "dl-test", "Test v01", "magnet:test", 1.0, test_env["src_root"]),
+            "INSERT INTO import_queue(series_id, download_id, torrent_name,"
+            " torrent_url, volume_num, src_dir, status)"
+            " VALUES(?,?,?,?,?,?,'pending')",
+            (
+                sid,
+                "dl-test",
+                "Test v01",
+                "magnet:test",
+                1.0,
+                test_env["src_root"],
+            ),
         )
         qid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -114,11 +117,13 @@ def test_commit_all_failure_marks_import_failed(test_env, monkeypatch):
         )
         c.commit()
 
-    # Mock commit_all to raise OSError (disk full, permissions, etc.)
-    def mock_commit_all(self):
+    real_publish = import_publication.publish_publication
+
+    def fail_publish(publication_id, owner_token):
+        del publication_id, owner_token
         raise OSError("Mock disk write failure")
 
-    monkeypatch.setattr(import_staging._ImportStaging, "commit_all", mock_commit_all)
+    monkeypatch.setattr(import_publication, "publish_publication", fail_publish)
 
     # Run import
     result = _run(import_execute._execute_import_impl(qid))
@@ -136,14 +141,17 @@ def test_commit_all_failure_marks_import_failed(test_env, monkeypatch):
     with sqlite3.connect(test_env["db_path"]) as c:
         c.row_factory = sqlite3.Row
 
-        # Queue should be 'failed', not deleted
+        # The active journal, not a reset queue/domain state, owns recovery.
         queue_row = c.execute(
-            "SELECT status FROM import_queue WHERE id=?", (qid,)
+            "SELECT status, lease_owner FROM import_queue WHERE id=?", (qid,)
         ).fetchone()
         assert queue_row is not None, "Queue should not be deleted"
-        assert queue_row["status"] == "failed", (
-            f"Expected 'failed', got '{queue_row['status']}'"
-        )
+        assert queue_row["status"] == "importing"
+        assert queue_row["lease_owner"]
+        assert c.execute(
+            "SELECT state FROM import_publications WHERE queue_id=?",
+            (qid,),
+        ).fetchone()["state"] == "prepared"
 
         # Files should still exist for review
         file_rows = c.execute(
@@ -168,36 +176,38 @@ def test_commit_all_failure_marks_import_failed(test_env, monkeypatch):
             "No chapters should be marked as downloaded after commit failure"
         )
 
-        history_types = [
-            row["event_type"]
-            for row in c.execute(
-                "SELECT event_type FROM history WHERE series_id=? AND download_id='dl-test'",
-                (sid,),
-            ).fetchall()
-        ]
-        assert history_types == ["import_failed"]
+        history_types = c.execute(
+            "SELECT event_type FROM history"
+            " WHERE series_id=? AND download_id='dl-test'",
+            (sid,),
+        ).fetchall()
+        assert history_types == []
         assert c.execute(
             "SELECT COUNT(*) FROM events"
             " WHERE series_id=? AND event_type='error'"
             " AND message='Import failed: Test v01'",
             (sid,),
-        ).fetchone()[0] == 1
+        ).fetchone()[0] == 0
 
-        c.execute("DELETE FROM import_queue_files WHERE queue_id=?", (qid,))
-        c.execute("DELETE FROM import_queue WHERE id=?", (qid,))
-
-    with main.get_db() as db:
-        retry_qid, needs_review = main._queue_import(
-            db,
-            sid,
-            "dl-test",
-            "Test v01",
-            "magnet:test",
-            1.0,
-            test_env["src_root"],
-        )
-    assert retry_qid is not None
-    assert not needs_review
+    monkeypatch.setattr(import_publication, "publish_publication", real_publish)
+    replayed = _run(import_publication.replay_import_publications(max_rows=None))
+    assert replayed.completed == 1
+    assert os.path.isfile(dst_file)
+    with sqlite3.connect(test_env["db_path"]) as c:
+        assert c.execute(
+            "SELECT 1 FROM import_queue WHERE id=?",
+            (qid,),
+        ).fetchone() is None
+        assert c.execute(
+            "SELECT state, pack_cleanup_state FROM import_publications"
+            " WHERE queue_id=?",
+            (qid,),
+        ).fetchone() == ("deleted", "complete")
+        assert c.execute(
+            "SELECT event_type FROM history"
+            " WHERE series_id=? AND download_id='dl-test'",
+            (sid,),
+        ).fetchall() == [("imported",)]
 
 
 def test_minimum_free_space_guard_blocks_before_staging(test_env, monkeypatch):
@@ -281,10 +291,13 @@ def test_minimum_free_space_guard_blocks_before_staging(test_env, monkeypatch):
         assert any("insufficient free space" in msg for msg in event_messages)
 
 
-def test_commit_all_failure_preserves_volumes_to_retry(test_env, monkeypatch):
-    """When commit fails, volumes should reset to 'wanted' for retry."""
-    import import_staging
+def test_os_replace_failure_preserves_grabbed_domain_until_replay(
+    test_env,
+    monkeypatch,
+):
+    """A transient atomic-publish fault must not reset grabbed domain state."""
     import import_execute
+    import import_publication
 
     # Seed with grabbed volume stub
     with sqlite3.connect(test_env["db_path"]) as c:
@@ -307,8 +320,17 @@ def test_commit_all_failure_preserves_volumes_to_retry(test_env, monkeypatch):
 
         # Create queue
         c.execute(
-            "INSERT INTO import_queue(series_id, download_id, torrent_name, torrent_url, volume_num, src_dir, status) VALUES(?,?,?,?,?,?,'pending')",
-            (sid, "dl-test", "Test v01", "magnet:test", 1.0, test_env["src_root"]),
+            "INSERT INTO import_queue(series_id, download_id, torrent_name,"
+            " torrent_url, volume_num, src_dir, status)"
+            " VALUES(?,?,?,?,?,?,'pending')",
+            (
+                sid,
+                "dl-test",
+                "Test v01",
+                "magnet:test",
+                1.0,
+                test_env["src_root"],
+            ),
         )
         qid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -318,11 +340,13 @@ def test_commit_all_failure_preserves_volumes_to_retry(test_env, monkeypatch):
         )
         c.commit()
 
-    # Mock commit_all to fail
-    def mock_commit_all(self):
+    real_replace = import_publication._rename_noreplace
+
+    def fail_replace(source, destination):
+        del source, destination
         raise OSError("No space left on device")
 
-    monkeypatch.setattr(import_staging._ImportStaging, "commit_all", mock_commit_all)
+    monkeypatch.setattr(import_publication, "_rename_noreplace", fail_replace)
 
     # Run import
     result = _run(import_execute._execute_import_impl(qid))
@@ -333,15 +357,22 @@ def test_commit_all_failure_preserves_volumes_to_retry(test_env, monkeypatch):
         "Destination file should not exist after commit failure"
     )
 
-    # Verify volume reset to wanted
+    # The publication remains replayable and the grabbed receipt is unchanged.
     with sqlite3.connect(test_env["db_path"]) as c:
         vol_status = c.execute(
-            "SELECT status FROM volumes WHERE series_id=? AND volume_num=?",
+            "SELECT status, download_id FROM volumes"
+            " WHERE series_id=? AND volume_num=?",
             (sid, 1.0),
         ).fetchone()
-        assert vol_status[0] == "wanted", (
-            "Volume should reset to wanted after commit failure"
-        )
+        assert vol_status == ("grabbed", "dl-test")
+        assert c.execute(
+            "SELECT status FROM import_queue WHERE id=?",
+            (qid,),
+        ).fetchone() == ("importing",)
+        assert c.execute(
+            "SELECT state FROM import_publications WHERE queue_id=?",
+            (qid,),
+        ).fetchone() == ("publishing",)
 
         # Verify no download states were written
         vol_downloaded = c.execute(
@@ -352,11 +383,22 @@ def test_commit_all_failure_preserves_volumes_to_retry(test_env, monkeypatch):
             "No volumes should be marked as downloaded after commit failure"
         )
 
+    monkeypatch.setattr(import_publication, "_rename_noreplace", real_replace)
+    replayed = _run(import_publication.replay_import_publications(max_rows=None))
+    assert replayed.completed == 1
+    assert os.path.isfile(dst_file)
+    with sqlite3.connect(test_env["db_path"]) as c:
+        assert c.execute(
+            "SELECT status, download_id FROM volumes"
+            " WHERE series_id=? AND volume_num=?",
+            (sid, 1.0),
+        ).fetchone() == ("downloaded", "dl-test")
 
-def test_commit_all_failure_with_some_preexisting_errors(test_env, monkeypatch):
-    """When commit fails with pre-existing errors, still marks as failed."""
-    import import_staging
+
+def test_preexisting_error_aborts_before_journal_publish(test_env, monkeypatch):
+    """A pre-failed plan still rolls back without entering publication."""
     import import_execute
+    import import_publication
 
     # Seed data with one file that will pre-fail (missing source)
     with sqlite3.connect(test_env["db_path"]) as c:
@@ -392,12 +434,11 @@ def test_commit_all_failure_with_some_preexisting_errors(test_env, monkeypatch):
         )
         c.commit()
 
-    # Mock commit_all to fail (this should not even be called due to pre-fail,
-    # but test the code path anyway)
-    def mock_commit_all(self):
-        raise OSError("Unexpected commit failure")
-
-    monkeypatch.setattr(import_staging._ImportStaging, "commit_all", mock_commit_all)
+    monkeypatch.setattr(
+        import_publication,
+        "publish_publication",
+        lambda *args: pytest.fail("pre-failed plan reached publication"),
+    )
 
     # Run import
     result = _run(import_execute._execute_import_impl(qid))
@@ -414,31 +455,43 @@ def test_commit_all_failure_with_some_preexisting_errors(test_env, monkeypatch):
         )
 
 
-def test_commit_failure_prevents_post_success_side_effects(test_env, monkeypatch):
-    """Verify that commit failure prevents post-success cleanup from running."""
+def test_publish_failure_defers_success_side_effects_until_replay(
+    test_env,
+    monkeypatch,
+):
+    """Success DB effects cannot run before a transient publication fault clears."""
+    import clients
+    import cover_images
     import import_execute
     import import_commit
-    import import_staging
-    import clients
+    import import_publication
     import main
+    import shared
 
     # Track side effect calls
     side_effects_called = {
+        "cover": False,
         "komga_scan": False,
         "remove_completed": False,
         "success_history": False,
     }
 
-    # Override the async functions to track calls
-    async def mock_noop(*args, **kwargs):
-        return None
-
-    async def mock_komga_scan():
+    async def mock_komga_scan(payload):
+        del payload
         side_effects_called["komga_scan"] = True
+        return True
+
+    real_add_history = import_commit.add_history
 
     def mock_add_history(db, event, *args, **kwargs):
         if event == "imported":
             side_effects_called["success_history"] = True
+        return real_add_history(db, event, *args, **kwargs)
+
+    def mock_extract_cover(*args, **kwargs):
+        del args, kwargs
+        side_effects_called["cover"] = True
+        return True
 
     # Seed data
     with sqlite3.connect(test_env["db_path"]) as c:
@@ -447,14 +500,29 @@ def test_commit_failure_prevents_post_success_side_effects(test_env, monkeypatch
             ("Test Series", "test-series"),
         )
         sid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+        c.execute(
+            "INSERT INTO download_clients("
+            " id,name,type,host,username,password,enabled,priority"
+            ") VALUES(915001,'Test qBittorrent','qbittorrent',"
+            " 'https://qbit.test','user','password',1,1)"
+        )
 
         src_file = os.path.join(test_env["src_root"], "Test v01.cbz")
         with open(src_file, "wb") as f:
             f.write(b"PK\x03\x04" + b"x" * 200)
 
         c.execute(
-            "INSERT INTO import_queue(series_id, download_id, torrent_name, torrent_url, volume_num, src_dir, status) VALUES(?,?,?,?,?,?,'pending')",
-            (sid, "dl-test", "Test v01", "magnet:test", 1.0, test_env["src_root"]),
+            "INSERT INTO import_queue(series_id, download_id, download_client_id,"
+            " torrent_name, torrent_url, volume_num, src_dir, status)"
+            " VALUES(?,?,915001,?,?,?,?,'pending')",
+            (
+                sid,
+                "dl-test",
+                "Test v01",
+                "magnet:test",
+                1.0,
+                test_env["src_root"],
+            ),
         )
         qid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -463,31 +531,52 @@ def test_commit_failure_prevents_post_success_side_effects(test_env, monkeypatch
             (qid, "Test v01.cbz", src_file, src_file, 1.0),
         )
 
-        # Create a grabbed volume stub
+        # Mirror production grab evidence: the domain rows retain the selected
+        # adapter marker, which Phase 3 resolves to the exact configured ID.
         c.execute(
-            "INSERT INTO volumes(series_id, volume_num, status, download_id) VALUES(?,?,?,?)",
-            (sid, 1.0, "grabbed", "dl-test"),
+            "INSERT INTO seen(torrent_url,torrent_name,series_id,volume_num,"
+            " protocol,client,download_id,download_client_id)"
+            " VALUES('magnet:test','Test v01',?,1,'torrent','qbittorrent',"
+            " 'dl-test',915001)",
+            (sid,),
+        )
+        c.execute(
+            "INSERT INTO volumes(series_id,volume_num,status,download_id,"
+            " protocol,client,download_client_id)"
+            " VALUES(?,1,'grabbed','dl-test','torrent','qbittorrent',915001)",
+            (sid,),
         )
         c.commit()
 
-    # Mock commit to fail
-    def mock_commit_all(self):
+    real_publish = import_publication.publish_publication
+
+    def fail_publish(publication_id, owner_token):
+        del publication_id, owner_token
         raise OSError("Simulated commit failure")
 
-    monkeypatch.setattr(import_staging._ImportStaging, "commit_all", mock_commit_all)
-    monkeypatch.setattr(import_execute, "trigger_komga_scan", mock_komga_scan)
+    monkeypatch.setattr(import_publication, "publish_publication", fail_publish)
+    monkeypatch.setattr(
+        import_publication,
+        "_dispatch_journaled_komga_scan",
+        mock_komga_scan,
+    )
+    monkeypatch.setattr(cover_images, "cached_cover_is_valid", lambda _path: False)
+    monkeypatch.setattr(cover_images, "extract_cbz_cover", mock_extract_cover)
     monkeypatch.setattr(import_commit, "add_history", mock_add_history)
 
-    # Mock CONFIG for remove_completed
+    # Both success effects must be snapshotted in the Phase 3 transaction.
     monkeypatch.setitem(main.CONFIG, "remove_completed", "true")
+    monkeypatch.setitem(shared.CONFIG, "remove_completed", "true")
+    monkeypatch.setitem(main.CONFIG, "komga_scan_enabled", "true")
+    monkeypatch.setitem(shared.CONFIG, "komga_scan_enabled", "true")
 
-    # Add a mock for qbit_remove that would fail the test if called
-    async def mock_qbit_remove_fail(*args, **kwargs):
+    async def mock_remove_completed(*args, **kwargs):
+        del args, kwargs
         side_effects_called["remove_completed"] = True
-        raise AssertionError("qbit_remove should not be called on commit failure")
+        return True
 
-    monkeypatch.setattr(clients, "qbit_remove", mock_qbit_remove_fail)
-    monkeypatch.setattr(clients, "sab_remove", mock_qbit_remove_fail)
+    monkeypatch.setattr(clients, "qbit_remove", mock_remove_completed)
+    monkeypatch.setattr(clients, "sab_remove", mock_remove_completed)
 
     # Run import
     result = _run(import_execute._execute_import_impl(qid))
@@ -498,6 +587,9 @@ def test_commit_failure_prevents_post_success_side_effects(test_env, monkeypatch
     # Verify side effects were NOT called
     assert side_effects_called["komga_scan"] is False, (
         "Komga scan should not be triggered on commit failure"
+    )
+    assert side_effects_called["cover"] is False, (
+        "Cover handling should not run on commit failure"
     )
     assert side_effects_called["remove_completed"] is False, (
         "Remove completed should not run on commit failure"
@@ -510,12 +602,52 @@ def test_commit_failure_prevents_post_success_side_effects(test_env, monkeypatch
     with sqlite3.connect(test_env["db_path"]) as c:
         c.row_factory = sqlite3.Row
 
-        # Check column name first
-        cols_info = c.execute("PRAGMA table_info(history)").fetchall()
-        col_names = [col[1] for col in cols_info]
+        assert c.execute(
+            "SELECT COUNT(*) FROM history WHERE series_id=?",
+            (sid,),
+        ).fetchone()[0] == 0
+        assert tuple(c.execute(
+            "SELECT status, download_id FROM volumes"
+            " WHERE series_id=? AND volume_num=1",
+            (sid,),
+        ).fetchone()) == ("grabbed", "dl-test")
 
-        # Determine correct column name (event_type for this schema)
-        event_col = "event_type"
-
-        # Test passes - side effects were not called
-        pass
+    monkeypatch.setattr(import_publication, "publish_publication", real_publish)
+    replayed = _run(import_publication.replay_import_publications(max_rows=None))
+    assert replayed.completed == 1
+    assert side_effects_called["success_history"] is True
+    assert side_effects_called["cover"] is True
+    assert side_effects_called["komga_scan"] is True
+    assert side_effects_called["remove_completed"] is True
+    with sqlite3.connect(test_env["db_path"]) as c:
+        assert c.execute(
+            "SELECT status FROM volumes WHERE series_id=? AND volume_num=1",
+            (sid,),
+        ).fetchone() == ("downloaded",)
+        assert c.execute(
+            "SELECT event_type FROM history WHERE series_id=?",
+            (sid,),
+        ).fetchall() == [("imported",)]
+        assert c.execute(
+            "SELECT effect_type, state, attempt_count, idempotency_key"
+            " FROM import_publication_success_effects ORDER BY effect_type"
+        ).fetchall() == [
+            (
+                "cover",
+                "completed",
+                1,
+                "mangarr-import-publication:1:success:cover",
+            ),
+            (
+                "komga_scan",
+                "completed",
+                1,
+                "mangarr-import-publication:1:success:komga_scan",
+            ),
+            (
+                "remove_completed",
+                "completed",
+                1,
+                "mangarr-import-publication:1:success:remove_completed",
+            ),
+        ]

@@ -3,8 +3,10 @@
 import logging
 import os
 import sqlite3
+from dataclasses import dataclass
 from typing import Any
 
+from download_identity import coerce_download_client_id, resolve_download_protocol
 from events import log_event
 from parsing import extract_chapter_num
 from files import (
@@ -31,74 +33,43 @@ class _ImportPlanLeaseLost(RuntimeError):
     """Raised to roll back Phase 1 when its final ownership CAS fails."""
 
 
+@dataclass(slots=True)
 class _FilePlan:
     """Frozen per-file decision data computed in Phase 1."""
 
-    def __init__(
-        self,
-        file_id: int,
-        src_path: str,
-        filename: str,
-        dst_path: str,
-        import_kind: str,
-        file_type: str,
-        proposed_vol: float | None,
-        proposed_chap: float | None,
-        chap_range_end: float | None,
-        vol_range_start: float | None,
-        vol_range_end: float | None,
-        pack_type: str | None,
-        is_special: int,
-        special_title: str | None,
-        has_volume_range: bool,
-        is_legacy_chapter_stub: bool,
-        is_legacy_chapter_recheck: bool,
-        plan_status: str,
-        plan_failure_reason: str,
-    ):
-        self.file_id = file_id
-        self.src_path = src_path
-        self.filename = filename
-        self.dst_path = dst_path
-        self.import_kind = import_kind
-        self.file_type = file_type
-        self.proposed_vol = proposed_vol
-        self.proposed_chap = proposed_chap
-        self.chap_range_end = chap_range_end
-        self.vol_range_start = vol_range_start
-        self.vol_range_end = vol_range_end
-        self.pack_type = pack_type
-        self.is_special = is_special
-        self.special_title = special_title
-        self.has_volume_range = has_volume_range
-        self.is_legacy_chapter_stub = is_legacy_chapter_stub
-        self.is_legacy_chapter_recheck = is_legacy_chapter_recheck
-        self.plan_status = plan_status
-        self.plan_failure_reason = plan_failure_reason
+    file_id: int
+    src_path: str
+    filename: str
+    dst_path: str
+    import_kind: str
+    file_type: str
+    proposed_vol: float | None
+    proposed_chap: float | None
+    chap_range_end: float | None
+    vol_range_start: float | None
+    vol_range_end: float | None
+    pack_type: str | None
+    is_special: int
+    special_title: str | None
+    has_volume_range: bool
+    is_legacy_chapter_stub: bool
+    is_legacy_chapter_recheck: bool
+    plan_status: str
+    plan_failure_reason: str
 
 
+@dataclass(slots=True)
 class _ImportPlan:
     """Phase 1 output: queue/series snapshot plus per-file plans."""
 
-    def __init__(
-        self,
-        queue: dict[str, Any],
-        series: dict[str, Any] | None,
-        series_tags: list[str],
-        dst_dir: str,
-        import_mode: str,
-        now_ts: None,
-        files: list[_FilePlan],
-        series_id: int,
-    ) -> None:
-        self.queue = queue
-        self.series = series
-        self.series_tags = series_tags
-        self.dst_dir = dst_dir
-        self.import_mode = import_mode
-        self.now_ts = now_ts
-        self.files = files
-        self.series_id = series_id
+    queue: dict[str, Any]
+    series: dict[str, Any] | None
+    series_tags: list[str]
+    dst_dir: str
+    import_mode: str
+    now_ts: str | None
+    files: list[_FilePlan]
+    series_id: int
 
 
 def _plan_import(
@@ -124,7 +95,8 @@ def _plan_import(
     queue = dict(queue_row)
 
     files = db.execute(
-        "SELECT * FROM import_queue_files WHERE queue_id=? AND status='pending'",
+        "SELECT * FROM import_queue_files"
+        " WHERE queue_id=? AND status IN ('pending','needs_review')",
         (queue_id,),
     ).fetchall()
 
@@ -160,15 +132,40 @@ def _plan_import(
             db,
             queue_id=queue_id,
             download_id=queue["download_id"],
+            download_client_id=queue.get("download_client_id"),
             series_id=queue["series_id"],
         )
         if transitioned and not shared_download:
+            owner_id = coerce_download_client_id(
+                queue.get("download_client_id")
+            )
+            protocol = resolve_download_protocol(
+                db,
+                download_client_id=owner_id,
+                series_id=queue["series_id"],
+                download_id=str(queue["download_id"] or ""),
+                source_url=str(queue["torrent_url"] or ""),
+            )
             db.execute(
                 "UPDATE volumes SET status='wanted', grabbed_at=NULL, download_id=NULL,"
                 " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
-                " client=NULL, release_group=NULL, import_path=NULL"
-                " WHERE series_id=? AND download_id=? AND status='grabbed'",
-                (queue["series_id"], queue["download_id"]),
+                " client=NULL, download_client_id=NULL, release_group=NULL,"
+                " import_path=NULL"
+                " WHERE series_id=? AND download_client_id IS ?"
+                " AND download_id IS NOT NULL"
+                " AND ("
+                "   (?='torrent' AND lower(download_id)=lower(?))"
+                "   OR (COALESCE(?,'')!='torrent' AND download_id=?)"
+                " )"
+                " AND status='grabbed'",
+                (
+                    queue["series_id"],
+                    owner_id,
+                    protocol,
+                    queue["download_id"],
+                    protocol,
+                    queue["download_id"],
+                ),
             )
         return None
 
@@ -314,7 +311,7 @@ def _plan_import(
 
         has_vol_range = row_vol_rs is not None and row_vol_re is not None
 
-        plan_status = "ready"
+        plan_status = "needs_review" if f["status"] == "needs_review" else "ready"
         plan_failure_reason = ""
         is_legacy_chapter_stub = False
 
@@ -325,11 +322,33 @@ def _plan_import(
             and f["id"] not in volume_overrides
         ):
             stub = None
-            if queue["download_id"]:
+            owner_id = coerce_download_client_id(
+                queue.get("download_client_id")
+            )
+            if queue["download_id"] and owner_id is not None:
+                protocol = resolve_download_protocol(
+                    db,
+                    download_client_id=owner_id,
+                    series_id=queue["series_id"],
+                    download_id=str(queue["download_id"]),
+                    source_url=str(queue["torrent_url"] or ""),
+                )
                 stub = db.execute(
-                    "SELECT id FROM volumes WHERE series_id=? AND download_id=?"
+                    "SELECT id FROM volumes WHERE series_id=?"
+                    " AND download_id IS NOT NULL AND download_client_id IS ?"
+                    " AND ("
+                    "   (?='torrent' AND lower(download_id)=lower(?))"
+                    "   OR (COALESCE(?,'')!='torrent' AND download_id=?)"
+                    " )"
                     " AND status='grabbed' AND pack_type='chapter'",
-                    (queue["series_id"], queue["download_id"]),
+                    (
+                        queue["series_id"],
+                        owner_id,
+                        protocol,
+                        queue["download_id"],
+                        protocol,
+                        queue["download_id"],
+                    ),
                 ).fetchone()
             if stub:
                 is_legacy_chapter_stub = True

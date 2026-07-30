@@ -113,6 +113,7 @@ _VOLUME_GUARD = (
     "status",
     "import_path",
     "download_id",
+    "download_client_id",
     "torrent_name",
     "indexer",
     "protocol",
@@ -133,6 +134,7 @@ _PACK_GUARD = (
     "vol_range_start",
     "vol_range_end",
     "download_id",
+    "download_client_id",
     "import_path",
     "quality",
 )
@@ -149,6 +151,7 @@ _CHAPTER_GUARD = (
     "protocol",
     "client",
     "download_id",
+    "download_client_id",
     "release_group",
     "import_path",
     "quality",
@@ -157,63 +160,72 @@ _CHAPTER_GUARD = (
 )
 _VOLUME_GUARD_SQL = (
     "id IS ? AND series_id IS ? AND volume_num IS ? AND status IS ?"
-    " AND import_path IS ? AND download_id IS ? AND torrent_name IS ?"
-    " AND indexer IS ? AND protocol IS ? AND client IS ? AND grabbed_at IS ?"
-    " AND imported_at IS ? AND source_url IS ? AND release_group IS ?"
-    " AND size_bytes IS ? AND quality IS ?"
+    " AND import_path IS ? AND download_id IS ? AND download_client_id IS ?"
+    " AND torrent_name IS ? AND indexer IS ? AND protocol IS ? AND client IS ?"
+    " AND grabbed_at IS ? AND imported_at IS ? AND source_url IS ?"
+    " AND release_group IS ? AND size_bytes IS ? AND quality IS ?"
 )
 _PACK_GUARD_SQL = (
     "id IS ? AND series_id IS ? AND volume_num IS ? AND status IS ?"
     " AND pack_type IS ? AND vol_range_start IS ? AND vol_range_end IS ?"
-    " AND download_id IS ? AND import_path IS ? AND quality IS ?"
+    " AND download_id IS ? AND download_client_id IS ?"
+    " AND import_path IS ? AND quality IS ?"
 )
 _CHAPTER_GUARD_SQL = (
     "id IS ? AND series_id IS ? AND volume_id IS ? AND status IS ?"
     " AND monitored IS ? AND grabbed_at IS ? AND torrent_name IS ?"
     " AND torrent_url IS ? AND indexer IS ? AND protocol IS ? AND client IS ?"
-    " AND download_id IS ? AND release_group IS ? AND import_path IS ?"
-    " AND quality IS ? AND imported_at IS ? AND size_bytes IS ?"
+    " AND download_id IS ? AND download_client_id IS ? AND release_group IS ?"
+    " AND import_path IS ? AND quality IS ? AND imported_at IS ?"
+    " AND size_bytes IS ?"
 )
 _RECOVER_VOLUME_SQL = (
     "UPDATE volumes SET status='downloaded',import_path=?,"
     " size_bytes=COALESCE(NULLIF(size_bytes,0),?),quality=COALESCE(quality,?),"
     " imported_at=COALESCE(imported_at,?) WHERE id IS ? AND series_id IS ?"
     " AND volume_num IS ? AND status IS ? AND import_path IS ? AND download_id IS ?"
-    " AND torrent_name IS ? AND indexer IS ? AND protocol IS ? AND client IS ?"
-    " AND grabbed_at IS ? AND imported_at IS ? AND source_url IS ?"
-    " AND release_group IS ? AND size_bytes IS ? AND quality IS ?"
+    " AND download_client_id IS ? AND torrent_name IS ? AND indexer IS ?"
+    " AND protocol IS ? AND client IS ? AND grabbed_at IS ? AND imported_at IS ?"
+    " AND source_url IS ? AND release_group IS ? AND size_bytes IS ?"
+    " AND quality IS ?"
 )
 _RESET_MISSING_VOLUME_SQL = (
     "UPDATE volumes SET status='wanted',import_path=NULL,download_id=NULL,"
-    " torrent_name=NULL,indexer=NULL,protocol=NULL,client=NULL,"
-    " grabbed_at=NULL,imported_at=NULL,source_url=NULL,release_group=NULL"
+    " download_client_id=NULL,torrent_name=NULL,indexer=NULL,protocol=NULL,"
+    " client=NULL,grabbed_at=NULL,imported_at=NULL,source_url=NULL,"
+    " release_group=NULL"
     " WHERE id IS ? AND series_id IS ? AND volume_num IS ? AND status IS ?"
-    " AND import_path IS ? AND download_id IS ? AND torrent_name IS ?"
-    " AND indexer IS ? AND protocol IS ? AND client IS ? AND grabbed_at IS ?"
-    " AND imported_at IS ? AND source_url IS ? AND release_group IS ?"
-    " AND size_bytes IS ? AND quality IS ?"
+    " AND import_path IS ? AND download_id IS ? AND download_client_id IS ?"
+    " AND torrent_name IS ? AND indexer IS ? AND protocol IS ?"
+    " AND client IS ? AND grabbed_at IS ? AND imported_at IS ?"
+    " AND source_url IS ? AND release_group IS ? AND size_bytes IS ?"
+    " AND quality IS ?"
 )
 _MARK_VOLUME_DOWNLOADED_SQL = (
     "UPDATE volumes SET status='downloaded' WHERE id IS ? AND series_id IS ?"
     " AND volume_num IS ? AND status IS ? AND import_path IS ? AND download_id IS ?"
-    " AND torrent_name IS ? AND indexer IS ? AND protocol IS ? AND client IS ?"
-    " AND grabbed_at IS ? AND imported_at IS ? AND source_url IS ?"
-    " AND release_group IS ? AND size_bytes IS ? AND quality IS ?"
+    " AND download_client_id IS ? AND torrent_name IS ? AND indexer IS ?"
+    " AND protocol IS ? AND client IS ? AND grabbed_at IS ? AND imported_at IS ?"
+    " AND source_url IS ? AND release_group IS ? AND size_bytes IS ?"
+    " AND quality IS ?"
 )
 _MARK_CHAPTER_DOWNLOADED_SQL = (
     "UPDATE chapters SET status=? WHERE id IS ? AND series_id IS ?"
     " AND volume_id IS ? AND status IS ? AND monitored IS ? AND grabbed_at IS ?"
     " AND torrent_name IS ? AND torrent_url IS ? AND indexer IS ? AND protocol IS ?"
-    " AND client IS ? AND download_id IS ? AND release_group IS ?"
-    " AND import_path IS ? AND quality IS ? AND imported_at IS ? AND size_bytes IS ?"
+    " AND client IS ? AND download_id IS ? AND download_client_id IS ?"
+    " AND release_group IS ? AND import_path IS ? AND quality IS ?"
+    " AND imported_at IS ? AND size_bytes IS ?"
 )
 _RESET_MISSING_CHAPTER_SQL = (
     "UPDATE chapters SET status=?,grabbed_at=NULL,torrent_name=NULL,"
     " torrent_url=NULL,indexer=NULL,protocol=NULL,client=NULL,download_id=NULL,"
-    " release_group=NULL WHERE id IS ? AND series_id IS ? AND volume_id IS ?"
-    " AND status IS ? AND monitored IS ? AND grabbed_at IS ? AND torrent_name IS ?"
-    " AND torrent_url IS ? AND indexer IS ? AND protocol IS ? AND client IS ?"
-    " AND download_id IS ? AND release_group IS ? AND import_path IS ?"
+    " download_client_id=NULL,release_group=NULL"
+    " WHERE id IS ? AND series_id IS ? AND volume_id IS ?"
+    " AND status IS ? AND monitored IS ? AND grabbed_at IS ?"
+    " AND torrent_name IS ? AND torrent_url IS ? AND indexer IS ?"
+    " AND protocol IS ? AND client IS ? AND download_id IS ?"
+    " AND download_client_id IS ? AND release_group IS ? AND import_path IS ?"
     " AND quality IS ? AND imported_at IS ? AND size_bytes IS ?"
 )
 _QUALITY_BACKFILL_SQL = """
@@ -232,18 +244,18 @@ _QUALITY_BACKFILL_SQL = """
 _DELETE_PACK_SQL = (
     "DELETE FROM volumes WHERE id IS ? AND series_id IS ? AND volume_num IS ?"
     " AND status IS ? AND pack_type IS ? AND vol_range_start IS ?"
-    " AND vol_range_end IS ? AND download_id IS ? AND import_path IS ?"
-    " AND quality IS ?"
+    " AND vol_range_end IS ? AND download_id IS ? AND download_client_id IS ?"
+    " AND import_path IS ? AND quality IS ?"
 )
 _MARK_PACK_DOWNLOADED_SQL = (
     "UPDATE volumes SET status='downloaded' WHERE id IS ? AND series_id IS ?"
     " AND volume_num IS ? AND status IS ? AND pack_type IS ?"
     " AND vol_range_start IS ? AND vol_range_end IS ? AND download_id IS ?"
-    " AND import_path IS ? AND quality IS ?"
+    " AND download_client_id IS ? AND import_path IS ? AND quality IS ?"
 )
 _ENRICHMENT_VOLUME_SELECT = (
-    "SELECT id,series_id,volume_num,status,download_id,torrent_name,"
-    " indexer,protocol,client,grabbed_at,imported_at,source_url,"
+    "SELECT id,series_id,volume_num,status,download_id,download_client_id,"
+    " torrent_name,indexer,protocol,client,grabbed_at,imported_at,source_url,"
     " release_group,import_path,size_bytes,quality FROM volumes WHERE id=?"
 )
 _UPDATE_CONVERTED_VOLUME_SQL = (
@@ -318,9 +330,10 @@ def snapshot_series_rescan(
             numbered = tuple(
                 dict(row)
                 for row in db.execute(
-                    "SELECT id,series_id,volume_num,status,download_id,torrent_name,"
-                    " indexer,protocol,client,grabbed_at,imported_at,source_url,"
-                    " release_group,import_path,size_bytes,quality"
+                    "SELECT id,series_id,volume_num,status,download_id,"
+                    " download_client_id,torrent_name,indexer,protocol,client,"
+                    " grabbed_at,imported_at,source_url,release_group,import_path,"
+                    " size_bytes,quality"
                     " FROM volumes WHERE series_id=? AND volume_num IS NOT NULL"
                     " ORDER BY id",
                     (series_id,),
@@ -330,7 +343,8 @@ def snapshot_series_rescan(
                 dict(row)
                 for row in db.execute(
                     "SELECT id,series_id,volume_num,pack_type,vol_range_start,"
-                    " vol_range_end,status,download_id,import_path,quality"
+                    " vol_range_end,status,download_id,download_client_id,"
+                    " import_path,quality"
                     " FROM volumes WHERE series_id=? AND volume_num IS NULL ORDER BY id",
                     (series_id,),
                 ).fetchall()
@@ -340,7 +354,8 @@ def snapshot_series_rescan(
                 for row in db.execute(
                     "SELECT id,series_id,volume_id,status,monitored,grabbed_at,"
                     " torrent_name,torrent_url,indexer,protocol,client,download_id,"
-                    " release_group,import_path,quality,imported_at,size_bytes"
+                    " download_client_id,release_group,import_path,quality,"
+                    " imported_at,size_bytes"
                     " FROM chapters WHERE series_id=? ORDER BY id",
                     (series_id,),
                 ).fetchall()
@@ -562,6 +577,7 @@ def _backfill_snapshot_quality(
     db: sqlite3.Connection,
     snapshot: SeriesRescanSnapshot,
 ) -> None:
+    guard: tuple[str, ...]
     for volume in (*snapshot.numbered, *snapshot.packs):
         if (
             volume["status"] != "downloaded"
@@ -678,6 +694,7 @@ def reconcile_series_inventory(
                 str(snapshot.series["title"] or ""),
                 f"Vol {vol_num_to_display(volume_num)}",
                 source_title=volume["torrent_name"] or "",
+                data={"download_client_id": volume["download_client_id"]},
             )
             _cascade_chapter_snapshot(
                 db,

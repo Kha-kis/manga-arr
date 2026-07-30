@@ -4,17 +4,21 @@ import json
 import os
 import re
 import shutil
+import sqlite3
+import stat
 import subprocess
+import threading
+import time
 import zipfile
+from collections.abc import Callable
+from functools import wraps
+from typing import Any, ParamSpec, TypeVar
 
 from files import (
     MANGA_EXTENSIONS,
     build_filename,
     build_special_filename,
     derive_special_title,
-    pack_image_dir_to_cbz,
-    quality_from_filename,
-    safe_join_under,
     sanitize_filename,
 )
 from parsing import (
@@ -29,14 +33,360 @@ from parsing import (
 )
 from shared import get_cfg, get_db
 from comicinfo import read_comic_info
+from download_identity import (
+    DownloadIdentity,
+    DownloadProtocol,
+    coerce_download_client_id,
+    download_identities_match,
+    normalize_download_protocol,
+    resolve_download_protocol,
+)
 from events import add_history, log_event
 from import_kinds import infer_import_kind
+from import_pack_cleanup import (
+    PACK_RESERVATION_SECONDS,
+    begin_pack_queue_attachment,
+    durably_attach_pack_queue_directory,
+    pack_queue_creation_paths,
+    recover_pack_cleanup_state,
+    refresh_pack_queue_creation,
+    release_pack_queue_creation,
+    remove_pack_queue_private_artifacts,
+    reserve_pack_queue_creation,
+)
 from rescan import _series_library_dir
 
 
 _SPLIT_RAR_PART_RE = re.compile(r"^(?P<stem>.+)\.(?:rar|r\d{2})$", re.IGNORECASE)
+_IMAGE_EXTENSIONS = frozenset((".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"))
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
 
 
+class _PackQueueReservationLost(RuntimeError):
+    """Raised once queue generation no longer owns its reservation."""
+
+
+class _PackQueueHeartbeat:
+    """Throttled synchronous heartbeat used at every filesystem checkpoint."""
+
+    def __init__(
+        self,
+        db,
+        download_id: str,
+        download_client_id: int | None,
+        protocol: DownloadProtocol | None,
+        owner_token: str,
+    ) -> None:
+        self._db = db
+        self._download_id = download_id
+        self._download_client_id = download_client_id
+        self._protocol: DownloadProtocol | None = protocol
+        self._owner_token = owner_token
+        self._interval = max(0.01, min(30.0, PACK_RESERVATION_SECONDS / 3))
+        self._next_refresh = time.monotonic() + self._interval
+        self._lost = threading.Event()
+
+    def checkpoint(self, *, force: bool = False) -> None:
+        if self._lost.is_set():
+            self._raise_lost()
+        now = time.monotonic()
+        if not force and now < self._next_refresh:
+            return
+        if refresh_pack_queue_creation(
+            self._db,
+            self._download_id,
+            self._owner_token,
+            download_client_id=self._download_client_id,
+            protocol=self._protocol,
+            lease_seconds=PACK_RESERVATION_SECONDS,
+            commit=True,
+        ):
+            self._next_refresh = now + self._interval
+            return
+        self._raise_lost()
+
+    def run(self, operation: Callable[[], _T]) -> _T:
+        """Keep the lease live while one indivisible scan operation blocks."""
+        self.checkpoint(force=True)
+        stop = threading.Event()
+
+        def _keep_alive() -> None:
+            while not stop.wait(self._interval):
+                try:
+                    with get_db() as heartbeat_db:
+                        owned = refresh_pack_queue_creation(
+                            heartbeat_db,
+                            self._download_id,
+                            self._owner_token,
+                            download_client_id=self._download_client_id,
+                            protocol=self._protocol,
+                            lease_seconds=PACK_RESERVATION_SECONDS,
+                            commit=False,
+                        )
+                except sqlite3.Error:
+                    continue
+                if not owned:
+                    self._lost.set()
+                    return
+
+        worker = threading.Thread(
+            target=_keep_alive,
+            name=f"pack-queue-heartbeat-{self._download_id}",
+            daemon=True,
+        )
+        worker.start()
+        try:
+            result = operation()
+        finally:
+            stop.set()
+            worker.join(timeout=max(1.0, self._interval * 2))
+        self.checkpoint(force=True)
+        return result
+
+    def _raise_lost(self) -> None:
+        remove_pack_queue_private_artifacts(
+            self._download_id,
+            self._owner_token,
+            download_client_id=self._download_client_id,
+            protocol=self._protocol,
+        )
+        release_pack_queue_creation(
+            self._db,
+            self._download_id,
+            self._owner_token,
+            download_client_id=self._download_client_id,
+            protocol=self._protocol,
+            commit=True,
+            attaching=True,
+        )
+        raise _PackQueueReservationLost
+
+
+def _return_on_pack_reservation_loss(
+    func: Callable[_P, tuple[int | None, bool]],
+) -> Callable[_P, tuple[int | None, bool]]:
+    @wraps(func)
+    def _wrapped(*args: _P.args, **kwargs: _P.kwargs) -> tuple[int | None, bool]:
+        try:
+            return func(*args, **kwargs)
+        except _PackQueueReservationLost:
+            return None, False
+
+    return _wrapped
+
+
+def _persisted_download_identity(
+    db: sqlite3.Connection,
+    *,
+    series_id: int,
+    download_id: str,
+    torrent_url: str,
+) -> tuple[int | None, DownloadProtocol | None]:
+    """Return one exact grab-time identity, or legacy NULL when unprovable.
+
+    The source URL is the stable acquisition identity shared by ``seen`` and
+    owned rows. Legacy rows and conflicting evidence intentionally remain
+    unbound so later cleanup cannot guess from current routing configuration.
+    """
+    if not torrent_url:
+        return None, None
+    rows = db.execute(
+        """
+        SELECT download_client_id, protocol
+        FROM seen
+        WHERE series_id=? AND torrent_url=?
+          AND (
+              download_id=?
+              OR lower(download_id)=lower(?)
+          )
+        UNION ALL
+        SELECT download_client_id, protocol
+        FROM volumes
+        WHERE series_id=? AND source_url=?
+          AND (
+              download_id=?
+              OR lower(download_id)=lower(?)
+          )
+        UNION ALL
+        SELECT download_client_id, protocol
+        FROM chapters
+        WHERE series_id=? AND torrent_url=?
+          AND (
+              download_id=?
+              OR lower(download_id)=lower(?)
+          )
+        """,
+        (
+            series_id,
+            torrent_url,
+            download_id,
+            download_id,
+            series_id,
+            torrent_url,
+            download_id,
+            download_id,
+            series_id,
+            torrent_url,
+            download_id,
+            download_id,
+        ),
+    ).fetchall()
+    owners = {
+        coerce_download_client_id(row["download_client_id"])
+        for row in rows
+    }
+    protocols: set[DownloadProtocol] = {
+        normalized
+        for row in rows
+        if (normalized := normalize_download_protocol(row["protocol"])) is not None
+    }
+    owner = next(iter(owners)) if len(owners) == 1 else None
+    protocol = next(iter(protocols)) if len(protocols) == 1 else None
+    if owner is None:
+        return None, protocol
+    return owner, protocol or resolve_download_protocol(
+        db,
+        download_client_id=owner,
+        series_id=series_id,
+        download_id=download_id,
+        source_url=torrent_url,
+        allow_client_configuration=False,
+    )
+
+
+def _matching_queue_rows(
+    db: sqlite3.Connection,
+    *,
+    series_id: int,
+    identity: DownloadIdentity,
+) -> list[dict[str, Any]]:
+    """Snapshot queue rows that match one ownership-aware download identity."""
+    rows = db.execute(
+        """
+        SELECT id, status, download_id, download_client_id, download_protocol,
+               torrent_url, series_id
+        FROM import_queue
+        WHERE series_id=? AND download_id IS NOT NULL
+          AND (
+              download_id=?
+              OR lower(download_id)=lower(?)
+          )
+        ORDER BY id
+        """,
+        (series_id, identity.download_id, identity.download_id),
+    ).fetchall()
+    matching: list[dict[str, Any]] = []
+    for row in rows:
+        candidate = dict(row)
+        candidate_owner = coerce_download_client_id(
+            candidate["download_client_id"]
+        )
+        candidate_protocol = normalize_download_protocol(
+            candidate["download_protocol"]
+        )
+        if candidate_protocol is None:
+            candidate_protocol = resolve_download_protocol(
+                db,
+                download_client_id=candidate_owner,
+                series_id=series_id,
+                download_id=str(candidate["download_id"] or ""),
+                source_url=str(candidate["torrent_url"] or ""),
+            )
+        if download_identities_match(
+            identity,
+            DownloadIdentity(
+                candidate_owner,
+                candidate_protocol,
+                str(candidate["download_id"] or ""),
+            ),
+        ):
+            matching.append(candidate)
+    return matching
+
+
+def _has_terminal_download_receipt(
+    db: sqlite3.Connection,
+    *,
+    series_id: int,
+    torrent_url: str,
+    identity: DownloadIdentity,
+) -> bool:
+    """Return whether this exact acquisition identity was already handled."""
+    domain_rows = db.execute(
+        """
+        SELECT download_id, download_client_id, protocol, source_url AS item_url
+        FROM volumes
+        WHERE series_id=? AND status='downloaded' AND download_id IS NOT NULL
+          AND (
+              download_id=?
+              OR lower(download_id)=lower(?)
+          )
+        UNION ALL
+        SELECT download_id, download_client_id, protocol, torrent_url AS item_url
+        FROM chapters
+        WHERE series_id=? AND status='downloaded' AND download_id IS NOT NULL
+          AND (
+              download_id=?
+              OR lower(download_id)=lower(?)
+          )
+        """,
+        (
+            series_id,
+            identity.download_id,
+            identity.download_id,
+            series_id,
+            identity.download_id,
+            identity.download_id,
+        ),
+    ).fetchall()
+    for row in domain_rows:
+        candidate_protocol = normalize_download_protocol(row["protocol"])
+        candidate_owner = coerce_download_client_id(row["download_client_id"])
+        if download_identities_match(
+            identity,
+            DownloadIdentity(
+                candidate_owner,
+                candidate_protocol,
+                str(row["download_id"] or ""),
+            ),
+        ):
+            return True
+
+    history = db.execute(
+        """
+        SELECT download_id, download_client_id, protocol
+        FROM history
+        WHERE series_id=?
+          AND (torrent_url=? OR torrent_url IS NULL)
+          AND event_type IN ('imported','import_skipped')
+          AND download_id IS NOT NULL
+          AND (
+              download_id=?
+              OR lower(download_id)=lower(?)
+          )
+        """,
+        (
+            series_id,
+            torrent_url,
+            identity.download_id,
+            identity.download_id,
+        ),
+    ).fetchall()
+    return any(
+        download_identities_match(
+            identity,
+            DownloadIdentity(
+                coerce_download_client_id(row["download_client_id"]),
+                normalize_download_protocol(row["protocol"]),
+                str(row["download_id"] or ""),
+            ),
+        )
+        for row in history
+    )
+
+
+@_return_on_pack_reservation_loss
 def _queue_import(
     db,
     series_id: int,
@@ -45,6 +395,9 @@ def _queue_import(
     torrent_url: str,
     volume_num: float | None,
     content_path: str,
+    *,
+    download_client_id: int | None = None,
+    protocol: str | None = None,
 ) -> tuple[int | None, bool]:
     """
     Scan completed download files at content_path and create an import_queue entry.
@@ -87,14 +440,36 @@ def _queue_import(
     _rel_is_special = is_special_release(torrent_name or "")
     _rel_pack_type = detect_pack_type(torrent_name or "", _rel_vol_range, _total_vols)
 
+    normalized_protocol = normalize_download_protocol(protocol)
+    if protocol is None:
+        owner_id, normalized_protocol = _persisted_download_identity(
+            db,
+            series_id=series_id,
+            download_id=download_id,
+            torrent_url=torrent_url,
+        )
+    else:
+        owner_id = coerce_download_client_id(download_client_id)
+        normalized_protocol = normalized_protocol or resolve_download_protocol(
+            db,
+            download_client_id=owner_id,
+            series_id=series_id,
+            download_id=download_id,
+            source_url=torrent_url,
+            allow_client_configuration=False,
+        )
+    identity = DownloadIdentity(owner_id, normalized_protocol, download_id)
+
     # Existing queue state is authoritative. In particular, a mixed import can
     # have a durable imported receipt while a sibling file still needs review.
     # Never let terminal evidence hide or rewrite that unresolved work.
-    existing = db.execute(
-        "SELECT id, status FROM import_queue WHERE series_id=? AND download_id=? LIMIT 1",
-        (series_id, download_id),
-    ).fetchone()
-    if existing:
+    existing_rows = _matching_queue_rows(
+        db,
+        series_id=series_id,
+        identity=identity,
+    )
+    if existing_rows:
+        existing = existing_rows[0]
         if existing["status"] in ("pending", "partial"):
             has_review = db.execute(
                 "SELECT 1 FROM import_queue_files WHERE queue_id=? AND status='needs_review'",
@@ -110,44 +485,59 @@ def _queue_import(
     # satisfied the import. The history row is the durable receipt after
     # completed queue rows are removed. Ignore empty IDs: they are not unique
     # download identities.
-    already_done = None
-    if download_id:
-        already_done = db.execute(
-            "SELECT 1 WHERE EXISTS ("
-            " SELECT 1 FROM volumes"
-            " WHERE series_id=? AND download_id=? AND status='downloaded'"
-            ") OR EXISTS ("
-            " SELECT 1 FROM chapters"
-            " WHERE series_id=? AND download_id=? AND status='downloaded'"
-            ") OR EXISTS ("
-            " SELECT 1 FROM history"
-            " WHERE series_id=? AND download_id=?"
-            " AND event_type IN ('imported','import_skipped')"
-            ")",
-            (
-                series_id,
-                download_id,
-                series_id,
-                download_id,
-                series_id,
-                download_id,
-            ),
-        ).fetchone()
-    if already_done:
+    if download_id and _has_terminal_download_receipt(
+        db,
+        series_id=series_id,
+        torrent_url=torrent_url,
+        identity=identity,
+    ):
         return None, False
 
-    cvm: dict = json.loads(s["chapter_vol_map"]) if s["chapter_vol_map"] else {}
+    recover_pack_cleanup_state(max_rows=20)
+    pack_reservation_owner = reserve_pack_queue_creation(
+        db,
+        download_id,
+        download_client_id=owner_id,
+        protocol=normalized_protocol,
+    )
+    if pack_reservation_owner is None:
+        return None, False
+    heartbeat = _PackQueueHeartbeat(
+        db,
+        download_id,
+        owner_id,
+        normalized_protocol,
+        pack_reservation_owner,
+    )
+    canonical_pack_dir, private_pack_dir = pack_queue_creation_paths(
+        download_id,
+        pack_reservation_owner,
+        download_client_id=owner_id,
+        protocol=normalized_protocol,
+    )
+    generated_pack_artifacts = False
+
+    cvm: dict[str, Any] = (
+        json.loads(s["chapter_vol_map"]) if s["chapter_vol_map"] else {}
+    )
 
     if os.path.isdir(content_path):
         src_dir = content_path
         scan_paths = None
 
-        image_leafs = sorted(_find_image_only_chapter_dirs(content_path))
+        image_leafs = sorted(
+            _find_image_only_chapter_dirs(
+                content_path,
+                heartbeat.checkpoint,
+            )
+        )
         if image_leafs:
-            pack_dir = safe_join_under(_get_pack_staging_root(), f"queue-{download_id}")
+            heartbeat.checkpoint(force=True)
+            pack_dir = private_pack_dir
             packed_paths: list[str] = []
             used_names: set[str] = set()
             for leaf in image_leafs:
+                heartbeat.checkpoint()
                 leaf_basename = os.path.basename(leaf.rstrip("/")) or "chapter"
                 base_name = sanitize_filename(leaf_basename)
                 cbz_name = base_name + ".cbz"
@@ -157,7 +547,11 @@ def _queue_import(
                     n += 1
                 used_names.add(cbz_name)
                 cbz_path = os.path.join(pack_dir, cbz_name)
-                size = pack_image_dir_to_cbz(leaf, cbz_path)
+                size = _pack_image_dir_to_cbz(
+                    leaf,
+                    cbz_path,
+                    heartbeat.checkpoint,
+                )
                 if size:
                     packed_paths.append(cbz_path)
                 else:
@@ -175,18 +569,36 @@ def _queue_import(
                     f"into CBZs: {torrent_name}",
                 )
                 scan_paths = packed_paths
+                generated_pack_artifacts = True
         if scan_paths is None:
+            heartbeat.checkpoint(force=True)
             split_payloads = _extract_zip_wrapped_split_rars(
                 content_path,
-                download_id,
+                private_pack_dir,
                 _defer_scan_event,
+                heartbeat,
             )
             if split_payloads is not None:
                 scan_paths = split_payloads
+                generated_pack_artifacts = bool(split_payloads)
     elif os.path.isfile(content_path):
         src_dir = os.path.dirname(content_path)
         scan_paths = [content_path]
     else:
+        remove_pack_queue_private_artifacts(
+            download_id,
+            pack_reservation_owner,
+            download_client_id=owner_id,
+            protocol=normalized_protocol,
+        )
+        release_pack_queue_creation(
+            db,
+            download_id,
+            pack_reservation_owner,
+            download_client_id=owner_id,
+            protocol=normalized_protocol,
+            commit=True,
+        )
         log_event(
             "error",
             f"Import queue: content_path not found: {content_path}",
@@ -198,6 +610,20 @@ def _queue_import(
 
     dst_dir = _series_library_dir(db, series_id)
     if not dst_dir:
+        remove_pack_queue_private_artifacts(
+            download_id,
+            pack_reservation_owner,
+            download_client_id=owner_id,
+            protocol=normalized_protocol,
+        )
+        release_pack_queue_creation(
+            db,
+            download_id,
+            pack_reservation_owner,
+            download_client_id=owner_id,
+            protocol=normalized_protocol,
+            commit=True,
+        )
         log_event(
             "error",
             f"Import queue: cannot resolve destination folder for {torrent_name}",
@@ -208,22 +634,37 @@ def _queue_import(
         return None, False
 
     _chap_stub = db.execute(
-        "SELECT id FROM volumes WHERE series_id=? AND download_id=?"
+        "SELECT id FROM volumes WHERE series_id=? AND download_id IS NOT NULL"
+        " AND download_client_id IS ?"
+        " AND ("
+        "   (?='torrent' AND lower(download_id)=lower(?))"
+        "   OR (COALESCE(?,'')!='torrent' AND download_id=?)"
+        " )"
         " AND status='grabbed' AND pack_type='chapter'",
-        (series_id, download_id),
+        (
+            series_id,
+            owner_id,
+            normalized_protocol,
+            download_id,
+            normalized_protocol,
+            download_id,
+        ),
     ).fetchone()
     _is_chapter_grab = _chap_stub is not None
 
     if scan_paths is None:
         scan_paths = []
         for root, dirs, files in os.walk(src_dir):
+            heartbeat.checkpoint()
             dirs.sort()
             for fname in sorted(files):
+                heartbeat.checkpoint()
                 scan_paths.append(os.path.join(root, fname))
 
     mapped = unmapped = special = 0
     file_rows = []
     for src_path in scan_paths:
+        heartbeat.checkpoint()
         fname = os.path.basename(src_path)
         if os.path.splitext(fname)[1].lower() not in MANGA_EXTENSIONS:
             continue
@@ -252,7 +693,7 @@ def _queue_import(
 
         ext_lower = os.path.splitext(fname)[1].lower()
         if ext_lower in (".cbz", ".zip"):
-            ci = read_comic_info(src_path)
+            ci = heartbeat.run(lambda: read_comic_info(src_path))
             if ci.get("volume") is not None:
                 ci_vol = ci["volume"]
                 if ci_vol != proposed_vol:
@@ -272,20 +713,24 @@ def _queue_import(
                 import rarfile
 
                 with rarfile.RarFile(src_path) as rf:
-                    ci_name = next(
-                        (
-                            n
-                            for n in rf.namelist()
-                            if n.lower().endswith("comicinfo.xml")
-                        ),
-                        None,
+                    ci_name = heartbeat.run(
+                        lambda: next(
+                            (
+                                name
+                                for name in rf.namelist()
+                                if name.lower().endswith("comicinfo.xml")
+                            ),
+                            None,
+                        )
                     )
                     if ci_name:
                         from defusedxml.ElementTree import (
                             fromstring as _safe_xml_fromstring,
                         )
 
-                        cbr_root = _safe_xml_fromstring(rf.read(ci_name))
+                        cbr_root = _safe_xml_fromstring(
+                            heartbeat.run(lambda: rf.read(ci_name))
+                        )
 
                         def _cbr_text(tag: str):
                             el = cbr_root.find(tag)
@@ -314,6 +759,8 @@ def _queue_import(
                                 proposed_chap = ci_num
             except ImportError:
                 pass
+            except _PackQueueReservationLost:
+                raise
             except Exception:
                 pass
 
@@ -424,6 +871,20 @@ def _queue_import(
         )
 
     if mapped == 0 and unmapped == 0:
+        remove_pack_queue_private_artifacts(
+            download_id,
+            pack_reservation_owner,
+            download_client_id=owner_id,
+            protocol=normalized_protocol,
+        )
+        release_pack_queue_creation(
+            db,
+            download_id,
+            pack_reservation_owner,
+            download_client_id=owner_id,
+            protocol=normalized_protocol,
+            commit=True,
+        )
         _defer_scan_event(
             "import",
             f"No manga files found in {src_dir} — skipping: {torrent_name}",
@@ -432,10 +893,102 @@ def _queue_import(
         _replay_scan_events()
         return None, False
 
+    heartbeat.checkpoint(force=True)
+    if not begin_pack_queue_attachment(
+        db,
+        download_id,
+        pack_reservation_owner,
+        download_client_id=owner_id,
+        protocol=normalized_protocol,
+    ):
+        remove_pack_queue_private_artifacts(
+            download_id,
+            pack_reservation_owner,
+            download_client_id=owner_id,
+            protocol=normalized_protocol,
+        )
+        release_pack_queue_creation(
+            db,
+            download_id,
+            pack_reservation_owner,
+            download_client_id=owner_id,
+            protocol=normalized_protocol,
+            commit=True,
+            attaching=True,
+        )
+        return None, False
+
+    if generated_pack_artifacts:
+        try:
+            durably_attach_pack_queue_directory(
+                download_id,
+                pack_reservation_owner,
+                download_client_id=owner_id,
+                protocol=normalized_protocol,
+                checkpoint=heartbeat.checkpoint,
+            )
+        except OSError as exc:
+            private_exists = os.path.lexists(private_pack_dir)
+            canonical_exists = os.path.lexists(canonical_pack_dir)
+            if private_exists:
+                remove_pack_queue_private_artifacts(
+                    download_id,
+                    pack_reservation_owner,
+                    download_client_id=owner_id,
+                    protocol=normalized_protocol,
+                )
+            if private_exists or not canonical_exists:
+                release_pack_queue_creation(
+                    db,
+                    download_id,
+                    pack_reservation_owner,
+                    download_client_id=owner_id,
+                    protocol=normalized_protocol,
+                    commit=True,
+                    attaching=True,
+                )
+            log_event(
+                "error",
+                f"Import queue: could not publish generated pack for "
+                f"{torrent_name}: {exc}",
+                series_id,
+                db=db,
+                dedup=True,
+            )
+            return None, False
+        file_rows = _canonicalize_pack_file_rows(
+            file_rows,
+            private_pack_dir,
+            canonical_pack_dir,
+        )
+
+    heartbeat.checkpoint(force=True)
+    if not refresh_pack_queue_creation(
+        db,
+        download_id,
+        pack_reservation_owner,
+        download_client_id=owner_id,
+        protocol=normalized_protocol,
+        lease_seconds=PACK_RESERVATION_SECONDS,
+        commit=False,
+    ):
+        db.rollback()
+        return None, False
+
     cur = db.execute(
-        "INSERT INTO import_queue(series_id, download_id, torrent_name, torrent_url, volume_num, src_dir, status)"
-        " VALUES(?,?,?,?,?,?,'pending')",
-        (series_id, download_id, torrent_name, torrent_url, volume_num, src_dir),
+        "INSERT INTO import_queue(series_id, download_id, download_client_id,"
+        " download_protocol, torrent_name, torrent_url, volume_num, src_dir,"
+        " status) VALUES(?,?,?,?,?,?,?,?,'pending')",
+        (
+            series_id,
+            download_id,
+            owner_id,
+            normalized_protocol,
+            torrent_name,
+            torrent_url,
+            volume_num,
+            src_dir,
+        ),
     )
     queue_id = cur.lastrowid
 
@@ -447,6 +1000,15 @@ def _queue_import(
         " proposed_import_kind, proposed_special_title, file_type, status)"
         " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [(queue_id, *row) for row in file_rows],
+    )
+    release_pack_queue_creation(
+        db,
+        download_id,
+        pack_reservation_owner,
+        download_client_id=owner_id,
+        protocol=normalized_protocol,
+        commit=False,
+        attaching=True,
     )
 
     needs_review = unmapped > 0 or special > 0
@@ -466,9 +1028,82 @@ def _queue_import(
     return queue_id, needs_review
 
 
-def _find_image_only_chapter_dirs(content_path: str) -> list[str]:
+def _canonicalize_pack_file_rows(
+    file_rows: list[tuple[Any, ...]],
+    private_pack_dir: str,
+    canonical_pack_dir: str,
+) -> list[tuple[Any, ...]]:
+    canonical_rows: list[tuple[Any, ...]] = []
+    private_abs = os.path.abspath(private_pack_dir)
+    for row in file_rows:
+        source_abs = os.path.abspath(str(row[1]))
+        if os.path.commonpath((private_abs, source_abs)) != private_abs:
+            canonical_rows.append(row)
+            continue
+        relative = os.path.relpath(source_abs, private_abs)
+        canonical_source = os.path.join(canonical_pack_dir, relative)
+        canonical_rows.append((row[0], canonical_source, *row[2:]))
+    return canonical_rows
+
+
+def _pack_image_dir_to_cbz(
+    src_dir: str,
+    dst_cbz: str,
+    checkpoint: Callable[[], None],
+) -> int | None:
+    """Pack image pages cooperatively so reservation loss stops private writes."""
+    try:
+        pages: list[str] = []
+        for name in sorted(os.listdir(src_dir)):
+            checkpoint()
+            source = os.path.join(src_dir, name)
+            try:
+                info = os.lstat(source)
+            except OSError:
+                continue
+            if (
+                os.path.splitext(name)[1].lower() in _IMAGE_EXTENSIONS
+                and stat.S_ISREG(info.st_mode)
+            ):
+                pages.append(name)
+        if not pages:
+            return None
+
+        os.makedirs(os.path.dirname(dst_cbz), exist_ok=True)
+        with zipfile.ZipFile(dst_cbz, "w", zipfile.ZIP_STORED) as archive:
+            for name in pages:
+                checkpoint()
+                source = os.path.join(src_dir, name)
+                with open(source, "rb") as source_file:
+                    with archive.open(name, "w") as destination:
+                        while True:
+                            chunk = source_file.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            checkpoint()
+                            destination.write(chunk)
+        checkpoint()
+        return os.path.getsize(dst_cbz)
+    except _PackQueueReservationLost:
+        try:
+            os.remove(dst_cbz)
+        except FileNotFoundError:
+            pass
+        raise
+    except Exception:
+        try:
+            os.remove(dst_cbz)
+        except FileNotFoundError:
+            pass
+        return None
+
+
+def _find_image_only_chapter_dirs(
+    content_path: str,
+    checkpoint: Callable[[], None],
+) -> list[str]:
     """Find leaf directories containing only image files."""
-    result = []
+    result: list[str] = []
 
     def _is_image_only_dir(dirpath: str) -> bool:
         try:
@@ -476,21 +1111,16 @@ def _find_image_only_chapter_dirs(content_path: str) -> list[str]:
             if not files:
                 return False
             for f in files:
+                checkpoint()
                 ext = os.path.splitext(f)[1].lower()
-                if ext and ext not in {
-                    ".jpg",
-                    ".jpeg",
-                    ".png",
-                    ".webp",
-                    ".gif",
-                    ".bmp",
-                }:
+                if ext and ext not in _IMAGE_EXTENSIONS:
                     return False
             return True
         except OSError:
             return False
 
     for root, dirs, files in os.walk(content_path):
+        checkpoint()
         is_leaf = not dirs
         if is_leaf and _is_image_only_dir(root):
             result.append(root)
@@ -498,7 +1128,12 @@ def _find_image_only_chapter_dirs(content_path: str) -> list[str]:
     return result
 
 
-def _extract_zip_wrapped_split_rars(content_path: str, download_id: str, defer_event) -> list[str] | None:
+def _extract_zip_wrapped_split_rars(
+    content_path: str,
+    pack_dir: str,
+    defer_event,
+    heartbeat: _PackQueueHeartbeat,
+) -> list[str] | None:
     """Extract scene-style ZIP wrapped split RAR payloads.
 
     Some DDL/tracker releases contain files like ``abc1.zip``/``abc2.zip``.
@@ -507,19 +1142,23 @@ def _extract_zip_wrapped_split_rars(content_path: str, download_id: str, defer_e
     outer ZIPs as manga archives misclassifies opaque scene filenames as
     chapters, so queue the extracted payload instead.
     """
-    zip_paths = [
-        os.path.join(content_path, name)
-        for name in sorted(os.listdir(content_path))
-        if name.lower().endswith(".zip")
-    ]
+    checkpoint = heartbeat.checkpoint
+    checkpoint()
+    zip_paths: list[str] = []
+    for name in sorted(os.listdir(content_path)):
+        checkpoint()
+        if name.lower().endswith(".zip"):
+            zip_paths.append(os.path.join(content_path, name))
     if len(zip_paths) < 2:
         return None
 
     groups: dict[str, list[tuple[str, str]]] = {}
     for zip_path in zip_paths:
+        checkpoint()
         try:
             with zipfile.ZipFile(zip_path) as zf:
                 for info in zf.infolist():
+                    checkpoint()
                     if info.is_dir():
                         continue
                     member_name = os.path.basename(info.filename)
@@ -529,6 +1168,8 @@ def _extract_zip_wrapped_split_rars(content_path: str, download_id: str, defer_e
                     groups.setdefault(m.group("stem").lower(), []).append(
                         (zip_path, member_name)
                     )
+        except _PackQueueReservationLost:
+            raise
         except zipfile.BadZipFile:
             continue
 
@@ -540,18 +1181,22 @@ def _extract_zip_wrapped_split_rars(content_path: str, download_id: str, defer_e
     if not selected:
         return None
 
-    pack_dir = safe_join_under(_get_pack_staging_root(), f"queue-{download_id}")
     split_root = os.path.join(pack_dir, "split-rar")
-    shutil.rmtree(split_root, ignore_errors=True)
+    if os.path.lexists(split_root):
+        checkpoint()
+        shutil.rmtree(split_root)
+        checkpoint()
     os.makedirs(split_root, exist_ok=True)
 
     payloads: list[str] = []
     for idx, parts in enumerate(selected, start=1):
+        checkpoint()
         group_dir = os.path.join(split_root, f"group-{idx}")
         out_dir = os.path.join(group_dir, "out")
         os.makedirs(group_dir, exist_ok=True)
         rar_path = None
         for zip_path, member_name in parts:
+            checkpoint()
             try:
                 with zipfile.ZipFile(zip_path) as zf:
                     source_member = next(
@@ -560,9 +1205,16 @@ def _extract_zip_wrapped_split_rars(content_path: str, download_id: str, defer_e
                     )
                     target = os.path.join(group_dir, member_name)
                     with zf.open(source_member) as src, open(target, "wb") as dst:
-                        shutil.copyfileobj(src, dst)
+                        while True:
+                            chunk = src.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            checkpoint()
+                            dst.write(chunk)
                     if member_name.lower().endswith(".rar"):
                         rar_path = target
+            except _PackQueueReservationLost:
+                raise
             except Exception as exc:
                 defer_event(
                     "error",
@@ -580,13 +1232,18 @@ def _extract_zip_wrapped_split_rars(content_path: str, download_id: str, defer_e
             archive_cmd = ["unrar", "x", "-o+", rar_path, out_dir + os.sep]
 
         try:
-            result = subprocess.run(
-                archive_cmd,
-                check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
+            checkpoint()
+            result = heartbeat.run(
+                lambda: subprocess.run(
+                    archive_cmd,
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
             )
+        except _PackQueueReservationLost:
+            raise
         except Exception as exc:
             defer_event(
                 "error",
@@ -606,8 +1263,10 @@ def _extract_zip_wrapped_split_rars(content_path: str, download_id: str, defer_e
 
         group_payloads: list[str] = []
         for root, dirs, files in os.walk(out_dir):
+            checkpoint()
             dirs.sort()
             for fname in sorted(files):
+                checkpoint()
                 ext = os.path.splitext(fname)[1].lower()
                 if ext in MANGA_EXTENSIONS:
                     group_payloads.append(os.path.join(root, fname))
@@ -629,17 +1288,3 @@ def _extract_zip_wrapped_split_rars(content_path: str, download_id: str, defer_e
             f"Unpacked {len(payloads)} ZIP-wrapped split RAR payload(s)",
         )
     return payloads
-
-
-def _get_pack_staging_root() -> str:
-    """Get the staging root for auto-packed image dirs.
-
-    Reads from import_pipeline at runtime so tests can monkeypatch
-    import_pipeline.PACK_STAGING_ROOT.
-    """
-    try:
-        from import_pipeline import PACK_STAGING_ROOT as _psr
-
-        return _psr
-    except ImportError:
-        return "/config/mangarr-image-pack"

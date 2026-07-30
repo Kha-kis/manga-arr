@@ -9,12 +9,18 @@ import shutil
 import sqlite3
 from collections import defaultdict
 from datetime import datetime
-from typing import Literal, TypedDict
+from typing import Literal, TypedDict, cast
 
 import httpx
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from download_identity import (
+    DownloadIdentity,
+    coerce_download_client_id,
+    download_identities_match,
+    normalize_download_protocol,
+)
 from events import add_history
 from routers._templates import templates
 from shared import (
@@ -28,6 +34,7 @@ from shared import (
     vol_num_to_search,
     with_flash,
 )
+from volume_file_deletion import delete_volume_file as run_volume_file_deletion
 
 router = APIRouter()
 
@@ -43,6 +50,80 @@ _LIBRARY_SORT_DEFAULT = "title"
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
+
+
+def _persisted_volume_download_identity(
+    row: sqlite3.Row,
+) -> DownloadIdentity | None:
+    download_id = str(row["download_id"] or "")
+    if not download_id:
+        return None
+    return DownloadIdentity(
+        coerce_download_client_id(row["download_client_id"]),
+        normalize_download_protocol(row["protocol"]),
+        download_id,
+    )
+
+
+def _same_owned_download(
+    row: sqlite3.Row,
+    target: DownloadIdentity,
+) -> bool:
+    candidate = _persisted_volume_download_identity(row)
+    return bool(
+        candidate is not None
+        and candidate.download_client_id == target.download_client_id
+        and download_identities_match(candidate, target)
+    )
+
+
+def _clear_volume_seen_identity(
+    db: sqlite3.Connection,
+    row: sqlite3.Row,
+    volume_id: int,
+) -> None:
+    """Delete only seen rows owned by the selected volume's downloader."""
+    if row["source_url"]:
+        db.execute(
+            "DELETE FROM seen WHERE torrent_url=?",
+            (row["source_url"],),
+        )
+    identity = _persisted_volume_download_identity(row)
+    if identity is None:
+        return
+    siblings = db.execute(
+        "SELECT * FROM volumes"
+        " WHERE id!=? AND status='grabbed' AND download_id IS NOT NULL"
+        " AND lower(download_id)=lower(?)",
+        (volume_id, identity.download_id),
+    ).fetchall()
+    if any(_same_owned_download(sibling, identity) for sibling in siblings):
+        return
+    seen_rows = db.execute(
+        "SELECT * FROM seen"
+        " WHERE download_id IS NOT NULL AND lower(download_id)=lower(?)",
+        (identity.download_id,),
+    ).fetchall()
+    db.executemany(
+        "DELETE FROM seen WHERE torrent_url=?",
+        (
+            (seen_row["torrent_url"],)
+            for seen_row in seen_rows
+            if _same_owned_download(seen_row, identity)
+        ),
+    )
+
+
+def _clear_chapter_download_owner(
+    db: sqlite3.Connection,
+    series_id: int,
+    volume_id: int,
+) -> None:
+    db.execute(
+        "UPDATE chapters SET download_client_id=NULL"
+        " WHERE series_id=? AND volume_id=? AND monitored=1",
+        (series_id, volume_id),
+    )
 
 
 def _chapter_map_to_ranges(chapter_vol_map_json: str | None) -> str:
@@ -1643,11 +1724,23 @@ def _prepare_hard_delete_series(
     root_path = str(s["root_path"] or "")
     cover_path = f"/config/covers/{series_id}.jpg"
     import_active = db.execute(
-        "SELECT 1 FROM import_queue"
-        " WHERE series_id=?"
-        " AND (status='importing' OR lease_owner IS NOT NULL)"
+        "SELECT 1"
+        " WHERE EXISTS ("
+        "   SELECT 1 FROM import_queue"
+        "   WHERE series_id=?"
+        "   AND (status='importing' OR lease_owner IS NOT NULL"
+        "   OR EXISTS ("
+        "     SELECT 1 FROM import_publications publication"
+        "     WHERE publication.queue_id=import_queue.id"
+        "       AND publication.state IN ('staging','prepared','publishing',"
+        "           'published','db_committed','cleaning')"
+        "   ))"
+        " ) OR EXISTS ("
+        "   SELECT 1 FROM volume_file_deletions deletion"
+        "   WHERE deletion.series_id=? AND deletion.state='active'"
+        " )"
         " LIMIT 1",
-        (series_id,),
+        (series_id, series_id),
     ).fetchone()
     if import_active is not None:
         return {
@@ -2779,26 +2872,17 @@ async def mark_volume_wanted(request: Request, series_id: int, volume_id: int):
 
     with get_db() as db:
         row = db.execute(
-            "SELECT source_url, download_id, volume_num FROM volumes WHERE id=? AND series_id=?",
+            "SELECT * FROM volumes WHERE id=? AND series_id=?",
             (volume_id, series_id),
         ).fetchone()
         s = db.execute("SELECT title FROM series WHERE id=?", (series_id,)).fetchone()
         if row:
-            if row["source_url"]:
-                db.execute("DELETE FROM seen WHERE torrent_url=?", (row["source_url"],))
-            if row["download_id"]:
-                others = db.execute(
-                    "SELECT COUNT(*) FROM volumes WHERE download_id=? AND status='grabbed' AND id != ?",
-                    (row["download_id"], volume_id),
-                ).fetchone()[0]
-                if others == 0:
-                    db.execute(
-                        "DELETE FROM seen WHERE download_id=?", (row["download_id"],)
-                    )
+            _clear_volume_seen_identity(db, row, volume_id)
         db.execute(
             "UPDATE volumes SET status='wanted', grabbed_at=NULL, imported_at=NULL,"
             " import_path=NULL, source_url=NULL, download_id=NULL, torrent_name=NULL,"
-            " indexer=NULL, protocol=NULL, client=NULL, release_group=NULL,"
+            " indexer=NULL, protocol=NULL, client=NULL, download_client_id=NULL,"
+            " release_group=NULL,"
             " size_bytes=NULL, quality=NULL WHERE id=? AND series_id=?",
             (volume_id, series_id),
         )
@@ -2816,6 +2900,7 @@ async def mark_volume_wanted(request: Request, series_id: int, volume_id: int):
             download_id=None,
             release_group=None,
         )
+        _clear_chapter_download_owner(db, series_id, volume_id)
         if row and s:
             vol_label = (
                 f"Vol {vol_num_to_display(row['volume_num'])}"
@@ -2832,13 +2917,36 @@ async def mark_volume_wanted(request: Request, series_id: int, volume_id: int):
 @router.post("/series/{series_id}/volumes/{volume_id}/reset-to-wanted")
 async def reset_volume_to_wanted(series_id: int, volume_id: int):
     with get_db() as db:
-        db.execute(
-            "UPDATE volumes SET status='wanted', download_id=NULL, grabbed_at=NULL,"
-            " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
-            " client=NULL, release_group=NULL, import_path=NULL"
+        row = db.execute(
+            "SELECT * FROM volumes"
             " WHERE id=? AND series_id=? AND status='grabbed'",
             (volume_id, series_id),
-        )
+        ).fetchone()
+        if row is not None:
+            _clear_volume_seen_identity(db, row, volume_id)
+            db.execute(
+                "UPDATE volumes SET status='wanted', download_id=NULL, grabbed_at=NULL,"
+                " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
+                " client=NULL, download_client_id=NULL, release_group=NULL,"
+                " import_path=NULL"
+                " WHERE id=? AND series_id=? AND status='grabbed'",
+                (volume_id, series_id),
+            )
+            cascade_chapters(
+                db,
+                series_id,
+                [volume_id],
+                "wanted",
+                grabbed_at=None,
+                torrent_name=None,
+                torrent_url=None,
+                indexer=None,
+                protocol=None,
+                client=None,
+                download_id=None,
+                release_group=None,
+            )
+            _clear_chapter_download_owner(db, series_id, volume_id)
     return RedirectResponse(f"/series/{series_id}", status_code=303)
 
 
@@ -2862,76 +2970,85 @@ async def toggle_volume_monitor(request: Request, series_id: int, volume_id: int
 
 @router.post("/series/{series_id}/volumes/{volume_id}/delete-file")
 async def delete_volume_file(request: Request, series_id: int, volume_id: int):
-    import main as _m
-
-    with get_db() as db:
-        v = db.execute(
-            "SELECT * FROM volumes WHERE id=? AND series_id=?", (volume_id, series_id)
-        ).fetchone()
-        s = db.execute("SELECT title FROM series WHERE id=?", (series_id,)).fetchone()
-        if not v:
-            return RedirectResponse(f"/series/{series_id}", status_code=303)
-
-        deleted = False
-        if v["import_path"]:
-            path = v["import_path"]
-            if os.path.isfile(path):
-                try:
-                    os.remove(path)
-                    deleted = True
-                except Exception as e:
-                    _m.log_event("error", f"File delete failed: {e}", series_id)
-            elif os.path.isdir(path) and v["volume_num"]:
-                for fname in os.listdir(path):
-                    fvol = _m.extract_volume_num(fname)
-                    if fvol is not None and abs(fvol - v["volume_num"]) < 0.01:
-                        try:
-                            os.remove(os.path.join(path, fname))
-                            deleted = True
-                        except Exception as e:
-                            _m.log_event("error", f"File delete failed: {e}", series_id)
-                        break
-
-        db.execute(
-            "UPDATE volumes SET status='wanted', import_path=NULL, download_id=NULL, "
-            "grabbed_at=NULL, source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
-            " client=NULL, release_group=NULL WHERE id=?",
-            (volume_id,),
+    result = await asyncio.to_thread(
+        run_volume_file_deletion,
+        series_id,
+        volume_id,
+    )
+    if result.status == "not_found":
+        return RedirectResponse(f"/series/{series_id}", status_code=303)
+    if result.status == "import_in_progress":
+        message = (
+            "Import is in progress; wait for it to finish before deleting this file"
         )
-        cascade_chapters(
-            db,
-            series_id,
-            [volume_id],
-            "wanted",
-            grabbed_at=None,
-            torrent_name=None,
-            torrent_url=None,
-            indexer=None,
-            protocol=None,
-            client=None,
-            download_id=None,
-            release_group=None,
+        if request.headers.get("HX-Request") == "true":
+            ctx = cast(
+                dict[str, object],
+                await _get_volume_row_ctx(series_id, volume_id),
+            )
+            response = templates.TemplateResponse(
+                request,
+                "partials/volume_row.html",
+                ctx,
+            )
+            response.headers["HX-Trigger"] = json.dumps(
+                {"showToast": {"msg": message, "type": "warning"}}
+            )
+            return response
+        return RedirectResponse(
+            with_flash(f"/series/{series_id}", message, "warning"),
+            status_code=303,
         )
-        from shared import build_volume_label
-
-        vol_label = build_volume_label(v["volume_num"], None, None)
-        _m.add_history(
-            db,
-            "file_deleted",
-            series_id,
-            s["title"] if s else "",
-            vol_label,
-            source_title=v["torrent_name"] or "",
-            data={"deleted": deleted, "path": v["import_path"]},
+    if result.status == "pending":
+        message = (
+            "File deletion is pending recovery; imports remain blocked until "
+            "cleanup completes"
         )
-        msg = (
-            f"Deleted file for {vol_label}"
-            if deleted
-            else f"Reset {vol_label} to wanted (file not found)"
+        if result.diagnostic:
+            message = f"{message}: {result.diagnostic}"
+        if request.headers.get("HX-Request") == "true":
+            ctx = cast(
+                dict[str, object],
+                await _get_volume_row_ctx(series_id, volume_id),
+            )
+            response = templates.TemplateResponse(
+                request,
+                "partials/volume_row.html",
+                ctx,
+            )
+            response.headers["HX-Trigger"] = json.dumps(
+                {"showToast": {"msg": message, "type": "warning"}}
+            )
+            return response
+        return RedirectResponse(
+            with_flash(f"/series/{series_id}", message, "warning"),
+            status_code=303,
         )
-        _m.log_event("delete", msg, series_id)
+    if result.status in {"changed", "unsafe"}:
+        message = result.diagnostic or "File deletion could not be prepared safely"
+        if request.headers.get("HX-Request") == "true":
+            ctx = cast(
+                dict[str, object],
+                await _get_volume_row_ctx(series_id, volume_id),
+            )
+            response = templates.TemplateResponse(
+                request,
+                "partials/volume_row.html",
+                ctx,
+            )
+            response.headers["HX-Trigger"] = json.dumps(
+                {"showToast": {"msg": message, "type": "warning"}}
+            )
+            return response
+        return RedirectResponse(
+            with_flash(f"/series/{series_id}", message, "warning"),
+            status_code=303,
+        )
     if request.headers.get("HX-Request") == "true":
-        ctx = await _get_volume_row_ctx(series_id, volume_id)
+        ctx = cast(
+            dict[str, object],
+            await _get_volume_row_ctx(series_id, volume_id),
+        )
         return templates.TemplateResponse(request, "partials/volume_row.html", ctx)
     return RedirectResponse(f"/series/{series_id}", status_code=303)
 

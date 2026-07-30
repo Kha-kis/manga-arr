@@ -1,6 +1,9 @@
 """Notification Connections — multi-service notification system (Sonarr parity)."""
 
 import json
+from dataclasses import dataclass
+from typing import Literal, cast
+
 import httpx
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -854,7 +857,123 @@ _VALID_NOTIFICATION_EVENTS = frozenset(
 )
 
 
-async def fire_notifications(event: str, message: str, embed: dict | None = None):
+class NotificationDeliveryError(RuntimeError):
+    """Raised after fanout when one or more enabled providers failed."""
+
+    def __init__(self, failed_providers: tuple[str, ...]) -> None:
+        self.failed_providers = failed_providers
+        providers = ", ".join(failed_providers)
+        super().__init__(
+            f"notification delivery failed for {len(failed_providers)} "
+            f"enabled provider(s): {providers}"
+        )
+
+
+NotificationDeliveryOutcome = Literal[
+    "delivered",
+    "failed",
+    "connection_deleted",
+    "connection_disabled",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class NotificationConnectionDelivery:
+    """Result of targeting one current notification connection by ID."""
+
+    connection_id: int
+    provider: str
+    outcome: NotificationDeliveryOutcome
+    error: str = ""
+
+
+async def _deliver_connection(
+    connection: dict[str, object],
+    message: str,
+    *,
+    event: str,
+    embed: dict[str, object] | None,
+) -> NotificationConnectionDelivery:
+    connection_id = int(cast(int | str, connection["id"]))
+    provider = f"{connection['type']} — {connection['name']}"
+    try:
+        ok, detail = await send_connection(
+            connection,
+            message,
+            event=event,
+            embed=embed,
+        )
+        error = "" if ok else "provider_rejected"
+    except Exception as exc:
+        ok = False
+        detail = type(exc).__name__
+        error = type(exc).__name__
+    if not ok:
+        try:
+            import main as _m
+
+            _m.log_event("error", f"Notification failed [{provider}]: {detail}")
+        except Exception:
+            pass
+    return NotificationConnectionDelivery(
+        connection_id=connection_id,
+        provider=provider,
+        outcome="delivered" if ok else "failed",
+        error=error,
+    )
+
+
+async def deliver_notification_connection(
+    connection_id: int,
+    event: str,
+    message: str,
+    embed: dict[str, object] | None = None,
+) -> NotificationConnectionDelivery:
+    """Deliver to one current connection, or settle deleted/disabled targets.
+
+    Durable publication work snapshots only an ID and display metadata. Secrets
+    and mutable provider settings are loaded here at delivery time.
+    """
+    if event not in _VALID_NOTIFICATION_EVENTS:
+        return NotificationConnectionDelivery(
+            connection_id=connection_id,
+            provider=f"connection {connection_id}",
+            outcome="failed",
+            error="invalid_event",
+        )
+    with get_db() as db:
+        row = db.execute(
+            "SELECT * FROM notification_connections WHERE id=?",
+            (connection_id,),
+        ).fetchone()
+    if row is None:
+        return NotificationConnectionDelivery(
+            connection_id=connection_id,
+            provider=f"connection {connection_id}",
+            outcome="connection_deleted",
+        )
+
+    connection = dict(row)
+    provider = f"{connection['type']} — {connection['name']}"
+    if not bool(connection["enabled"]) or not bool(connection[event]):
+        return NotificationConnectionDelivery(
+            connection_id=connection_id,
+            provider=provider,
+            outcome="connection_disabled",
+        )
+    return await _deliver_connection(
+        connection,
+        message,
+        event=event,
+        embed=embed,
+    )
+
+
+async def fire_notifications(
+    event: str,
+    message: str,
+    embed: dict[str, object] | None = None,
+) -> bool:
     """
     Send notifications to all enabled connections subscribed to the given event.
     event: 'on_grab' | 'on_download' | 'on_upgrade' | 'on_series_add' |
@@ -874,7 +993,7 @@ async def fire_notifications(event: str, message: str, embed: dict | None = None
             )
         except Exception:
             pass
-        return
+        return True
     with get_db() as db:
         connections = db.execute(
             f"SELECT * FROM notification_connections WHERE enabled=1 AND {event}=1"
@@ -882,18 +1001,21 @@ async def fire_notifications(event: str, message: str, embed: dict | None = None
 
     import asyncio
 
-    async def _send_and_log(c):
-        ok, msg = await send_connection(c, message, event=event, embed=embed)
-        if not ok:
-            try:
-                import main as _m
-
-                _m.log_event(
-                    "error", f"Notification failed [{c['type']} — {c['name']}]: {msg}"
-                )
-            except Exception:
-                pass
-
-    tasks = [_send_and_log(dict(c)) for c in connections]
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+    tasks = [
+        _deliver_connection(
+            dict(connection),
+            message,
+            event=event,
+            embed=embed,
+        )
+        for connection in connections
+    ]
+    if not tasks:
+        return True
+    results = await asyncio.gather(*tasks)
+    failures = tuple(
+        result.provider for result in results if result.outcome == "failed"
+    )
+    if failures:
+        raise NotificationDeliveryError(failures)
+    return True

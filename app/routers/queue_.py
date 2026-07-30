@@ -10,6 +10,17 @@ import httpx
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
+from clients import load_bound_download_client
+from download_identity import (
+    DownloadIdentity,
+    DownloadProtocol,
+    coerce_download_client_id,
+    download_identities_match,
+    normalize_download_id,
+    normalize_download_protocol,
+    protocol_for_client_type,
+    resolve_download_protocol,
+)
 from routers._templates import templates
 from shared import (
     cascade_chapters,
@@ -43,33 +54,70 @@ def _queue_status_context() -> dict[str, dict[str, object]]:
     that separately from 'warming_up' so operators can tell the cache
     isn't broken, there's simply nothing to poll.
     """
-    from routers.download_clients import get_client_for_protocol as _gcp
-
     with get_db() as _db:
-        qc = _gcp(_db, "torrent")
-        sc = _gcp(_db, "nzb")
+        configured: dict[DownloadProtocol, list[int]] = {
+            "torrent": [],
+            "nzb": [],
+        }
+        for row in _db.execute(
+            "SELECT id,type FROM download_clients"
+            " WHERE enabled=1 AND type IN ('qbittorrent','sabnzbd')"
+        ).fetchall():
+            protocol = protocol_for_client_type(row["type"])
+            if protocol is not None:
+                configured[protocol].append(int(row["id"]))
 
-    def _one(snap, configured: bool) -> dict[str, object]:
-        if not configured:
+    def _one(
+        protocol: DownloadProtocol,
+        legacy_snapshot: _sc.DownloadClientSnapshot | None,
+    ) -> dict[str, object]:
+        owner_ids = configured[protocol]
+        if not owner_ids:
             return {"label": "disabled", "age_seconds": None, "error": None}
-        label = _sc.DOWNLOAD_STATUS_CACHE.freshness_label(snap)
-        if snap is None or snap.last_success_at is None:
-            age = None
-        else:
-            from datetime import datetime, timezone
+        concrete = _sc.DOWNLOAD_STATUS_CACHE.snapshots_for_protocol(protocol)
+        snapshots = [concrete.get(owner_id) for owner_id in owner_ids]
+        if not concrete and len(owner_ids) == 1 and legacy_snapshot is not None:
+            snapshots = [legacy_snapshot]
+        labels = [
+            _sc.DOWNLOAD_STATUS_CACHE.freshness_label(snapshot)
+            for snapshot in snapshots
+        ]
+        priority = {
+            "live": 0,
+            "stale": 1,
+            "warming_up": 2,
+            "unavailable": 3,
+        }
+        label = max(labels, key=priority.__getitem__)
+        from datetime import datetime, timezone
 
-            age = int(
-                (datetime.now(timezone.utc) - snap.last_success_at).total_seconds()
+        ages = [
+            int(
+                (datetime.now(timezone.utc) - snapshot.last_success_at).total_seconds()
             )
+            for snapshot in snapshots
+            if snapshot is not None and snapshot.last_success_at is not None
+        ]
+        errors = [
+            snapshot.error
+            for snapshot in snapshots
+            if snapshot is not None and snapshot.error
+        ]
         return {
             "label": label,
-            "age_seconds": age,
-            "error": snap.error if snap else None,
+            "age_seconds": max(ages) if ages else None,
+            "error": "; ".join(errors)[:240] or None,
         }
 
     return {
-        "qbit": _one(_sc.DOWNLOAD_STATUS_CACHE.snapshot_qbit(), bool(qc)),
-        "sab": _one(_sc.DOWNLOAD_STATUS_CACHE.snapshot_sab(), bool(sc)),
+        "qbit": _one(
+            "torrent",
+            _sc.DOWNLOAD_STATUS_CACHE.snapshot_qbit(),
+        ),
+        "sab": _one(
+            "nzb",
+            _sc.DOWNLOAD_STATUS_CACHE.snapshot_sab(),
+        ),
     }
 
 
@@ -77,9 +125,19 @@ router = APIRouter()
 
 
 class _DownloadIdentity(NamedTuple):
+    download_client_id: int | None
+    protocol: DownloadProtocol | None
     persisted_id: str
     external_id: str
     client_kind: Literal["qbit", "sab"]
+
+    @property
+    def shared(self) -> DownloadIdentity:
+        return DownloadIdentity(
+            self.download_client_id,
+            self.protocol,
+            self.persisted_id,
+        )
 
 
 class _ManualDownloadCleanup(NamedTuple):
@@ -94,132 +152,217 @@ def _download_client_kind(
     client: object = None,
     protocol: object = None,
 ) -> Literal["qbit", "sab"]:
-    """Classify a persisted identity without changing SAB's case-sensitive ID."""
-    identifier = download_id.lower() if isinstance(download_id, str) else ""
-    client_name = client.lower() if isinstance(client, str) else ""
-    protocol_name = protocol.lower() if isinstance(protocol, str) else ""
-    if client_name in ("sab", "sabnzbd"):
+    """Classify display-only legacy evidence without rewriting SAB IDs."""
+    resolved = normalize_download_protocol(protocol) or protocol_for_client_type(client)
+    if resolved == "nzb":
         return "sab"
-    if client_name in ("qbit", "qbittorrent"):
+    if resolved == "torrent":
         return "qbit"
-    if protocol_name in ("nzb", "usenet"):
-        return "sab"
-    if protocol_name == "torrent":
-        return "qbit"
+    identifier = str(download_id or "").lower()
     return "sab" if identifier.startswith("sabnzbd_nzo_") else "qbit"
 
 
 def _identity_key(
     download_id: str,
+    download_client_id: object = None,
     client: object = None,
     protocol: object = None,
-) -> tuple[Literal["qbit", "sab"], str]:
+) -> tuple[int | None, Literal["qbit", "sab"], str]:
     """Return the client-qualified key used for queue grouping and rendering."""
     client_kind = _download_client_kind(download_id, client, protocol)
     identity_id = download_id if client_kind == "sab" else download_id.lower()
-    return client_kind, identity_id
+    return coerce_download_client_id(download_client_id), client_kind, identity_id
+
+
+def _row_value(row: sqlite3.Row | dict[str, Any], key: str) -> Any:
+    return row[key] if key in row.keys() else None
+
+
+def _identity_from_row(
+    db: sqlite3.Connection,
+    row: sqlite3.Row | dict[str, Any],
+    *,
+    require_current_client_match: bool = False,
+) -> _DownloadIdentity | None:
+    persisted_id = str(_row_value(row, "download_id") or "")
+    if not persisted_id:
+        return None
+    owner_id = coerce_download_client_id(_row_value(row, "download_client_id"))
+    queue_protocol = normalize_download_protocol(
+        _row_value(row, "download_protocol")
+    )
+    row_protocol = normalize_download_protocol(_row_value(row, "protocol"))
+    client_protocol = protocol_for_client_type(_row_value(row, "client"))
+    persisted_protocols: set[DownloadProtocol] = {
+        protocol
+        for protocol in (queue_protocol, row_protocol, client_protocol)
+        if protocol is not None
+    }
+    if len(persisted_protocols) > 1:
+        return None
+    protocol: DownloadProtocol | None = next(iter(persisted_protocols), None)
+    configured_protocol: DownloadProtocol | None = None
+    if owner_id is not None and require_current_client_match:
+        configured = db.execute(
+            "SELECT type FROM download_clients WHERE id=?",
+            (owner_id,),
+        ).fetchone()
+        if configured is None:
+            return None
+        configured_protocol = protocol_for_client_type(configured["type"])
+        if configured_protocol is None:
+            return None
+        if protocol is not None and configured_protocol != protocol:
+            return None
+    if protocol is None:
+        protocol = resolve_download_protocol(
+            db,
+            download_client_id=owner_id,
+            series_id=_row_value(row, "series_id"),
+            download_id=persisted_id,
+            source_url=str(
+                _row_value(row, "source_url")
+                or _row_value(row, "torrent_url")
+                or ""
+            ),
+            allow_client_configuration=require_current_client_match,
+        )
+    if (
+        require_current_client_match
+        and configured_protocol is not None
+        and protocol is not None
+        and configured_protocol != protocol
+    ):
+        return None
+    if protocol is None:
+        return _DownloadIdentity(owner_id, None, persisted_id, persisted_id, "qbit")
+    client_kind: Literal["qbit", "sab"] = "qbit" if protocol == "torrent" else "sab"
+    return _DownloadIdentity(
+        owner_id,
+        protocol,
+        persisted_id,
+        normalize_download_id(persisted_id, protocol),
+        client_kind,
+    )
+
+
+def _download_identity_evidence(
+    db: sqlite3.Connection,
+    requested_id: str,
+) -> list[sqlite3.Row]:
+    return db.execute(
+        """
+        SELECT download_id, download_client_id, client, protocol,
+               NULL AS download_protocol,
+               series_id, source_url, NULL AS torrent_url
+        FROM volumes
+        WHERE download_id IS NOT NULL AND lower(download_id)=lower(?)
+        UNION ALL
+        SELECT download_id, download_client_id, client, protocol,
+               NULL AS download_protocol,
+               series_id, NULL AS source_url, torrent_url
+        FROM seen
+        WHERE download_id IS NOT NULL AND lower(download_id)=lower(?)
+        UNION ALL
+        SELECT download_id, download_client_id, client, protocol,
+               NULL AS download_protocol,
+               series_id, NULL AS source_url, torrent_url
+        FROM chapters
+        WHERE download_id IS NOT NULL AND lower(download_id)=lower(?)
+        UNION ALL
+        SELECT download_id, download_client_id, NULL AS client, NULL AS protocol,
+               download_protocol,
+               series_id, NULL AS source_url, torrent_url
+        FROM import_queue
+        WHERE download_id IS NOT NULL AND lower(download_id)=lower(?)
+        """,
+        (requested_id, requested_id, requested_id, requested_id),
+    ).fetchall()
 
 
 def _resolve_manual_download_identity(
     db: sqlite3.Connection,
     requested_id: str,
+    *,
+    download_client_id: int | None = None,
 ) -> tuple[
     _DownloadIdentity | None,
     Literal["ok", "ambiguous", "not_found"],
 ]:
-    """Resolve one exact client-qualified identity before acquiring a writer lock.
-
-    Exact persisted IDs take precedence. A case-insensitive compatibility lookup
-    is accepted only when all matching evidence describes one distinct identity.
-    """
-    rows = db.execute(
-        """
-        SELECT download_id, client, protocol, 'domain' AS source_kind
-        FROM volumes
-        WHERE download_id IS NOT NULL
-          AND lower(download_id)=lower(?)
-        UNION ALL
-        SELECT download_id, client, protocol, 'domain' AS source_kind
-        FROM seen
-        WHERE download_id IS NOT NULL
-          AND lower(download_id)=lower(?)
-        UNION ALL
-        SELECT download_id, NULL AS client, NULL AS protocol,
-               'queue' AS source_kind
-        FROM import_queue
-        WHERE download_id IS NOT NULL
-          AND lower(download_id)=lower(?)
-        """,
-        (requested_id, requested_id, requested_id),
-    ).fetchall()
+    """Resolve one concrete owner plus its protocol-aware local identifier."""
+    rows = _download_identity_evidence(db, requested_id)
     if not rows:
         return None, "not_found"
 
-    explicit_kinds: dict[str, set[Literal["qbit", "sab"]]] = {}
-    queue_ids: set[str] = set()
+    requested_owner = coerce_download_client_id(download_client_id)
+    if download_client_id is not None and requested_owner is None:
+        return None, "not_found"
+    candidates: dict[tuple[int, DownloadProtocol, str], _DownloadIdentity] = {}
+    legacy_match = False
+    conflicting_evidence = False
     for row in rows:
-        persisted_id = row["download_id"]
-        if row["source_kind"] == "queue":
-            queue_ids.add(persisted_id)
+        owner_id = coerce_download_client_id(row["download_client_id"])
+        if requested_owner is not None and owner_id != requested_owner:
             continue
-        explicit_kinds.setdefault(persisted_id, set()).add(
-            _download_client_kind(
-                persisted_id,
-                row["client"],
-                row["protocol"],
-            )
+        identity = _identity_from_row(
+            db,
+            row,
+            require_current_client_match=True,
         )
-
-    persisted_ids = set(explicit_kinds) | queue_ids
-    identities: dict[str, _DownloadIdentity] = {}
-    ambiguous_ids: set[str] = set()
-    for persisted_id in persisted_ids:
-        kinds = explicit_kinds.get(persisted_id)
-        if not kinds:
-            kinds = {_download_client_kind(persisted_id)}
-        if len(kinds) != 1:
-            ambiguous_ids.add(persisted_id)
+        if identity is None:
+            conflicting_evidence = True
             continue
-        client_kind: Literal["qbit", "sab"] = (
-            "sab" if "sab" in kinds else "qbit"
+        if identity.protocol is None:
+            if identity.persisted_id.lower() == requested_id.lower():
+                conflicting_evidence = True
+            continue
+        probe = DownloadIdentity(
+            identity.download_client_id,
+            identity.protocol,
+            requested_id,
         )
-        identities[persisted_id] = _DownloadIdentity(
-            persisted_id,
-            persisted_id if client_kind == "sab" else persisted_id.lower(),
-            client_kind,
+        if not download_identities_match(identity.shared, probe):
+            continue
+        if owner_id is None:
+            legacy_match = True
+            continue
+        key = (
+            owner_id,
+            identity.protocol,
+            normalize_download_id(identity.persisted_id, identity.protocol),
         )
+        candidates.setdefault(key, identity)
 
-    if requested_id in ambiguous_ids:
+    if conflicting_evidence or legacy_match or len(candidates) > 1:
         return None, "ambiguous"
-    route_key_matches = [
-        identity
-        for identity in identities.values()
-        if identity.external_id == requested_id
-    ]
-    if len({identity.client_kind for identity in route_key_matches}) > 1:
-        return None, "ambiguous"
-    exact = identities.get(requested_id)
-    if exact is not None:
-        return exact, "ok"
-
-    if ambiguous_ids or len(identities) != 1:
-        return None, "ambiguous"
-    identity = next(iter(identities.values()))
+    if not candidates:
+        return None, "not_found"
+    identity = next(iter(candidates.values()))
     return identity, "ok"
 
 
 def _row_matches_identity(
+    db: sqlite3.Connection,
     row: sqlite3.Row,
     identity: _DownloadIdentity,
 ) -> bool:
-    return (
-        row["download_id"] == identity.persisted_id
-        and _download_client_kind(
-            row["download_id"],
-            row["client"],
-            row["protocol"],
-        )
-        == identity.client_kind
+    row_identity = _identity_from_row(db, row)
+    return bool(
+        row_identity is not None
+        and row_identity.download_client_id == identity.download_client_id
+        and download_identities_match(row_identity.shared, identity.shared)
+    )
+
+
+def _row_may_match_identity(
+    db: sqlite3.Connection,
+    row: sqlite3.Row,
+    identity: _DownloadIdentity,
+) -> bool:
+    row_identity = _identity_from_row(db, row)
+    return bool(
+        row_identity is not None
+        and download_identities_match(row_identity.shared, identity.shared)
     )
 
 
@@ -231,10 +374,10 @@ def _grabbed_volumes_for_identity(
         dict(row)
         for row in db.execute(
             "SELECT * FROM volumes"
-            " WHERE download_id=? AND status='grabbed'",
+            " WHERE lower(download_id)=lower(?) AND status='grabbed'",
             (identity.persisted_id,),
         ).fetchall()
-        if _row_matches_identity(row, identity)
+        if _row_matches_identity(db, row, identity)
     ]
 
 
@@ -245,10 +388,10 @@ def _seen_rows_for_identity(
     return [
         dict(row)
         for row in db.execute(
-            "SELECT * FROM seen WHERE download_id=?",
+            "SELECT * FROM seen WHERE lower(download_id)=lower(?)",
             (identity.persisted_id,),
         ).fetchall()
-        if _row_matches_identity(row, identity)
+        if _row_matches_identity(db, row, identity)
     ]
 
 
@@ -259,6 +402,23 @@ def _delete_seen_rows(
     db.executemany(
         "DELETE FROM seen WHERE torrent_url=?",
         ((row["torrent_url"],) for row in rows),
+    )
+
+
+def _clear_chapter_download_owners(
+    db: sqlite3.Connection,
+    series_id: int,
+    volume_ids: list[int],
+) -> None:
+    """Clear ownership on the same monitored chapter rows cascade updates."""
+    if not volume_ids:
+        return
+    placeholders = ",".join("?" for _ in volume_ids)
+    db.execute(
+        "UPDATE chapters SET download_client_id=NULL"
+        f" WHERE series_id=? AND volume_id IN ({placeholders})"
+        " AND monitored=1",
+        [series_id, *volume_ids],
     )
 
 
@@ -273,12 +433,43 @@ def _manual_cleanup_failure_message(
             "Download identity is ambiguous across clients or SAB jobs; "
             f"refresh the queue before {action}"
         )
+    if status == "client_unavailable":
+        return (
+            "The owning download client is unavailable or no longer matches; "
+            f"refresh its configuration before {action}"
+        )
     return f"Download is no longer tracked; refresh the queue before {action}"
+
+
+def _load_exact_download_client(
+    db: sqlite3.Connection,
+    identity: _DownloadIdentity,
+) -> dict[str, Any] | None:
+    """Load only the persisted owner, with no protocol routing or fallback."""
+    owner_id = coerce_download_client_id(identity.download_client_id)
+    if owner_id is None or identity.protocol is None:
+        return None
+    row = db.execute(
+        "SELECT id,name,type FROM download_clients WHERE id=?",
+        (owner_id,),
+    ).fetchone()
+    expected_type = "qbittorrent" if identity.protocol == "torrent" else "sabnzbd"
+    if row is None or str(row["type"]) != expected_type:
+        return None
+    bound = load_bound_download_client(
+        owner_id,
+        expected_type=expected_type,
+        expected_name=str(row["name"]),
+    )
+    return bound.client
 
 
 def _reserve_manual_download_cleanup(
     db: sqlite3.Connection,
     download_id: str,
+    *,
+    download_client_id: int | None = None,
+    identity: _DownloadIdentity | None = None,
 ) -> _ManualDownloadCleanup:
     """Resolve and skip unowned review rows for one exact client identity.
 
@@ -287,10 +478,13 @@ def _reserve_manual_download_cleanup(
     manual cleanup mutually exclusive across separate SQLite connections.
     """
     db.execute("BEGIN IMMEDIATE")
-    identity, resolution_status = _resolve_manual_download_identity(
-        db,
-        download_id,
-    )
+    resolution_status: Literal["ok", "ambiguous", "not_found"] = "ok"
+    if identity is None:
+        identity, resolution_status = _resolve_manual_download_identity(
+            db,
+            download_id,
+            download_client_id=download_client_id,
+        )
     if identity is None:
         return _ManualDownloadCleanup(
             False,
@@ -299,45 +493,56 @@ def _reserve_manual_download_cleanup(
             (),
         )
 
-    transitioned = [
-        int(row["id"])
-        for row in db.execute(
-            """
-            UPDATE import_queue
-            SET status='skipped'
-            WHERE download_id IS NOT NULL
-              AND download_id=?
-              AND status IN ('pending','partial')
-              AND lease_owner IS NULL
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM import_queue active
-                  WHERE active.download_id IS NOT NULL
-                    AND active.download_id=?
-                    AND (
-                        active.status='importing'
-                        OR active.lease_owner IS NOT NULL
-                    )
-              )
-            RETURNING id
-            """,
-            (identity.persisted_id, identity.persisted_id),
-        ).fetchall()
-    ]
-    active = db.execute(
-        "SELECT 1 FROM import_queue"
-        " WHERE download_id IS NOT NULL AND download_id=?"
-        " AND (status='importing' OR lease_owner IS NOT NULL)"
-        " LIMIT 1",
+    queue_rows = db.execute(
+        "SELECT * FROM import_queue WHERE download_id IS NOT NULL"
+        " AND lower(download_id)=lower(?)",
         (identity.persisted_id,),
-    ).fetchone()
-    if active is not None:
+    ).fetchall()
+    active_ids = {
+        int(row["id"])
+        for row in queue_rows
+        if (
+            row["status"] == "importing"
+            or row["lease_owner"] is not None
+            or db.execute(
+                "SELECT 1 FROM import_publications WHERE queue_id=?"
+                " AND state IN ('staging','prepared','publishing','published',"
+                " 'db_committed','cleaning') LIMIT 1",
+                (row["id"],),
+            ).fetchone()
+            is not None
+        )
+        and _row_may_match_identity(db, row, identity)
+    }
+    if active_ids:
         return _ManualDownloadCleanup(
             False,
             "in_progress",
             identity,
             (),
         )
+    transitioned: list[int] = []
+    for row in queue_rows:
+        if not _row_matches_identity(db, row, identity):
+            continue
+        if row["status"] not in ("pending", "partial") or row["lease_owner"] is not None:
+            continue
+        active_publication = db.execute(
+            "SELECT 1 FROM import_publications WHERE queue_id=?"
+            " AND state IN ('staging','prepared','publishing','published',"
+            " 'db_committed','cleaning') LIMIT 1",
+            (row["id"],),
+        ).fetchone()
+        if active_publication is not None:
+            continue
+        updated = db.execute(
+            "UPDATE import_queue SET status='skipped'"
+            " WHERE id=? AND status IN ('pending','partial')"
+            " AND lease_owner IS NULL",
+            (row["id"],),
+        )
+        if updated.rowcount == 1:
+            transitioned.append(int(row["id"]))
     if transitioned:
         db.executemany(
             "UPDATE import_queue_files SET status='skipped' WHERE queue_id=?",
@@ -365,18 +570,70 @@ async def _build_queue_rows() -> tuple[
     # Read from the in-memory cache populated by download_status_refresh_loop
     # every 20s. Rendering no longer makes live qBit/SAB HTTP calls — a slow
     # or dead upstream can't stall the page. See app/status_cache.py.
-    _qbit_snap = _sc.DOWNLOAD_STATUS_CACHE.snapshot_qbit()
-    _sab_snap = _sc.DOWNLOAD_STATUS_CACHE.snapshot_sab()
     all_client_items: dict[
-        tuple[Literal["qbit", "sab"], str],
+        tuple[int, DownloadProtocol, str],
         dict[str, Any],
-    ] = {}
-    if _qbit_snap:
-        for download_id, item in _qbit_snap.items.items():
-            all_client_items[("qbit", str(download_id).lower())] = item
-    if _sab_snap:
-        for download_id, item in _sab_snap.items.items():
-            all_client_items[("sab", str(download_id))] = item
+    ] = _sc.DOWNLOAD_STATUS_CACHE.qualified_items()
+    with get_db() as _client_db:
+        configured_owners: dict[DownloadProtocol, list[int]] = {
+            "torrent": [],
+            "nzb": [],
+        }
+        for configured in _client_db.execute(
+            "SELECT id,type FROM download_clients"
+            " WHERE enabled=1 AND type IN ('qbittorrent','sabnzbd')"
+        ).fetchall():
+            configured_protocol = protocol_for_client_type(configured["type"])
+            if configured_protocol is not None:
+                configured_owners[configured_protocol].append(int(configured["id"]))
+
+    # Compatibility for tests and warm upgrades that populated the historical
+    # single-protocol attributes. Never fan one legacy snapshot out to multiple
+    # concrete owners.
+    legacy_snapshots: dict[
+        DownloadProtocol,
+        _sc.DownloadClientSnapshot | None,
+    ] = {
+        "torrent": _sc.DOWNLOAD_STATUS_CACHE.snapshot_qbit(),
+        "nzb": _sc.DOWNLOAD_STATUS_CACHE.snapshot_sab(),
+    }
+    for protocol, legacy_snapshot in legacy_snapshots.items():
+        if (
+            not _sc.DOWNLOAD_STATUS_CACHE.snapshots_for_protocol(protocol)
+            and len(configured_owners[protocol]) == 1
+            and legacy_snapshot is not None
+        ):
+            owner_id = configured_owners[protocol][0]
+            for download_id, item in legacy_snapshot.items.items():
+                normalized_id = normalize_download_id(download_id, protocol)
+                if normalized_id:
+                    all_client_items[(owner_id, protocol, normalized_id)] = item
+
+    def _live_item(
+        identity_key: tuple[
+            int | None,
+            Literal["qbit", "sab"],
+            str,
+        ],
+    ) -> dict[str, Any]:
+        owner_id, client_kind, normalized_id = identity_key
+        protocol: DownloadProtocol = (
+            "torrent" if client_kind == "qbit" else "nzb"
+        )
+        if owner_id is not None:
+            return all_client_items.get(
+                (owner_id, protocol, normalized_id),
+                {},
+            )
+        matches = [
+            item
+            for (candidate_owner, candidate_protocol, candidate_id), item
+            in all_client_items.items()
+            if candidate_owner > 0
+            and candidate_protocol == protocol
+            and candidate_id == normalized_id
+        ]
+        return matches[0] if len(matches) == 1 else {}
 
     def _client_stage(state: str) -> str:
         sl = (state or "").lower()
@@ -394,16 +651,18 @@ async def _build_queue_rows() -> tuple[
 
     with get_db() as db:
         seen_meta: dict[
-            tuple[Literal["qbit", "sab"], str],
+            tuple[int | None, Literal["qbit", "sab"], str],
             dict[str, Any],
         ] = {}
         for _sm in db.execute(
-            "SELECT download_id, client, protocol, indexer, size_bytes"
+            "SELECT download_id, download_client_id, client, protocol,"
+            " indexer, size_bytes"
             " FROM seen WHERE download_id IS NOT NULL"
         ).fetchall():
             persisted_id = _sm["download_id"] or ""
             identity_key = _identity_key(
                 persisted_id,
+                _sm["download_client_id"],
                 _sm["client"],
                 _sm["protocol"],
             )
@@ -422,33 +681,21 @@ async def _build_queue_rows() -> tuple[
             "WHERE iq.status IN ('pending','partial') ORDER BY iq.created_at DESC"
         ).fetchall()
         pending_by_dlid: dict[
-            tuple[Literal["qbit", "sab"], str],
+            tuple[int | None, Literal["qbit", "sab"], str],
             dict[str, Any],
         ] = {}
         for q in pending_raw:
             persisted_id = q["download_id"] or ""
-            identity_evidence = db.execute(
-                "SELECT client, protocol FROM volumes WHERE download_id=?"
-                " UNION ALL"
-                " SELECT client, protocol FROM seen WHERE download_id=?",
-                (persisted_id, persisted_id),
-            ).fetchall()
-            evidence_kinds = {
-                _download_client_kind(
-                    persisted_id,
-                    evidence["client"],
-                    evidence["protocol"],
-                )
-                for evidence in identity_evidence
-            }
+            pending_identity = _identity_from_row(db, q)
             identity_kind = (
-                next(iter(evidence_kinds))
-                if len(evidence_kinds) == 1
+                pending_identity.client_kind
+                if pending_identity is not None
                 else _download_client_kind(persisted_id)
             )
             identity_key = _identity_key(
                 persisted_id,
-                identity_kind,
+                q["download_client_id"],
+                protocol="nzb" if identity_kind == "sab" else "torrent",
             )
             files = [
                 dict(file_row)
@@ -475,7 +722,8 @@ async def _build_queue_rows() -> tuple[
                 "torrent_name": q["torrent_name"],
                 "grabbed_at": q["created_at"],
                 "src_dir": q["src_dir"],
-                "download_id": identity_key[1],
+                "download_id": identity_key[2],
+                "download_client_id": q["download_client_id"],
                 "needs_review": needs_review,
                 "files": files,
             }
@@ -484,7 +732,7 @@ async def _build_queue_rows() -> tuple[
             "SELECT v.id, v.series_id, v.volume_num, v.pack_type,"
             " v.vol_range_start, v.vol_range_end, v.grabbed_at,"
             " v.download_id, v.torrent_name, v.client as grabbed_client,"
-            " v.protocol as grabbed_protocol,"
+            " v.protocol as grabbed_protocol, v.download_client_id,"
             " s.title as series_title "
             "FROM volumes v JOIN series s ON s.id=v.series_id "
             "WHERE v.status='grabbed' "
@@ -492,7 +740,7 @@ async def _build_queue_rows() -> tuple[
         ).fetchall()
 
         by_dlid: dict[
-            tuple[Literal["qbit", "sab"], str],
+            tuple[int | None, Literal["qbit", "sab"], str],
             list[sqlite3.Row],
         ] = _dd(list)
         for v in grabbed_raw:
@@ -500,19 +748,20 @@ async def _build_queue_rows() -> tuple[
             by_dlid[
                 _identity_key(
                     persisted_id,
+                    v["download_client_id"],
                     v["grabbed_client"],
                     v["grabbed_protocol"],
                 )
             ].append(v)
 
         queue_rows: list[dict[str, Any]] = []
-        seen_dlids: set[tuple[Literal["qbit", "sab"], str]] = set()
+        seen_dlids: set[tuple[int | None, Literal["qbit", "sab"], str]] = set()
 
         for identity_key, vols in by_dlid.items():
             seen_dlids.add(identity_key)
             v0 = vols[0]
             sm = seen_meta.get(identity_key, {})
-            external_download_id = identity_key[1]
+            external_download_id = identity_key[2]
 
             if len(vols) == 1:
                 vol_label = build_volume_label(
@@ -539,6 +788,7 @@ async def _build_queue_rows() -> tuple[
                 "torrent_name": v0["torrent_name"] or "",
                 "grabbed_at": v0["grabbed_at"],
                 "hash": external_download_id,
+                "download_client_id": identity_key[0],
                 "client": v0["grabbed_client"] or "qbittorrent",
                 "protocol": sm.get("protocol", ""),
                 "indexer": sm.get("indexer", ""),
@@ -552,7 +802,7 @@ async def _build_queue_rows() -> tuple[
 
             if identity_key in pending_by_dlid:
                 pq = pending_by_dlid[identity_key]
-                live = all_client_items.get(identity_key, {})
+                live = _live_item(identity_key)
                 stage = "review" if pq["needs_review"] else "importing"
                 queue_rows.append(
                     {
@@ -566,8 +816,7 @@ async def _build_queue_rows() -> tuple[
                         "files": pq["files"],
                     }
                 )
-            elif identity_key in all_client_items:
-                live = all_client_items[identity_key]
+            elif (live := _live_item(identity_key)):
                 stage = _client_stage(live.get("state", ""))
                 queue_rows.append(
                     {
@@ -596,11 +845,11 @@ async def _build_queue_rows() -> tuple[
         for identity_key, pq in pending_by_dlid.items():
             if identity_key in seen_dlids:
                 continue
-            live = all_client_items.get(identity_key, {})
+            live = _live_item(identity_key)
             sm = seen_meta.get(identity_key, {})
             stage = "review" if pq["needs_review"] else "importing"
-            external_download_id = identity_key[1]
-            is_sab = identity_key[0] == "sab"
+            external_download_id = identity_key[2]
+            is_sab = identity_key[1] == "sab"
             queue_rows.append(
                 {
                     "stage": stage,
@@ -613,6 +862,7 @@ async def _build_queue_rows() -> tuple[
                     "dlspeed": 0,
                     "eta": -1,
                     "hash": external_download_id,
+                    "download_client_id": identity_key[0],
                     "client": "sabnzbd" if is_sab else "qbittorrent",
                     "queue_id": pq["queue_id"],
                     "src_dir": pq["src_dir"],
@@ -643,6 +893,7 @@ async def _build_queue_rows() -> tuple[
                     "dlspeed": 0,
                     "eta": -1,
                     "hash": None,
+                    "download_client_id": None,
                     "client": pr["protocol"] or "torrent",
                     "queue_id": None,
                     "src_dir": None,
@@ -863,7 +1114,8 @@ def reset_grabbed_volume(vol_id: int) -> dict[str, object]:
     cleanup_identity: _DownloadIdentity | None = None
     with get_db() as db:
         row = db.execute(
-            "SELECT status, source_url, download_id, series_id, client, protocol"
+            "SELECT status, source_url, download_id, download_client_id,"
+            " series_id, client, protocol"
             " FROM volumes WHERE id=?",
             (vol_id,),
         ).fetchone()
@@ -873,9 +1125,13 @@ def reset_grabbed_volume(vol_id: int) -> dict[str, object]:
             return {"ok": False, "status": "not_grabbed"}
 
         if row["download_id"]:
+            volume_identity = _identity_from_row(db, row)
+            if volume_identity is None:
+                return {"ok": False, "status": "ambiguous"}
             cleanup = _reserve_manual_download_cleanup(
                 db,
                 row["download_id"],
+                identity=volume_identity,
             )
             if not cleanup.allowed:
                 return {"ok": False, "status": cleanup.status}
@@ -897,7 +1153,8 @@ def reset_grabbed_volume(vol_id: int) -> dict[str, object]:
         db.execute(
             "UPDATE volumes SET status='wanted', download_id=NULL, grabbed_at=NULL,"
             " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
-            " client=NULL, release_group=NULL WHERE id=? AND status='grabbed'",
+            " client=NULL, download_client_id=NULL, release_group=NULL"
+            " WHERE id=? AND status='grabbed'",
             (vol_id,),
         )
         cascade_chapters(
@@ -911,9 +1168,11 @@ def reset_grabbed_volume(vol_id: int) -> dict[str, object]:
             indexer=None,
             protocol=None,
             client=None,
+            download_client_id=None,
             download_id=None,
             release_group=None,
         )
+        _clear_chapter_download_owners(db, row["series_id"], [vol_id])
     return {"ok": True, "status": "reset"}
 
 
@@ -926,17 +1185,28 @@ def dismiss_pending_release(pending_id: int) -> dict[str, object]:
     return {"ok": True, "status": "dismissed"}
 
 
-@router.post("/queue/grabbed/{dl_hash}/reset-all")
-async def reset_orphaned_by_hash(request: Request, dl_hash: str):
+async def _reset_orphaned_by_hash(
+    request: Request,
+    dl_hash: str,
+    download_client_id: int | None,
+) -> Response:
     """Reset all grabbed volumes sharing a download_id back to wanted (for 'missing' queue items)."""
     cleanup_allowed = False
     cleanup_status = "not_found"
     with get_db() as db:
-        cleanup = _reserve_manual_download_cleanup(db, dl_hash)
+        cleanup = _reserve_manual_download_cleanup(
+            db,
+            dl_hash,
+            download_client_id=download_client_id,
+        )
         cleanup_allowed = cleanup.allowed
         cleanup_status = cleanup.status
         if cleanup_allowed and cleanup.identity is not None:
             volumes = _grabbed_volumes_for_identity(db, cleanup.identity)
+            by_series: dict[int, list[int]] = {}
+            for volume in volumes:
+                if volume["volume_num"] is not None:
+                    by_series.setdefault(volume["series_id"], []).append(volume["id"])
             _delete_seen_rows(
                 db,
                 _seen_rows_for_identity(db, cleanup.identity),
@@ -944,7 +1214,8 @@ async def reset_orphaned_by_hash(request: Request, dl_hash: str):
             db.executemany(
                 "UPDATE volumes SET status='wanted', download_id=NULL,"
                 " grabbed_at=NULL, source_url=NULL, torrent_name=NULL,"
-                " indexer=NULL, protocol=NULL, client=NULL, release_group=NULL"
+                " indexer=NULL, protocol=NULL, client=NULL,"
+                " download_client_id=NULL, release_group=NULL"
                 " WHERE id=? AND status='grabbed'",
                 (
                     (volume["id"],)
@@ -952,6 +1223,23 @@ async def reset_orphaned_by_hash(request: Request, dl_hash: str):
                     if volume["volume_num"] is not None
                 ),
             )
+            for series_id, volume_ids in by_series.items():
+                cascade_chapters(
+                    db,
+                    series_id,
+                    volume_ids,
+                    "wanted",
+                    grabbed_at=None,
+                    torrent_name=None,
+                    torrent_url=None,
+                    indexer=None,
+                    protocol=None,
+                    client=None,
+                    download_client_id=None,
+                    download_id=None,
+                    release_group=None,
+                )
+                _clear_chapter_download_owners(db, series_id, volume_ids)
             db.executemany(
                 "DELETE FROM volumes WHERE id=? AND volume_num IS NULL",
                 (
@@ -971,6 +1259,25 @@ async def reset_orphaned_by_hash(request: Request, dl_hash: str):
     return await _queue_partial_response(request)
 
 
+@router.post(
+    "/api/queue/download-clients/{download_client_id}/downloads/{dl_hash}/reset"
+)
+@router.post("/queue/download/client/{download_client_id}/{dl_hash}/reset")
+async def reset_owned_download(
+    request: Request,
+    download_client_id: int,
+    dl_hash: str,
+) -> Response:
+    """Reset only one concrete download-client owner's matching rows."""
+    return await _reset_orphaned_by_hash(request, dl_hash, download_client_id)
+
+
+@router.post("/queue/grabbed/{dl_hash}/reset-all")
+async def reset_orphaned_by_hash(request: Request, dl_hash: str) -> Response:
+    """Legacy ID-only reset, accepted only for one unambiguous concrete owner."""
+    return await _reset_orphaned_by_hash(request, dl_hash, None)
+
+
 @router.post("/queue/grabbed/{vol_id}/reset")
 async def reset_orphaned_volume(request: Request, vol_id: int):
     """Reset an orphaned grabbed volume back to wanted so it can be re-grabbed."""
@@ -987,7 +1294,7 @@ async def reset_orphaned_volume(request: Request, vol_id: int):
 
 
 @router.post("/queue/download/{dl_hash}/reset")
-async def reset_download_by_hash(request: Request, dl_hash: str):
+async def reset_download_by_hash(request: Request, dl_hash: str) -> Response:
     """Reset all grabbed volumes for a download_id back to wanted (for missing/orphaned items)."""
     cleanup_allowed = False
     cleanup_status = "not_found"
@@ -1006,7 +1313,7 @@ async def reset_download_by_hash(request: Request, dl_hash: str):
                     "UPDATE volumes SET status='wanted', download_id=NULL,"
                     " grabbed_at=NULL, source_url=NULL, torrent_name=NULL,"
                     " indexer=NULL, protocol=NULL, client=NULL,"
-                    " release_group=NULL"
+                    " download_client_id=NULL, release_group=NULL"
                     " WHERE id=? AND status='grabbed'",
                     ((row["id"],) for row in grabbed),
                 )
@@ -1025,9 +1332,11 @@ async def reset_download_by_hash(request: Request, dl_hash: str):
                         indexer=None,
                         protocol=None,
                         client=None,
+                        download_client_id=None,
                         download_id=None,
                         release_group=None,
                     )
+                    _clear_chapter_download_owners(db, sid, vol_ids)
     if not cleanup_allowed:
         return await _queue_partial_response(
             request,
@@ -1039,15 +1348,41 @@ async def reset_download_by_hash(request: Request, dl_hash: str):
     return await _queue_partial_response(request)
 
 
-@router.post("/queue/torrent/{torrent_hash}/remove")
-async def remove_from_queue(
+@router.post(
+    "/api/queue/download-clients/{download_client_id}/downloads/{torrent_hash}/remove"
+)
+@router.post("/queue/download/client/{download_client_id}/{torrent_hash}/remove")
+async def remove_owned_from_queue(
     request: Request,
+    download_client_id: int,
     torrent_hash: str,
     remove_from_client: str = Form("1"),
     delete_files: str = Form("0"),
     blocklist: str = Form("0"),
     change_category: str = Form(""),
-):
+) -> Response:
+    """Remove one owner-qualified download without protocol/client fallback."""
+    return await _remove_from_queue(
+        request,
+        torrent_hash,
+        download_client_id=download_client_id,
+        remove_from_client=remove_from_client,
+        delete_files=delete_files,
+        blocklist=blocklist,
+        change_category=change_category,
+    )
+
+
+async def _remove_from_queue(
+    request: Request,
+    torrent_hash: str,
+    *,
+    download_client_id: int | None,
+    remove_from_client: str,
+    delete_files: str,
+    blocklist: str,
+    change_category: str,
+) -> Response:
     """Remove a torrent from the queue.
 
     Params:
@@ -1062,8 +1397,37 @@ async def remove_from_queue(
     cleanup_status = "not_found"
     identity: _DownloadIdentity | None = None
     seen_row: dict[str, Any] | None = None
+    exact_client: dict[str, Any] | None = None
+    cat_new = change_category.strip()
+    if remove_from_client == "1" or cat_new:
+        with get_db() as lookup_db:
+            lookup_identity, lookup_status = _resolve_manual_download_identity(
+                lookup_db,
+                torrent_hash,
+                download_client_id=download_client_id,
+            )
+            if lookup_identity is not None:
+                exact_client = _load_exact_download_client(
+                    lookup_db,
+                    lookup_identity,
+                )
+        if lookup_identity is None or exact_client is None:
+            failure_status = (
+                lookup_status if lookup_identity is None else "client_unavailable"
+            )
+            return await _queue_partial_response(
+                request,
+                message=_manual_cleanup_failure_message(
+                    failure_status,
+                    "removing or untracking this download",
+                ),
+            )
     with get_db() as db:
-        cleanup = _reserve_manual_download_cleanup(db, torrent_hash)
+        cleanup = _reserve_manual_download_cleanup(
+            db,
+            torrent_hash,
+            download_client_id=download_client_id,
+        )
         cleanup_allowed = cleanup.allowed
         cleanup_status = cleanup.status
         identity = cleanup.identity
@@ -1103,7 +1467,8 @@ async def remove_from_queue(
             db.executemany(
                 "UPDATE volumes SET status='wanted', download_id=NULL,"
                 " grabbed_at=NULL, source_url=NULL, torrent_name=NULL,"
-                " indexer=NULL, protocol=NULL, client=NULL, release_group=NULL"
+                " indexer=NULL, protocol=NULL, client=NULL,"
+                " download_client_id=NULL, release_group=NULL"
                 " WHERE id=? AND status='grabbed'",
                 (
                     (volume["id"],)
@@ -1123,9 +1488,11 @@ async def remove_from_queue(
                     indexer=None,
                     protocol=None,
                     client=None,
+                    download_client_id=None,
                     download_id=None,
                     release_group=None,
                 )
+                _clear_chapter_download_owners(db, series_id, volume_ids)
             _delete_seen_rows(db, seen_rows)
             if seen_row:
                 action = "Removed" if remove_from_client == "1" else "Untracked"
@@ -1152,16 +1519,11 @@ async def remove_from_queue(
         )
 
     # Optional: change category in download client before untracking
-    cat_new = change_category.strip()
     if cat_new and remove_from_client != "1" and identity.client_kind == "qbit":
-        from routers.download_clients import get_client_for_protocol as _gcp_cc
-
-        with get_db() as _cc_db:
-            _cc_c = _gcp_cc(_cc_db, "torrent")
-        if _cc_c:
-            _cc_host = (_cc_c.get("host") or "").rstrip("/")
-            _cc_user = _cc_c.get("username") or ""
-            _cc_pw = _cc_c.get("password") or ""
+        if exact_client:
+            _cc_host = (exact_client.get("host") or "").rstrip("/")
+            _cc_user = exact_client.get("username") or ""
+            _cc_pw = exact_client.get("password") or ""
             try:
                 async with httpx.AsyncClient(timeout=10) as client:
                     r = await client.post(
@@ -1183,20 +1545,64 @@ async def remove_from_queue(
     # Remove from download client (optional)
     if remove_from_client == "1":
         if identity.client_kind == "sab":
-            await _m.sab_remove(identity.external_id)
+            await _m.sab_remove(identity.external_id, client=exact_client)
         else:
             await _m.qbit_remove(
                 identity.external_id,
                 delete_files=delete_files == "1",
+                client=exact_client,
             )
 
     return await _queue_partial_response(request)
 
 
-@router.post("/queue/torrent/{torrent_hash}/block-remove")
-async def block_and_remove(
-    request: Request, torrent_hash: str, delete_files: str = Form("1")
-):
+@router.post("/queue/torrent/{torrent_hash}/remove")
+async def remove_from_queue(
+    request: Request,
+    torrent_hash: str,
+    remove_from_client: str = Form("1"),
+    delete_files: str = Form("0"),
+    blocklist: str = Form("0"),
+    change_category: str = Form(""),
+) -> Response:
+    """Legacy ID-only removal, accepted only for one unambiguous owner."""
+    return await _remove_from_queue(
+        request,
+        torrent_hash,
+        download_client_id=None,
+        remove_from_client=remove_from_client,
+        delete_files=delete_files,
+        blocklist=blocklist,
+        change_category=change_category,
+    )
+
+
+@router.post(
+    "/api/queue/download-clients/{download_client_id}/downloads/{torrent_hash}/block-remove"
+)
+@router.post("/queue/download/client/{download_client_id}/{torrent_hash}/block-remove")
+async def block_and_remove_owned(
+    request: Request,
+    download_client_id: int,
+    torrent_hash: str,
+    delete_files: str = Form("1"),
+) -> Response:
+    """Block and remove one owner-qualified download."""
+    return await _block_and_remove(
+        request,
+        torrent_hash,
+        download_client_id=download_client_id,
+        delete_files=delete_files,
+    )
+
+
+async def _block_and_remove(
+    request: Request,
+    torrent_hash: str,
+    *,
+    download_client_id: int | None,
+    delete_files: str,
+) -> Response:
     """Blacklist the release, remove from client, reset volume to wanted, trigger re-search."""
     import main as _m
 
@@ -1204,8 +1610,34 @@ async def block_and_remove(
     cleanup_status = "not_found"
     identity: _DownloadIdentity | None = None
     seen_row: dict[str, Any] | None = None
+    with get_db() as lookup_db:
+        lookup_identity, lookup_status = _resolve_manual_download_identity(
+            lookup_db,
+            torrent_hash,
+            download_client_id=download_client_id,
+        )
+        exact_client = (
+            _load_exact_download_client(lookup_db, lookup_identity)
+            if lookup_identity is not None
+            else None
+        )
+    if lookup_identity is None or exact_client is None:
+        failure_status = (
+            lookup_status if lookup_identity is None else "client_unavailable"
+        )
+        return await _queue_partial_response(
+            request,
+            message=_manual_cleanup_failure_message(
+                failure_status,
+                "blocking or removing this download",
+            ),
+        )
     with get_db() as db:
-        cleanup = _reserve_manual_download_cleanup(db, torrent_hash)
+        cleanup = _reserve_manual_download_cleanup(
+            db,
+            torrent_hash,
+            download_client_id=download_client_id,
+        )
         cleanup_allowed = cleanup.allowed
         cleanup_status = cleanup.status
         identity = cleanup.identity
@@ -1227,10 +1659,15 @@ async def block_and_remove(
                     ),
                 )
             grabbed = _grabbed_volumes_for_identity(db, identity)
+            by_series: dict[int, list[int]] = {}
+            for volume in grabbed:
+                if volume["volume_num"] is not None:
+                    by_series.setdefault(volume["series_id"], []).append(volume["id"])
             db.executemany(
                 "UPDATE volumes SET status='wanted', download_id=NULL,"
                 " grabbed_at=NULL, source_url=NULL, torrent_name=NULL,"
-                " indexer=NULL, protocol=NULL, client=NULL, release_group=NULL"
+                " indexer=NULL, protocol=NULL, client=NULL,"
+                " download_client_id=NULL, release_group=NULL"
                 " WHERE id=? AND status='grabbed'",
                 (
                     (volume["id"],)
@@ -1246,6 +1683,23 @@ async def block_and_remove(
                     if volume["volume_num"] is None
                 ),
             )
+            for series_id, volume_ids in by_series.items():
+                cascade_chapters(
+                    db,
+                    series_id,
+                    volume_ids,
+                    "wanted",
+                    grabbed_at=None,
+                    torrent_name=None,
+                    torrent_url=None,
+                    indexer=None,
+                    protocol=None,
+                    client=None,
+                    download_client_id=None,
+                    download_id=None,
+                    release_group=None,
+                )
+                _clear_chapter_download_owners(db, series_id, volume_ids)
             _delete_seen_rows(db, seen_rows)
 
     if not cleanup_allowed:
@@ -1263,11 +1717,12 @@ async def block_and_remove(
         )
 
     if identity.client_kind == "sab":
-        await _m.sab_remove(identity.external_id)
+        await _m.sab_remove(identity.external_id, client=exact_client)
     else:
         await _m.qbit_remove(
             identity.external_id,
             delete_files=delete_files == "1",
+            client=exact_client,
         )
     if seen_row:
         with get_db() as db:
@@ -1286,43 +1741,121 @@ async def block_and_remove(
     return await _queue_partial_response(request)
 
 
+@router.post("/queue/torrent/{torrent_hash}/block-remove")
+async def block_and_remove(
+    request: Request,
+    torrent_hash: str,
+    delete_files: str = Form("1"),
+) -> Response:
+    """Legacy ID-only block/remove, accepted only for one concrete owner."""
+    return await _block_and_remove(
+        request,
+        torrent_hash,
+        download_client_id=None,
+        delete_files=delete_files,
+    )
+
+
+@router.post(
+    "/api/queue/download-clients/{download_client_id}/downloads/{torrent_hash}/set-category"
+)
+@router.post("/queue/download/client/{download_client_id}/{torrent_hash}/set-category")
+async def set_owned_torrent_category(
+    request: Request,
+    download_client_id: int,
+    torrent_hash: str,
+    category: str = Form(...),
+) -> Response:
+    """Change category through the exact qBit owner rendered for the item."""
+    return await _set_torrent_category(
+        request,
+        torrent_hash,
+        download_client_id=download_client_id,
+        category=category,
+    )
+
+
+async def _set_torrent_category(
+    request: Request,
+    torrent_hash: str,
+    *,
+    download_client_id: int | None,
+    category: str,
+) -> Response:
+    """Change one resolved qBit item without protocol/default fallback."""
+    with get_db() as db:
+        identity, resolution_status = _resolve_manual_download_identity(
+            db,
+            torrent_hash,
+            download_client_id=download_client_id,
+        )
+        exact_client = (
+            _load_exact_download_client(db, identity)
+            if identity is not None and identity.protocol == "torrent"
+            else None
+        )
+    if identity is None:
+        return await _queue_partial_response(
+            request,
+            message=_manual_cleanup_failure_message(
+                resolution_status,
+                "changing its category",
+            ),
+        )
+    if identity.protocol != "torrent":
+        return await _queue_partial_response(
+            request,
+            message="Only qBittorrent downloads have a category",
+        )
+    if exact_client is None:
+        return await _queue_partial_response(
+            request,
+            message=_manual_cleanup_failure_message(
+                "client_unavailable",
+                "changing its category",
+            ),
+        )
+
+    host = (exact_client.get("host") or "").rstrip("/")
+    user = exact_client.get("username") or ""
+    password = exact_client.get("password") or ""
+    normalized_category = category.strip()
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                f"{host}/api/v2/auth/login",
+                data={"username": user, "password": password},
+            )
+            if "Ok" in response.text:
+                await client.post(
+                    f"{host}/api/v2/torrents/createCategory",
+                    data={"category": normalized_category, "savePath": ""},
+                )
+                await client.post(
+                    f"{host}/api/v2/torrents/setCategory",
+                    data={
+                        "hashes": identity.external_id,
+                        "category": normalized_category,
+                    },
+                )
+    except Exception:
+        pass
+    return await _queue_partial_response(request)
+
+
 @router.post("/queue/torrent/{torrent_hash}/set-category")
 async def set_torrent_category(
-    request: Request, torrent_hash: str, category: str = Form(...)
-):
-    """Change the qBittorrent category for an active torrent.
-
-    Useful to move a torrent from a pre-import category to the import category,
-    or to correct a mis-categorised grab.
-    """
-    from routers.download_clients import get_client_for_protocol as _gcp_sc
-
-    with get_db() as _sc_db:
-        _sc_c = _gcp_sc(_sc_db, "torrent")
-    if _sc_c:
-        host = (_sc_c.get("host") or "").rstrip("/")
-        user = _sc_c.get("username") or ""
-        pw = _sc_c.get("password") or ""
-        cat = category.strip()
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.post(
-                    f"{host}/api/v2/auth/login", data={"username": user, "password": pw}
-                )
-                if "Ok" in r.text:
-                    # Ensure the category exists in qBittorrent first
-                    await client.post(
-                        f"{host}/api/v2/torrents/createCategory",
-                        data={"category": cat, "savePath": ""},
-                    )
-                    # Set the category on the torrent
-                    await client.post(
-                        f"{host}/api/v2/torrents/setCategory",
-                        data={"hashes": torrent_hash, "category": cat},
-                    )
-        except Exception:
-            pass
-    return await _queue_partial_response(request)
+    request: Request,
+    torrent_hash: str,
+    category: str = Form(...),
+) -> Response:
+    """Legacy ID-only category change, accepted only for one exact owner."""
+    return await _set_torrent_category(
+        request,
+        torrent_hash,
+        download_client_id=None,
+        category=category,
+    )
 
 
 @router.post("/queue/pending/{pending_id}/force-grab")

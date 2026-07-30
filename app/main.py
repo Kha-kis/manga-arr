@@ -423,7 +423,9 @@ from metadata_service import (  # noqa: F401
 # DB_PATH, router modules) are imported lazily inside the loops to break
 # cycles — same pattern as prior extractions.
 from tasks import (  # noqa: F401
-    rss_loop, status_loop, refresh_ongoing_loop,
+    rss_loop, status_loop, pack_cleanup_recovery_loop,
+    publication_replay_loop,
+    volume_deletion_replay_loop, refresh_ongoing_loop,
     _metadata_retry_loop, _backfill_metadata_loop, _stuck_state_cleanup_loop,
     backlog_search_loop, backlog_search,
     import_list_sync, rescan_loop,
@@ -439,6 +441,11 @@ from import_workers import (  # noqa: F401
     schedule_import_worker,
     start_import_worker_scheduling,
     stop_import_worker_scheduling,
+)
+from import_publication import drain_active_import_publications  # noqa: F401
+from import_pack_cleanup import recover_pack_cleanup_state  # noqa: F401
+from volume_file_deletion import (  # noqa: F401
+    drain_active_volume_file_deletions,
 )
 
 
@@ -514,6 +521,52 @@ async def lifespan(app: FastAPI):
     # other flows that read settings post-migration get the plaintext
     # round-tripped through Fernet — same value, just paranoid consistency.
     load_config()
+    # Recover a bounded page of expired generated-pack reservations and
+    # tombstones before any import producer starts. Filesystem work runs off
+    # the event loop and the recovery helper closes each short DB transaction
+    # before touching disk. The runtime loop drains additional pages.
+    _pack_recovery = await asyncio.to_thread(
+        recover_pack_cleanup_state,
+        max_rows=100,
+    )
+    if (
+        _pack_recovery.reservations_recovered
+        or _pack_recovery.tombstones_removed
+        or _pack_recovery.tombstones_retained
+    ):
+        log_event(
+            "pack_cleanup_replay",
+            "startup import-pack recovery: "
+            f"{_pack_recovery.reservations_recovered} reservation(s) recovered, "
+            f"{_pack_recovery.tombstones_removed} tombstone(s) removed, "
+            f"{_pack_recovery.tombstones_retained} tombstone(s) retained",
+        )
+    # Deletion reservations already reset their volume rows and fence import
+    # admission. Replay them before publication recovery or any producer can
+    # attempt work for the same series.
+    _deletion_replay = await drain_active_volume_file_deletions(page_size=100)
+    if _deletion_replay.examined:
+        log_event(
+            "delete_replay",
+            "startup volume deletion replay: "
+            f"{_deletion_replay.completed} completed, "
+            f"{_deletion_replay.blocked} blocked",
+        )
+    # Durable publication replay is recovery authority after the prepared
+    # barrier. Drain active journals in bounded pages before lease recovery,
+    # download-client bootstrap, worker admission, or any producer can
+    # observe/import the same queue. Terminal pack/outbox work belongs to the
+    # cancellable runtime loop below.
+    _publication_replay = await drain_active_import_publications(page_size=100)
+    if _publication_replay.examined:
+        log_event(
+            "import_replay",
+            "startup import publication replay: "
+            f"{_publication_replay.completed} completed, "
+            f"{_publication_replay.aborted_staging} reversible staging aborted, "
+            f"{_publication_replay.deferred} deferred, "
+            f"{_publication_replay.blocked} blocked",
+        )
     # Initialize import concurrency semaphore (max_concurrent_imports setting)
     from import_pipeline import initialize_import_semaphore
     initialize_import_semaphore()
@@ -585,6 +638,9 @@ async def lifespan(app: FastAPI):
 
         create_background_task(rss_loop(),                         name="rss_loop")
         create_background_task(status_loop(),                      name="status_loop")
+        create_background_task(pack_cleanup_recovery_loop(),       name="pack_cleanup_recovery_loop")
+        create_background_task(publication_replay_loop(),          name="publication_replay_loop")
+        create_background_task(volume_deletion_replay_loop(),      name="volume_deletion_replay_loop")
         create_background_task(refresh_ongoing_loop(),             name="refresh_ongoing_loop")
         create_background_task(_metadata_retry_loop(),             name="metadata_retry_loop")
         create_background_task(_backfill_metadata_loop(),          name="backfill_metadata_loop")

@@ -377,3 +377,176 @@ def test_refresh_loop_survives_exception(isolated_cache, monkeypatch):
     assert calls["n"] >= 2, (
         f"loop stopped after first exception; only {calls['n']} refresh(es) ran"
     )
+
+
+def test_refresh_polls_and_keys_every_concrete_owner(fresh_db, isolated_cache):
+    """Downloader-local collisions remain separate in the live cache."""
+    with sqlite3.connect(fresh_db) as db:
+        db.execute(
+            "INSERT INTO download_clients(id,name,type,host,enabled,username,"
+            " password,category,priority)"
+            " VALUES(3,'qb-2','qbittorrent','http://qbit-2.local',1,"
+            " 'u2','p2','manga',3)"
+        )
+        db.execute(
+            "INSERT INTO download_clients(id,name,type,host,enabled,password,"
+            " category,priority)"
+            " VALUES(4,'sab-2','sabnzbd','http://sab-2.local',1,"
+            " 'sabkey2','manga',4)"
+        )
+
+    requested_hosts: list[str] = []
+
+    class _EveryOwner:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            del args
+            return False
+
+        async def post(self, url, *args, **kwargs):
+            del args, kwargs
+            requested_hosts.append(url.split("//", 1)[1].split("/", 1)[0])
+            return _MockResp(text="Ok.")
+
+        async def get(self, url, *args, **kwargs):
+            del args
+            host = url.split("//", 1)[1].split("/", 1)[0]
+            requested_hosts.append(host)
+            if "torrents/info" in url:
+                return _MockResp(
+                    json_data=[
+                        {
+                            "hash": "ABCDEF" if host.startswith("qbit.local") else "abcdef",
+                            "name": host,
+                            "state": "downloading",
+                            "progress": 0.5,
+                            "dlspeed": 1,
+                            "eta": 2,
+                        }
+                    ]
+                )
+            return _MockResp(
+                json_data={
+                    "queue": {
+                        "slots": [
+                            {
+                                "nzo_id": "NZO-Exact",
+                                "filename": host,
+                                "status": "Downloading",
+                                "percentage": 10,
+                                "timeleft": "0:01:00",
+                            }
+                        ]
+                    }
+                }
+            )
+
+    with patch("status_cache.httpx.AsyncClient", new=_EveryOwner):
+        assert asyncio.run(isolated_cache.refresh())
+
+    assert set(requested_hosts) >= {
+        "qbit.local:8080",
+        "qbit-2.local",
+        "sab.local:8080",
+        "sab-2.local",
+    }
+    assert isolated_cache.snapshot_for(1, "torrent") is not None
+    assert isolated_cache.snapshot_for(3, "torrent") is not None
+    assert isolated_cache.snapshot_for(2, "nzb") is not None
+    assert isolated_cache.snapshot_for(4, "nzb") is not None
+    assert set(isolated_cache.qualified_items()) == {
+        (1, "torrent", "abcdef"),
+        (3, "torrent", "abcdef"),
+        (2, "nzb", "NZO-Exact"),
+        (4, "nzb", "NZO-Exact"),
+    }
+
+
+def test_queue_live_state_and_hiding_are_owner_qualified(
+    fresh_db,
+    isolated_cache,
+    monkeypatch,
+):
+    """One owner's completed collision cannot hide another owner or legacy row."""
+    import inspect
+    import main
+    import routers.queue_ as queue_router
+    from status_cache import DownloadClientSnapshot
+
+    with sqlite3.connect(fresh_db) as db:
+        db.execute(
+            "INSERT INTO download_clients(id,name,type,host,enabled,username,"
+            " password,category,priority)"
+            " VALUES(3,'qb-2','qbittorrent','http://qbit-2.local',1,"
+            " 'u2','p2','manga',3)"
+        )
+        db.execute(
+            "INSERT INTO series(id,title,search_pattern)"
+            " VALUES(20,'Qualified Live','Qualified Live')"
+        )
+        db.executemany(
+            "INSERT INTO volumes(series_id,volume_num,status,download_id,"
+            " download_client_id,torrent_name,grabbed_at,client,protocol)"
+            " VALUES(20,?,'grabbed',?,?,?,datetime('now'),'qbittorrent','torrent')",
+            (
+                (1, "ABCDEF", 1, "owner one"),
+                (2, "abcdef", 3, "owner three"),
+                (3, "ABCDEF", None, "legacy ambiguous"),
+            ),
+        )
+
+    now = datetime.now(timezone.utc)
+    isolated_cache._snapshots = {
+        (1, "torrent"): DownloadClientSnapshot(
+            items={
+                "abcdef": {
+                    "hash": "abcdef",
+                    "name": "owner one",
+                    "state": "downloading",
+                    "progress": 25,
+                    "dlspeed": 10,
+                    "eta": 30,
+                    "client": "qbittorrent",
+                }
+            },
+            fetched_at=now,
+            last_success_at=now,
+        ),
+        (3, "torrent"): DownloadClientSnapshot(
+            items={
+                "abcdef": {
+                    "hash": "abcdef",
+                    "name": "owner three",
+                    "state": "uploading",
+                    "progress": 100,
+                    "dlspeed": 0,
+                    "eta": 0,
+                    "client": "qbittorrent",
+                }
+            },
+            fetched_at=now,
+            last_success_at=now,
+        ),
+    }
+
+    def _discard(coro, *, name):
+        del name
+        if inspect.iscoroutine(coro):
+            coro.close()
+
+    monkeypatch.setattr(main, "create_background_task", _discard)
+    rows, *_ = asyncio.run(queue_router._build_queue_rows())
+
+    assert {
+        (row["download_client_id"], row["stage"], row["progress"])
+        for row in rows
+        if row["hash"] == "abcdef"
+    } == {
+        (1, "downloading", 25),
+        (None, "warning", 0),
+    }

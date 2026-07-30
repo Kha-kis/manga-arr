@@ -372,6 +372,105 @@ def test_missing_reset_cas_preserves_concurrent_status_and_skips_cascade(
     assert history_count == 0
 
 
+def test_missing_reset_cas_preserves_concurrent_owner_change(rescan_env):
+    """An owner-only reassignment invalidates the parent and chapter snapshot."""
+    import rescan
+    import shared
+
+    volume_id = _insert_volume(
+        rescan_env["db_path"],
+        1.0,
+        "downloaded",
+        import_path="/old/import.cbz",
+        download_id="owned-download",
+        download_client_id=101,
+    )
+    with sqlite3.connect(rescan_env["db_path"]) as db:
+        db.execute(
+            "INSERT INTO chapters("
+            "series_id,volume_id,chapter_num,status,monitored,download_id,"
+            "download_client_id"
+            ") VALUES(7,?,1,'downloaded',1,'owned-download',101)",
+            (volume_id,),
+        )
+
+    with shared.get_db() as db:
+        snapshot = rescan.snapshot_series_rescan(db, 7)
+    assert snapshot is not None
+    inventory = rescan.build_filesystem_inventory(snapshot)
+    with sqlite3.connect(rescan_env["db_path"]) as db:
+        db.execute(
+            "UPDATE volumes SET download_client_id=102 WHERE id=?",
+            (volume_id,),
+        )
+
+    with shared.get_db() as db:
+        reconciliation = rescan.reconcile_series_inventory(db, snapshot, inventory)
+
+    assert reconciliation.result["missing"] == 0
+    with sqlite3.connect(rescan_env["db_path"]) as db:
+        assert db.execute(
+            "SELECT status,import_path,download_id,download_client_id"
+            " FROM volumes WHERE id=?",
+            (volume_id,),
+        ).fetchone() == (
+            "downloaded",
+            "/old/import.cbz",
+            "owned-download",
+            102,
+        )
+        assert db.execute(
+            "SELECT status,download_id,download_client_id FROM chapters"
+            " WHERE volume_id=?",
+            (volume_id,),
+        ).fetchone() == ("downloaded", "owned-download", 101)
+        assert db.execute(
+            "SELECT COUNT(*) FROM history WHERE event_type='file_deleted'"
+        ).fetchone() == (0,)
+
+
+def test_missing_reset_clears_owner_and_records_original_owner(rescan_env):
+    """A won reset clears acquisition ownership from parent and children."""
+    import rescan
+
+    volume_id = _insert_volume(
+        rescan_env["db_path"],
+        1.0,
+        "downloaded",
+        import_path="/missing/import.cbz",
+        download_id="owned-download",
+        download_client_id=101,
+        torrent_name="Owned release",
+    )
+    with sqlite3.connect(rescan_env["db_path"]) as db:
+        db.execute(
+            "INSERT INTO chapters("
+            "series_id,volume_id,chapter_num,status,monitored,download_id,"
+            "download_client_id"
+            ") VALUES(7,?,1,'downloaded',1,'owned-download',101)",
+            (volume_id,),
+        )
+
+    result = rescan.rescan_series_folder(7)
+
+    assert result["missing"] == 1
+    with sqlite3.connect(rescan_env["db_path"]) as db:
+        assert db.execute(
+            "SELECT status,download_id,download_client_id FROM volumes"
+            " WHERE id=?",
+            (volume_id,),
+        ).fetchone() == ("wanted", None, None)
+        assert db.execute(
+            "SELECT status,download_id,download_client_id FROM chapters"
+            " WHERE volume_id=?",
+            (volume_id,),
+        ).fetchone() == ("wanted", None, None)
+        history_data = db.execute(
+            "SELECT data FROM history WHERE event_type='file_deleted'"
+        ).fetchone()[0]
+    assert json.loads(history_data) == {"download_client_id": 101}
+
+
 def test_recovery_cas_preserves_concurrent_import(rescan_env, monkeypatch):
     import rescan
     import shared

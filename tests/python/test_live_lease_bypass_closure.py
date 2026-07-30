@@ -69,6 +69,52 @@ def lease_env(
             "INSERT INTO series(id, title, search_pattern, root_folder_id)"
             " VALUES(1, 'Lease Series', 'Lease Series', 1)"
         )
+        db.executemany(
+            "INSERT INTO download_clients("
+            "id,name,type,host,username,password,enabled,priority,category"
+            ") VALUES(?,?,?,?,?,?,0,?,'manga')",
+            (
+                (
+                    101,
+                    "qBit primary",
+                    "qbittorrent",
+                    "http://qbit-primary.invalid",
+                    "qbit-primary",
+                    "qbit-primary-secret",
+                    1,
+                ),
+                (
+                    102,
+                    "qBit secondary",
+                    "qbittorrent",
+                    "http://qbit-secondary.invalid",
+                    "qbit-secondary",
+                    "qbit-secondary-secret",
+                    2,
+                ),
+                (
+                    201,
+                    "SAB primary",
+                    "sabnzbd",
+                    "http://sab-primary.invalid",
+                    "",
+                    "sab-primary-secret",
+                    1,
+                ),
+                (
+                    202,
+                    "SAB secondary",
+                    "sabnzbd",
+                    "http://sab-secondary.invalid",
+                    "",
+                    "sab-secondary-secret",
+                    2,
+                ),
+            ),
+        )
+        db.execute(
+            "UPDATE download_clients SET enabled=1 WHERE id IN (101, 201)"
+        )
 
     try:
         yield db_path
@@ -109,6 +155,7 @@ def _queue(
     download_id: str,
     status: str,
     child_status: str,
+    download_client_id: int | None = None,
     owner: str | None = None,
     expired: bool = False,
     src_path: str = "/staging/keep.cbz",
@@ -117,18 +164,26 @@ def _queue(
         if owner is None:
             cur = db.execute(
                 "INSERT INTO import_queue("
-                "series_id, download_id, torrent_name, src_dir, status"
-                ") VALUES(1, ?, ?, '/staging', ?)",
-                (download_id, download_id, status),
+                "series_id, download_id, download_client_id, torrent_name,"
+                " src_dir, status"
+                ") VALUES(1, ?, ?, ?, '/staging', ?)",
+                (download_id, download_client_id, download_id, status),
             )
         else:
             modifier = "-5 minutes" if expired else "+5 minutes"
             cur = db.execute(
                 "INSERT INTO import_queue("
-                "series_id, download_id, torrent_name, src_dir, status,"
-                " lease_owner, lease_expires_at"
-                ") VALUES(1, ?, ?, '/staging', ?, ?, datetime('now', ?))",
-                (download_id, download_id, status, owner, modifier),
+                "series_id, download_id, download_client_id, torrent_name,"
+                " src_dir, status, lease_owner, lease_expires_at"
+                ") VALUES(1, ?, ?, ?, '/staging', ?, ?, datetime('now', ?))",
+                (
+                    download_id,
+                    download_client_id,
+                    download_id,
+                    status,
+                    owner,
+                    modifier,
+                ),
             )
         queue_lastrowid = cur.lastrowid
         assert queue_lastrowid is not None
@@ -152,15 +207,27 @@ def _grabbed_domain(
     volume_num: float,
     client: str = "qbittorrent",
     protocol: str = "torrent",
+    download_client_id: int | None = None,
+    source_key: str | None = None,
 ) -> tuple[int, int, str]:
     source_url = f"https://source.invalid/{client}/{download_id}"
+    if source_key is not None:
+        source_url = f"{source_url}?owner={source_key}"
     with sqlite3.connect(db_path) as db:
         volume = db.execute(
             "INSERT INTO volumes("
             "series_id, volume_num, status, monitored, grabbed_at, download_id,"
-            " source_url, torrent_name, client, protocol"
-            ") VALUES(1, ?, 'grabbed', 1, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)",
-            (volume_num, download_id, source_url, download_id, client, protocol),
+            " download_client_id, source_url, torrent_name, client, protocol"
+            ") VALUES(1, ?, 'grabbed', 1, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)",
+            (
+                volume_num,
+                download_id,
+                download_client_id,
+                source_url,
+                download_id,
+                client,
+                protocol,
+            ),
         )
         volume_lastrowid = volume.lastrowid
         assert volume_lastrowid is not None
@@ -168,16 +235,32 @@ def _grabbed_domain(
         chapter = db.execute(
             "INSERT INTO chapters("
             "series_id, volume_id, chapter_num, status, monitored, download_id,"
-            " torrent_url, client"
-            ") VALUES(1, ?, ?, 'grabbed', 1, ?, ?, ?)",
-            (volume_id, volume_num, download_id, source_url, client),
+            " download_client_id, torrent_url, client, protocol"
+            ") VALUES(1, ?, ?, 'grabbed', 1, ?, ?, ?, ?, ?)",
+            (
+                volume_id,
+                volume_num,
+                download_id,
+                download_client_id,
+                source_url,
+                client,
+                protocol,
+            ),
         )
         db.execute(
             "INSERT INTO seen("
             "torrent_url, torrent_name, series_id, volume_num, client, protocol,"
-            " download_id"
-            ") VALUES(?, ?, 1, ?, ?, ?, ?)",
-            (source_url, download_id, volume_num, client, protocol, download_id),
+            " download_id, download_client_id"
+            ") VALUES(?, ?, 1, ?, ?, ?, ?, ?)",
+            (
+                source_url,
+                download_id,
+                volume_num,
+                client,
+                protocol,
+                download_id,
+                download_client_id,
+            ),
         )
         chapter_lastrowid = chapter.lastrowid
         assert chapter_lastrowid is not None
@@ -480,6 +563,7 @@ def test_queue_untrack_blocks_active_shared_download_before_any_mutation(
         download_id="shared-download",
         status="importing",
         child_status="pending",
+        download_client_id=101,
         owner="live-owner",
     )
     pending_id, pending_child = _queue(
@@ -487,11 +571,13 @@ def test_queue_untrack_blocks_active_shared_download_before_any_mutation(
         download_id="SHARED-DOWNLOAD",
         status="pending",
         child_status="needs_review",
+        download_client_id=101,
     )
     volume_id, chapter_id, source_url = _grabbed_domain(
         lease_env,
         download_id="shared-download",
         volume_num=30,
+        download_client_id=101,
     )
 
     response = _client().post(
@@ -548,17 +634,20 @@ def test_queue_untrack_scopes_children_to_transitioned_nonactive_parents(
         download_id="nonactive-shared",
         status="pending",
         child_status="pending",
+        download_client_id=101,
     )
     failed_id, failed_child = _queue(
         lease_env,
         download_id="NONACTIVE-SHARED",
         status="failed",
         child_status="failed",
+        download_client_id=101,
     )
     _grabbed_domain(
         lease_env,
         download_id="nonactive-shared",
         volume_num=31,
+        download_client_id=101,
     )
 
     response = _client().post(
@@ -605,7 +694,7 @@ def test_mixed_case_sab_identifier_is_coherent_for_manual_queue_actions(
     expects_blocklist: bool,
     expects_client_remove: bool,
 ) -> None:
-    """SAB DB matching is case-insensitive, but its external nzo ID stays exact."""
+    """SAB actions preserve exact case and use the persisted owning client."""
     import main
 
     sab_id = "SABnzbd_nzo_kyt1f0"
@@ -614,6 +703,7 @@ def test_mixed_case_sab_identifier_is_coherent_for_manual_queue_actions(
         download_id=sab_id,
         status="pending",
         child_status="pending",
+        download_client_id=201,
     )
     volume_id, _, source_url = _grabbed_domain(
         lease_env,
@@ -621,16 +711,28 @@ def test_mixed_case_sab_identifier_is_coherent_for_manual_queue_actions(
         volume_num=40,
         client="sabnzbd",
         protocol="nzb",
+        download_client_id=201,
     )
 
-    client_calls: list[tuple[str, str, bool | None]] = []
+    client_calls: list[tuple[str, str, str]] = []
 
-    async def fake_sab_remove(download_id: str) -> bool:
-        client_calls.append(("sab", download_id, None))
+    async def fake_sab_remove(
+        download_id: str,
+        *,
+        client: dict[str, object] | None = None,
+    ) -> bool:
+        assert client is not None
+        client_calls.append(("sab", download_id, str(client["host"])))
         return True
 
-    async def fake_qbit_remove(download_id: str, delete_files: bool = False) -> bool:
-        client_calls.append(("qbit", download_id, delete_files))
+    async def fake_qbit_remove(
+        download_id: str,
+        delete_files: bool = False,
+        *,
+        client: dict[str, object] | None = None,
+    ) -> bool:
+        del delete_files, client
+        client_calls.append(("qbit", download_id, ""))
         return True
 
     def discard_background_task(coro: object, *, name: str) -> None:
@@ -642,23 +744,22 @@ def test_mixed_case_sab_identifier_is_coherent_for_manual_queue_actions(
     monkeypatch.setattr(main, "qbit_remove", fake_qbit_remove)
     monkeypatch.setattr(main, "create_background_task", discard_background_task)
 
-    route_id = sab_id.lower()
     data: dict[str, str] = {}
     if action == "reset_all":
-        path = f"/queue/grabbed/{route_id}/reset-all"
+        path = f"/queue/grabbed/{sab_id}/reset-all"
     elif action == "reset_download":
-        path = f"/queue/download/{route_id}/reset"
+        path = f"/queue/download/client/201/{sab_id}/reset"
     elif action == "reset_volume":
         path = f"/queue/grabbed/{volume_id}/reset"
     elif action == "remove":
-        path = f"/queue/torrent/{route_id}/remove"
+        path = f"/queue/download/client/201/{sab_id}/remove"
         data = {
             "remove_from_client": "1",
             "delete_files": "1",
             "blocklist": "1",
         }
     else:
-        path = f"/queue/torrent/{route_id}/block-remove"
+        path = f"/queue/download/client/201/{sab_id}/block-remove"
         data = {"delete_files": "1"}
 
     response = _client().post(
@@ -694,7 +795,11 @@ def test_mixed_case_sab_identifier_is_coherent_for_manual_queue_actions(
         assert blocklist_rows == [(source_url, sab_id, "nzb")]
     else:
         assert blocklist_rows == []
-    expected_calls = [("sab", sab_id, None)] if expects_client_remove else []
+    expected_calls = (
+        [("sab", sab_id, "http://sab-primary.invalid")]
+        if expects_client_remove
+        else []
+    )
     assert client_calls == expected_calls
 
 
@@ -702,17 +807,19 @@ def test_case_distinct_sab_ids_fail_legacy_probe_then_mutate_exact_only(
     lease_env: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A lowercase compatibility probe cannot merge two case-distinct SAB jobs."""
+    """SAB case variants remain exact and independently owner-qualified."""
     import main
 
     sab_ids = ("SABnzbd_nzo_AbC", "SABnzbd_nzo_aBc")
     queue_rows = []
     for offset, sab_id in enumerate(sab_ids):
+        download_client_id = 201 + offset
         queue_id, child_id = _queue(
             lease_env,
             download_id=sab_id,
             status="pending",
             child_status="pending",
+            download_client_id=download_client_id,
         )
         volume_id, _, source_url = _grabbed_domain(
             lease_env,
@@ -720,13 +827,19 @@ def test_case_distinct_sab_ids_fail_legacy_probe_then_mutate_exact_only(
             volume_num=50 + offset,
             client="sabnzbd",
             protocol="nzb",
+            download_client_id=download_client_id,
         )
         queue_rows.append((queue_id, child_id, volume_id, source_url))
 
-    client_calls: list[str] = []
+    client_calls: list[tuple[str, str]] = []
 
-    async def fake_sab_remove(download_id: str) -> bool:
-        client_calls.append(download_id)
+    async def fake_sab_remove(
+        download_id: str,
+        *,
+        client: dict[str, object] | None = None,
+    ) -> bool:
+        assert client is not None
+        client_calls.append((download_id, str(client["host"])))
         return True
 
     async def fail_qbit_remove(*args: object, **kwargs: object) -> bool:
@@ -736,24 +849,24 @@ def test_case_distinct_sab_ids_fail_legacy_probe_then_mutate_exact_only(
     monkeypatch.setattr(main, "sab_remove", fake_sab_remove)
     monkeypatch.setattr(main, "qbit_remove", fail_qbit_remove)
 
-    ambiguous = _client().post(
+    case_miss = _client().post(
         "/queue/torrent/sabnzbd_nzo_abc/remove",
         data={"remove_from_client": "1"},
         **_csrf("sab-case-ambiguous"),
         follow_redirects=False,
     )
-    assert ambiguous.status_code == 303
-    assert "ambiguous" in ambiguous.headers["location"]
+    assert case_miss.status_code == 303
+    assert "no+longer+tracked" in case_miss.headers["location"]
     assert client_calls == []
 
     exact = _client().post(
-        f"/queue/torrent/{sab_ids[0]}/remove",
+        f"/queue/download/client/201/{sab_ids[0]}/remove",
         data={"remove_from_client": "1", "blocklist": "1"},
         **_csrf("sab-case-exact"),
         follow_redirects=False,
     )
     assert exact.status_code == 303
-    assert client_calls == [sab_ids[0]]
+    assert client_calls == [(sab_ids[0], "http://sab-primary.invalid")]
 
     with sqlite3.connect(lease_env) as db:
         first_queue, first_child, first_volume, first_source = queue_rows[0]
@@ -810,17 +923,20 @@ def test_qbit_exact_identity_wins_over_casefolded_sab_collision(
         download_id=qbit_id,
         status="pending",
         child_status="pending",
+        download_client_id=101,
     )
     sab_queue, sab_child = _queue(
         lease_env,
         download_id=sab_id,
         status="pending",
         child_status="pending",
+        download_client_id=201,
     )
     qbit_volume, _, qbit_source = _grabbed_domain(
         lease_env,
         download_id=qbit_id,
         volume_num=60,
+        download_client_id=101,
     )
     sab_volume, _, sab_source = _grabbed_domain(
         lease_env,
@@ -828,17 +944,29 @@ def test_qbit_exact_identity_wins_over_casefolded_sab_collision(
         volume_num=61,
         client="sabnzbd",
         protocol="nzb",
+        download_client_id=201,
     )
 
-    client_calls: list[tuple[str, str]] = []
+    client_calls: list[tuple[str, str, str]] = []
 
-    async def fake_qbit_remove(download_id: str, delete_files: bool = False) -> bool:
+    async def fake_qbit_remove(
+        download_id: str,
+        delete_files: bool = False,
+        *,
+        client: dict[str, object] | None = None,
+    ) -> bool:
         del delete_files
-        client_calls.append(("qbit", download_id))
+        assert client is not None
+        client_calls.append(("qbit", download_id, str(client["host"])))
         return True
 
-    async def fake_sab_remove(download_id: str) -> bool:
-        client_calls.append(("sab", download_id))
+    async def fake_sab_remove(
+        download_id: str,
+        *,
+        client: dict[str, object] | None = None,
+    ) -> bool:
+        assert client is not None
+        client_calls.append(("sab", download_id, str(client["host"])))
         return True
 
     monkeypatch.setattr(main, "qbit_remove", fake_qbit_remove)
@@ -851,7 +979,9 @@ def test_qbit_exact_identity_wins_over_casefolded_sab_collision(
         follow_redirects=False,
     )
     assert response.status_code == 303
-    assert client_calls == [("qbit", qbit_id)]
+    assert client_calls == [
+        ("qbit", qbit_id, "http://qbit-primary.invalid")
+    ]
 
     with sqlite3.connect(lease_env) as db:
         assert db.execute(
@@ -900,18 +1030,19 @@ def test_qbit_rendered_key_collision_with_exact_sab_is_ambiguous(
     qbit_id = "ABCDEF0123456789ABCDEF0123456789ABCDEF01"
     route_key = qbit_id.lower()
     identities = (
-        (qbit_id, "qbittorrent", "torrent", 66),
-        (route_key, "sabnzbd", "nzb", 67),
+        (qbit_id, "qbittorrent", "torrent", 101, 66),
+        (route_key, "sabnzbd", "nzb", 201, 67),
     )
     queue_rows: list[tuple[int, int]] = []
     domain_rows: list[tuple[int, int, str, str]] = []
-    for download_id, client, protocol, volume_num in identities:
+    for download_id, client, protocol, download_client_id, volume_num in identities:
         queue_rows.append(
             _queue(
                 lease_env,
                 download_id=download_id,
                 status="pending",
                 child_status="pending",
+                download_client_id=download_client_id,
             )
         )
         volume_id, chapter_id, source_url = _grabbed_domain(
@@ -920,6 +1051,7 @@ def test_qbit_rendered_key_collision_with_exact_sab_is_ambiguous(
             volume_num=volume_num,
             client=client,
             protocol=protocol,
+            download_client_id=download_client_id,
         )
         domain_rows.append((volume_id, chapter_id, source_url, download_id))
 
@@ -1005,22 +1137,26 @@ def test_legacy_uppercase_qbit_uses_exact_db_id_and_lowercase_external_id(
         download_id=persisted_id,
         status="partial",
         child_status="needs_review",
+        download_client_id=101,
     )
     volume_id, _, source_url = _grabbed_domain(
         lease_env,
         download_id=persisted_id,
         volume_num=64,
+        download_client_id=101,
     )
     untouched_queue, untouched_child = _queue(
         lease_env,
         download_id="unrelated-qbit",
         status="pending",
         child_status="pending",
+        download_client_id=101,
     )
     untouched_volume, _, untouched_source = _grabbed_domain(
         lease_env,
         download_id="unrelated-qbit",
         volume_num=65,
+        download_client_id=101,
     )
     monkeypatch.setattr(
         queue_router._sc,
@@ -1035,14 +1171,25 @@ def test_legacy_uppercase_qbit_uses_exact_db_id_and_lowercase_external_id(
         for row in queue_rows
     )
 
-    client_calls: list[tuple[str, str]] = []
+    client_calls: list[tuple[str, str, str]] = []
 
-    async def fake_qbit_remove(download_id: str, delete_files: bool = False) -> bool:
+    async def fake_qbit_remove(
+        download_id: str,
+        delete_files: bool = False,
+        *,
+        client: dict[str, object] | None = None,
+    ) -> bool:
         del delete_files
-        client_calls.append(("qbit", download_id))
+        assert client is not None
+        client_calls.append(("qbit", download_id, str(client["host"])))
         return True
 
-    async def fail_sab_remove(download_id: str) -> bool:
+    async def fail_sab_remove(
+        download_id: str,
+        *,
+        client: dict[str, object] | None = None,
+    ) -> bool:
+        del client
         raise AssertionError(f"SAB received qBit identity {download_id}")
 
     monkeypatch.setattr(main, "qbit_remove", fake_qbit_remove)
@@ -1055,7 +1202,9 @@ def test_legacy_uppercase_qbit_uses_exact_db_id_and_lowercase_external_id(
         follow_redirects=False,
     )
     assert response.status_code == 303
-    assert client_calls == [("qbit", external_id)]
+    assert client_calls == [
+        ("qbit", external_id, "http://qbit-primary.invalid")
+    ]
 
     with sqlite3.connect(lease_env) as db:
         assert db.execute(
@@ -1106,14 +1255,16 @@ def test_same_text_cross_client_identity_fails_without_mutation(
             download_id=collision_id,
             status="pending",
             child_status="pending",
+            download_client_id=download_client_id,
         )
-        for _ in range(2)
+        for download_client_id in (101, 201)
     ]
     domains = (
         _grabbed_domain(
             lease_env,
             download_id=collision_id,
             volume_num=62,
+            download_client_id=101,
         ),
         _grabbed_domain(
             lease_env,
@@ -1121,6 +1272,7 @@ def test_same_text_cross_client_identity_fails_without_mutation(
             volume_num=63,
             client="sabnzbd",
             protocol="nzb",
+            download_client_id=201,
         ),
     )
 
@@ -1169,6 +1321,181 @@ def test_same_text_cross_client_identity_fails_without_mutation(
         assert db.execute("SELECT COUNT(*) FROM blocklist").fetchone()[0] == 0
 
 
+@pytest.mark.parametrize(
+    (
+        "client_ids",
+        "client_name",
+        "protocol",
+        "persisted_ids",
+        "route_id",
+        "expected_external_id",
+        "expected_host",
+    ),
+    (
+        (
+            (101, 102),
+            "qbittorrent",
+            "torrent",
+            (
+                "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+                "abcdef0123456789abcdef0123456789abcdef01",
+            ),
+            "abcdef0123456789abcdef0123456789abcdef01",
+            "abcdef0123456789abcdef0123456789abcdef01",
+            "http://qbit-primary.invalid",
+        ),
+        (
+            (201, 202),
+            "sabnzbd",
+            "nzb",
+            ("NZO-SHARED", "NZO-SHARED"),
+            "NZO-SHARED",
+            "NZO-SHARED",
+            "http://sab-primary.invalid",
+        ),
+    ),
+)
+def test_two_client_collision_fails_closed_then_owner_api_mutates_exactly(
+    lease_env: str,
+    monkeypatch: pytest.MonkeyPatch,
+    client_ids: tuple[int, int],
+    client_name: str,
+    protocol: str,
+    persisted_ids: tuple[str, str],
+    route_id: str,
+    expected_external_id: str,
+    expected_host: str,
+) -> None:
+    """Legacy plain/HTMX calls fail closed; the qualified API selects one owner."""
+    import main
+
+    queues: list[tuple[int, int]] = []
+    domains: list[tuple[int, int, str]] = []
+    for offset, (download_client_id, persisted_id) in enumerate(
+        zip(client_ids, persisted_ids, strict=True),
+    ):
+        queues.append(
+            _queue(
+                lease_env,
+                download_id=persisted_id,
+                status="pending",
+                child_status="pending",
+                download_client_id=download_client_id,
+            )
+        )
+        domains.append(
+            _grabbed_domain(
+                lease_env,
+                download_id=persisted_id,
+                volume_num=90 + offset,
+                client=client_name,
+                protocol=protocol,
+                download_client_id=download_client_id,
+                source_key=str(download_client_id),
+            )
+        )
+
+    plain = _client().post(
+        f"/queue/torrent/{route_id}/remove",
+        data={"remove_from_client": "0"},
+        **_csrf(f"{protocol}-collision-plain"),
+        follow_redirects=False,
+    )
+    assert plain.status_code == 303
+    assert "ambiguous" in plain.headers["location"]
+
+    htmx_csrf = _csrf(f"{protocol}-collision-htmx")
+    htmx_headers = dict(htmx_csrf["headers"])
+    htmx_headers["HX-Request"] = "true"
+    htmx = _client().post(
+        f"/queue/torrent/{route_id}/remove",
+        data={"remove_from_client": "0"},
+        headers=htmx_headers,
+        cookies=htmx_csrf["cookies"],
+        follow_redirects=False,
+    )
+    assert htmx.status_code == 200
+    assert "ambiguous" in json.loads(htmx.headers["HX-Trigger"])[
+        "showToast"
+    ]["msg"].lower()
+
+    client_calls: list[tuple[str, str, str]] = []
+
+    async def fake_qbit_remove(
+        download_id: str,
+        delete_files: bool = False,
+        *,
+        client: dict[str, object] | None = None,
+    ) -> bool:
+        del delete_files
+        assert client is not None
+        client_calls.append(("qbit", download_id, str(client["host"])))
+        return True
+
+    async def fake_sab_remove(
+        download_id: str,
+        *,
+        client: dict[str, object] | None = None,
+    ) -> bool:
+        assert client is not None
+        client_calls.append(("sab", download_id, str(client["host"])))
+        return True
+
+    monkeypatch.setattr(main, "qbit_remove", fake_qbit_remove)
+    monkeypatch.setattr(main, "sab_remove", fake_sab_remove)
+    qualified = _client().post(
+        "/api/queue/download-clients/"
+        f"{client_ids[0]}/downloads/{route_id}/remove",
+        data={"remove_from_client": "1"},
+        **_csrf(f"{protocol}-collision-qualified"),
+        follow_redirects=False,
+    )
+    assert qualified.status_code == 303
+    expected_kind = "qbit" if protocol == "torrent" else "sab"
+    assert client_calls == [
+        (expected_kind, expected_external_id, expected_host)
+    ]
+
+    with sqlite3.connect(lease_env) as db:
+        first_queue, first_child = queues[0]
+        first_volume, _, first_source = domains[0]
+        assert db.execute(
+            "SELECT status FROM import_queue WHERE id=?",
+            (first_queue,),
+        ).fetchone() == ("skipped",)
+        assert db.execute(
+            "SELECT status FROM import_queue_files WHERE id=?",
+            (first_child,),
+        ).fetchone() == ("skipped",)
+        assert db.execute(
+            "SELECT status,download_id,download_client_id FROM volumes WHERE id=?",
+            (first_volume,),
+        ).fetchone() == ("wanted", None, None)
+        assert db.execute(
+            "SELECT COUNT(*) FROM seen WHERE torrent_url=?",
+            (first_source,),
+        ).fetchone() == (0,)
+
+        second_queue, second_child = queues[1]
+        second_volume, _, second_source = domains[1]
+        assert db.execute(
+            "SELECT status FROM import_queue WHERE id=?",
+            (second_queue,),
+        ).fetchone() == ("pending",)
+        assert db.execute(
+            "SELECT status FROM import_queue_files WHERE id=?",
+            (second_child,),
+        ).fetchone() == ("pending",)
+        assert db.execute(
+            "SELECT status,download_id,download_client_id FROM volumes WHERE id=?",
+            (second_volume,),
+        ).fetchone() == ("grabbed", persisted_ids[1], client_ids[1])
+        assert db.execute(
+            "SELECT COUNT(*) FROM seen WHERE torrent_url=?",
+            (second_source,),
+        ).fetchone() == (1,)
+
+
 def test_blocked_htmx_render_releases_writer_transaction(
     lease_env: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -1182,6 +1509,7 @@ def test_blocked_htmx_render_releases_writer_transaction(
         download_id=download_id,
         status="importing",
         child_status="pending",
+        download_client_id=101,
         owner="render-owner",
     )
     render_started = threading.Event()
@@ -1261,11 +1589,11 @@ def test_queue_rendering_preserves_client_identity_and_escapes_no_rows(
         "Abcdef0123456789abcdef0123456789abcdef01",
         "aBcdef0123456789abcdef0123456789abcdef01",
     )
-    for index, (download_id, client, protocol) in enumerate(
+    for index, (download_id, client, protocol, download_client_id) in enumerate(
         (
-            (qbit_id, "qbittorrent", "torrent"),
-            (sab_ids[0], "sabnzbd", "nzb"),
-            (sab_ids[1], "sabnzbd", "nzb"),
+            (qbit_id, "qbittorrent", "torrent", 101),
+            (sab_ids[0], "sabnzbd", "nzb", 201),
+            (sab_ids[1], "sabnzbd", "nzb", 202),
         ),
         start=1,
     ):
@@ -1274,6 +1602,7 @@ def test_queue_rendering_preserves_client_identity_and_escapes_no_rows(
             download_id=download_id,
             status="partial",
             child_status="needs_review",
+            download_client_id=download_client_id,
         )
         _grabbed_domain(
             lease_env,
@@ -1281,6 +1610,7 @@ def test_queue_rendering_preserves_client_identity_and_escapes_no_rows(
             volume_num=70 + index,
             client=client,
             protocol=protocol,
+            download_client_id=download_client_id,
         )
     with sqlite3.connect(lease_env) as db:
         db.execute(
@@ -1423,11 +1753,7 @@ def test_qbit_and_sab_orphan_passes_protect_active_rows_and_scope_children(
 
     with sqlite3.connect(lease_env) as db:
         db.execute(
-            "INSERT INTO download_clients("
-            "name, type, host, port, username, password, category, priority, enabled"
-            ") VALUES"
-            "('qbit', 'qbittorrent', 'qbit.invalid', 8080, 'u', 'p', 'manga', 1, 1),"
-            "('sab', 'sabnzbd', 'sab.invalid', 8080, '', 'apikey', '', 1, 1)"
+            "UPDATE download_clients SET enabled=1 WHERE id IN (101, 201)"
         )
 
     protected: list[tuple[int, int, int, int, str]] = []
@@ -1439,11 +1765,13 @@ def test_qbit_and_sab_orphan_passes_protect_active_rows_and_scope_children(
         ("sab-pending", "pending", None, False, "sabnzbd", 43.0),
         ("sab-partial", "partial", None, False, "sabnzbd", 43.5),
     ):
+        download_client_id = 101 if client == "qbittorrent" else 201
         queue_id, child_id = _queue(
             lease_env,
             download_id=download_id,
             status=status,
             child_status="needs_review",
+            download_client_id=download_client_id,
             owner=owner,
             expired=expired,
         )
@@ -1455,6 +1783,8 @@ def test_qbit_and_sab_orphan_passes_protect_active_rows_and_scope_children(
             download_id=volume_download_id,
             volume_num=volume_num,
             client=client,
+            protocol="torrent" if client == "qbittorrent" else "nzb",
+            download_client_id=download_client_id,
         )
         protected.append(
             (queue_id, child_id, volume_id, chapter_id, source_url)
@@ -1465,23 +1795,28 @@ def test_qbit_and_sab_orphan_passes_protect_active_rows_and_scope_children(
         ("qbit-failed", "qbittorrent", 44.0),
         ("sab-failed", "sabnzbd", 45.0),
     ):
+        download_client_id = 101 if client == "qbittorrent" else 201
         failed_id, failed_child = _queue(
             lease_env,
             download_id=download_id,
             status="failed",
             child_status="failed",
+            download_client_id=download_client_id,
         )
         sibling_id, sibling_child = _queue(
             lease_env,
             download_id=download_id,
             status="imported",
             child_status="needs_review",
+            download_client_id=download_client_id,
         )
         volume_id, chapter_id, source_url = _grabbed_domain(
             lease_env,
             download_id=download_id,
             volume_num=volume_num,
             client=client,
+            protocol="torrent" if client == "qbittorrent" else "nzb",
+            download_client_id=download_client_id,
         )
         transitioned.append(
             (
@@ -1593,6 +1928,428 @@ def test_import_download_fallback_never_overwrites_importing_owner(
             "SELECT status FROM import_queue_files WHERE id=?",
             (child_id,),
         ).fetchone() == ("pending",)
+
+
+def test_set_category_uses_exact_owner_and_legacy_collision_fails_closed(
+    lease_env: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Standalone category changes never route through the default qBit."""
+    from routers import queue_ as queue_router
+
+    download_id = "ABCDEF0123456789ABCDEF0123456789ABCDEF01"
+    for offset, owner_id in enumerate((101, 102), start=1):
+        queue_id, _ = _queue(
+            lease_env,
+            download_id=download_id.lower(),
+            status="pending",
+            child_status="pending",
+            download_client_id=owner_id,
+        )
+        _grabbed_domain(
+            lease_env,
+            download_id=download_id,
+            volume_num=110 + offset,
+            download_client_id=owner_id,
+            source_key=str(owner_id),
+        )
+        with sqlite3.connect(lease_env) as db:
+            db.execute(
+                "UPDATE import_queue SET download_protocol='torrent' WHERE id=?",
+                (queue_id,),
+            )
+    with sqlite3.connect(lease_env) as db:
+        db.execute("UPDATE download_clients SET enabled=1 WHERE id=102")
+
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    class _Qbit:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args: object) -> bool:
+            del args
+            return False
+
+        async def post(
+            self,
+            url: str,
+            *args: object,
+            **kwargs: object,
+        ) -> _Response:
+            del args
+            data = kwargs.get("data")
+            requests.append((url, data if isinstance(data, dict) else {}))
+            return _Response(text="Ok.")
+
+    monkeypatch.setattr(queue_router.httpx, "AsyncClient", _Qbit)
+
+    legacy = _client().post(
+        f"/queue/torrent/{download_id.lower()}/set-category",
+        data={"category": "new-category"},
+        **_csrf("category-legacy"),
+        follow_redirects=False,
+    )
+    assert legacy.status_code == 303
+    assert "ambiguous" in legacy.headers["location"]
+    assert requests == []
+
+    qualified = _client().post(
+        f"/queue/download/client/101/{download_id}/set-category",
+        data={"category": "new-category"},
+        **_csrf("category-qualified"),
+        follow_redirects=False,
+    )
+    assert qualified.status_code == 303
+    assert [url for url, _ in requests] == [
+        "http://qbit-primary.invalid/api/v2/auth/login",
+        "http://qbit-primary.invalid/api/v2/torrents/createCategory",
+        "http://qbit-primary.invalid/api/v2/torrents/setCategory",
+    ]
+    assert requests[-1][1] == {
+        "hashes": download_id.lower(),
+        "category": "new-category",
+    }
+
+
+def test_manual_queue_and_import_actions_reject_client_type_drift(
+    lease_env: str,
+) -> None:
+    """Persisted NZB work cannot be reinterpreted after its owner becomes qBit."""
+    queue_id, child_id = _queue(
+        lease_env,
+        download_id="NZO-Drift",
+        status="pending",
+        child_status="pending",
+        download_client_id=101,
+    )
+    volume_id, chapter_id, source_url = _grabbed_domain(
+        lease_env,
+        download_id="NZO-Drift",
+        volume_num=120,
+        client="sabnzbd",
+        protocol="nzb",
+        download_client_id=101,
+    )
+    with sqlite3.connect(lease_env) as db:
+        db.execute(
+            "UPDATE import_queue SET download_protocol='nzb' WHERE id=?",
+            (queue_id,),
+        )
+
+    queue_response = _client().post(
+        "/queue/download/client/101/NZO-Drift/remove",
+        data={"remove_from_client": "0"},
+        **_csrf("drift-queue"),
+        follow_redirects=False,
+    )
+    assert queue_response.status_code == 303
+    assert "ambiguous" in queue_response.headers["location"]
+
+    import_response = _client().post(
+        f"/import/{queue_id}/dismiss",
+        **_csrf("drift-import"),
+        follow_redirects=False,
+    )
+    assert import_response.status_code == 303
+    assert "persisted" in import_response.headers["location"].lower()
+
+    with sqlite3.connect(lease_env) as db:
+        assert db.execute(
+            "SELECT status,download_protocol FROM import_queue WHERE id=?",
+            (queue_id,),
+        ).fetchone() == ("pending", "nzb")
+        assert db.execute(
+            "SELECT status FROM import_queue_files WHERE id=?",
+            (child_id,),
+        ).fetchone() == ("pending",)
+        assert db.execute(
+            "SELECT status,download_id,download_client_id FROM volumes WHERE id=?",
+            (volume_id,),
+        ).fetchone() == ("grabbed", "NZO-Drift", 101)
+        assert db.execute(
+            "SELECT status,download_id,download_client_id FROM chapters WHERE id=?",
+            (chapter_id,),
+        ).fetchone() == ("grabbed", "NZO-Drift", 101)
+        assert db.execute(
+            "SELECT COUNT(*) FROM seen WHERE torrent_url=?",
+            (source_url,),
+        ).fetchone() == (1,)
+
+
+def test_mark_wanted_uses_owner_and_protocol_aware_siblings(
+    lease_env: str,
+) -> None:
+    """qBit case variants group; SAB case variants and other owners do not."""
+    qbit_target = _grabbed_domain(
+        lease_env,
+        download_id="ABCDEF",
+        volume_num=130,
+        download_client_id=101,
+        source_key="target",
+    )
+    qbit_sibling = _grabbed_domain(
+        lease_env,
+        download_id="abcdef",
+        volume_num=131,
+        download_client_id=101,
+        source_key="same-owner",
+    )
+    qbit_collision = _grabbed_domain(
+        lease_env,
+        download_id="ABCDEF",
+        volume_num=132,
+        download_client_id=102,
+        source_key="other-owner",
+    )
+    sab_target = _grabbed_domain(
+        lease_env,
+        download_id="NZO-Case",
+        volume_num=133,
+        client="sabnzbd",
+        protocol="nzb",
+        download_client_id=201,
+        source_key="sab-target",
+    )
+    sab_case_variant = _grabbed_domain(
+        lease_env,
+        download_id="nzo-case",
+        volume_num=134,
+        client="sabnzbd",
+        protocol="nzb",
+        download_client_id=201,
+        source_key="sab-variant",
+    )
+
+    for tag, volume_id in (
+        ("qbit-mark-wanted", qbit_target[0]),
+        ("sab-mark-wanted", sab_target[0]),
+    ):
+        response = _client().post(
+            f"/series/1/volumes/{volume_id}/mark-wanted",
+            **_csrf(tag),
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+    with sqlite3.connect(lease_env) as db:
+        for volume_id, chapter_id, source_url in (qbit_target, sab_target):
+            assert db.execute(
+                "SELECT status,download_id,download_client_id FROM volumes"
+                " WHERE id=?",
+                (volume_id,),
+            ).fetchone() == ("wanted", None, None)
+            assert db.execute(
+                "SELECT status,download_id,download_client_id FROM chapters"
+                " WHERE id=?",
+                (chapter_id,),
+            ).fetchone() == ("wanted", None, None)
+            assert db.execute(
+                "SELECT COUNT(*) FROM seen WHERE torrent_url=?",
+                (source_url,),
+            ).fetchone() == (0,)
+
+        for volume_id, chapter_id, source_url in (
+            qbit_sibling,
+            qbit_collision,
+            sab_case_variant,
+        ):
+            assert db.execute(
+                "SELECT status,download_client_id FROM volumes WHERE id=?",
+                (volume_id,),
+            ).fetchone()[0] == "grabbed"
+            assert db.execute(
+                "SELECT status,download_client_id FROM chapters WHERE id=?",
+                (chapter_id,),
+            ).fetchone()[0] == "grabbed"
+            assert db.execute(
+                "SELECT COUNT(*) FROM seen WHERE torrent_url=?",
+                (source_url,),
+            ).fetchone() == (1,)
+
+
+def test_system_maintenance_isolates_owners_and_protects_active_work(
+    lease_env: str,
+) -> None:
+    """Cleanup/reset honor owner, qBit/SAB ID rules, leases, and publications."""
+    from routers.system import _cleanup_stale_seen_rows, _reset_stuck_grabs
+    from shared import get_db
+
+    active_queue, _ = _queue(
+        lease_env,
+        download_id="MAINT-HASH",
+        status="importing",
+        child_status="pending",
+        download_client_id=101,
+        owner="import-owner",
+    )
+    lease_queue, _ = _queue(
+        lease_env,
+        download_id="NZO-Lease",
+        status="failed",
+        child_status="failed",
+        download_client_id=201,
+        owner="lease-owner",
+    )
+    publication_queue, _ = _queue(
+        lease_env,
+        download_id="NZO-Publication",
+        status="failed",
+        child_status="failed",
+        download_client_id=201,
+    )
+    exact_qbit = _grabbed_domain(
+        lease_env,
+        download_id="maint-hash",
+        volume_num=140,
+        download_client_id=101,
+        source_key="active",
+    )
+    owner_collision = _grabbed_domain(
+        lease_env,
+        download_id="MAINT-HASH",
+        volume_num=141,
+        download_client_id=102,
+        source_key="idle-collision",
+    )
+    leased_sab = _grabbed_domain(
+        lease_env,
+        download_id="NZO-Lease",
+        volume_num=142,
+        client="sabnzbd",
+        protocol="nzb",
+        download_client_id=201,
+        source_key="lease",
+    )
+    published_sab = _grabbed_domain(
+        lease_env,
+        download_id="NZO-Publication",
+        volume_num=143,
+        client="sabnzbd",
+        protocol="nzb",
+        download_client_id=201,
+        source_key="publication",
+    )
+    sab_case_miss = _grabbed_domain(
+        lease_env,
+        download_id="nzo-publication",
+        volume_num=144,
+        client="sabnzbd",
+        protocol="nzb",
+        download_client_id=201,
+        source_key="case-miss",
+    )
+
+    with sqlite3.connect(lease_env) as db:
+        db.executemany(
+            "UPDATE import_queue SET download_protocol=? WHERE id=?",
+            (
+                ("torrent", active_queue),
+                ("nzb", lease_queue),
+                ("nzb", publication_queue),
+            ),
+        )
+        db.execute(
+            """
+            INSERT INTO import_publications(
+                queue_id,state,owner_token,series_id,dst_dir,import_mode,
+                staging_dir,queue_snapshot_json,series_tags_json,queue_status
+            ) VALUES(
+                ?,'publishing','publication-owner',1,'/library/Lease Series',
+                'copy','/library/.publication','{}','[]','failed'
+            )
+            """,
+            (publication_queue,),
+        )
+        db.execute(
+            "UPDATE volumes SET grabbed_at=datetime('now','-3 days')"
+            " WHERE id IN (?,?,?,?,?)",
+            (
+                exact_qbit[0],
+                owner_collision[0],
+                leased_sab[0],
+                published_sab[0],
+                sab_case_miss[0],
+            ),
+        )
+        db.executemany(
+            "INSERT INTO seen("
+            "torrent_url,torrent_name,series_id,grabbed_at,protocol,client,"
+            "download_id,download_client_id"
+            ") VALUES(?,?,1,datetime('now','-120 days'),?,?,?,?)",
+            (
+                (
+                    "https://source.invalid/orphan/owner-101",
+                    "owner 101",
+                    "torrent",
+                    "qbittorrent",
+                    "ORPHAN-ID",
+                    101,
+                ),
+                (
+                    "https://source.invalid/orphan/owner-102",
+                    "owner 102",
+                    "torrent",
+                    "qbittorrent",
+                    "ORPHAN-ID",
+                    102,
+                ),
+                (
+                    "https://source.invalid/orphan/sab-case",
+                    "sab case",
+                    "nzb",
+                    "sabnzbd",
+                    "nzo-orphan",
+                    201,
+                ),
+            ),
+        )
+        orphan_active = db.execute(
+            "INSERT INTO import_queue("
+            "series_id,download_id,download_client_id,download_protocol,"
+            "torrent_name,status,lease_owner"
+            ") VALUES(1,'ORPHAN-ID',101,'torrent','owner 101',"
+            "'importing','orphan-owner')"
+        ).lastrowid
+        assert orphan_active is not None
+        db.execute(
+            "INSERT INTO import_queue("
+            "series_id,download_id,download_client_id,download_protocol,"
+            "torrent_name,status"
+            ") VALUES(1,'NZO-Orphan',201,'nzb','sab exact case','importing')"
+        )
+
+    with get_db() as db:
+        assert _cleanup_stale_seen_rows(db) == 2
+    with sqlite3.connect(lease_env) as db:
+        assert db.execute(
+            "SELECT torrent_url FROM seen WHERE torrent_url LIKE"
+            " 'https://source.invalid/orphan/%' ORDER BY torrent_url"
+        ).fetchall() == [
+            ("https://source.invalid/orphan/owner-101",),
+        ]
+
+    with get_db() as db:
+        assert _reset_stuck_grabs(db) == 2
+    with sqlite3.connect(lease_env) as db:
+        for volume_id in (
+            exact_qbit[0],
+            leased_sab[0],
+            published_sab[0],
+        ):
+            assert db.execute(
+                "SELECT status,download_client_id FROM volumes WHERE id=?",
+                (volume_id,),
+            ).fetchone()[0] == "grabbed"
+        for volume_id in (owner_collision[0], sab_case_miss[0]):
+            assert db.execute(
+                "SELECT status,download_id,download_client_id FROM volumes"
+                " WHERE id=?",
+                (volume_id,),
+            ).fetchone() == ("wanted", None, None)
 
 
 def test_async_queue_db_contexts_do_not_render_or_yield() -> None:

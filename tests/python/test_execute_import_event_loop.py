@@ -183,6 +183,7 @@ def _seed_chapter_queue(
             (series_id,),
         )
         qid = cur.lastrowid
+        assert qid is not None
         c.execute(
             "INSERT INTO import_queue_files(queue_id, src_path, filename,"
             " file_type, proposed_volume, proposed_chapter, status)"
@@ -278,33 +279,22 @@ def test_execute_import_does_not_block_event_loop(env):
     )
 
 
-def test_rollback_also_runs_off_event_loop(env):
-    """The rollback path (shutil.rmtree on the staging dir) must also
-    yield. Simulate a failure mid-stage so rollback fires."""
-    import main
-
-    src = _make_zip(str(env["src_root"] / "c005.zip"))
-    qid = _seed_chapter_queue(env["db_path"], src, chap_num=5.0)
-
-    slow = _SlowCopyTracker(delay_seconds=0.2)  # succeed quickly so
-    # we don't blow the
-    # 30s test budget
-
-    # We don't have a reliable way to force a rollback without touching
-    # DB or FS mid-import. Instead, drive a successful import and pin
-    # that commit_all and rollback both run through off-loop helpers. If this
-    # regresses, inspect _execute_import_impl's staging calls first. (PR #147
-    # added a thin _execute_import
-    # wrapper for staging-dir cleanup; the actual import body lives in
-    # _execute_import_impl now.)
+def test_publication_and_rollback_filesystem_work_runs_off_event_loop(env):
+    """Publication preparation and rollback must both use worker threads."""
     import inspect
     from import_pipeline import _execute_import_impl
 
     src_code = inspect.getsource(_execute_import_impl)
-    assert "asyncio.to_thread(staging.commit_all" in src_code, (
-        "_execute_import_impl must call staging.commit_all via asyncio.to_thread"
+    assert (
+        "await _run_blocking_uninterruptibly(\n"
+        "                    lambda: prepare_staged_artifacts("
+    ) in src_code, (
+        "_execute_import_impl must prepare publication artifacts off-loop"
     )
-    assert "_run_blocking_uninterruptibly(staging.rollback" in src_code, (
+    assert (
+        "_run_blocking_uninterruptibly(\n"
+        "                staging.rollback"
+    ) in src_code, (
         "_execute_import_impl must settle staging.rollback off-loop"
     )
 
@@ -313,46 +303,35 @@ def test_inject_comicinfo_runs_off_event_loop(env):
     """ComicInfo injection reads and rewrites a zip. That's blocking
     I/O; must go through asyncio.to_thread."""
     import inspect
-    from import_pipeline import _execute_import_impl
-
-    src = inspect.getsource(_execute_import_impl)
-    # Every _try_inject_comicinfo call inside _execute_import is
-    # prefixed with asyncio.to_thread. A bare `_try_inject_comicinfo(`
-    # call (no `to_thread` before it) would regress.
     import re
+    from import_staging import _stage_files
 
-    bare_calls = re.findall(
-        r"(?<!to_thread,\s)_try_inject_comicinfo\(",
+    src = inspect.getsource(_stage_files)
+    calls = re.findall(r"_try_inject_comicinfo,", src)
+    wrapped_calls = re.findall(
+        r"await asyncio\.to_thread\(\s+_try_inject_comicinfo,",
         src,
     )
-    # Filter out the to_thread-wrapped ones explicitly — count only
-    # calls that don't sit inside an `asyncio.to_thread(...)` call.
-    # Simplest check: the source must not contain the bare pattern
-    # directly preceded by whitespace-only (i.e. a statement-level call).
-    bad = re.findall(
-        r"^\s+_try_inject_comicinfo\(",
-        src,
-        flags=re.MULTILINE,
-    )
-    assert not bad, (
-        "_execute_import still has bare _try_inject_comicinfo calls — "
-        f"wrap them in asyncio.to_thread. Offenders:\n{bad}"
+    assert len(calls) == 2
+    assert len(wrapped_calls) == len(calls), (
+        "_stage_files must run every ComicInfo injection through "
+        "asyncio.to_thread"
     )
 
 
 def test_maybe_convert_to_cbz_runs_off_event_loop(env):
     """CBR→CBZ conversion is CPU+IO heavy (rarfile extraction + zip
     write). Same rule as above."""
-    import inspect, re
-    from import_pipeline import _execute_import_impl
+    import inspect
+    import re
+    from import_staging import _stage_files
 
-    src = inspect.getsource(_execute_import_impl)
-    bad = re.findall(
-        r"^\s+stage_after\s*=\s*_maybe_convert_to_cbz\(",
+    src = inspect.getsource(_stage_files)
+    assert re.search(
+        r"stage_after\s*=\s*await asyncio\.to_thread\(\s*"
+        r"_maybe_convert_to_cbz,\s*stage_path\s*\)",
         src,
-        flags=re.MULTILINE,
-    )
-    assert not bad, (
-        "_execute_import still has bare _maybe_convert_to_cbz calls — "
-        f"wrap them in asyncio.to_thread. Offenders:\n{bad}"
+    ), (
+        "_stage_files must run CBR-to-CBZ conversion through "
+        "asyncio.to_thread"
     )
