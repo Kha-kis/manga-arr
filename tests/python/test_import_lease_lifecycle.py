@@ -872,7 +872,7 @@ def test_startup_recovers_before_retry_and_excludes_live_lease(
     retry_tasks: list[asyncio.Task[object]] = []
     real_sleep = asyncio.sleep
 
-    async def _record_retry(queue_id: int) -> None:
+    def _record_retry(queue_id: int) -> None:
         retried.append(queue_id)
 
     async def _fast_retry_sleep(delay: float) -> None:
@@ -895,7 +895,7 @@ def test_startup_recovers_before_retry_and_excludes_live_lease(
     async def _cancel_none() -> None:
         return None
 
-    monkeypatch.setattr(main, "_process_auto_import", _record_retry)
+    monkeypatch.setattr(main, "schedule_import_worker", _record_retry)
     monkeypatch.setattr(main, "create_background_task", _create)
     monkeypatch.setattr(main, "_cancel_background_tasks", _cancel_none)
     monkeypatch.setattr(main.asyncio, "sleep", _fast_retry_sleep)

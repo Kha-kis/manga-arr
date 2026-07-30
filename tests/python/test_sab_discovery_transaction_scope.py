@@ -416,7 +416,7 @@ def test_qbit_rows_are_snapshotted_before_threaded_discovery_work(
         retry_calls.append((series_id, title, pattern))
         return 0
 
-    async def fake_auto_import(queue_id: int) -> None:
+    def fake_schedule_import(queue_id: int) -> None:
         auto_import_ids.append(queue_id)
 
     async def no_suwayomi() -> None:
@@ -425,7 +425,11 @@ def test_qbit_rows_are_snapshotted_before_threaded_discovery_work(
     monkeypatch.setattr(import_discovery, "get_db", tracked_get_db)
     monkeypatch.setattr(import_discovery, "get_cfg", fake_get_cfg)
     monkeypatch.setattr(import_discovery.httpx, "AsyncClient", _QbitClient)
-    monkeypatch.setattr(import_discovery, "_process_auto_import", fake_auto_import)
+    monkeypatch.setattr(
+        import_discovery,
+        "schedule_import_worker",
+        fake_schedule_import,
+    )
     monkeypatch.setattr(grab, "grab_existing", fake_grab_existing)
     monkeypatch.setattr(suwayomi_router, "check_suwayomi_jobs", no_suwayomi)
 

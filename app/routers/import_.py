@@ -354,14 +354,10 @@ def retry_import_queue_entry(queue_id: int) -> ImportQueueActionResult:
 
     queued = False
     if not has_review:
-        _m.create_background_task(
-            _m._process_auto_import(queue_id),
-            name=f"import:retry:{queue_id}",
-        )
-        queued = True
+        queued = _m.schedule_import_worker(queue_id) is not None
     return {
         "ok": True,
-        "status": "queued" if queued else "needs_review",
+        "status": "queued" if queued else ("needs_review" if has_review else "pending"),
         "queued": queued,
         "retried_files": retried_files,
     }
@@ -673,7 +669,11 @@ async def retry_import(request: Request, queue_id: int):
         success_message=(
             "Import queued for retry"
             if result.get("queued")
-            else "Failed files reset; review is still required"
+            else (
+                "Failed files reset; review is still required"
+                if result["status"] == "needs_review"
+                else "Failed files reset; automatic retry was not scheduled"
+            )
         ),
         redirect_url="/import",
     )

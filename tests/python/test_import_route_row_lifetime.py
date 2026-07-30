@@ -203,6 +203,58 @@ def test_retry_materializes_parent_status_and_review_presence(
     }
 
 
+def test_retry_reports_closed_scheduler_rejection_as_pending(
+    row_lifetime_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import main
+    from routers.import_ import retry_import_queue_entry
+
+    queue_id, _ = _insert_queue(
+        row_lifetime_env["db_path"],
+        status="failed",
+        child_status="failed",
+    )
+    monkeypatch.setattr(main, "schedule_import_worker", lambda queue_id: None)
+
+    assert retry_import_queue_entry(queue_id) == {
+        "ok": True,
+        "status": "pending",
+        "queued": False,
+        "retried_files": 1,
+    }
+
+
+def test_retry_reports_deduplicated_live_worker_as_queued(
+    row_lifetime_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import main
+    from routers.import_ import retry_import_queue_entry
+
+    queue_id, _ = _insert_queue(
+        row_lifetime_env["db_path"],
+        status="failed",
+        child_status="failed",
+    )
+    live_worker = object()
+    scheduled_ids: list[int] = []
+
+    def _deduplicated_worker(scheduled_queue_id: int) -> object:
+        scheduled_ids.append(scheduled_queue_id)
+        return live_worker
+
+    monkeypatch.setattr(main, "schedule_import_worker", _deduplicated_worker)
+
+    assert retry_import_queue_entry(queue_id) == {
+        "ok": True,
+        "status": "queued",
+        "queued": True,
+        "retried_files": 1,
+    }
+    assert scheduled_ids == [queue_id]
+
+
 @pytest.mark.parametrize("htmx", [False, True])
 def test_process_route_materializes_result_status_for_response(
     row_lifetime_env: dict[str, Path],

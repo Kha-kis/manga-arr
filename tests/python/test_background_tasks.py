@@ -14,6 +14,8 @@ Covers:
 import asyncio
 import logging
 
+import pytest
+
 
 def _run(coro):
     """Run a coroutine in a fresh event loop and restore a default loop
@@ -180,6 +182,97 @@ def test_lifespan_shutdown_calls_cancel_helper():
     assert "_rss_task.cancel()" not in src
     assert "_status_task.cancel()" not in src
     assert "_refresh_task.cancel()" not in src
+
+
+def test_lifespan_protects_all_producer_startup_and_nests_worker_drain():
+    """Every producer and fallible startup step is lifecycle-owned."""
+    import inspect
+    import main
+
+    lifespan_src = inspect.getsource(main.lifespan)
+    protected = lifespan_src.index("async with _import_worker_lifecycle():")
+    first_producer = lifespan_src.index(
+        'create_background_task(_event_loop_lag(),'
+    )
+    fallible_db_work = lifespan_src.index("with get_db() as _db:")
+    retry = lifespan_src.index(
+        'create_background_task(_retry_stuck(), name="retry_stuck_imports")'
+    )
+    served = lifespan_src.index("yield", retry)
+    assert protected < first_producer < fallible_db_work < retry < served
+
+    lifecycle_src = inspect.getsource(main._import_worker_lifecycle)
+    assert (
+        "try:\n            await _cancel_background_tasks()\n"
+        "        finally:\n            await cancel_import_workers()"
+    ) in lifecycle_src
+
+
+def test_pre_yield_startup_failure_drains_owned_producer_and_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import import_workers
+    import main
+
+    worker_drains: list[str] = []
+
+    async def _drain_workers() -> None:
+        worker_drains.append("workers")
+
+    monkeypatch.setattr(main, "cancel_import_workers", _drain_workers)
+
+    async def _exercise() -> None:
+        task: asyncio.Task[None] | None = None
+
+        async def _producer() -> None:
+            _ = await asyncio.Event().wait()
+
+        with pytest.raises(RuntimeError, match="startup DB work failed"):
+            async with main._import_worker_lifecycle():
+                task = main.create_background_task(
+                    _producer(), name="pre-yield-producer"
+                )
+                raise RuntimeError("startup DB work failed")
+
+        assert task is not None
+        assert task.cancelled()
+        assert task not in main._BACKGROUND_TASKS
+        assert import_workers.schedule_import_worker(9001) is None
+
+    _run(_exercise())
+    assert worker_drains == ["workers"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [RuntimeError("producer drain failed"), asyncio.CancelledError()],
+    ids=["exception", "cancellation"],
+)
+def test_worker_drain_runs_when_producer_drain_raises_or_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
+) -> None:
+    import main
+
+    drains: list[str] = []
+
+    async def _drain_producers() -> None:
+        drains.append("producers")
+        raise failure
+
+    async def _drain_workers() -> None:
+        drains.append("workers")
+
+    monkeypatch.setattr(main, "_cancel_background_tasks", _drain_producers)
+    monkeypatch.setattr(main, "cancel_import_workers", _drain_workers)
+
+    async def _exercise() -> None:
+        with pytest.raises(type(failure)):
+            async with main._import_worker_lifecycle():
+                pass
+
+    _run(_exercise())
+    assert drains == ["producers", "workers"]
 
 
 def test_router_handlers_do_not_spawn_untracked_asyncio_tasks():

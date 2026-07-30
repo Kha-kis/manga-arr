@@ -14,6 +14,7 @@ from defusedxml.ElementTree import parse as _safe_xml_parse, fromstring as _safe
 from defusedxml.ElementTree import ParseError as _SafeXMLParseError
 from defusedxml.common import DefusedXmlException as _DefusedXmlException
 import zipfile
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from urllib.parse import quote_plus
@@ -432,6 +433,28 @@ from tasks import (  # noqa: F401
     cleanup_stuck_state,
     _BACKGROUND_TASKS, create_background_task, _cancel_background_tasks,
 )
+from import_workers import (  # noqa: F401
+    _IMPORT_WORKERS,
+    cancel_import_workers,
+    schedule_import_worker,
+    start_import_worker_scheduling,
+    stop_import_worker_scheduling,
+)
+
+
+@asynccontextmanager
+async def _import_worker_lifecycle() -> AsyncGenerator[None, None]:
+    """Own import-worker admission and ordered producer/worker shutdown."""
+    start_import_worker_scheduling()
+    try:
+        yield
+    finally:
+        stop_import_worker_scheduling()
+        try:
+            await _cancel_background_tasks()
+        finally:
+            await cancel_import_workers()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -554,61 +577,63 @@ async def lifespan(app: FastAPI):
     # stored reference — see create_background_task() docstring.
     # Event-loop lag watchdog — no-op unless MANGARR_DEBUG_TIMING=1.
     # Helps diagnose issue #31 follow-up A stalls during investigation.
-    from shared import event_loop_lag_monitor as _event_loop_lag
-    create_background_task(_event_loop_lag(),                  name="event_loop_lag_monitor")
+    # All producer registration and the fallible reconciliation that follows
+    # are protected by ordered producer/worker cleanup.
+    async with _import_worker_lifecycle():
+        from shared import event_loop_lag_monitor as _event_loop_lag
+        create_background_task(_event_loop_lag(),                  name="event_loop_lag_monitor")
 
-    create_background_task(rss_loop(),                         name="rss_loop")
-    create_background_task(status_loop(),                      name="status_loop")
-    create_background_task(refresh_ongoing_loop(),             name="refresh_ongoing_loop")
-    create_background_task(_metadata_retry_loop(),             name="metadata_retry_loop")
-    create_background_task(_backfill_metadata_loop(),          name="backfill_metadata_loop")
-    create_background_task(backlog_search_loop(),              name="backlog_search_loop")
-    create_background_task(_stuck_state_cleanup_loop(),        name="stuck_state_cleanup_loop")
-    create_background_task(_swy_router.suwayomi_monitor_loop(), name="suwayomi_monitor_loop")
-    create_background_task(rescan_loop(),                      name="rescan_loop")
-    create_background_task(_import_list_loop(),                name="import_list_loop")
-    create_background_task(_backup_loop(),                     name="backup_loop")
-    create_background_task(_recycle_bin_reaper_loop(),         name="recycle_bin_reaper")
-    # Poll qBit/SAB in the background so /queue renders from cached
-    # snapshots instead of making live HTTP calls on every pageview.
-    from status_cache import download_status_refresh_loop as _dl_status_loop
-    create_background_task(_dl_status_loop(),                  name="download_status_refresh_loop")
-    # Re-process safe unleased retry rows, including rows recovered above.
-    # Live importing leases are excluded by both status and owner.
-    with get_db() as _db:
-        _stuck = _db.execute(
-            "SELECT iq.id FROM import_queue iq"
-            " WHERE iq.status IN ('pending','partial')"
-            " AND iq.lease_owner IS NULL"
-            " AND NOT EXISTS ("
-            "   SELECT 1 FROM import_queue_files f"
-            "   WHERE f.queue_id=iq.id AND f.status='needs_review'"
-            ")"
-        ).fetchall()
-        _stuck_ids = [r[0] for r in _stuck]
-        # Reset grabbed volumes with no download_id that somehow persisted through shutdown
-        _db.execute(
-            "UPDATE volumes SET status='wanted', grabbed_at=NULL, source_url=NULL,"
-            " download_id=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
-            " client=NULL, release_group=NULL, imported_at=NULL"
-            " WHERE status='grabbed' AND download_id IS NULL AND volume_num IS NOT NULL"
-            " AND (client IS NULL OR client != 'suwayomi')"
-        )
-        _db.execute(
-            "DELETE FROM volumes WHERE status='grabbed' AND download_id IS NULL AND volume_num IS NULL"
-        )
-    # Defer stuck-import retries until after startup completes to avoid blocking
-    # the event loop (since _execute_import is fully synchronous).
-    async def _retry_stuck():
-        await asyncio.sleep(5)
-        for _qid in _stuck_ids:
-            await _process_auto_import(_qid)
-    if _stuck_ids:
-        create_background_task(_retry_stuck(), name="retry_stuck_imports")
-    yield
-    # Cancel every registered background task and wait for graceful exit.
-    # Done-callbacks log unexpected exceptions; cancellations are silent.
-    await _cancel_background_tasks()
+        create_background_task(rss_loop(),                         name="rss_loop")
+        create_background_task(status_loop(),                      name="status_loop")
+        create_background_task(refresh_ongoing_loop(),             name="refresh_ongoing_loop")
+        create_background_task(_metadata_retry_loop(),             name="metadata_retry_loop")
+        create_background_task(_backfill_metadata_loop(),          name="backfill_metadata_loop")
+        create_background_task(backlog_search_loop(),              name="backlog_search_loop")
+        create_background_task(_stuck_state_cleanup_loop(),        name="stuck_state_cleanup_loop")
+        create_background_task(_swy_router.suwayomi_monitor_loop(), name="suwayomi_monitor_loop")
+        create_background_task(rescan_loop(),                      name="rescan_loop")
+        create_background_task(_import_list_loop(),                name="import_list_loop")
+        create_background_task(_backup_loop(),                     name="backup_loop")
+        create_background_task(_recycle_bin_reaper_loop(),         name="recycle_bin_reaper")
+        # Poll qBit/SAB in the background so /queue renders from cached
+        # snapshots instead of making live HTTP calls on every pageview.
+        from status_cache import download_status_refresh_loop as _dl_status_loop
+        create_background_task(_dl_status_loop(),                  name="download_status_refresh_loop")
+        # Re-process safe unleased retry rows, including rows recovered above.
+        # Live importing leases are excluded by both status and owner.
+        with get_db() as _db:
+            _stuck = _db.execute(
+                "SELECT iq.id FROM import_queue iq"
+                " WHERE iq.status IN ('pending','partial')"
+                " AND iq.lease_owner IS NULL"
+                " AND NOT EXISTS ("
+                "   SELECT 1 FROM import_queue_files f"
+                "   WHERE f.queue_id=iq.id AND f.status='needs_review'"
+                ")"
+            ).fetchall()
+            _stuck_ids = [r[0] for r in _stuck]
+            # Reset grabbed volumes with no download_id that somehow persisted through shutdown
+            _db.execute(
+                "UPDATE volumes SET status='wanted', grabbed_at=NULL, source_url=NULL,"
+                " download_id=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
+                " client=NULL, release_group=NULL, imported_at=NULL"
+                " WHERE status='grabbed' AND download_id IS NULL AND volume_num IS NOT NULL"
+                " AND (client IS NULL OR client != 'suwayomi')"
+            )
+            _db.execute(
+                "DELETE FROM volumes WHERE status='grabbed' AND download_id IS NULL AND volume_num IS NULL"
+            )
+
+        # Defer stuck-import retries until after startup completes to avoid
+        # blocking the event loop (since _execute_import is synchronous).
+        async def _retry_stuck() -> None:
+            await asyncio.sleep(5)
+            for _qid in _stuck_ids:
+                _ = schedule_import_worker(_qid)
+
+        if _stuck_ids:
+            create_background_task(_retry_stuck(), name="retry_stuck_imports")
+        yield
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 # ── Helpers moved to helpers.py ─────────────────────────────────────────────

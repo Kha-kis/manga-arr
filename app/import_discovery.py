@@ -11,6 +11,7 @@ from shared import get_cfg, get_db
 from events import add_history, log_event
 from routers.download_clients import get_client_for_protocol, apply_remote_path_mapping
 from import_queue import _queue_import
+from import_workers import schedule_import_worker
 
 
 # Single-flight guard for check_download_status. Evidence from issue #31
@@ -336,7 +337,7 @@ async def _check_download_status_impl():
         stuck_ids = [r["id"] for r in stuck_pending]
     if stuck_ids:
         for _sid in stuck_ids:
-            asyncio.create_task(_process_auto_import(_sid))
+            schedule_import_worker(_sid)
 
     # ── qBittorrent ──────────────────────────────────────────────────────────
     with get_db() as _cdb:
@@ -400,7 +401,7 @@ async def _check_download_status_impl():
 
                     _new_imports = await asyncio.to_thread(_process_qbit_completed)
                     for _imp_id in _new_imports:
-                        asyncio.create_task(_process_auto_import(_imp_id))
+                        schedule_import_worker(_imp_id)
 
                     def _qbit_orphan_cleanup_sync():
                         # Phase A (quick): bulk-reset grabbed-without-download_id
@@ -659,7 +660,7 @@ async def _check_download_status_impl():
                     sab_host,
                 )
                 for _sqid in _sab_new_queue_ids:
-                    asyncio.create_task(_process_auto_import(_sqid))
+                    schedule_import_worker(_sqid)
         except Exception as e:
             log_event("error", f"SABnzbd status check failed: {e}")
 

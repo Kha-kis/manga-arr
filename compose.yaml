@@ -17,6 +17,9 @@ services:
     ports:
       - "6789:8000"
     restart: unless-stopped
+    # Imports defer cancellation until filesystem publication or rollback is
+    # complete, so allow normal upgrades to finish that safety boundary.
+    stop_grace_period: 15m
     init: true
     security_opt:
       - no-new-privileges=true
