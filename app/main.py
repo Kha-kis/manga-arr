@@ -461,6 +461,10 @@ async def lifespan(app: FastAPI):
             "secret cipher unavailable at startup: %s — encryption-at-rest disabled", _e,
         )
     load_config()
+    # init_db() must run before DB-backed configuration can be loaded on a
+    # fresh install. Re-run the idempotent bootstrap now that environment and
+    # settings values are available so save_path can seed the first root.
+    _bootstrap_root_folders()
     # Defense in depth: if api_key is still blank after init_db + load_config
     # (DB row nulled, partial migration, etc.), generate one now. The
     # middleware fails closed on blank api_key, so the alternative is the
