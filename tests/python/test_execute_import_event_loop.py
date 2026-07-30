@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -51,8 +52,36 @@ def _make_zip(path: str, name: str = "page.png") -> str:
 
 
 @pytest.fixture
-def env(tmp_path):
-    import main, shared, security
+def _process_globals_restored():
+    import import_execute
+    import main
+    import security
+    import shared
+
+    semaphore = import_execute._IMPORT_SEM
+    semaphore_value = semaphore._value if semaphore is not None else None
+    main_config = main.CONFIG
+    main_values = dict(main.CONFIG)
+    shared_config = shared.CONFIG
+    shared_values = dict(shared.CONFIG)
+    cipher = security._SECRET_CIPHER
+    yield
+    assert import_execute._IMPORT_SEM is semaphore
+    if semaphore is not None:
+        assert semaphore._value == semaphore_value
+    assert main.CONFIG is main_config
+    assert main.CONFIG == main_values
+    assert shared.CONFIG is shared_config
+    assert shared.CONFIG == shared_values
+    assert security._SECRET_CIPHER is cipher
+
+
+@pytest.fixture
+def env(tmp_path, _process_globals_restored):
+    import import_execute
+    import main
+    import security
+    import shared
 
     db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     db.close()
@@ -60,8 +89,16 @@ def env(tmp_path):
     key_dir = tempfile.mkdtemp(prefix="mangarr-evloop-keys-")
     orig_main_db = main.DB_PATH
     orig_shared_db = shared.DB_PATH
+    orig_sem = import_execute._IMPORT_SEM
+    orig_sem_value = orig_sem._value if orig_sem is not None else None
+    orig_main_config = main.CONFIG
+    orig_main_values = dict(main.CONFIG)
+    orig_shared_config = shared.CONFIG
+    orig_shared_values = dict(shared.CONFIG)
+    orig_cipher = security._SECRET_CIPHER
     main.DB_PATH = db.name
     shared.DB_PATH = db.name
+    import_execute._IMPORT_SEM = None
     security._SECRET_CIPHER = None
     security.load_or_create_secret_cipher(key_dir)
     main.init_db()
@@ -87,10 +124,21 @@ def env(tmp_path):
     finally:
         main.DB_PATH = orig_main_db
         shared.DB_PATH = orig_shared_db
+        if orig_sem is not None and orig_sem_value is not None:
+            orig_sem._value = orig_sem_value
+        import_execute._IMPORT_SEM = orig_sem
+        main.CONFIG = orig_main_config
+        main.CONFIG.clear()
+        main.CONFIG.update(orig_main_values)
+        shared.CONFIG = orig_shared_config
+        shared.CONFIG.clear()
+        shared.CONFIG.update(orig_shared_values)
+        security._SECRET_CIPHER = orig_cipher
         for ext in ("", "-wal", "-shm"):
             p = db.name + ext
             if os.path.exists(p):
                 os.unlink(p)
+        shutil.rmtree(key_dir)
 
 
 def _seed_chapter_queue(
@@ -244,21 +292,20 @@ def test_rollback_also_runs_off_event_loop(env):
 
     # We don't have a reliable way to force a rollback without touching
     # DB or FS mid-import. Instead, drive a successful import and pin
-    # that commit_all is invoked through asyncio.to_thread — the same
-    # mechanism rollback uses. If this test regresses, a grep for
-    # "await asyncio.to_thread(staging." in _execute_import_impl is the
-    # quickest way to triage. (PR #147 added a thin _execute_import
+    # that commit_all and rollback both run through off-loop helpers. If this
+    # regresses, inspect _execute_import_impl's staging calls first. (PR #147
+    # added a thin _execute_import
     # wrapper for staging-dir cleanup; the actual import body lives in
     # _execute_import_impl now.)
     import inspect
     from import_pipeline import _execute_import_impl
 
     src_code = inspect.getsource(_execute_import_impl)
-    assert "await asyncio.to_thread(staging.commit_all" in src_code, (
+    assert "asyncio.to_thread(staging.commit_all" in src_code, (
         "_execute_import_impl must call staging.commit_all via asyncio.to_thread"
     )
-    assert "await asyncio.to_thread(staging.rollback" in src_code, (
-        "_execute_import_impl must call staging.rollback via asyncio.to_thread"
+    assert "_run_blocking_uninterruptibly(staging.rollback" in src_code, (
+        "_execute_import_impl must settle staging.rollback off-loop"
     )
 
 

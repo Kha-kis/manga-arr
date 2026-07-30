@@ -2,6 +2,8 @@
 
 import logging
 import os
+import sqlite3
+from typing import Any
 
 from events import log_event
 from parsing import extract_chapter_num
@@ -14,9 +16,19 @@ from files import (
     safe_join_under,
 )
 from import_kinds import normalize_import_kind
+from import_lease import (
+    has_import_sibling_that_may_use_download,
+    refresh_import_queue_lease,
+    release_import_queue_lease as _release_import_queue_lease,
+    transition_import_queue_row as _transition_import_queue_row,
+)
 from rescan import _series_library_dir
 
 log = logging.getLogger(__name__)
+
+
+class _ImportPlanLeaseLost(RuntimeError):
+    """Raised to roll back Phase 1 when its final ownership CAS fails."""
 
 
 class _FilePlan:
@@ -70,15 +82,15 @@ class _ImportPlan:
 
     def __init__(
         self,
-        queue: dict,
-        series: dict | None,
+        queue: dict[str, Any],
+        series: dict[str, Any] | None,
         series_tags: list[str],
         dst_dir: str,
         import_mode: str,
-        now_ts,
+        now_ts: None,
         files: list[_FilePlan],
         series_id: int,
-    ):
+    ) -> None:
         self.queue = queue
         self.series = series
         self.series_tags = series_tags
@@ -90,18 +102,24 @@ class _ImportPlan:
 
 
 def _plan_import(
-    db,
+    db: sqlite3.Connection,
     queue_id: int,
-    volume_overrides: dict,
-    chapter_overrides: dict,
-    skip_ids: set,
+    lease_owner: str,
+    volume_overrides: dict[int, float],
+    chapter_overrides: dict[int, float],
+    skip_ids: set[int],
     import_mode: str,
-):
+    *,
+    lease_seconds: float,
+) -> _ImportPlan | None:
     """Phase 1: read queue/series/files and build _ImportPlan."""
     queue_row = db.execute(
-        "SELECT * FROM import_queue WHERE id=?", (queue_id,)
+        "SELECT * FROM import_queue"
+        " WHERE id=? AND status='importing' AND lease_owner=?"
+        " AND lease_expires_at > datetime('now')",
+        (queue_id, lease_owner),
     ).fetchone()
-    if not queue_row or queue_row["status"] not in ("pending", "partial", "importing"):
+    if not queue_row:
         return None
     queue = dict(queue_row)
 
@@ -111,10 +129,7 @@ def _plan_import(
     ).fetchall()
 
     if not files:
-        if queue["status"] == "importing":
-            db.execute(
-                "UPDATE import_queue SET status='pending' WHERE id=?", (queue_id,)
-            )
+        _release_import_queue_lease(db, queue_id, lease_owner)
         return None
 
     s_row = db.execute(
@@ -135,33 +150,26 @@ def _plan_import(
             queue["series_id"],
             db=db,
         )
-        db.execute("UPDATE import_queue SET status='failed' WHERE id=?", (queue_id,))
-        db.execute(
-            "UPDATE volumes SET status='wanted', grabbed_at=NULL, download_id=NULL,"
-            " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
-            " client=NULL, release_group=NULL, import_path=NULL"
-            " WHERE download_id=? AND status='grabbed'",
-            (queue["download_id"],),
+        transitioned = _transition_import_queue_row(
+            db,
+            queue_id,
+            lease_owner,
+            "failed",
         )
-        return None
-
-    try:
-        os.makedirs(dst_dir, exist_ok=True)
-    except Exception as e:
-        log_event(
-            "error",
-            f"Import: cannot create {dst_dir}: {e}",
-            queue["series_id"],
-            db=db,
+        shared_download = has_import_sibling_that_may_use_download(
+            db,
+            queue_id=queue_id,
+            download_id=queue["download_id"],
+            series_id=queue["series_id"],
         )
-        db.execute("UPDATE import_queue SET status='failed' WHERE id=?", (queue_id,))
-        db.execute(
-            "UPDATE volumes SET status='wanted', grabbed_at=NULL, download_id=NULL,"
-            " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
-            " client=NULL, release_group=NULL, import_path=NULL"
-            " WHERE download_id=? AND status='grabbed'",
-            (queue["download_id"],),
-        )
+        if transitioned and not shared_download:
+            db.execute(
+                "UPDATE volumes SET status='wanted', grabbed_at=NULL, download_id=NULL,"
+                " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
+                " client=NULL, release_group=NULL, import_path=NULL"
+                " WHERE series_id=? AND download_id=? AND status='grabbed'",
+                (queue["series_id"], queue["download_id"]),
+            )
         return None
 
     now_ts = None
@@ -403,10 +411,6 @@ def _plan_import(
             except ValueError as _e:
                 plan_status = "pre_failed"
                 plan_failure_reason = f"unsafe destination ({filename}): {_e}"
-            if plan_status == "ready" and not os.path.isfile(f["src_path"]):
-                plan_status = "pre_failed"
-                plan_failure_reason = f"source file missing: {f['src_path']}"
-
         plans.append(
             _FilePlan(
                 file_id=f["id"],
@@ -435,7 +439,7 @@ def _plan_import(
     if plans:
         now_ts = None
 
-    return _ImportPlan(
+    plan = _ImportPlan(
         queue=queue,
         series=s,
         series_tags=series_tags,
@@ -445,3 +449,14 @@ def _plan_import(
         files=plans,
         series_id=queue["series_id"],
     )
+    # Phase 1 may update child decisions above. This renewal is deliberately
+    # its final DB mutation so an expired/stale owner rolls the transaction
+    # back instead of committing any of those child changes.
+    if not refresh_import_queue_lease(
+        db,
+        queue_id,
+        lease_owner,
+        lease_seconds=lease_seconds,
+    ):
+        raise _ImportPlanLeaseLost
+    return plan

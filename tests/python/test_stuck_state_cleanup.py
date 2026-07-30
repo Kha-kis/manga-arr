@@ -5,9 +5,11 @@ rows stuck in pending/partial for >30 days. Prior behaviour only
 ran a subset of this at startup, so a long-running container drifted."""
 
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
+import threading
 
 import pytest
 
@@ -16,7 +18,24 @@ import conftest  # noqa: F401
 
 
 @pytest.fixture
-def env():
+def _process_globals_restored():
+    import main, shared, security
+
+    main_config = main.CONFIG
+    main_values = dict(main.CONFIG)
+    shared_config = shared.CONFIG
+    shared_values = dict(shared.CONFIG)
+    cipher = security._SECRET_CIPHER
+    yield
+    assert main.CONFIG is main_config
+    assert main.CONFIG == main_values
+    assert shared.CONFIG is shared_config
+    assert shared.CONFIG == shared_values
+    assert security._SECRET_CIPHER is cipher
+
+
+@pytest.fixture
+def env(_process_globals_restored):
     import main, shared, security
 
     db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -26,6 +45,11 @@ def env():
 
     orig_main_db = main.DB_PATH
     orig_shared_db = shared.DB_PATH
+    orig_main_config = main.CONFIG
+    orig_main_values = dict(main.CONFIG)
+    orig_shared_config = shared.CONFIG
+    orig_shared_values = dict(shared.CONFIG)
+    orig_cipher = security._SECRET_CIPHER
     main.DB_PATH = db.name
     shared.DB_PATH = db.name
     security._SECRET_CIPHER = None
@@ -38,10 +62,18 @@ def env():
     finally:
         main.DB_PATH = orig_main_db
         shared.DB_PATH = orig_shared_db
+        main.CONFIG = orig_main_config
+        main.CONFIG.clear()
+        main.CONFIG.update(orig_main_values)
+        shared.CONFIG = orig_shared_config
+        shared.CONFIG.clear()
+        shared.CONFIG.update(orig_shared_values)
+        security._SECRET_CIPHER = orig_cipher
         for ext in ("", "-wal", "-shm"):
             p = db.name + ext
             if os.path.exists(p):
                 os.unlink(p)
+        shutil.rmtree(key_dir)
 
 
 def _seed_series(db_path, sid, monitored=1):
@@ -202,65 +234,53 @@ def test_recent_pending_import_queue_is_left_alone(env):
 # ───────────────────── Phase 4: stuck 'importing' rows ─────────────────────
 
 
-def test_reverts_stuck_importing_queue_after_threshold(env):
-    """Phase 4: import_queue rows stuck in 'importing' state past
-    threshold get reverted to 'failed'. This was the production bug
-    where a worker died mid-import (or hit "database is locked"
-    trying to mark itself failed) and left the row claimed forever.
-    Auto-import status_loop never retried the row because it only
-    looks at 'pending'."""
+def test_recovers_expired_and_legacy_importing_leases(env):
+    """Lease expiry, never queue age, determines importing recovery."""
     from main import cleanup_stuck_state
 
     _seed_series(env, 7)
     with sqlite3.connect(env) as c:
-        # Old stuck importing row — should be recovered
+        # Legacy importing row with no lease metadata is always recoverable.
         c.execute(
             "INSERT INTO import_queue(series_id, download_id, torrent_name,"
             " status, created_at) VALUES(7, 'dl-old', 'OldImporting',"
             " 'importing', datetime('now', '-10 hours'))"
         )
-        # Recent importing row — should be left alone (worker may still be live)
+        # Queue age is irrelevant while a live owner lease exists.
         c.execute(
             "INSERT INTO import_queue(series_id, download_id, torrent_name,"
-            " status, created_at) VALUES(7, 'dl-fresh', 'FreshImporting',"
-            " 'importing', datetime('now', '-30 minutes'))"
+            " status, lease_owner, lease_expires_at, created_at)"
+            " VALUES(7, 'dl-live', 'LiveImporting', 'importing', 'owner-live',"
+            " datetime('now', '+5 minutes'), datetime('now', '-40 days'))"
         )
 
     stats = cleanup_stuck_state()
-    assert stats["importing_reset"] == 1, (
-        f"expected 1 stuck 'importing' to be reset; got {stats['importing_reset']}"
-    )
+    assert stats["importing_reset"] == 1
     with sqlite3.connect(env) as c:
         c.row_factory = sqlite3.Row
         rows = {
-            r["torrent_name"]: r["status"]
+            r["torrent_name"]: (r["status"], r["lease_owner"], r["lease_expires_at"])
             for r in c.execute(
-                "SELECT torrent_name, status FROM import_queue"
+                "SELECT torrent_name, status, lease_owner, lease_expires_at"
+                " FROM import_queue"
             ).fetchall()
         }
-    assert rows["OldImporting"] == "failed", (
-        "old stuck-importing must be reset to 'failed'"
-    )
-    assert rows["FreshImporting"] == "importing", (
-        "fresh in-flight import must NOT be touched"
-    )
+    assert rows["OldImporting"] == ("pending", None, None)
+    assert rows["LiveImporting"][0:2] == ("importing", "owner-live")
 
 
-def test_does_not_revert_importing_with_needs_review_files(env):
-    """Safety: rows with needs_review files carry user decisions and
-    must NOT be auto-recovered — operator must intervene via the
-    reconcile UI. Mirrors the planning logic in app/reconcile.py."""
+def test_expired_lease_recovers_to_partial_and_preserves_needs_review(env):
+    """Recovery preserves child decisions and derives partial from review state."""
     from main import cleanup_stuck_state
 
     _seed_series(env, 7)
     with sqlite3.connect(env) as c:
-        # Old stuck importing row...
         c.execute(
             "INSERT INTO import_queue(id, series_id, download_id, torrent_name,"
-            " status, created_at) VALUES(99, 7, 'dl-needs-review', 'NeedsReview',"
-            " 'importing', datetime('now', '-10 hours'))"
+            " status, lease_owner, lease_expires_at, created_at)"
+            " VALUES(99, 7, 'dl-needs-review', 'NeedsReview', 'importing',"
+            " 'dead-owner', datetime('now', '-1 second'), datetime('now'))"
         )
-        # ...with at least one needs_review file
         c.execute(
             "INSERT INTO import_queue_files(queue_id, filename, src_path,"
             " dst_path, status) VALUES(99, 'foo.cbz', '/src/foo.cbz',"
@@ -268,32 +288,246 @@ def test_does_not_revert_importing_with_needs_review_files(env):
         )
 
     stats = cleanup_stuck_state()
-    assert stats["importing_reset"] == 0, (
-        "must NOT auto-recover rows with needs_review files"
-    )
+    assert stats["importing_reset"] == 1
     with sqlite3.connect(env) as c:
-        status = c.execute("SELECT status FROM import_queue WHERE id=99").fetchone()[0]
-    assert status == "importing", "row must remain 'importing' for operator review"
+        queue = c.execute(
+            "SELECT status, lease_owner, lease_expires_at"
+            " FROM import_queue WHERE id=99"
+        ).fetchone()
+        child = c.execute(
+            "SELECT status FROM import_queue_files WHERE queue_id=99"
+        ).fetchone()
+    assert queue == ("partial", None, None)
+    assert child == ("needs_review",)
 
 
-def test_importing_threshold_param_overridable(env):
-    """The threshold is parameterized (not just hardcoded). Useful for
-    tests + future tuning. Default is 6h."""
+def test_importing_recovery_ignores_created_at_and_legacy_threshold(env):
+    """The retained importing_stale_hours argument cannot weaken lease rules."""
     from main import cleanup_stuck_state
 
     _seed_series(env, 7)
     with sqlite3.connect(env) as c:
         c.execute(
             "INSERT INTO import_queue(series_id, download_id, torrent_name,"
-            " status, created_at) VALUES(7, 'dl-2h', 'TwoHoursOld',"
-            " 'importing', datetime('now', '-2 hours'))"
+            " status, lease_owner, lease_expires_at, created_at)"
+            " VALUES(7, 'dl-recent-expired', 'RecentExpired', 'importing',"
+            " 'dead-owner', datetime('now', '-1 second'), datetime('now'))"
         )
-    # With default threshold (6h), 2h-old row is left alone
-    stats = cleanup_stuck_state()
-    assert stats["importing_reset"] == 0
-    # With 1h threshold, same row gets recovered
+        c.execute(
+            "INSERT INTO import_queue(series_id, download_id, torrent_name,"
+            " status, lease_owner, lease_expires_at, created_at)"
+            " VALUES(7, 'dl-old-live', 'OldLive', 'importing', 'live-owner',"
+            " datetime('now', '+5 minutes'), datetime('now', '-100 days'))"
+        )
+
     stats = cleanup_stuck_state(importing_stale_hours=1)
     assert stats["importing_reset"] == 1
+    with sqlite3.connect(env) as c:
+        rows = dict(
+            c.execute(
+                "SELECT torrent_name, status FROM import_queue"
+                " WHERE torrent_name IN ('RecentExpired','OldLive')"
+            ).fetchall()
+        )
+    assert rows == {
+        "RecentExpired": "pending",
+        "OldLive": "importing",
+    }
+
+
+def test_stale_pending_cleanup_only_resets_volume_after_parent_cas(env, monkeypatch):
+    """A lost parent CAS must not reset the claimed worker's volume."""
+    import tasks
+    from main import cleanup_stuck_state
+
+    _seed_series(env, 7)
+    with sqlite3.connect(env) as c:
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, download_id)"
+            " VALUES(7, 1, 'grabbed', 'dl-race')"
+        )
+        c.execute(
+            "INSERT INTO import_queue(series_id, download_id, torrent_name,"
+            " status, created_at) VALUES(7, 'dl-race', 'CleanupRace',"
+            " 'pending', datetime('now', '-40 days'))"
+        )
+
+    monkeypatch.setattr(
+        tasks,
+        "fail_stale_pending_import_queue_row",
+        lambda *args, **kwargs: False,
+    )
+    stats = cleanup_stuck_state()
+    assert stats["queue_failed"] == 0
+    with sqlite3.connect(env) as c:
+        queue_status = c.execute(
+            "SELECT status FROM import_queue WHERE download_id='dl-race'"
+        ).fetchone()[0]
+        volume_state = c.execute(
+            "SELECT status, download_id FROM volumes WHERE series_id=7"
+        ).fetchone()
+    assert queue_status == "pending"
+    assert volume_state == ("grabbed", "dl-race")
+
+
+def test_stale_parent_failure_preserves_live_same_download_sibling(env):
+    """A parent CAS does not grant ownership of a sibling's shared download."""
+    from main import cleanup_stuck_state
+
+    _seed_series(env, 7)
+    with sqlite3.connect(env) as db:
+        db.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, download_id)"
+            " VALUES(7, 1, 'grabbed', 'shared-stale')"
+        )
+        db.execute(
+            "INSERT INTO import_queue(series_id, download_id, torrent_name,"
+            " status, created_at) VALUES(7, 'shared-stale', 'Stale A',"
+            " 'pending', datetime('now', '-40 days'))"
+        )
+        db.execute(
+            "INSERT INTO import_queue(series_id, download_id, torrent_name,"
+            " status, lease_owner, lease_expires_at)"
+            " VALUES(7, 'shared-stale', 'Live B', 'importing', 'owner-b',"
+            " datetime('now', '+5 minutes'))"
+        )
+
+    stats = cleanup_stuck_state(
+        events_retention_days=0,
+        orphan_pack_cleanup=False,
+    )
+    assert stats["queue_failed"] == 1
+    with sqlite3.connect(env) as db:
+        rows = dict(
+            db.execute(
+                "SELECT torrent_name, status FROM import_queue"
+                " WHERE download_id='shared-stale'"
+            ).fetchall()
+        )
+        volume = db.execute(
+            "SELECT status, download_id FROM volumes WHERE series_id=7"
+        ).fetchone()
+    assert rows == {"Stale A": "failed", "Live B": "importing"}
+    assert volume == ("grabbed", "shared-stale")
+
+
+def test_stale_reset_is_series_scoped_for_shared_download_hash(env):
+    import tasks
+
+    _seed_series(env, 7)
+    _seed_series(env, 8)
+    with sqlite3.connect(env) as db:
+        db.executemany(
+            "INSERT INTO volumes(series_id, volume_num, status, download_id)"
+            " VALUES(?, 1, 'grabbed', 'cross-series')",
+            [(7,), (8,)],
+        )
+        queue_id = db.execute(
+            "INSERT INTO import_queue(series_id, download_id, torrent_name,"
+            " status) VALUES(7, 'cross-series', 'Series 7', 'pending')"
+        ).lastrowid
+        assert queue_id is not None
+        assert tasks._fail_stale_queue_and_reset_volume(
+            db,
+            queue_id=int(queue_id),
+            observed_status="pending",
+            download_id="cross-series",
+            series_id=7,
+        )
+
+    with sqlite3.connect(env) as db:
+        states = dict(
+            db.execute(
+                "SELECT series_id, status FROM volumes ORDER BY series_id"
+            ).fetchall()
+        )
+    assert states == {7: "wanted", 8: "grabbed"}
+
+
+def test_concurrent_claim_and_stale_reset_preserve_shared_download(env):
+    """Separate WAL writers cannot reset a sibling immediately before claim."""
+    import tasks
+    from import_lease import claim_import_queue_row
+
+    _seed_series(env, 7)
+    with sqlite3.connect(env) as db:
+        db.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, download_id)"
+            " VALUES(7, 1, 'grabbed', 'shared-concurrent')"
+        )
+        stale_id = db.execute(
+            "INSERT INTO import_queue(series_id, download_id, torrent_name,"
+            " status) VALUES(7, 'shared-concurrent', 'Stale A', 'pending')"
+        ).lastrowid
+        sibling_id = db.execute(
+            "INSERT INTO import_queue(series_id, download_id, torrent_name,"
+            " status) VALUES(7, 'shared-concurrent', 'Sibling B', 'pending')"
+        ).lastrowid
+    assert stale_id is not None
+    assert sibling_id is not None
+
+    barrier = threading.Barrier(2)
+    results: dict[str, bool] = {}
+    errors: list[BaseException] = []
+    result_lock = threading.Lock()
+
+    def _record(name: str, operation) -> None:
+        try:
+            with sqlite3.connect(env, timeout=5) as db:
+                db.execute("PRAGMA busy_timeout=5000")
+                barrier.wait()
+                value = operation(db)
+            with result_lock:
+                results[name] = value
+        except BaseException as exc:
+            with result_lock:
+                errors.append(exc)
+
+    cleanup = threading.Thread(
+        target=_record,
+        args=(
+            "cleanup",
+            lambda db: tasks._fail_stale_queue_and_reset_volume(
+                db,
+                queue_id=int(stale_id),
+                observed_status="pending",
+                download_id="shared-concurrent",
+                series_id=7,
+            ),
+        ),
+    )
+    claim = threading.Thread(
+        target=_record,
+        args=(
+            "claim",
+            lambda db: claim_import_queue_row(
+                db,
+                int(sibling_id),
+                "owner-b",
+            ),
+        ),
+    )
+    cleanup.start()
+    claim.start()
+    cleanup.join(timeout=10)
+    claim.join(timeout=10)
+
+    assert not cleanup.is_alive()
+    assert not claim.is_alive()
+    assert errors == []
+    assert results == {"cleanup": True, "claim": True}
+    with sqlite3.connect(env) as db:
+        queue_rows = dict(
+            db.execute(
+                "SELECT torrent_name, status FROM import_queue"
+                " WHERE download_id='shared-concurrent'"
+            ).fetchall()
+        )
+        volume = db.execute(
+            "SELECT status, download_id FROM volumes WHERE series_id=7"
+        ).fetchone()
+    assert queue_rows == {"Stale A": "failed", "Sibling B": "importing"}
+    assert volume == ("grabbed", "shared-concurrent")
 
 
 def test_stats_dict_includes_importing_reset_key(env):

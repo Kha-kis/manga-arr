@@ -5,9 +5,13 @@ across listing pages + search loops, and the dedup-on-re-add behaviour.
 The reaper job tests live in PR-3; the UI tests in PR-2.
 """
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 import pytest
 
@@ -19,13 +23,23 @@ import conftest  # noqa: F401
 @pytest.fixture
 def env(tmp_path):
     """Fresh DB; each test seeds its own series rows."""
-    import main, shared, security
+    import import_execute
+    import main
+    import security
+    import shared
+
     db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     db.close(); os.unlink(db.name)
     key_dir = tempfile.mkdtemp(prefix="mangarr-recyclebin-keys-")
 
     orig_main_db = main.DB_PATH
     orig_shared_db = shared.DB_PATH
+    orig_main_config = main.CONFIG
+    orig_main_values = dict(main.CONFIG)
+    orig_shared_config = shared.CONFIG
+    orig_shared_values = dict(shared.CONFIG)
+    orig_cipher = security._SECRET_CIPHER
+    orig_import_sem = import_execute._IMPORT_SEM
     main.DB_PATH = db.name
     shared.DB_PATH = db.name
     security._SECRET_CIPHER = None
@@ -38,10 +52,19 @@ def env(tmp_path):
     finally:
         main.DB_PATH = orig_main_db
         shared.DB_PATH = orig_shared_db
+        main.CONFIG = orig_main_config
+        main.CONFIG.clear()
+        main.CONFIG.update(orig_main_values)
+        shared.CONFIG = orig_shared_config
+        shared.CONFIG.clear()
+        shared.CONFIG.update(orig_shared_values)
+        security._SECRET_CIPHER = orig_cipher
+        import_execute._IMPORT_SEM = orig_import_sem
         for ext in ("", "-wal", "-shm"):
             p = db.name + ext
             if os.path.exists(p):
                 os.unlink(p)
+        shutil.rmtree(key_dir)
 
 
 def _client():
@@ -96,6 +119,20 @@ def _seed_series(db_path, sid, title, **kwargs) -> None:
         c.execute(
             "INSERT INTO series_aliases(series_id, alias) VALUES(?, ?)",
             (sid, f"alias-{sid}")
+        )
+
+
+def _assign_root_folder(db_path, root_path, *series_ids) -> None:
+    os.makedirs(root_path, exist_ok=True)
+    with sqlite3.connect(db_path) as c:
+        root_id = c.execute(
+            "INSERT INTO root_folders(path) VALUES(?)",
+            (str(root_path),),
+        ).lastrowid
+        assert root_id is not None
+        c.executemany(
+            "UPDATE series SET root_folder_id=? WHERE id=?",
+            ((root_id, series_id) for series_id in series_ids),
         )
 
 
@@ -660,6 +697,119 @@ def test_reaper_handles_empty_bin(env):
     assert purged == 0
 
 
+def test_reaper_blocks_expired_but_unrecovered_live_import(env):
+    """The reaper must not delete a series while any importer still owns it."""
+    from tasks import _run_recycle_bin_purge_once
+
+    _seed_series(env["db_path"], 1, "Importing")
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute(
+            "UPDATE series SET deleted_at=datetime('now', '-31 days') WHERE id=1"
+        )
+        queue_id = c.execute(
+            "INSERT INTO import_queue("
+            "series_id, status, lease_owner, lease_expires_at"
+            ") VALUES(1, 'importing', 'live-owner', datetime('now', '-1 hour'))"
+        ).lastrowid
+        assert queue_id is not None
+
+    assert _run_recycle_bin_purge_once(retention_days=30) == 0
+    with sqlite3.connect(env["db_path"]) as c:
+        assert c.execute("SELECT 1 FROM series WHERE id=1").fetchone() is not None
+        assert c.execute(
+            "SELECT status, lease_owner FROM import_queue WHERE id=?",
+            (queue_id,),
+        ).fetchone() == ("importing", "live-owner")
+        assert c.execute(
+            "SELECT COUNT(*) FROM history WHERE event_type='series_purged'"
+        ).fetchone()[0] == 0
+        message = c.execute(
+            "SELECT message FROM events"
+            " WHERE message LIKE 'Recycle-bin purge failed for series 1:%'"
+            " ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert message is not None
+    assert "Import is in progress" in message[0]
+
+
+def test_reaper_closes_all_db_contexts_before_slow_cleanup(
+    env, tmp_path, monkeypatch
+):
+    """Paused recursive cleanup has no open get_db context or writer lock."""
+    import routers.series_ as series_router
+    import shared
+    from tasks import _run_recycle_bin_purge_once
+
+    _seed_series(env["db_path"], 1, "Old")
+    _seed_series(env["db_path"], 2, "Writer Probe")
+    library_root = tmp_path / "library"
+    _assign_root_folder(env["db_path"], library_root, 1)
+    series_dir = library_root / "Old"
+    series_dir.mkdir()
+    (series_dir / "Old v01.cbz").write_bytes(b"purge-me")
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute("DELETE FROM volumes WHERE series_id=1")
+        c.execute(
+            "INSERT INTO volumes(series_id, volume_num, status, import_path)"
+            " VALUES(1, 1, 'downloaded', ?)",
+            (str(series_dir),),
+        )
+        c.execute(
+            "UPDATE series SET deleted_at=datetime('now', '-31 days') WHERE id=1"
+        )
+
+    active_db_contexts = 0
+    real_get_db = shared.get_db
+
+    @contextmanager
+    def tracked_get_db():
+        nonlocal active_db_contexts
+        with real_get_db() as db:
+            active_db_contexts += 1
+            try:
+                yield db
+            finally:
+                active_db_contexts -= 1
+
+    monkeypatch.setattr(shared, "get_db", tracked_get_db)
+    monkeypatch.setattr(series_router, "get_db", tracked_get_db)
+
+    cleanup_started = threading.Event()
+    cleanup_release = threading.Event()
+    real_rmtree = series_router.shutil.rmtree
+
+    def slow_rmtree(path):
+        assert active_db_contexts == 0
+        cleanup_started.set()
+        assert cleanup_release.wait(timeout=5)
+        real_rmtree(path)
+
+    monkeypatch.setattr(series_router.shutil, "rmtree", slow_rmtree)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            _run_recycle_bin_purge_once,
+            retention_days=30,
+            remove_files=True,
+        )
+        assert cleanup_started.wait(timeout=2), "reaper never reached disk cleanup"
+        try:
+            with sqlite3.connect(env["db_path"], timeout=0.05) as writer:
+                writer.execute("PRAGMA busy_timeout=50")
+                writer.execute(
+                    "UPDATE series SET title='Writer Succeeded' WHERE id=2"
+                )
+        finally:
+            cleanup_release.set()
+        assert future.result(timeout=5) == 1
+
+    with sqlite3.connect(env["db_path"]) as c:
+        assert c.execute("SELECT 1 FROM series WHERE id=1").fetchone() is None
+        assert c.execute("SELECT title FROM series WHERE id=2").fetchone()[0] == (
+            "Writer Succeeded"
+        )
+
+
 # ───────────────────── PR-3: retention setting ─────────────────────
 
 
@@ -865,10 +1015,12 @@ def test_purge_removes_volume_files_from_disk(env, tmp_path):
     """The per-row "Permanent delete" button removes on-disk volume files
     in addition to the DB cascade."""
     _seed_series(env['db_path'], 1, 'Series With Files')
+    library_root = tmp_path / "library"
+    _assign_root_folder(env["db_path"], library_root, 1)
     # Replace the seeded volumes with rows whose import_path points to
     # real files we can actually verify get removed.
-    f1 = tmp_path / "vol01.cbz"
-    f2 = tmp_path / "vol02.cbz"
+    f1 = library_root / "vol01.cbz"
+    f2 = library_root / "vol02.cbz"
     f1.write_bytes(b"PK\x03\x04fake-cbz-1")
     f2.write_bytes(b"PK\x03\x04fake-cbz-2")
     with sqlite3.connect(env['db_path']) as c:
@@ -895,8 +1047,10 @@ def test_bulk_empty_removes_volume_files_from_disk(env, tmp_path):
     """Empty-bin matches the per-row purge: removes files."""
     _seed_series(env['db_path'], 1, 'Series A')
     _seed_series(env['db_path'], 2, 'Series B')
-    f_a = tmp_path / "a-vol01.cbz"
-    f_b = tmp_path / "b-vol01.cbz"
+    library_root = tmp_path / "library"
+    _assign_root_folder(env["db_path"], library_root, 1, 2)
+    f_a = library_root / "a-vol01.cbz"
+    f_b = library_root / "b-vol01.cbz"
     f_a.write_bytes(b"a"); f_b.write_bytes(b"b")
     with sqlite3.connect(env['db_path']) as c:
         c.execute("DELETE FROM volumes WHERE series_id IN (1,2)")
@@ -945,7 +1099,9 @@ def test_reaper_removes_files_when_remove_files_setting_enabled(env, tmp_path):
     from tasks import _run_recycle_bin_purge_once
 
     _seed_series(env['db_path'], 1, 'Old')
-    f = tmp_path / "old-vol01.cbz"
+    library_root = tmp_path / "library"
+    _assign_root_folder(env["db_path"], library_root, 1)
+    f = library_root / "old-vol01.cbz"
     f.write_bytes(b"data")
     with sqlite3.connect(env['db_path']) as c:
         c.execute("DELETE FROM volumes WHERE series_id=1")
@@ -960,16 +1116,19 @@ def test_reaper_removes_files_when_remove_files_setting_enabled(env, tmp_path):
     assert not f.exists()
 
 
-def test_remove_files_handles_missing_file(env):
+def test_remove_files_handles_missing_file(env, tmp_path):
     """A missing file (e.g. user moved it manually) must not block the
     DB cascade — robustness property."""
     from tasks import _run_recycle_bin_purge_once
     _seed_series(env['db_path'], 1, 'Old')
+    missing_root = tmp_path / "missing-library"
+    _assign_root_folder(env["db_path"], missing_root, 1)
     with sqlite3.connect(env['db_path']) as c:
         c.execute("DELETE FROM volumes WHERE series_id=1")
         c.execute(
             "INSERT INTO volumes(series_id, volume_num, status, import_path)"
-            " VALUES(1, 1, 'downloaded', '/tmp/does-not-exist-xyzzy.cbz')"
+            " VALUES(1, 1, 'downloaded', ?)",
+            (str(missing_root / "does-not-exist-xyzzy.cbz"),),
         )
         c.execute("UPDATE series SET deleted_at=datetime('now', '-31 days') WHERE id=1")
     purged = _run_recycle_bin_purge_once(retention_days=30, remove_files=True)

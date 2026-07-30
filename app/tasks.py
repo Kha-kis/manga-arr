@@ -59,11 +59,18 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from events import log_event
 from grab import grab_existing, poll_rss
 from import_pipeline import check_download_status
+from import_lease import (
+    RetryableImportQueueStatus,
+    fail_stale_pending_import_queue_row,
+    has_import_sibling_that_may_use_download,
+    recover_expired_import_leases,
+)
 from metadata_service import refresh_series_metadata
 from metadata_state import metadata_retry_candidates
 from shared import get_cfg, get_db
@@ -357,12 +364,49 @@ def _parse_retry_after_seconds(raw: str | None) -> float | None:
         return None
 
 
+def _fail_stale_queue_and_reset_volume(
+    db: sqlite3.Connection,
+    *,
+    queue_id: int,
+    observed_status: RetryableImportQueueStatus,
+    download_id: str | None,
+    series_id: int,
+) -> bool:
+    """Fail one stale parent and reset only its unshared series download.
+
+    The parent transition remains useful even when another retryable/importing
+    sibling uses the same download. In that case the shared volume metadata is
+    left intact for the sibling.
+    """
+    if not fail_stale_pending_import_queue_row(
+        db,
+        queue_id,
+        observed_status,
+    ):
+        return False
+    if has_import_sibling_that_may_use_download(
+        db,
+        queue_id=queue_id,
+        download_id=download_id,
+        series_id=series_id,
+    ):
+        return True
+    db.execute(
+        "UPDATE volumes SET status='wanted', grabbed_at=NULL,"
+        " download_id=NULL, torrent_name=NULL, indexer=NULL,"
+        " protocol=NULL, client=NULL, release_group=NULL"
+        " WHERE series_id=? AND download_id=? AND status='grabbed'",
+        (series_id, download_id),
+    )
+    return True
+
+
 def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
                         queue_stale_days: int = 30,
                         importing_stale_hours: int = 6,
                         events_retention_days: int = 90,
                         orphan_pack_cleanup: bool = True,
-                        max_rows_per_sweep: int = 500) -> dict:
+                        max_rows_per_sweep: int = 500) -> dict[str, int]:
     """Reconcile the four stuck-state patterns the app can otherwise
     accumulate indefinitely:
 
@@ -377,22 +421,15 @@ def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
          for these, but the auto-prune only removes rows >7 days old
          — leaving a long tail of junk in the queue UI.
 
-      3. import_queue rows stuck in status='pending' or 'partial' for
+      3. Unleased import_queue rows stuck in status='pending' or 'partial' for
          more than ``queue_stale_days`` days. Mark them failed so the
          next periodic reconcile can return the associated volumes
          to 'wanted'.
 
-      4. import_queue rows stuck in status='importing' for more than
-         ``importing_stale_hours`` hours. The 'importing' state is
-         supposed to be ephemeral (a worker claimed it, then either
-         marks 'imported'/'failed'/'partial' on completion). Stuck
-         'importing' rows mean the worker died mid-flight or hit
-         "database is locked" trying to mark itself failed — leaving
-         the row claimed forever. Recover by reverting to 'failed' so
-         the next status_loop can retry. NOTE: rows with any
-         needs_review files are skipped (those carry user decisions
-         we shouldn't drop) — operator must intervene via the
-         reconcile UI for those.
+      4. import_queue rows whose importing lease expired, plus legacy
+         importing rows with no owner/expiry. Recover them to pending
+         or partial according to their preserved needs_review children.
+         Queue created_at is intentionally irrelevant to lease recovery.
 
     Every destructive action is logged via `log_event` so operators
     can see what moved. The ``max_rows_per_sweep`` cap exists as a
@@ -401,6 +438,9 @@ def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
 
     Returns a dict of counts for visibility in tests and logs.
     """
+    # Retained for callers from before lease-based importing recovery.
+    _ = importing_stale_hours
+
     # One transaction per phase — not one big transaction for all four.
     # Each phase might process hundreds of rows; keeping each phase its
     # own transaction lets other writers slot in between. The stats dict
@@ -471,74 +511,46 @@ def cleanup_stuck_state(*, grabbed_stale_hours: int = 6,
     # ── Phase 3: import_queue stuck in pending/partial ──
     with get_db() as db:
         stale_queue = db.execute(
-            "SELECT id, series_id, torrent_name"
+            "SELECT id, series_id, torrent_name, download_id, status, lease_owner"
             "  FROM import_queue"
             " WHERE status IN ('pending', 'partial')"
+            "   AND lease_owner IS NULL"
             "   AND created_at < datetime('now', ?)"
             " LIMIT ?",
             (f'-{int(queue_stale_days)} days', max_rows_per_sweep)
         ).fetchall()
         for row in stale_queue:
-            db.execute(
-                "UPDATE import_queue SET status='failed' WHERE id=?",
-                (row['id'],)
+            transitioned = _fail_stale_queue_and_reset_volume(
+                db,
+                queue_id=row['id'],
+                observed_status=row['status'],
+                download_id=row['download_id'],
+                series_id=row['series_id'],
             )
-            # Return any grabbed volumes associated via download_id back to wanted
-            db.execute(
-                "UPDATE volumes SET status='wanted', grabbed_at=NULL,"
-                " download_id=NULL, torrent_name=NULL, indexer=NULL,"
-                " protocol=NULL, client=NULL, release_group=NULL"
-                " WHERE download_id IN ("
-                "   SELECT download_id FROM import_queue WHERE id=?"
-                " ) AND status='grabbed'",
-                (row['id'],)
-            )
+            if not transitioned:
+                continue
             stats['queue_failed'] += 1
-        if stale_queue:
+        if stats['queue_failed']:
             log_event(
                 'stuck_cleanup',
-                f'failed {len(stale_queue)} import_queue row(s) stuck in '
+                f"failed {stats['queue_failed']} import_queue row(s) stuck in "
                 f'pending/partial for >{queue_stale_days} days',
                 db=db,
             )
 
-    # ── Phase 4: stuck 'importing' queue rows ──
-    # The 'importing' state means a worker claimed the row but never
-    # marked completion. Two real causes observed in production:
-    #   (a) Worker died mid-flight (crash, restart) before the final
-    #       UPDATE.
-    #   (b) An old importer revision held the SQLite write lock during
-    #       file I/O; if the per-row commit-failed UPDATE could not
-    #       acquire the lock within busy_timeout, the row stayed claimed
-    #       and the worker logged (but could not write to) the error.
-    # Recovery: revert to 'failed' so the next status_loop can retry.
-    # Skip rows that have files in 'needs_review' state — those carry
-    # user decisions and need manual operator action via the reconcile
-    # UI. (Mirrors the planning logic in app/reconcile.py.)
+    # ── Phase 4: expired/legacy 'importing' leases ──
+    # Recovery is driven only by the DB-clock lease expiry. created_at is
+    # the queue's age, not evidence that its current worker died.
     with get_db() as db:
-        stale_importing = db.execute(
-            "SELECT iq.id, iq.series_id, iq.torrent_name"
-            "  FROM import_queue iq"
-            " WHERE iq.status = 'importing'"
-            "   AND iq.created_at < datetime('now', ?)"
-            "   AND NOT EXISTS ("
-            "       SELECT 1 FROM import_queue_files f"
-            "        WHERE f.queue_id = iq.id AND f.status = 'needs_review'"
-            "   )"
-            " LIMIT ?",
-            (f'-{int(importing_stale_hours)} hours', max_rows_per_sweep)
-        ).fetchall()
-        for row in stale_importing:
-            db.execute(
-                "UPDATE import_queue SET status='failed' WHERE id=?",
-                (row['id'],)
-            )
-            stats['importing_reset'] += 1
-        if stale_importing:
+        stats['importing_reset'] = recover_expired_import_leases(
+            db,
+            max_rows=max_rows_per_sweep,
+        )
+        if stats['importing_reset']:
             log_event(
                 'stuck_cleanup',
-                f"reverted {len(stale_importing)} import_queue row(s) "
-                f"stuck in 'importing' for >{importing_stale_hours}h to 'failed' for retry",
+                f"recovered {stats['importing_reset']} expired/legacy "
+                "import_queue lease(s) to pending/partial",
                 db=db,
             )
 
@@ -840,7 +852,7 @@ def _run_recycle_bin_purge_once(
     True regardless of this setting (user clicked permanent delete).
     """
     from shared import get_db
-    from routers.series_ import _hard_delete_series
+    from routers.series_ import _run_hard_delete_series
     if retention_days is None:
         try:
             retention_days = max(1, int(get_cfg('recycle_bin_retention_days', '30')))
@@ -854,21 +866,36 @@ def _run_recycle_bin_purge_once(
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
     purged = 0
     with get_db() as db:
-        expired = db.execute(
-            "SELECT id, title FROM series"
-            " WHERE deleted_at IS NOT NULL AND deleted_at < ?",
-            (cutoff.isoformat(sep=' ', timespec='seconds'),)
-        ).fetchall()
-        for row in expired:
-            try:
-                _hard_delete_series(
-                    db, row['id'],
-                    log_history=True,
-                    remove_files=remove_files,
-                )
+        expired_ids = [
+            int(row["id"])
+            for row in db.execute(
+                "SELECT id FROM series"
+                " WHERE deleted_at IS NOT NULL AND deleted_at < ?",
+                (cutoff.isoformat(sep=' ', timespec='seconds'),),
+            ).fetchall()
+        ]
+
+    for series_id in expired_ids:
+        try:
+            result = _run_hard_delete_series(
+                series_id,
+                log_history=True,
+                remove_files=remove_files,
+            )
+            if result["status"] == "purged":
                 purged += 1
-            except Exception as e:
-                log_event('error', f"Recycle-bin purge failed for series {row['id']}: {e}")
+            elif result["status"] == "import_in_progress":
+                log_event(
+                    "error",
+                    "Recycle-bin purge failed for series "
+                    f"{series_id}: Import is in progress; wait for it "
+                    "to finish before purging the series",
+                )
+        except Exception as e:
+            log_event(
+                "error",
+                f"Recycle-bin purge failed for series {series_id}: {e}",
+            )
     return purged
 
 

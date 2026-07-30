@@ -3,7 +3,6 @@
 import asyncio
 import logging
 
-from shared import get_db
 from events import log_event
 from notifications import notify_discord, make_complete_embed
 from volumes import _cascade_chapters
@@ -172,16 +171,3 @@ async def _process_auto_import(queue_id: int):
 
         log_event("error", f"Auto-import failed for queue {queue_id}: {e}")
         log.error("[AutoImport] %s\n%s", e, traceback.format_exc())
-        try:
-            with get_db() as _db_err:
-                _db_err.execute(
-                    "UPDATE import_queue SET status='failed'"
-                    " WHERE id=? AND status IN ('pending','partial','importing')",
-                    (queue_id,),
-                )
-        except Exception as _db_e:
-            log.error(
-                "[AutoImport] failed to mark queue %s as failed: %s",
-                queue_id,
-                _db_e,
-            )

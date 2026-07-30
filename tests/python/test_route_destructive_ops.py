@@ -9,10 +9,14 @@ verify against is the same row that just got deleted (or never written).
 Each test posts the real request through the real router → real DB,
 verifies the response and the resulting DB state.
 """
+import json
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -22,61 +26,107 @@ import conftest  # noqa: F401
 
 
 @pytest.fixture
-def env(tmp_path):
+def _process_globals_restored():
+    """Assert this module's DB fixture leaves process globals exactly as found."""
+    import import_execute
+    import main
+    import security
+    import shared
+
+    state = {
+        "main_db": main.DB_PATH,
+        "shared_db": shared.DB_PATH,
+        "main_config": main.CONFIG,
+        "main_config_values": dict(main.CONFIG),
+        "shared_config": shared.CONFIG,
+        "shared_config_values": dict(shared.CONFIG),
+        "cipher": security._SECRET_CIPHER,
+        "import_sem": import_execute._IMPORT_SEM,
+    }
+    yield state
+    assert main.DB_PATH == state["main_db"]
+    assert shared.DB_PATH == state["shared_db"]
+    assert main.CONFIG is state["main_config"]
+    assert main.CONFIG == state["main_config_values"]
+    assert shared.CONFIG is state["shared_config"]
+    assert shared.CONFIG == state["shared_config_values"]
+    assert security._SECRET_CIPHER is state["cipher"]
+    assert import_execute._IMPORT_SEM is state["import_sem"]
+
+
+@pytest.fixture
+def env(tmp_path, _process_globals_restored):
     """Fresh DB + 2 series + their volumes, blocklist, indexer."""
-    import main, shared, security
+    import import_execute
+    import main
+    import security
+    import shared
+
     db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     db.close(); os.unlink(db.name)
     key_dir = tempfile.mkdtemp(prefix="mangarr-destroy-keys-")
 
-    orig_main_db = main.DB_PATH
-    orig_shared_db = shared.DB_PATH
-    main.DB_PATH = db.name
-    shared.DB_PATH = db.name
-    security._SECRET_CIPHER = None
-    security.load_or_create_secret_cipher(key_dir)
-    main.init_db()
-    main.load_config()
-    main.ensure_api_key()
-
-    library_root = tmp_path / "library"
-    library_root.mkdir()
-
-    with sqlite3.connect(db.name) as c:
-        c.execute("DELETE FROM root_folders")
-        c.execute("INSERT INTO root_folders(id, path) VALUES(1, ?)", (str(library_root),))
-        # Two series — destructive ops on series 1 must not touch series 2
-        c.execute(
-            "INSERT INTO series(id, title, search_pattern, edition_type, enabled,"
-            " monitored, monitor_mode, root_folder_id)"
-            " VALUES(1, 'AlphaSeries', 'AlphaSeries', 'standard', 1, 1, 'all', 1),"
-            "       (2, 'BetaSeries',  'BetaSeries',  'standard', 1, 1, 'all', 1)"
-        )
-        c.execute(
-            "INSERT INTO volumes(series_id, volume_num, status, monitored)"
-            " VALUES(1, 1.0, 'wanted', 1), (1, 2.0, 'wanted', 1),"
-            "       (2, 1.0, 'wanted', 1)"
-        )
-        # Blocklist with 3 rows: 2 for series 1, 1 standalone
-        c.execute(
-            "INSERT INTO blocklist(series_id, torrent_url, torrent_name, reason)"
-            " VALUES(1, 'http://stub/a.torrent', 'AlphaSeries v01 bad release', 'Manual'),"
-            "       (1, 'http://stub/b.torrent', 'AlphaSeries v02 bad release', 'Manual'),"
-            "       (NULL, 'http://stub/c.torrent', 'unrelated', 'Manual')"
-        )
-
     try:
+        main.DB_PATH = db.name
+        shared.DB_PATH = db.name
+        security._SECRET_CIPHER = None
+        security.load_or_create_secret_cipher(key_dir)
+        main.init_db()
+        main.load_config()
+        main.ensure_api_key()
+
+        library_root = tmp_path / "library"
+        library_root.mkdir()
+
+        with sqlite3.connect(db.name) as c:
+            c.execute("DELETE FROM root_folders")
+            c.execute(
+                "INSERT INTO root_folders(id, path) VALUES(1, ?)",
+                (str(library_root),),
+            )
+            # Two series — destructive ops on series 1 must not touch series 2
+            c.execute(
+                "INSERT INTO series(id, title, search_pattern, edition_type, enabled,"
+                " monitored, monitor_mode, root_folder_id)"
+                " VALUES(1, 'AlphaSeries', 'AlphaSeries', 'standard', 1, 1, 'all', 1),"
+                "       (2, 'BetaSeries',  'BetaSeries',  'standard', 1, 1, 'all', 1)"
+            )
+            c.execute(
+                "INSERT INTO volumes(series_id, volume_num, status, monitored)"
+                " VALUES(1, 1.0, 'wanted', 1), (1, 2.0, 'wanted', 1),"
+                "       (2, 1.0, 'wanted', 1)"
+            )
+            # Blocklist with 3 rows: 2 for series 1, 1 standalone
+            c.execute(
+                "INSERT INTO blocklist(series_id, torrent_url, torrent_name, reason)"
+                " VALUES(1, 'http://stub/a.torrent',"
+                " 'AlphaSeries v01 bad release', 'Manual'),"
+                "       (1, 'http://stub/b.torrent',"
+                " 'AlphaSeries v02 bad release', 'Manual'),"
+                "       (NULL, 'http://stub/c.torrent', 'unrelated', 'Manual')"
+            )
+
         yield {
             'db_path': db.name,
             'library_root': str(library_root),
         }
     finally:
-        main.DB_PATH = orig_main_db
-        shared.DB_PATH = orig_shared_db
+        state = _process_globals_restored
+        main.DB_PATH = state["main_db"]
+        shared.DB_PATH = state["shared_db"]
+        main.CONFIG = state["main_config"]
+        main.CONFIG.clear()
+        main.CONFIG.update(state["main_config_values"])
+        shared.CONFIG = state["shared_config"]
+        shared.CONFIG.clear()
+        shared.CONFIG.update(state["shared_config_values"])
+        security._SECRET_CIPHER = state["cipher"]
+        import_execute._IMPORT_SEM = state["import_sem"]
         for ext in ("", "-wal", "-shm"):
             p = db.name + ext
             if os.path.exists(p):
                 os.unlink(p)
+        shutil.rmtree(key_dir)
 
 
 def _client():
@@ -103,7 +153,7 @@ def test_series_delete_soft_deletes_only_target(env):
 
     NOTE: as of the recycle-bin epic, /series/{id}/delete is a soft-delete
     that sets `deleted_at` + `deletion_reason` and leaves every dependent
-    row in place. The hard cascade now lives in `_hard_delete_series`,
+    row in place. The hard cascade now lives in `_run_hard_delete_series`,
     called by the reaper and by the explicit purge endpoint. The
     cross-series isolation property still holds.
     """
@@ -165,6 +215,322 @@ def test_series_delete_unknown_id_returns_redirect_not_500(env):
     with sqlite3.connect(env['db_path']) as c:
         n = c.execute("SELECT COUNT(*) FROM series").fetchone()[0]
         assert n == 2, "no series should have been deleted"
+
+
+# ───────────────────── series hard purge ─────────────────────
+
+
+@pytest.mark.parametrize("htmx", [False, True], ids=["plain", "htmx"])
+def test_series_purge_blocks_exact_live_import_lease_without_mutation(env, htmx):
+    """Even an expired lease remains owned until recovery explicitly clears it."""
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute("UPDATE series SET deleted_at=CURRENT_TIMESTAMP WHERE id=1")
+        queue_id = c.execute(
+            "INSERT INTO import_queue("
+            "series_id, download_id, torrent_name, status, lease_owner,"
+            " lease_expires_at"
+            ") VALUES(1, 'live-download', 'AlphaSeries v01', 'importing',"
+            " 'live-owner', datetime('now', '-1 hour'))"
+        ).lastrowid
+        assert queue_id is not None
+        c.execute(
+            "INSERT INTO import_queue_files(queue_id, filename, status)"
+            " VALUES(?, 'AlphaSeries v01.cbz', 'pending')",
+            (queue_id,),
+        )
+        before = {
+            "series": c.execute(
+                "SELECT title, deleted_at FROM series WHERE id=1"
+            ).fetchone(),
+            "volumes": c.execute(
+                "SELECT COUNT(*) FROM volumes WHERE series_id=1"
+            ).fetchone()[0],
+            "blocklist": c.execute(
+                "SELECT COUNT(*) FROM blocklist WHERE series_id=1"
+            ).fetchone()[0],
+            "queue": c.execute(
+                "SELECT status, lease_owner, lease_expires_at"
+                " FROM import_queue WHERE id=?",
+                (queue_id,),
+            ).fetchone(),
+            "queue_files": c.execute(
+                "SELECT COUNT(*) FROM import_queue_files WHERE queue_id=?",
+                (queue_id,),
+            ).fetchone()[0],
+            "history": c.execute(
+                "SELECT COUNT(*) FROM history WHERE event_type='series_purged'"
+            ).fetchone()[0],
+        }
+
+    csrf = _csrf_kwargs(f"purge-live-lease-{htmx}")
+    headers = dict(csrf["headers"])
+    if htmx:
+        headers["HX-Request"] = "true"
+    response = _client().post(
+        "/series/1/purge",
+        cookies=csrf["cookies"],
+        headers=headers,
+        follow_redirects=False,
+    )
+
+    if htmx:
+        assert response.status_code == 200
+        assert response.headers["HX-Redirect"] == "/recycle-bin"
+        toast = json.loads(response.headers["HX-Trigger"])["showToast"]
+        assert toast["type"] == "warning"
+        assert "Import is in progress" in toast["msg"]
+    else:
+        assert response.status_code == 303
+        assert response.headers["location"].startswith("/recycle-bin?")
+        assert "flash_type=warning" in response.headers["location"]
+        assert "Import+is+in+progress" in response.headers["location"]
+
+    with sqlite3.connect(env["db_path"]) as c:
+        after = {
+            "series": c.execute(
+                "SELECT title, deleted_at FROM series WHERE id=1"
+            ).fetchone(),
+            "volumes": c.execute(
+                "SELECT COUNT(*) FROM volumes WHERE series_id=1"
+            ).fetchone()[0],
+            "blocklist": c.execute(
+                "SELECT COUNT(*) FROM blocklist WHERE series_id=1"
+            ).fetchone()[0],
+            "queue": c.execute(
+                "SELECT status, lease_owner, lease_expires_at"
+                " FROM import_queue WHERE id=?",
+                (queue_id,),
+            ).fetchone(),
+            "queue_files": c.execute(
+                "SELECT COUNT(*) FROM import_queue_files WHERE queue_id=?",
+                (queue_id,),
+            ).fetchone()[0],
+            "history": c.execute(
+                "SELECT COUNT(*) FROM history WHERE event_type='series_purged'"
+            ).fetchone()[0],
+        }
+    assert after == before
+    assert after["queue"][:2] == ("importing", "live-owner")
+
+
+def test_series_purge_allows_unowned_pending_queue_and_cascades_atomically(env):
+    """An eligible purge still removes the complete DB domain and its file."""
+    volume_file = os.path.join(env["library_root"], "AlphaSeries v01.cbz")
+    with open(volume_file, "wb") as stream:
+        stream.write(b"purge-me")
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute("UPDATE series SET deleted_at=CURRENT_TIMESTAMP WHERE id=1")
+        c.execute(
+            "UPDATE volumes SET import_path=? WHERE series_id=1 AND volume_num=1",
+            (volume_file,),
+        )
+        queue_id = c.execute(
+            "INSERT INTO import_queue(series_id, status, lease_owner)"
+            " VALUES(1, 'pending', NULL)"
+        ).lastrowid
+        assert queue_id is not None
+        c.execute(
+            "INSERT INTO import_queue_files(queue_id, filename, status)"
+            " VALUES(?, 'AlphaSeries v01.cbz', 'pending')",
+            (queue_id,),
+        )
+
+    csrf = _csrf_kwargs("purge-normal")
+    response = _client().post(
+        "/series/1/purge",
+        cookies=csrf["cookies"],
+        headers=csrf["headers"],
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/recycle-bin"
+    assert not os.path.exists(volume_file)
+
+    with sqlite3.connect(env["db_path"]) as c:
+        assert c.execute("SELECT 1 FROM series WHERE id=1").fetchone() is None
+        assert c.execute("SELECT 1 FROM series WHERE id=2").fetchone() is not None
+        for table in (
+            "volumes",
+            "chapters",
+            "pending_releases",
+            "seen",
+            "blocklist",
+            "series_aliases",
+            "series_tags",
+            "import_queue",
+        ):
+            assert (
+                c.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE series_id=1"
+                ).fetchone()[0]
+                == 0
+            )
+        assert (
+            c.execute(
+                "SELECT COUNT(*) FROM import_queue_files WHERE queue_id=?",
+                (queue_id,),
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            c.execute(
+                "SELECT COUNT(*) FROM history"
+                " WHERE event_type='series_purged' AND source_title='AlphaSeries'"
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_series_purge_removes_only_paths_strictly_inside_configured_root(env, tmp_path):
+    """Corrupt import paths cannot make purge delete outside the library root."""
+    library_root = env["library_root"]
+    inside_file = os.path.join(library_root, "inside.cbz")
+    inside_link = os.path.join(library_root, "inside-link.cbz")
+    inside_dir = os.path.join(library_root, "inside-dir")
+    outside_regular = str(tmp_path / "outside.cbz")
+    outside_link = str(tmp_path / "outside-link.cbz")
+    outside_target = str(tmp_path / "outside-target.cbz")
+    escaped_parent = os.path.join(library_root, "escaped-parent")
+    escaped_dir = tmp_path / "escaped-dir"
+    escaped_victim = escaped_dir / "escaped-victim.cbz"
+    relative_victim = tmp_path / "relative-victim.cbz"
+
+    with open(inside_file, "wb") as stream:
+        stream.write(b"inside")
+    os.mkdir(inside_dir)
+    with open(os.path.join(inside_dir, "nested.cbz"), "wb") as stream:
+        stream.write(b"nested")
+    with open(outside_regular, "wb") as stream:
+        stream.write(b"outside")
+    with open(outside_target, "wb") as stream:
+        stream.write(b"target")
+    os.symlink(outside_target, inside_link)
+    os.symlink(inside_file, outside_link)
+    escaped_dir.mkdir()
+    escaped_victim.write_bytes(b"escaped")
+    os.symlink(str(escaped_dir), escaped_parent)
+    relative_victim.write_bytes(b"relative")
+    relative_path = os.path.relpath(relative_victim, os.getcwd())
+
+    import_paths = (
+        library_root,  # The root itself must never be recursively removed.
+        inside_file,
+        inside_link,  # Unlink without following its outside target.
+        inside_dir,
+        outside_regular,
+        outside_link,
+        os.path.join(escaped_parent, escaped_victim.name),
+        relative_path,
+    )
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute("UPDATE series SET deleted_at=CURRENT_TIMESTAMP WHERE id=1")
+        c.execute("DELETE FROM volumes WHERE series_id=1")
+        c.executemany(
+            "INSERT INTO volumes(series_id, volume_num, status, import_path)"
+            " VALUES(1, ?, 'downloaded', ?)",
+            (
+                (float(index), import_path)
+                for index, import_path in enumerate(import_paths, start=1)
+            ),
+        )
+
+    csrf = _csrf_kwargs("purge-path-containment")
+    response = _client().post(
+        "/series/1/purge",
+        cookies=csrf["cookies"],
+        headers=csrf["headers"],
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    assert os.path.isdir(library_root), "configured root itself must survive"
+    assert not os.path.exists(inside_file)
+    assert not os.path.lexists(inside_link)
+    assert not os.path.exists(inside_dir)
+    assert os.path.exists(outside_regular)
+    assert os.path.islink(outside_link)
+    assert os.path.exists(outside_target), "unlinking must not follow the target"
+    assert os.path.islink(escaped_parent)
+    assert escaped_victim.exists(), "a symlinked parent must not escape the root"
+    assert relative_victim.exists(), "relative import paths must be rejected"
+
+
+@pytest.mark.parametrize("slow_operation", ["library_rmtree", "cover_remove"])
+def test_series_purge_disk_cleanup_does_not_hold_writer_lock(
+    env, monkeypatch, slow_operation
+):
+    """A low-timeout writer succeeds while post-commit disk cleanup is paused."""
+    import routers.series_ as series_router
+
+    series_dir = os.path.join(env["library_root"], "AlphaSeries")
+    os.mkdir(series_dir)
+    with open(os.path.join(series_dir, "AlphaSeries v01.cbz"), "wb") as stream:
+        stream.write(b"purge-me")
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute("UPDATE series SET deleted_at=CURRENT_TIMESTAMP WHERE id=1")
+        c.execute(
+            "UPDATE volumes SET import_path=? WHERE series_id=1 AND volume_num=1",
+            (series_dir,),
+        )
+
+    cleanup_started = threading.Event()
+    cleanup_release = threading.Event()
+    if slow_operation == "library_rmtree":
+        real_rmtree = series_router.shutil.rmtree
+
+        def slow_rmtree(path):
+            cleanup_started.set()
+            assert cleanup_release.wait(timeout=5)
+            real_rmtree(path)
+
+        monkeypatch.setattr(series_router.shutil, "rmtree", slow_rmtree)
+    else:
+        cover_path = "/config/covers/1.jpg"
+        real_lexists = series_router.os.path.lexists
+        real_remove = series_router.os.remove
+
+        def cover_exists(path):
+            return path == cover_path or real_lexists(path)
+
+        def slow_cover_remove(path):
+            if path == cover_path:
+                cleanup_started.set()
+                assert cleanup_release.wait(timeout=5)
+                return
+            real_remove(path)
+
+        monkeypatch.setattr(series_router.os.path, "lexists", cover_exists)
+        monkeypatch.setattr(series_router.os, "remove", slow_cover_remove)
+
+    csrf = _csrf_kwargs(f"slow-{slow_operation}")
+
+    def purge():
+        return _client().post(
+            "/series/1/purge",
+            cookies=csrf["cookies"],
+            headers=csrf["headers"],
+            follow_redirects=False,
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(purge)
+        assert cleanup_started.wait(timeout=2), "purge never reached disk cleanup"
+        try:
+            with sqlite3.connect(env["db_path"], timeout=0.05) as writer:
+                writer.execute("PRAGMA busy_timeout=50")
+                writer.execute(
+                    "UPDATE series SET title='Concurrent Writer' WHERE id=2"
+                )
+        finally:
+            cleanup_release.set()
+        response = future.result(timeout=5)
+
+    assert response.status_code == 303
+    with sqlite3.connect(env["db_path"]) as c:
+        assert c.execute("SELECT 1 FROM series WHERE id=1").fetchone() is None
+        assert c.execute("SELECT title FROM series WHERE id=2").fetchone()[0] == (
+            "Concurrent Writer"
+        )
 
 
 # ───────────────────── blocklist mutations ─────────────────────

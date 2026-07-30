@@ -1,22 +1,37 @@
 """Import commit: Phase 3 DB transaction replaying all writes."""
 
 import logging
+import sqlite3
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from events import log_event, add_history
 from files import quality_from_filename, build_volume_label
 from volumes import _cascade_chapters, _check_volume_completion
 from import_download import _mark_downloaded
+from import_lease import (
+    ImportQueueStatus,
+    has_import_sibling_that_may_use_download,
+    refresh_import_queue_lease,
+    transition_import_queue_row,
+)
+
+if TYPE_CHECKING:
+    from import_plan import _ImportPlan
+    from import_staging import _StageOutcome
 
 log = logging.getLogger(__name__)
 
 
 def _commit_import(
-    db,
-    plan,
-    outcomes: list,
+    db: sqlite3.Connection,
+    plan: "_ImportPlan",
+    outcomes: list["_StageOutcome"],
     fs_committed: bool,
     commit_failure_reason: str,
+    *,
+    lease_owner: str,
+    lease_seconds: float,
 ) -> tuple[bool, int, str]:
     """Phase 3: short DB transaction replaying all writes."""
     queue = plan.queue
@@ -24,10 +39,20 @@ def _commit_import(
     dst_dir = plan.dst_dir
     queue_id = queue["id"]
 
+    # This owner-CAS is deliberately the transaction's first mutation. A stale
+    # worker returns before touching child rows, volumes, chapters, or history.
+    if not refresh_import_queue_lease(
+        db,
+        queue_id,
+        lease_owner,
+        lease_seconds=lease_seconds,
+    ):
+        return False, 0, "lease_lost"
+
     outcomes_by_id = {o.file_id: o for o in outcomes}
     imported_count = 0
-    imported_vols: set = set()
-    chapter_vols_touched: set = set()
+    imported_vols: set[float] = set()
+    chapter_vols_touched: set[int] = set()
 
     has_pre_failed = any(fp.plan_status == "pre_failed" for fp in plan.files)
     has_stage_fail = any(
@@ -169,7 +194,7 @@ def _commit_import(
     ).fetchone()
 
     if imported_count == 0 and any_error:
-        new_status = "failed"
+        new_status: ImportQueueStatus = "failed"
     elif has_needs_review:
         new_status = "partial"
     elif any_error:
@@ -177,14 +202,26 @@ def _commit_import(
     else:
         new_status = "imported"
 
-    db.execute("UPDATE import_queue SET status=? WHERE id=?", (new_status, queue_id))
-    if new_status == "failed" and queue["download_id"]:
+    if not transition_import_queue_row(
+        db,
+        queue_id,
+        lease_owner,
+        new_status,
+    ):
+        raise RuntimeError("import lease lost during Phase 3 transaction")
+    reset_is_shared = has_import_sibling_that_may_use_download(
+        db,
+        queue_id=queue_id,
+        download_id=queue["download_id"],
+        series_id=series_id,
+    )
+    if new_status == "failed" and queue["download_id"] and not reset_is_shared:
         db.execute(
             "UPDATE volumes SET status='wanted', grabbed_at=NULL, download_id=NULL,"
             " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
             " client=NULL, release_group=NULL, import_path=NULL"
-            " WHERE download_id=? AND status='grabbed'",
-            (queue["download_id"],),
+            " WHERE series_id=? AND download_id=? AND status='grabbed'",
+            (series_id, queue["download_id"]),
         )
     if new_status == "imported":
         if queue["download_id"]:

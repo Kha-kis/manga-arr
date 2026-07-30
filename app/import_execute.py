@@ -1,18 +1,40 @@
 """Import execution: orchestrate three-phase pipeline (plan → stage → commit)."""
 
 import asyncio
+import logging
 import os
+import secrets
 import shutil
+from collections.abc import Callable
+from typing import TypeVar
 
 from shared import get_cfg, get_db
 from events import log_event, broadcast_queue_event
 from import_staging import _ImportStaging, _stage_files
-from import_plan import _plan_import as _split_plan_import, _FilePlan, _ImportPlan
+from import_lease import (
+    IMPORT_LEASE_REFRESH_SECONDS,
+    IMPORT_LEASE_SECONDS,
+    claim_import_queue_row,
+    has_import_sibling_that_may_use_download,
+    refresh_import_queue_lease,
+    release_import_queue_lease,
+    transition_import_queue_row,
+)
+from import_plan import (
+    _FilePlan,
+    _ImportPlan,
+    _ImportPlanLeaseLost,
+    _plan_import as _split_plan_import,
+)
 from import_commit import _commit_import as _split_commit_import
 from import_download import _mark_downloaded
 from cover_images import extract_cbz_cover, download_cover
 from notifications import trigger_komga_scan
 from clients import qbit_remove, sab_remove
+
+log = logging.getLogger(__name__)
+_T = TypeVar("_T")
+_HEARTBEAT_RETRY_SECONDS = 1.0
 
 
 # Semaphore for bounding concurrent imports
@@ -96,62 +118,314 @@ def _mark_plan_failed(plan: _ImportPlan, reason: str) -> None:
             fp.plan_failure_reason = reason
 
 
-def claim_import_queue_row(
-    db, queue_id: int, allowed_statuses: tuple[str, ...] = ("pending", "partial")
-) -> bool:
-    """Atomically transition the queue row into 'importing' state.
+def _prepare_plan_filesystem(plan: _ImportPlan) -> str:
+    """Perform Phase 1 filesystem checks without holding its DB transaction."""
+    try:
+        os.makedirs(plan.dst_dir, exist_ok=True)
+    except OSError as exc:
+        reason = f"Import: cannot create {plan.dst_dir}: {exc}"
+        _mark_plan_failed(plan, reason)
+        return reason
 
-    Returns True iff this caller won the race.
+    for fp in plan.files:
+        if fp.plan_status == "ready" and not os.path.isfile(fp.src_path):
+            fp.plan_status = "pre_failed"
+            fp.plan_failure_reason = f"source file missing: {fp.src_path}"
+    return ""
+
+
+async def _wait_task_uninterruptibly(task: asyncio.Task[_T]) -> bool:
+    """Wait for ``task`` to settle while deferring caller cancellation.
+
+    Returns whether one or more cancellations were consumed. Shielding keeps
+    the worker alive; ``uncancel`` lets repeated cancellations be observed and
+    deferred instead of cancelling a later await of the same worker.
     """
-    placeholders = ",".join("?" * len(allowed_statuses))
-    cur = db.execute(
-        f"UPDATE import_queue SET status='importing'"
-        f" WHERE id=? AND status IN ({placeholders})",
-        [queue_id, *allowed_statuses],
-    )
-    return cur.rowcount > 0
+    current = asyncio.current_task()
+    cancellation_requested = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled():
+                break
+            cancellation_requested = True
+            if current is not None:
+                current.uncancel()
+        except Exception:
+            # The settled exception is retrieved exactly once by task.result()
+            # in the caller after the worker can no longer mutate anything.
+            break
+    return cancellation_requested
+
+
+async def _run_blocking_uninterruptibly(
+    func: Callable[[], _T],
+) -> tuple[_T, bool]:
+    task = asyncio.create_task(asyncio.to_thread(func))
+    cancellation_requested = await _wait_task_uninterruptibly(task)
+    return task.result(), cancellation_requested
+
+
+async def _lease_heartbeat(
+    queue_id: int,
+    lease_owner: str,
+    stop: asyncio.Event,
+    ownership_lost: asyncio.Event,
+) -> None:
+    """Renew one import lease until execution finishes or ownership is lost."""
+    refresh_interval = max(0.01, float(IMPORT_LEASE_REFRESH_SECONDS))
+    retry_interval = max(0.01, min(refresh_interval, _HEARTBEAT_RETRY_SECONDS))
+    lease_deadline = asyncio.get_running_loop().time() + IMPORT_LEASE_SECONDS
+    next_delay = refresh_interval
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=next_delay)
+            return
+        except TimeoutError:
+            pass
+        try:
+            refreshed = await asyncio.to_thread(
+                _refresh_owned_import,
+                queue_id,
+                lease_owner,
+            )
+        except Exception as exc:
+            remaining = lease_deadline - asyncio.get_running_loop().time()
+            log.warning(
+                "Import queue %s lease heartbeat failed; retrying "
+                "(%.3fs estimated remaining): %s",
+                queue_id,
+                max(0.0, remaining),
+                exc,
+            )
+            next_delay = min(retry_interval, max(0.01, remaining))
+            continue
+        if not refreshed:
+            ownership_lost.set()
+            return
+        lease_deadline = asyncio.get_running_loop().time() + IMPORT_LEASE_SECONDS
+        next_delay = refresh_interval
+
+
+async def _stop_lease_heartbeat(
+    heartbeat: asyncio.Task[None],
+    stop: asyncio.Event,
+) -> bool:
+    stop.set()
+    cancellation_requested = await _wait_task_uninterruptibly(heartbeat)
+    try:
+        heartbeat.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        log_event("error", f"[Import] lease heartbeat shutdown failed: {exc}")
+    return cancellation_requested
+
+
+def _refresh_owned_import(queue_id: int, lease_owner: str) -> bool:
+    with get_db() as db:
+        return refresh_import_queue_lease(
+            db,
+            queue_id,
+            lease_owner,
+            lease_seconds=IMPORT_LEASE_SECONDS,
+        )
+
+
+def _cleanup_pack_staging_if_safe(
+    queue_id: int,
+    download_id: str,
+    lease_owner: str,
+) -> bool:
+    """Detach shared pack staging only while a successor cannot own it.
+
+    The pack source path predates leases and is keyed only by download ID.
+    The writer lock covers the ownership proof and atomic rename, preventing a
+    successor claim between them. Recursive deletion happens after commit so
+    slow storage cannot hold the SQLite writer lock.
+    """
+    from import_pipeline import PACK_STAGING_ROOT
+
+    pack_dir = os.path.join(PACK_STAGING_ROOT, f"queue-{download_id}")
+    tombstone = f"{pack_dir}.cleanup-{secrets.token_urlsafe(18)}"
+    detached = False
+    with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(
+            "SELECT status, lease_owner,"
+            " lease_expires_at > datetime('now') AS lease_live"
+            " FROM import_queue WHERE id=?",
+            (queue_id,),
+        ).fetchone()
+        if row is not None:
+            exact_owner = (
+                row["status"] == "importing"
+                and row["lease_owner"] == lease_owner
+                and bool(row["lease_live"])
+            )
+            settled_unleased = (
+                row["status"] != "importing" and row["lease_owner"] is None
+            )
+            if not exact_owner and not settled_unleased:
+                return False
+        if has_import_sibling_that_may_use_download(
+            db,
+            queue_id=queue_id,
+            download_id=download_id,
+        ):
+            return False
+        try:
+            os.replace(pack_dir, tombstone)
+        except FileNotFoundError:
+            return True
+        except OSError as exc:
+            log.warning(
+                "Import queue %s could not detach pack staging %s: %s",
+                queue_id,
+                pack_dir,
+                exc,
+            )
+            return False
+        detached = True
+
+    if detached:
+        try:
+            shutil.rmtree(tombstone)
+        except OSError as exc:
+            log.warning(
+                "Import queue %s could not remove detached pack staging %s: %s",
+                queue_id,
+                tombstone,
+                exc,
+            )
+            return False
+    return True
 
 
 async def _guarded_execute_import(
     queue_id: int,
-    volume_overrides: dict | None = None,
-    skip_ids: set | None = None,
-    chapter_overrides: dict | None = None,
+    volume_overrides: dict[int, float] | None = None,
+    skip_ids: set[int] | None = None,
+    chapter_overrides: dict[int, float] | None = None,
 ) -> bool:
-    """Claim the queue row, then run _execute_import under the semaphore."""
-    with get_db() as _claim_db:
-        if not claim_import_queue_row(_claim_db, queue_id):
-            log_event("info", f"[Import] queue {queue_id}: claim lost", db=_claim_db)
-            return False
+    """Acquire capacity, claim with an owner token, and execute with heartbeat."""
     async with _get_import_sem():
+        lease_owner = secrets.token_urlsafe(32)
         try:
-            return await _execute_import(
-                queue_id, volume_overrides, skip_ids, chapter_overrides
+            with get_db() as claim_db:
+                if not claim_import_queue_row(
+                    claim_db,
+                    queue_id,
+                    lease_owner,
+                    lease_seconds=IMPORT_LEASE_SECONDS,
+                ):
+                    log_event(
+                        "info",
+                        f"[Import] queue {queue_id}: claim lost",
+                        db=claim_db,
+                    )
+                    return False
+        except Exception as exc:
+            log_event(
+                "error",
+                f"[Import] queue {queue_id}: claim failed: {exc}",
+            )
+            return False
+
+        heartbeat_stop = asyncio.Event()
+        ownership_lost = asyncio.Event()
+        heartbeat = asyncio.create_task(
+            _lease_heartbeat(
+                queue_id,
+                lease_owner,
+                heartbeat_stop,
+                ownership_lost,
+            ),
+            name=f"import-lease-heartbeat-{queue_id}",
+        )
+        result = False
+        execution_error: Exception | None = None
+        cancellation_requested = False
+        try:
+            result = await _execute_import(
+                queue_id,
+                volume_overrides,
+                skip_ids,
+                chapter_overrides,
+                lease_owner=lease_owner,
+                ownership_lost=ownership_lost,
             )
         except asyncio.CancelledError:
+            cancellation_requested = True
+        except Exception as exc:
+            execution_error = exc
+        finally:
+            cancellation_requested |= await _stop_lease_heartbeat(
+                heartbeat,
+                heartbeat_stop,
+            )
+
+        if cancellation_requested:
             log_event(
                 "info",
                 f"[Import] _guarded_execute_import cancelled for queue {queue_id}",
             )
-            with get_db() as _fail_db:
-                _fail_db.execute(
-                    "UPDATE import_queue SET status='failed', failed_at=datetime('now') WHERE id=?",
-                    (queue_id,),
+            try:
+                with get_db() as release_db:
+                    release_import_queue_lease(
+                        release_db,
+                        queue_id,
+                        lease_owner,
+                    )
+            except Exception as exc:
+                log_event(
+                    "error",
+                    f"[Import] queue {queue_id}: cancellation release failed: {exc}",
                 )
-                _fail_db.execute(
-                    "UPDATE import_queue_files SET status='cancelled' WHERE queue_id=?",
-                    (queue_id,),
+            raise asyncio.CancelledError
+
+        if execution_error is not None:
+            log_event(
+                "error",
+                f"[Import] queue {queue_id}: execution failed: {execution_error}",
+            )
+            try:
+                with get_db() as fail_db:
+                    transition_import_queue_row(
+                        fail_db,
+                        queue_id,
+                        lease_owner,
+                        "failed",
+                    )
+            except Exception as fail_exc:
+                log_event(
+                    "error",
+                    f"[Import] queue {queue_id}: failure transition failed: "
+                    f"{fail_exc}",
                 )
-            raise
+            return False
+        return result
 
 
 async def _execute_import(
     queue_id: int,
-    volume_overrides: dict | None = None,
-    skip_ids: set | None = None,
-    chapter_overrides: dict | None = None,
+    volume_overrides: dict[int, float] | None = None,
+    skip_ids: set[int] | None = None,
+    chapter_overrides: dict[int, float] | None = None,
+    *,
+    lease_owner: str | None = None,
+    ownership_lost: asyncio.Event | None = None,
 ) -> bool:
     """Wrapper around _execute_import_impl with auto-pack staging cleanup."""
+    if lease_owner is None:
+        return await _guarded_execute_import(
+            queue_id,
+            volume_overrides,
+            skip_ids,
+            chapter_overrides,
+        )
+
     pack_cleanup_id: str | None = None
     with get_db() as _db_init:
         _qrow = _db_init.execute(
@@ -162,7 +436,12 @@ async def _execute_import(
     try:
         try:
             return await _execute_import_impl(
-                queue_id, volume_overrides, skip_ids, chapter_overrides
+                queue_id,
+                volume_overrides,
+                skip_ids,
+                chapter_overrides,
+                lease_owner=lease_owner,
+                ownership_lost=ownership_lost,
             )
         except asyncio.CancelledError:
             log_event(
@@ -171,18 +450,46 @@ async def _execute_import(
             raise
     finally:
         if pack_cleanup_id:
-            from import_staging import _cleanup_pack_staging_dir
-
-            _cleanup_pack_staging_dir(pack_cleanup_id)
+            try:
+                _, cleanup_cancelled = await _run_blocking_uninterruptibly(
+                    lambda: _cleanup_pack_staging_if_safe(
+                        queue_id,
+                        pack_cleanup_id,
+                        lease_owner,
+                    )
+                )
+                if cleanup_cancelled:
+                    raise asyncio.CancelledError
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning(
+                    "Import queue %s pack staging cleanup failed: %s",
+                    queue_id,
+                    exc,
+                )
 
 
 async def _execute_import_impl(
     queue_id: int,
-    volume_overrides: dict | None = None,
-    skip_ids: set | None = None,
-    chapter_overrides: dict | None = None,
+    volume_overrides: dict[int, float] | None = None,
+    skip_ids: set[int] | None = None,
+    chapter_overrides: dict[int, float] | None = None,
+    *,
+    lease_owner: str | None = None,
+    ownership_lost: asyncio.Event | None = None,
 ) -> bool:
     """Three-phase pipeline: Plan → Stage → Commit."""
+    if lease_owner is None:
+        return await _guarded_execute_import(
+            queue_id,
+            volume_overrides,
+            skip_ids,
+            chapter_overrides,
+        )
+    if ownership_lost is None:
+        ownership_lost = asyncio.Event()
+
     if volume_overrides is None:
         volume_overrides = {}
     if chapter_overrides is None:
@@ -193,36 +500,72 @@ async def _execute_import_impl(
     import_mode = get_cfg("import_mode", "hardlink")
 
     # ── Phase 1 — short DB tx for planning ──────────────────────────────
-    with get_db() as _db1:
-        plan = _split_plan_import(
-            _db1,
-            queue_id,
-            volume_overrides,
-            chapter_overrides,
-            skip_ids,
-            import_mode,
-        )
+    try:
+        with get_db() as _db1:
+            if not refresh_import_queue_lease(
+                _db1,
+                queue_id,
+                lease_owner,
+                lease_seconds=IMPORT_LEASE_SECONDS,
+            ):
+                ownership_lost.set()
+                return False
+            plan = _split_plan_import(
+                _db1,
+                queue_id,
+                lease_owner,
+                volume_overrides,
+                chapter_overrides,
+                skip_ids,
+                import_mode,
+                lease_seconds=IMPORT_LEASE_SECONDS,
+            )
+    except _ImportPlanLeaseLost:
+        ownership_lost.set()
+        return False
     if plan is None:
         return False
 
     queue = plan.queue
+    filesystem_reason, prepare_cancelled = await _run_blocking_uninterruptibly(
+        lambda: _prepare_plan_filesystem(plan)
+    )
+    if prepare_cancelled:
+        raise asyncio.CancelledError
 
     space_ok, space_reason = _check_minimum_free_space(plan, import_mode)
-    if not space_ok:
-        _mark_plan_failed(plan, space_reason)
+    if filesystem_reason or not space_ok:
+        failure_reason = filesystem_reason or space_reason
+        if not filesystem_reason:
+            _mark_plan_failed(plan, failure_reason)
         with get_db() as _db_space:
             _split_commit_import(
                 _db_space,
                 plan,
                 [],
                 fs_committed=False,
-                commit_failure_reason=space_reason,
+                commit_failure_reason=failure_reason,
+                lease_owner=lease_owner,
+                lease_seconds=IMPORT_LEASE_SECONDS,
             )
         return False
 
     # ── Phase 2 — filesystem (no DB held) ───────────────────────────────
     staging = _ImportStaging(plan.dst_dir, queue["id"], import_mode)
-    outcomes = await _stage_files(plan, staging)
+    stage_task = asyncio.create_task(_stage_files(plan, staging))
+    stage_cancelled = await _wait_task_uninterruptibly(stage_task)
+    try:
+        outcomes = stage_task.result()
+    except Exception:
+        _, rollback_cancelled = await _run_blocking_uninterruptibly(staging.rollback)
+        if stage_cancelled or rollback_cancelled:
+            raise asyncio.CancelledError
+        raise
+    if stage_cancelled:
+        _, rollback_cancelled = await _run_blocking_uninterruptibly(staging.rollback)
+        if rollback_cancelled:
+            stage_cancelled = True
+        raise asyncio.CancelledError
     outcomes_by_id = {o.file_id: o for o in outcomes}
 
     has_pre_failed = any(fp.plan_status == "pre_failed" for fp in plan.files)
@@ -238,17 +581,62 @@ async def _execute_import_impl(
 
     fs_committed = False
     commit_failure_reason = ""
+    cancelled_after_publication = False
     if (has_pre_failed or has_stage_fail) and would_be_imported > 0:
-        await asyncio.to_thread(staging.rollback)
+        _, rollback_cancelled = await _run_blocking_uninterruptibly(staging.rollback)
+        if rollback_cancelled:
+            raise asyncio.CancelledError
     elif would_be_imported > 0:
+        if ownership_lost.is_set():
+            _, rollback_cancelled = await _run_blocking_uninterruptibly(
+                staging.rollback
+            )
+            if rollback_cancelled:
+                raise asyncio.CancelledError
+            return False
+        refresh_task = asyncio.create_task(
+            asyncio.to_thread(
+                _refresh_owned_import,
+                queue_id,
+                lease_owner,
+            )
+        )
+        refresh_cancelled = await _wait_task_uninterruptibly(refresh_task)
+        if refresh_cancelled:
+            await _run_blocking_uninterruptibly(staging.rollback)
+            raise asyncio.CancelledError
         try:
-            await asyncio.to_thread(staging.commit_all)
+            refresh_owned = refresh_task.result()
+        except Exception:
+            _, rollback_cancelled = await _run_blocking_uninterruptibly(
+                staging.rollback
+            )
+            if rollback_cancelled:
+                raise asyncio.CancelledError
+            raise
+        if not refresh_owned:
+            ownership_lost.set()
+            _, rollback_cancelled = await _run_blocking_uninterruptibly(
+                staging.rollback
+            )
+            if rollback_cancelled:
+                raise asyncio.CancelledError
+            return False
+        commit_task = asyncio.create_task(asyncio.to_thread(staging.commit_all))
+        cancelled_after_publication = await _wait_task_uninterruptibly(commit_task)
+        try:
+            commit_task.result()
             fs_committed = True
         except Exception as e:
-            await asyncio.to_thread(staging.rollback)
+            _, rollback_cancelled = await _run_blocking_uninterruptibly(
+                staging.rollback
+            )
+            cancelled_after_publication |= rollback_cancelled
             commit_failure_reason = str(e)
     else:
-        await asyncio.to_thread(staging.rollback)
+        _, rollback_cancelled = await _run_blocking_uninterruptibly(staging.rollback)
+        if rollback_cancelled:
+            raise asyncio.CancelledError
 
     # ── Phase 3 — short DB tx for replay ────────────────────────────────
     with get_db() as _db3:
@@ -258,7 +646,12 @@ async def _execute_import_impl(
             outcomes,
             fs_committed=fs_committed,
             commit_failure_reason=commit_failure_reason,
+            lease_owner=lease_owner,
+            lease_seconds=IMPORT_LEASE_SECONDS,
         )
+
+    if cancelled_after_publication:
+        raise asyncio.CancelledError
 
     # ── Post-import work ────────────────────────────────────────────────
     if ok:
@@ -314,15 +707,3 @@ async def _process_auto_import(queue_id: int):
             "error",
             f"Auto-import failed for queue {queue_id}: {e}\n{traceback.format_exc()}",
         )
-        try:
-            with get_db() as _db_err:
-                _db_err.execute(
-                    "UPDATE import_queue SET status='failed'"
-                    " WHERE id=? AND status IN ('pending','partial','importing')",
-                    (queue_id,),
-                )
-        except Exception as _db_e:
-            log_event(
-                "error",
-                f"Auto-import failed to mark queue {queue_id} as failed: {_db_e}",
-            )

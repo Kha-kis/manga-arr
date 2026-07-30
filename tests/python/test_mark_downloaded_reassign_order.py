@@ -8,10 +8,9 @@ mutually exclusive branches. This test verifies both patterns still
 exist with correct guard predicates.
 """
 
+import ast
 import pathlib
 import re
-
-import pytest
 
 
 _COMMIT_PATH = pathlib.Path(__file__).resolve().parents[2] / "app" / "import_commit.py"
@@ -22,17 +21,31 @@ def _commit_import_text() -> str:
 
 
 def test_reset_uses_download_id_and_status_grabbed():
-    """The reassign-reset SQL must key on download_id AND status='grabbed'.
-    Without the status filter, it would also clobber rows already in
-    'downloaded' state.
+    """The reset must key on series_id, download_id, and status='grabbed'.
+
+    Without the series filter, a shared download ID could reset another
+    series; without the status filter, it could clobber downloaded rows.
     """
     src = _commit_import_text()
+    string_literals = (
+        node.value
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    )
+    reset_sql = next(
+        (
+            value
+            for value in string_literals
+            if re.search(r"UPDATE\s+volumes\s+SET\s+status\s*=\s*'wanted'", value)
+        ),
+        None,
+    )
+    assert reset_sql, "could not locate the reassign-reset SQL"
     assert re.search(
-        r"UPDATE volumes SET status='wanted'.*?"
-        r"WHERE download_id=\? AND status='grabbed'",
-        src,
-        flags=re.DOTALL,
-    ), "reset SQL must filter on status='grabbed' to avoid clobbering"
+        r"\bWHERE\s+series_id\s*=\s*\?\s+AND\s+download_id\s*=\s*\?"
+        + r"\s+AND\s+status\s*=\s*'grabbed'\s*;?\s*$",
+        reset_sql,
+    ), "reset SQL must filter by series_id, download_id, and grabbed status"
 
 
 def test_reset_only_in_new_status_failed_branch():

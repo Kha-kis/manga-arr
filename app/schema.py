@@ -194,6 +194,8 @@ def init_db() -> None:
                  src_dir      TEXT,
                  status       TEXT DEFAULT 'pending',
                  failed_at    TIMESTAMP,
+                 lease_owner  TEXT,
+                 lease_expires_at TIMESTAMP,
                  created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
              );
             CREATE TABLE IF NOT EXISTS import_queue_files (
@@ -374,6 +376,8 @@ def init_db() -> None:
              WHERE proposed_import_kind = 'special'
         """)
         add_col('import_queue',            'failed_at',                'TIMESTAMP')
+        add_col('import_queue',            'lease_owner',              'TEXT')
+        add_col('import_queue',            'lease_expires_at',         'TIMESTAMP')
         # Side-story / oneshot persistence on the final volumes row.
         # Stage 2 only stores this flag; Stage 3 adds the coverage
         # exclusion that makes it load-bearing. Non-null default so
@@ -877,6 +881,7 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_volumes_series        ON volumes(series_id)",
             "CREATE INDEX IF NOT EXISTS idx_volumes_series_status ON volumes(series_id, status)",
             "CREATE INDEX IF NOT EXISTS idx_volumes_series_volnum ON volumes(series_id, volume_num)",
+            "CREATE INDEX IF NOT EXISTS idx_volumes_download_id   ON volumes(download_id)",
             "CREATE INDEX IF NOT EXISTS idx_seen_series           ON seen(series_id)",
             "CREATE INDEX IF NOT EXISTS idx_seen_dlid             ON seen(download_id)",
             "CREATE INDEX IF NOT EXISTS idx_seen_guid             ON seen(release_guid) WHERE release_guid IS NOT NULL",
@@ -884,6 +889,8 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_chapters_volid        ON chapters(volume_id)",
             "CREATE INDEX IF NOT EXISTS idx_import_queue_dlid     ON import_queue(download_id)",
             "CREATE INDEX IF NOT EXISTS idx_import_queue_status   ON import_queue(status)",
+            "CREATE INDEX IF NOT EXISTS idx_import_queue_importing_expiry"
+            " ON import_queue(lease_expires_at) WHERE status='importing'",
             "CREATE INDEX IF NOT EXISTS idx_events_series         ON events(series_id)",
             "CREATE INDEX IF NOT EXISTS idx_history_series        ON history(series_id)",
             "CREATE INDEX IF NOT EXISTS idx_remote_path_host      ON remote_path_mappings(host)",
@@ -1175,6 +1182,7 @@ def _restore_volume_chapter_artifacts(db) -> None:
         "CREATE INDEX IF NOT EXISTS idx_volumes_series        ON volumes(series_id)",
         "CREATE INDEX IF NOT EXISTS idx_volumes_series_status ON volumes(series_id, status)",
         "CREATE INDEX IF NOT EXISTS idx_volumes_series_volnum ON volumes(series_id, volume_num)",
+        "CREATE INDEX IF NOT EXISTS idx_volumes_download_id   ON volumes(download_id)",
         "CREATE INDEX IF NOT EXISTS idx_chapters_series       ON chapters(series_id)",
         "CREATE INDEX IF NOT EXISTS idx_chapters_volid        ON chapters(volume_id)",
     ]:

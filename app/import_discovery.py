@@ -1,6 +1,9 @@
 """Download client discovery: poll qBittorrent/SABnzbd for completed downloads."""
 
 import asyncio
+import sqlite3
+from collections.abc import Mapping
+from typing import cast
 
 import httpx
 
@@ -20,6 +23,229 @@ from import_queue import _queue_import
 # When one run is in flight, additional invocations are no-ops — the
 # in-flight run will pick up whatever new state the caller cared about.
 _CHECK_DOWNLOAD_STATUS_LOCK = asyncio.Lock()
+
+
+def _reserve_orphan_cleanup(
+    db: sqlite3.Connection,
+    download_id: str,
+    *,
+    case_insensitive: bool,
+) -> tuple[bool, list[int]]:
+    """Acquire the writer tx and protect active imports for one download.
+
+    Pending, partial, and importing rows are active protection. Failed rows are
+    the only nonactive work transitioned by orphan cleanup; child updates are
+    limited to the exact parent IDs returned by that transition.
+    """
+    if case_insensitive:
+        transition_sql = """
+            UPDATE import_queue
+            SET status='skipped'
+            WHERE download_id IS NOT NULL
+              AND lower(download_id)=lower(?)
+              AND status='failed'
+              AND lease_owner IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM import_queue active
+                  WHERE active.download_id IS NOT NULL
+                    AND lower(active.download_id)=lower(?)
+                    AND (
+                        active.status IN ('pending','partial','importing')
+                        OR active.lease_owner IS NOT NULL
+                    )
+              )
+            RETURNING id
+        """
+        active_sql = (
+            "SELECT 1 FROM import_queue"
+            " WHERE download_id IS NOT NULL"
+            " AND lower(download_id)=lower(?)"
+            " AND (status IN ('pending','partial','importing')"
+            " OR lease_owner IS NOT NULL) LIMIT 1"
+        )
+    else:
+        transition_sql = """
+            UPDATE import_queue
+            SET status='skipped'
+            WHERE download_id IS NOT NULL
+              AND download_id=?
+              AND status='failed'
+              AND lease_owner IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM import_queue active
+                  WHERE active.download_id IS NOT NULL
+                    AND active.download_id=?
+                    AND (
+                        active.status IN ('pending','partial','importing')
+                        OR active.lease_owner IS NOT NULL
+                    )
+              )
+            RETURNING id
+        """
+        active_sql = (
+            "SELECT 1 FROM import_queue"
+            " WHERE download_id IS NOT NULL AND download_id=?"
+            " AND (status IN ('pending','partial','importing')"
+            " OR lease_owner IS NOT NULL) LIMIT 1"
+        )
+    transitioned = [
+        int(row["id"])
+        for row in db.execute(
+            transition_sql,
+            (download_id, download_id),
+        ).fetchall()
+    ]
+    active = db.execute(
+        active_sql,
+        (download_id,),
+    ).fetchone()
+    if active is not None:
+        return False, []
+    if transitioned:
+        db.executemany(
+            "UPDATE import_queue_files SET status='skipped' WHERE queue_id=?",
+            ((queue_id,) for queue_id in transitioned),
+        )
+    return True, transitioned
+
+
+def _sab_process_sync(
+    sab_by_nzo: Mapping[str, Mapping[str, object]],
+    all_sab_nzo_ids: set[str],
+    sab_host: str,
+) -> list[int]:
+    """Queue completed SAB items without carrying writes into the next scan."""
+    with get_db() as db:
+        rows = [
+            dict(row)
+            for row in db.execute(
+                "SELECT torrent_url, torrent_name, series_id, volume_num, download_id "
+                "FROM seen WHERE client='sabnzbd'"
+            ).fetchall()
+        ]
+
+    new_queue_ids: list[int] = []
+    for row in rows:
+        download_id = row["download_id"]
+        if not download_id:
+            continue
+        slot = sab_by_nzo.get(download_id)
+        if not slot:
+            continue
+
+        with get_db() as db:
+            content_path = apply_remote_path_mapping(
+                db,
+                cast(str, slot.get("storage", "")),
+                sab_host,
+            )
+        with get_db() as db:
+            queue_id, needs_review = _queue_import(
+                db,
+                row["series_id"],
+                download_id,
+                row["torrent_name"] or "",
+                row["torrent_url"] or "",
+                row["volume_num"],
+                content_path,
+            )
+        if queue_id and not needs_review:
+            new_queue_ids.append(queue_id)
+
+    with get_db() as db:
+        sab_orphaned = [
+            dict(row)
+            for row in db.execute(
+                "SELECT DISTINCT v.download_id, v.series_id,"
+                " COALESCE(sv.torrent_name, v.torrent_name) as torrent_name "
+                "FROM volumes v "
+                "LEFT JOIN seen sv ON sv.download_id = v.download_id "
+                "WHERE v.status='grabbed' "
+                "  AND v.client='sabnzbd' "
+                "  AND v.download_id IS NOT NULL "
+                "  AND NOT EXISTS ("
+                "    SELECT 1 FROM import_queue iq"
+                "    WHERE iq.download_id IS NOT NULL"
+                "      AND iq.download_id=v.download_id"
+                "      AND (iq.status IN ('pending','partial','importing')"
+                "           OR iq.lease_owner IS NOT NULL))"
+            ).fetchall()
+        ]
+
+    for orphan in sab_orphaned:
+        download_id = orphan["download_id"]
+        if download_id in all_sab_nzo_ids:
+            continue
+        with get_db() as db:
+            cleanup_allowed, _ = _reserve_orphan_cleanup(
+                db,
+                download_id,
+                case_insensitive=False,
+            )
+            if not cleanup_allowed:
+                continue
+            orphan_vol_ids = [
+                row[0]
+                for row in db.execute(
+                    "SELECT id FROM volumes WHERE series_id=? AND download_id=?"
+                    " AND status='grabbed' AND volume_num IS NOT NULL",
+                    (orphan["series_id"], download_id),
+                ).fetchall()
+            ]
+            db.execute(
+                "DELETE FROM volumes WHERE series_id=? AND download_id=?"
+                " AND status='grabbed' AND volume_num IS NULL",
+                (orphan["series_id"], download_id),
+            )
+            db.execute(
+                "UPDATE volumes SET status='wanted', download_id=NULL,"
+                " torrent_name=NULL, indexer=NULL, protocol=NULL, client=NULL,"
+                " grabbed_at=NULL, source_url=NULL, release_group=NULL "
+                "WHERE series_id=? AND download_id=? AND status='grabbed'",
+                (orphan["series_id"], download_id),
+            )
+            if orphan_vol_ids:
+                from volumes import _cascade_chapters
+
+                _cascade_chapters(
+                    db,
+                    orphan["series_id"],
+                    orphan_vol_ids,
+                    "wanted",
+                    grabbed_at=None,
+                    torrent_name=None,
+                    torrent_url=None,
+                    indexer=None,
+                    protocol=None,
+                    client=None,
+                    download_id=None,
+                    release_group=None,
+                )
+            db.execute("DELETE FROM seen WHERE download_id=?", (download_id,))
+            log_event(
+                "warning",
+                f"SAB grab lost (removed from client): {orphan['torrent_name']}",
+                orphan["series_id"],
+                db=db,
+            )
+            series_row = db.execute(
+                "SELECT title FROM series WHERE id=?",
+                (orphan["series_id"],),
+            ).fetchone()
+            add_history(
+                db,
+                "grab_failed",
+                orphan["series_id"],
+                series_row["title"] if series_row else "",
+                "",
+                source_title=orphan["torrent_name"] or "",
+                download_id=download_id,
+                data={"reason": "removed_from_client"},
+            )
+
+    return new_queue_ids
 
 
 async def check_download_status():
@@ -78,8 +304,15 @@ async def _check_download_status_impl():
             " WHERE status='grabbed'"
             "   AND grabbed_at < datetime('now', '-2 days')"
             "   AND NOT EXISTS ("
-            "     SELECT 1 FROM import_queue iq WHERE iq.download_id = volumes.download_id"
-            "     AND iq.status IN ('pending','partial')"
+            "     SELECT 1 FROM import_queue iq"
+            "     WHERE ("
+            "       (lower(COALESCE(volumes.client,'')) IN ('qbittorrent','qbit')"
+            "        AND lower(iq.download_id)=lower(volumes.download_id))"
+            "       OR (lower(COALESCE(volumes.client,'')) NOT IN ('qbittorrent','qbit')"
+            "           AND iq.download_id=volumes.download_id)"
+            "     )"
+            "     AND (iq.status IN ('pending','partial','importing')"
+            "          OR iq.lease_owner IS NOT NULL)"
             "   )"
         ).rowcount
         if _stuck_count > 0:
@@ -131,10 +364,13 @@ async def _check_download_status_impl():
 
                     def _process_qbit_completed():
                         with get_db() as db:
-                            rows = db.execute(
-                                "SELECT torrent_url, torrent_name, series_id, volume_num, download_id "
-                                "FROM seen WHERE client='qbittorrent' AND protocol='torrent'"
-                            ).fetchall()
+                            rows = [
+                                dict(row)
+                                for row in db.execute(
+                                    "SELECT torrent_url, torrent_name, series_id, volume_num, download_id "
+                                    "FROM seen WHERE client='qbittorrent' AND protocol='torrent'"
+                                ).fetchall()
+                            ]
 
                         matched = _deduplicate_qbit_matches(
                             rows, torrent_by_hash, completed_names
@@ -182,19 +418,24 @@ async def _check_download_status_impl():
 
                         # Phase B (enumerate): find orphans at qBittorrent
                         with get_db() as db:
-                            orphaned = db.execute(
-                                "SELECT DISTINCT v.download_id, v.series_id,"
-                                " COALESCE(sv.torrent_name, v.torrent_name) as torrent_name "
-                                "FROM volumes v "
-                                "LEFT JOIN seen sv ON sv.download_id = v.download_id "
-                                "WHERE v.status='grabbed' "
-                                "  AND v.client='qbittorrent' "
-                                "  AND v.download_id IS NOT NULL "
-                                "  AND v.download_id NOT IN ("
-                                "    SELECT download_id FROM import_queue"
-                                "    WHERE status='pending' AND download_id IS NOT NULL)"
-                            ).fetchall()
-                            orphaned = [dict(r) for r in orphaned]
+                            orphaned = [
+                                dict(row)
+                                for row in db.execute(
+                                    "SELECT DISTINCT v.download_id, v.series_id,"
+                                    " COALESCE(sv.torrent_name, v.torrent_name) as torrent_name "
+                                    "FROM volumes v "
+                                    "LEFT JOIN seen sv ON sv.download_id = v.download_id "
+                                    "WHERE v.status='grabbed' "
+                                    "  AND v.client='qbittorrent' "
+                                    "  AND v.download_id IS NOT NULL "
+                                    "  AND NOT EXISTS ("
+                                    "    SELECT 1 FROM import_queue iq"
+                                    "    WHERE iq.download_id IS NOT NULL"
+                                    "      AND lower(iq.download_id)=lower(v.download_id)"
+                                    "      AND (iq.status IN ('pending','partial','importing')"
+                                    "           OR iq.lease_owner IS NOT NULL))"
+                                ).fetchall()
+                            ]
 
                         # Phase C (per-orphan): individual processing
                         for gs in orphaned:
@@ -202,6 +443,13 @@ async def _check_download_status_impl():
                                 continue
                             h = gs["download_id"]
                             with get_db() as db:
+                                cleanup_allowed, _ = _reserve_orphan_cleanup(
+                                    db,
+                                    h,
+                                    case_insensitive=True,
+                                )
+                                if not cleanup_allowed:
+                                    continue
                                 orphan_vol_ids = [
                                     r[0]
                                     for r in db.execute(
@@ -239,17 +487,6 @@ async def _check_download_status_impl():
                                         download_id=None,
                                         release_group=None,
                                     )
-                                db.execute(
-                                    "UPDATE import_queue SET status='skipped' "
-                                    "WHERE download_id=? AND status='pending'",
-                                    (h,),
-                                )
-                                db.execute(
-                                    "UPDATE import_queue_files SET status='skipped' "
-                                    "WHERE queue_id IN "
-                                    "(SELECT id FROM import_queue WHERE download_id=?)",
-                                    (h,),
-                                )
                                 db.execute("DELETE FROM seen WHERE download_id=?", (h,))
                                 log_event(
                                     "warning",
@@ -280,10 +517,13 @@ async def _check_download_status_impl():
                         }
                         error_states = {"error", "missingFiles", "stalledDL"}
                         with get_db() as _fdb:
-                            seen_rows = _fdb.execute(
-                                "SELECT download_id, series_id, torrent_name, torrent_url"
-                                " FROM seen WHERE client='qbittorrent' AND protocol='torrent'"
-                            ).fetchall()
+                            seen_rows = [
+                                dict(row)
+                                for row in _fdb.execute(
+                                    "SELECT download_id, series_id, torrent_name, torrent_url"
+                                    " FROM seen WHERE client='qbittorrent' AND protocol='torrent'"
+                                ).fetchall()
+                            ]
                         for row in seen_rows:
                             h_fail = (row["download_id"] or "").lower()
                             if not h_fail:
@@ -294,8 +534,19 @@ async def _check_download_status_impl():
                                 and torrent_fail.get("state", "") in error_states
                             ):
 
-                                def _mark_failed_sync(r=row, tf=torrent_fail, h=h_fail):
+                                def _mark_failed_sync(
+                                    r=row,
+                                    tf=torrent_fail,
+                                    h=h_fail,
+                                ) -> bool:
                                     with get_db() as db:
+                                        cleanup_allowed, _ = _reserve_orphan_cleanup(
+                                            db,
+                                            h,
+                                            case_insensitive=True,
+                                        )
+                                        if not cleanup_allowed:
+                                            return False
                                         db.execute(
                                             "INSERT OR IGNORE INTO blocklist(series_id, torrent_url, torrent_name, reason)"
                                             " VALUES(?,?,?,?)",
@@ -322,8 +573,10 @@ async def _check_download_status_impl():
                                         db.execute(
                                             "DELETE FROM seen WHERE download_id=?", (h,)
                                         )
+                                    return True
 
-                                await asyncio.to_thread(_mark_failed_sync)
+                                if not await asyncio.to_thread(_mark_failed_sync):
+                                    continue
                                 if (_qc or {}).get("remove_failed"):
                                     from clients import qbit_remove
 
@@ -337,10 +590,11 @@ async def _check_download_status_impl():
                                     from grab import grab_existing
 
                                     with get_db() as _rsdb:
-                                        _rs = _rsdb.execute(
+                                        _rs_row = _rsdb.execute(
                                             "SELECT title, search_pattern FROM series WHERE id=?",
                                             (row["series_id"],),
                                         ).fetchone()
+                                        _rs = dict(_rs_row) if _rs_row else None
                                     if _rs:
                                         asyncio.create_task(
                                             grab_existing(
@@ -398,122 +652,12 @@ async def _check_download_status_impl():
                     if s.get("status") == "Completed" and s.get("nzo_id")
                 }
 
-                _sab_new_queue_ids: list[int] = []
-
-                def _sab_process_sync():
-                    with get_db() as db:
-                        rows = db.execute(
-                            "SELECT torrent_url, torrent_name, series_id, volume_num, download_id "
-                            "FROM seen WHERE client='sabnzbd'"
-                        ).fetchall()
-                        for row in rows:
-                            if not row["download_id"]:
-                                continue
-                            slot = sab_by_nzo.get(row["download_id"])
-                            if not slot:
-                                continue
-                            content_path = slot.get("storage", "")
-                            content_path = apply_remote_path_mapping(
-                                db, content_path, sab_host
-                            )
-                            q_id, needs_review = _queue_import(
-                                db,
-                                row["series_id"],
-                                row["download_id"],
-                                row["torrent_name"] or "",
-                                row["torrent_url"] or "",
-                                row["volume_num"],
-                                content_path,
-                            )
-                            if q_id and not needs_review:
-                                _sab_new_queue_ids.append(q_id)
-
-                        sab_orphaned = db.execute(
-                            "SELECT DISTINCT v.download_id, v.series_id,"
-                            " COALESCE(sv.torrent_name, v.torrent_name) as torrent_name "
-                            "FROM volumes v "
-                            "LEFT JOIN seen sv ON sv.download_id = v.download_id "
-                            "WHERE v.status='grabbed' "
-                            "  AND v.client='sabnzbd' "
-                            "  AND v.download_id IS NOT NULL "
-                            "  AND v.download_id NOT IN ("
-                            "    SELECT download_id FROM import_queue"
-                            "    WHERE status='pending' AND download_id IS NOT NULL)"
-                        ).fetchall()
-                        for gs in sab_orphaned:
-                            if gs["download_id"] in all_sab_nzo_ids:
-                                continue
-                            h_id = gs["download_id"]
-                            orphan_vol_ids = [
-                                r[0]
-                                for r in db.execute(
-                                    "SELECT id FROM volumes WHERE series_id=? AND download_id=?"
-                                    " AND status='grabbed' AND volume_num IS NOT NULL",
-                                    (gs["series_id"], h_id),
-                                ).fetchall()
-                            ]
-                            db.execute(
-                                "DELETE FROM volumes WHERE series_id=? AND download_id=?"
-                                " AND status='grabbed' AND volume_num IS NULL",
-                                (gs["series_id"], h_id),
-                            )
-                            db.execute(
-                                "UPDATE volumes SET status='wanted', download_id=NULL,"
-                                " torrent_name=NULL, indexer=NULL, protocol=NULL, client=NULL,"
-                                " grabbed_at=NULL, source_url=NULL, release_group=NULL "
-                                "WHERE series_id=? AND download_id=? AND status='grabbed'",
-                                (gs["series_id"], h_id),
-                            )
-                            if orphan_vol_ids:
-                                from volumes import _cascade_chapters
-
-                                _cascade_chapters(
-                                    db,
-                                    gs["series_id"],
-                                    orphan_vol_ids,
-                                    "wanted",
-                                    grabbed_at=None,
-                                    torrent_name=None,
-                                    torrent_url=None,
-                                    indexer=None,
-                                    protocol=None,
-                                    client=None,
-                                    download_id=None,
-                                    release_group=None,
-                                )
-                            db.execute(
-                                "UPDATE import_queue SET status='skipped' "
-                                "WHERE download_id=? AND status='pending'",
-                                (h_id,),
-                            )
-                            db.execute(
-                                "UPDATE import_queue_files SET status='skipped' "
-                                "WHERE queue_id IN "
-                                "(SELECT id FROM import_queue WHERE download_id=?)",
-                                (h_id,),
-                            )
-                            db.execute("DELETE FROM seen WHERE download_id=?", (h_id,))
-                            log_event(
-                                "warning",
-                                f"SAB grab lost (removed from client): {gs['torrent_name']}",
-                                gs["series_id"],
-                            )
-                            _sr = db.execute(
-                                "SELECT title FROM series WHERE id=?",
-                                (gs["series_id"],),
-                            ).fetchone()
-                            add_history(
-                                db,
-                                "grab_failed",
-                                gs["series_id"],
-                                _sr["title"] if _sr else "",
-                                "",
-                                source_title=gs["torrent_name"] or "",
-                                download_id=h_id,
-                                data={"reason": "removed_from_client"},
-                            )
-
-                await asyncio.to_thread(_sab_process_sync)
+                _sab_new_queue_ids = await asyncio.to_thread(
+                    _sab_process_sync,
+                    sab_by_nzo,
+                    all_sab_nzo_ids,
+                    sab_host,
+                )
                 for _sqid in _sab_new_queue_ids:
                     asyncio.create_task(_process_auto_import(_sqid))
         except Exception as e:

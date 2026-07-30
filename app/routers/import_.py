@@ -1,14 +1,15 @@
 """Import queue and manual import routes."""
 
-import asyncio
 import json
 import os
 import re
 import shutil
+import sqlite3
 from datetime import datetime
+from typing import NotRequired, TypedDict
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from routers._templates import templates
 from files import sanitize_filename
@@ -16,6 +17,16 @@ from import_kinds import VALID_IMPORT_KINDS, infer_import_kind
 from shared import cascade_chapters, get_cfg, get_db, vol_num_to_display, with_flash
 
 router = APIRouter()
+
+
+class ImportQueueActionResult(TypedDict):
+    ok: bool
+    status: str
+    queued: NotRequired[bool]
+    deleted: NotRequired[int]
+    deleted_files: NotRequired[int]
+    retried_files: NotRequired[int]
+
 
 _BLOCKED_SCAN_PREFIXES = (
     "/proc",
@@ -99,14 +110,113 @@ def _parse_vol_input(raw: str) -> float | None:
     return _m._parse_vol_suffix(raw.strip())
 
 
-def dismiss_import_queue_entry(queue_id: int) -> dict:
+def _queue_action_failure(
+    db: sqlite3.Connection,
+    queue_id: int,
+    unavailable_status: str,
+    *,
+    protect_download: bool = False,
+) -> ImportQueueActionResult:
+    """Classify a failed parent CAS while the caller holds the writer tx."""
+    row = db.execute(
+        "SELECT status, lease_owner, download_id FROM import_queue WHERE id=?",
+        (queue_id,),
+    ).fetchone()
+    if row is None:
+        return {"ok": False, "status": "not_found"}
+    if row["status"] == "importing" or row["lease_owner"] is not None:
+        return {"ok": False, "status": "in_progress"}
+    if protect_download and row["download_id"]:
+        active = db.execute(
+            "SELECT 1 FROM import_queue"
+            " WHERE id != ? AND download_id IS NOT NULL"
+            " AND lower(download_id)=lower(?)"
+            " AND (status='importing' OR lease_owner IS NOT NULL)"
+            " LIMIT 1",
+            (queue_id, row["download_id"]),
+        ).fetchone()
+        if active is not None:
+            return {"ok": False, "status": "in_progress"}
+    return {"ok": False, "status": unavailable_status}
+
+
+def _import_action_response(
+    request: Request,
+    result: ImportQueueActionResult,
+    *,
+    success_message: str,
+    redirect_url: str,
+) -> Response:
+    """Preserve form/HTMX response shapes while surfacing a safe outcome."""
+    status = result["status"]
+    if result["ok"]:
+        message = success_message
+        toast_type = "success"
+    elif status == "in_progress":
+        message = "Import is in progress; wait for it to finish, then try again"
+        toast_type = "warning"
+    elif status == "not_found":
+        message = "Import queue entry no longer exists"
+        toast_type = "warning"
+    elif status == "needs_review":
+        message = "Review is still required; there are no failed files to retry"
+        toast_type = "warning"
+    else:
+        message = "Import queue entry is not eligible for this action"
+        toast_type = "warning"
+
+    if request.headers.get("HX-Request") == "true":
+        return HTMLResponse(
+            "",
+            headers={
+                "HX-Refresh": "true",
+                "HX-Trigger": json.dumps(
+                    {"showToast": {"msg": message, "type": toast_type}}
+                ),
+            },
+        )
+    return RedirectResponse(
+        with_flash(redirect_url, message, toast_type),
+        status_code=303,
+    )
+
+
+def dismiss_import_queue_entry(queue_id: int) -> ImportQueueActionResult:
     """Remove an import queue entry and reset its grabbed volumes to wanted."""
     with get_db() as db:
+        # This reservation is the transaction's first mutation. It both acquires
+        # SQLite's writer lock and proves that neither this row nor a sibling
+        # sharing its download is owned by an importer.
         q = db.execute(
-            "SELECT series_id, download_id FROM import_queue WHERE id=?", (queue_id,)
+            """
+            UPDATE import_queue
+            SET status='skipped'
+            WHERE id=?
+              AND status != 'importing'
+              AND lease_owner IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM import_queue active
+                  WHERE active.id != import_queue.id
+                    AND active.download_id IS NOT NULL
+                    AND import_queue.download_id IS NOT NULL
+                    AND lower(active.download_id)=lower(import_queue.download_id)
+                    AND (
+                        active.status='importing'
+                        OR active.lease_owner IS NOT NULL
+                    )
+              )
+            RETURNING series_id, download_id
+            """,
+            (queue_id,),
         ).fetchone()
-        if not q:
-            return {"ok": False, "status": "not_found"}
+        if q is None:
+            return _queue_action_failure(
+                db,
+                queue_id,
+                "not_dismissible",
+                protect_download=True,
+            )
 
         series_id = q["series_id"]
         dl_id = q["download_id"]
@@ -153,20 +263,20 @@ def dismiss_import_queue_entry(queue_id: int) -> dict:
     return {"ok": True, "status": "dismissed"}
 
 
-def skip_import_queue_entry(queue_id: int) -> dict:
+def skip_import_queue_entry(queue_id: int) -> ImportQueueActionResult:
     """Mark a pending or partial import queue entry as skipped."""
     with get_db() as db:
-        q = db.execute(
-            "SELECT status FROM import_queue WHERE id=?", (queue_id,)
-        ).fetchone()
-        if not q:
-            return {"ok": False, "status": "not_found"}
-        if q["status"] not in ("pending", "partial"):
-            return {"ok": False, "status": "not_skippable"}
-        db.execute(
-            "UPDATE import_queue SET status='skipped' WHERE id=?",
+        # Parent CAS first: a concurrent worker claim either wins before this
+        # write (and no child changes occur) or waits and loses after commit.
+        reserved = db.execute(
+            "UPDATE import_queue SET status='skipped'"
+            " WHERE id=? AND status IN ('pending','partial')"
+            " AND lease_owner IS NULL"
+            " RETURNING id",
             (queue_id,),
-        )
+        ).fetchone()
+        if reserved is None:
+            return _queue_action_failure(db, queue_id, "not_skippable")
         db.execute(
             "UPDATE import_queue_files SET status='skipped' WHERE queue_id=?",
             (queue_id,),
@@ -174,16 +284,18 @@ def skip_import_queue_entry(queue_id: int) -> dict:
     return {"ok": True, "status": "skipped"}
 
 
-def clear_inactive_import_queue_entries() -> dict:
+def clear_inactive_import_queue_entries() -> ImportQueueActionResult:
     """Delete failed/skipped import queue entries and their files."""
     with get_db() as db:
         file_cur = db.execute(
             "DELETE FROM import_queue_files WHERE queue_id IN ("
             "  SELECT id FROM import_queue WHERE status IN ('failed','skipped')"
+            "  AND lease_owner IS NULL"
             ")"
         )
         queue_cur = db.execute(
             "DELETE FROM import_queue WHERE status IN ('failed','skipped')"
+            " AND lease_owner IS NULL"
         )
         deleted_files = file_cur.rowcount
         deleted = queue_cur.rowcount
@@ -195,34 +307,50 @@ def clear_inactive_import_queue_entries() -> dict:
     }
 
 
-def retry_import_queue_entry(queue_id: int) -> dict:
+def retry_import_queue_entry(queue_id: int) -> ImportQueueActionResult:
     """Retry failed files while preserving decisions that still need review."""
     import main as _m
 
     with get_db() as db:
+        # A no-op parent CAS is intentionally the first write. It acquires the
+        # writer transaction before failed child decisions can be reset.
         q = db.execute(
-            "SELECT status FROM import_queue WHERE id=?",
+            "UPDATE import_queue SET status=status"
+            " WHERE id=? AND status IN ('failed','partial')"
+            " AND lease_owner IS NULL"
+            " RETURNING status",
             (queue_id,),
         ).fetchone()
-        if not q:
-            return {"ok": False, "status": "not_found"}
-        if q["status"] not in ("failed", "partial"):
-            return {"ok": False, "status": "not_retryable"}
+        if q is None:
+            return _queue_action_failure(db, queue_id, "not_retryable")
+        was_partial = q["status"] == "partial"
 
-        db.execute(
+        retried_files = db.execute(
             "UPDATE import_queue_files SET status='pending'"
             " WHERE queue_id=? AND status='failed'",
             (queue_id,),
+        ).rowcount
+        has_review = (
+            db.execute(
+                "SELECT 1 FROM import_queue_files"
+                " WHERE queue_id=? AND status='needs_review'",
+                (queue_id,),
+            ).fetchone()
+            is not None
         )
-        has_review = db.execute(
-            "SELECT 1 FROM import_queue_files WHERE queue_id=? AND status='needs_review'",
-            (queue_id,),
-        ).fetchone()
         queue_status = "partial" if has_review else "pending"
         db.execute(
             "UPDATE import_queue SET status=? WHERE id=?",
             (queue_status, queue_id),
         )
+
+    if was_partial and retried_files == 0 and has_review:
+        return {
+            "ok": False,
+            "status": "needs_review",
+            "queued": False,
+            "retried_files": 0,
+        }
 
     queued = False
     if not has_review:
@@ -235,6 +363,7 @@ def retry_import_queue_entry(queue_id: int) -> dict:
         "ok": True,
         "status": "queued" if queued else "needs_review",
         "queued": queued,
+        "retried_files": retried_files,
     }
 
 
@@ -252,6 +381,25 @@ async def process_import(queue_id: int, request: Request):
     valid_files = 0
 
     with get_db() as db:
+        # This no-op CAS is the first write in the transaction. A worker that
+        # already claimed (including one with an expired-but-unrecovered lease)
+        # makes the route return before any child decision is changed.
+        parent = db.execute(
+            "UPDATE import_queue SET status=status"
+            " WHERE id=? AND status IN ('pending','partial')"
+            " AND lease_owner IS NULL"
+            " RETURNING status",
+            (queue_id,),
+        ).fetchone()
+        if parent is None:
+            blocked = _queue_action_failure(db, queue_id, "not_processable")
+            return _import_action_response(
+                request,
+                blocked,
+                success_message="Import queued",
+                redirect_url="/queue",
+            )
+
         file_rows = db.execute(
             "SELECT * FROM import_queue_files WHERE queue_id=?"
             " AND status IN ('pending','needs_review','failed')",
@@ -447,11 +595,17 @@ async def process_import(queue_id: int, request: Request):
         result_row = db.execute(
             "SELECT status FROM import_queue WHERE id=?", (queue_id,)
         ).fetchone()
-    if result_row is None:
+        result_status = result_row["status"] if result_row is not None else None
+    if result_status is None:
         message, toast_type = "Import completed", "success"
-    elif result_row["status"] == "partial":
+    elif result_status == "importing":
+        message, toast_type = (
+            "Import is already in progress; wait for it to finish",
+            "warning",
+        )
+    elif result_status == "partial":
         message, toast_type = "Review required for remaining files", "warning"
-    elif result_row["status"] == "failed":
+    elif result_status == "failed":
         message, toast_type = "Import failed", "error"
     else:
         message, toast_type = "Import queued", "info"
@@ -474,25 +628,25 @@ async def process_import(queue_id: int, request: Request):
 @router.post("/import/{queue_id}/skip")
 async def skip_import(request: Request, queue_id: int):
     """Skip an entire import queue item without moving files."""
-    skip_import_queue_entry(queue_id)
-    if request.headers.get("HX-Request") == "true":
-        from fastapi.responses import Response as _Resp
-
-        return _Resp(headers={"HX-Refresh": "true"})
-    return RedirectResponse(
-        with_flash("/import", "Failed imports cleared", "success"), status_code=303
+    result = skip_import_queue_entry(queue_id)
+    return _import_action_response(
+        request,
+        result,
+        success_message="Import skipped",
+        redirect_url="/import",
     )
 
 
 @router.post("/import/{queue_id}/dismiss")
 async def dismiss_import(request: Request, queue_id: int):
     """Remove an import queue entry from Mangarr's DB only — resets grabbed volumes to wanted."""
-    dismiss_import_queue_entry(queue_id)
-    if request.headers.get("HX-Request") == "true":
-        from fastapi.responses import Response as _Resp
-
-        return _Resp(headers={"HX-Refresh": "true"})
-    return RedirectResponse("/import", status_code=303)
+    result = dismiss_import_queue_entry(queue_id)
+    return _import_action_response(
+        request,
+        result,
+        success_message="Import dismissed",
+        redirect_url="/import",
+    )
 
 
 @router.get("/api/import/pending-count")
@@ -512,20 +666,17 @@ async def import_pending_count():
 @router.post("/import/{queue_id}/retry")
 async def retry_import(request: Request, queue_id: int):
     """Reset a failed import back to pending and trigger auto-processing."""
-    retry_import_queue_entry(queue_id)
-    if request.headers.get("HX-Request") == "true":
-        import json
-        from fastapi.responses import Response as _Resp
-
-        return _Resp(
-            headers={
-                "HX-Trigger": json.dumps(
-                    {"showToast": {"msg": "Import queued for retry", "type": "success"}}
-                ),
-                "HX-Refresh": "true",
-            }
-        )
-    return RedirectResponse("/import", status_code=303)
+    result = retry_import_queue_entry(queue_id)
+    return _import_action_response(
+        request,
+        result,
+        success_message=(
+            "Import queued for retry"
+            if result.get("queued")
+            else "Failed files reset; review is still required"
+        ),
+        redirect_url="/import",
+    )
 
 
 @router.post("/import/clear-old")
@@ -553,10 +704,13 @@ async def import_clear_old(request: Request):
 @router.get("/manual-import", response_class=HTMLResponse)
 async def manual_import_page(request: Request):
     with get_db() as db:
-        rows = db.execute(
-            "SELECT id, title FROM series WHERE deleted_at IS NULL ORDER BY title"
-        ).fetchall()
-    series_list = [{"id": r["id"], "title": r["title"]} for r in rows]
+        series_list = [
+            {"id": row["id"], "title": row["title"]}
+            for row in db.execute(
+                "SELECT id, title FROM series"
+                " WHERE deleted_at IS NULL ORDER BY title"
+            ).fetchall()
+        ]
     return templates.TemplateResponse(
         request,
         "manual_import.html",
@@ -580,10 +734,13 @@ async def manual_import_scan(request: Request):
         return JSONResponse({"error": "Path not allowed", "files": []}, status_code=403)
 
     with get_db() as db:
-        series_list = db.execute(
-            "SELECT id, title, search_pattern FROM series"
-            " WHERE deleted_at IS NULL ORDER BY title"
-        ).fetchall()
+        series_list = [
+            dict(row)
+            for row in db.execute(
+                "SELECT id, title, search_pattern FROM series"
+                " WHERE deleted_at IS NULL ORDER BY title"
+            ).fetchall()
+        ]
         alias_map: dict[int, list[str]] = {}
         for r in db.execute("SELECT series_id, alias FROM series_aliases").fetchall():
             alias_map.setdefault(r["series_id"], []).append(r["alias"])
@@ -656,11 +813,12 @@ async def manual_import_auto(request: Request):
         return JSONResponse({"error": "No manga files found", "results": []})
 
     with get_db() as db:
-        series_list = list(
-            db.execute(
+        series_list = [
+            dict(row)
+            for row in db.execute(
                 "SELECT id, title, search_pattern FROM series WHERE deleted_at IS NULL"
             ).fetchall()
-        )
+        ]
         alias_map: dict[int, list[str]] = {}
         for r in db.execute("SELECT series_id, alias FROM series_aliases").fetchall():
             alias_map.setdefault(r["series_id"], []).append(r["alias"])
@@ -722,12 +880,18 @@ async def manual_import_auto(request: Request):
                         rf_id,
                     ),
                 )
-                sid = cur.lastrowid
+                inserted_series_id = cur.lastrowid
+                if inserted_series_id is None:
+                    raise RuntimeError("New series insert did not return an id")
+                sid = inserted_series_id
                 if best.get("volumes"):
                     _m.create_volume_stubs(db, sid, int(best["volumes"]))
-            new_s_row = db.execute(
+            new_s_row_raw = db.execute(
                 "SELECT id, title, search_pattern FROM series WHERE id=?", (sid,)
             ).fetchone()
+            if new_s_row_raw is None:
+                raise RuntimeError(f"Newly added series {sid} could not be loaded")
+            new_s_row = dict(new_s_row_raw)
 
         series_list.append(new_s_row)
         newly_added.append({"id": sid, "title": best["title"]})

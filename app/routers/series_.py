@@ -5,13 +5,17 @@ import json
 import math
 import os
 import re
+import shutil
+import sqlite3
 from collections import defaultdict
 from datetime import datetime
+from typing import Literal, TypedDict
 
 import httpx
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from events import add_history
 from routers._templates import templates
 from shared import (
     build_order_by,
@@ -1592,62 +1596,81 @@ async def api_cover_refresh(series_id: int):
     return JSONResponse({"ok": False, "error": error or "Cover refresh failed"})
 
 
-def _hard_delete_series(
-    db,
+class _HardDeleteSeriesResult(TypedDict):
+    status: Literal["purged", "not_eligible", "import_in_progress"]
+    title: str
+    file_paths: list[str]
+    root_path: str
+    cover_path: str
+
+
+def _prepare_hard_delete_series(
+    db: sqlite3.Connection,
     series_id: int,
     *,
     log_history: bool = False,
     remove_files: bool = False,
-) -> str:
-    """Destructive cascade for a series. Removes every dependent row +
-    the cover file. Returns the (possibly-empty) title for the caller's
-    logging purposes.
+) -> _HardDeleteSeriesResult:
+    """Reserve the writer and atomically remove an eligible series from SQLite."""
+    # This must precede the eligibility reads. It makes a worker claim and a
+    # purge mutually exclusive across separate SQLite connections.
+    if db.in_transaction:
+        raise RuntimeError("hard purge requires a fresh database transaction")
+    db.execute("BEGIN IMMEDIATE")
 
-    Used by:
-      - The recycle-bin reaper (`tasks.py:_recycle_bin_reaper_loop`)
-      - The "permanent delete now" button (`/series/{id}/purge`, PR-2)
+    s = db.execute(
+        "SELECT s.title, s.deleted_at, COALESCE(rf.path, '') AS root_path"
+        " FROM series s"
+        " LEFT JOIN root_folders rf ON rf.id=s.root_folder_id"
+        " WHERE s.id=?",
+        (series_id,),
+    ).fetchone()
+    if s is None or not s["deleted_at"]:
+        return {
+            "status": "not_eligible",
+            "title": "",
+            "file_paths": [],
+            "root_path": "",
+            "cover_path": "",
+        }
 
-    The user-facing soft-delete (`delete_series`) does NOT call this —
-    soft-delete only sets `deleted_at`/`deletion_reason` and keeps every
-    dependent row in place so restore is a one-flag operation.
+    title = str(s["title"] or "")
+    root_path = str(s["root_path"] or "")
+    cover_path = f"/config/covers/{series_id}.jpg"
+    import_active = db.execute(
+        "SELECT 1 FROM import_queue"
+        " WHERE series_id=?"
+        " AND (status='importing' OR lease_owner IS NOT NULL)"
+        " LIMIT 1",
+        (series_id,),
+    ).fetchone()
+    if import_active is not None:
+        return {
+            "status": "import_in_progress",
+            "title": title,
+            "file_paths": [],
+            "root_path": root_path,
+            "cover_path": cover_path,
+        }
 
-    `remove_files=True` (PR-4) additionally deletes every downloaded
-    volume file referenced by `volumes.import_path` before the cascade
-    DELETEs. Used by the explicit purge button (user clicked permanent
-    delete, expects disk to be freed) and optionally by the reaper
-    when `recycle_bin_remove_files` is set. Default off — preserves the
-    pre-epic behaviour where Mangarr never touched on-disk files on
-    series delete.
-    """
-    import main as _m
-
-    s = db.execute("SELECT title FROM series WHERE id=?", (series_id,)).fetchone()
-    title = s["title"] if s else ""
-
-    # PR-4: optionally delete on-disk volume files BEFORE the row deletes
-    # so we still know which paths to remove. Errors are swallowed — a
-    # missing file shouldn't block the cascade.
+    file_paths: list[str] = []
     if remove_files:
-        for vol in db.execute(
-            "SELECT import_path FROM volumes WHERE series_id=?"
-            " AND import_path IS NOT NULL AND import_path != ''",
-            (series_id,),
-        ).fetchall():
-            try:
-                fpath = vol["import_path"]
-                if fpath and os.path.exists(fpath) and os.path.isfile(fpath):
-                    os.remove(fpath)
-            except OSError:
-                pass
+        file_paths = list(
+            dict.fromkeys(
+                str(row["import_path"])
+                for row in db.execute(
+                    "SELECT import_path FROM volumes WHERE series_id=?"
+                    " AND import_path IS NOT NULL AND import_path != ''",
+                    (series_id,),
+                ).fetchall()
+            )
+        )
 
-    iq_ids = [
-        r["id"]
-        for r in db.execute(
-            "SELECT id FROM import_queue WHERE series_id=?", (series_id,)
-        ).fetchall()
-    ]
-    for iq_id in iq_ids:
-        db.execute("DELETE FROM import_queue_files WHERE queue_id=?", (iq_id,))
+    db.execute(
+        "DELETE FROM import_queue_files"
+        " WHERE queue_id IN (SELECT id FROM import_queue WHERE series_id=?)",
+        (series_id,),
+    )
     db.execute("DELETE FROM import_queue WHERE series_id=?", (series_id,))
     db.execute("DELETE FROM chapters WHERE series_id=?", (series_id,))
     db.execute("DELETE FROM volumes WHERE series_id=?", (series_id,))
@@ -1657,15 +1680,94 @@ def _hard_delete_series(
     db.execute("DELETE FROM series_aliases WHERE series_id=?", (series_id,))
     db.execute("DELETE FROM series_tags WHERE series_id=?", (series_id,))
     if log_history:
-        _m.add_history(db, "series_purged", None, title, "", source_title=title)
+        add_history(db, "series_purged", None, title, "", source_title=title)
     db.execute("DELETE FROM series WHERE id=?", (series_id,))
-    cover_path = f"/config/covers/{series_id}.jpg"
+    return {
+        "status": "purged",
+        "title": title,
+        "file_paths": file_paths,
+        "root_path": root_path,
+        "cover_path": cover_path,
+    }
+
+
+def _path_is_strictly_below(path: str, root: str) -> bool:
     try:
-        if os.path.exists(cover_path):
-            os.remove(cover_path)
-    except OSError:
-        pass
-    return title
+        return path != root and os.path.commonpath((path, root)) == root
+    except ValueError:
+        return False
+
+
+def _safe_purge_path(path: str, root_path: str, *, symlink: bool) -> bool:
+    """Validate an import path without allowing root or parent-symlink escapes."""
+    if not os.path.isabs(path) or not os.path.isabs(root_path):
+        return False
+    try:
+        path_abs = os.path.abspath(path)
+        root_abs = os.path.abspath(root_path)
+        if not _path_is_strictly_below(path_abs, root_abs):
+            return False
+
+        root_real = os.path.realpath(root_abs)
+        if symlink:
+            # Do not resolve the final component: an in-root symlink may point
+            # outside the library and is still safe to unlink. Its parent must
+            # resolve to the root or below it so a symlinked parent cannot
+            # redirect the unlink outside the library.
+            parent_real = os.path.realpath(os.path.dirname(path_abs))
+            return parent_real == root_real or _path_is_strictly_below(
+                parent_real, root_real
+            )
+
+        path_real = os.path.realpath(path_abs)
+        return _path_is_strictly_below(path_real, root_real)
+    except (OSError, ValueError):
+        return False
+
+
+def _remove_hard_delete_files(result: _HardDeleteSeriesResult) -> None:
+    """Best-effort disk cleanup for an already-committed purge."""
+    for path in result["file_paths"]:
+        try:
+            if os.path.islink(path):
+                if _safe_purge_path(path, result["root_path"], symlink=True):
+                    os.unlink(path)
+            elif os.path.isfile(path):
+                if _safe_purge_path(path, result["root_path"], symlink=False):
+                    os.remove(path)
+            elif os.path.isdir(path) and _safe_purge_path(
+                path, result["root_path"], symlink=False
+            ):
+                shutil.rmtree(path)
+        except OSError:
+            pass
+
+    cover_path = result["cover_path"]
+    if cover_path:
+        try:
+            if os.path.lexists(cover_path):
+                os.remove(cover_path)
+        except OSError:
+            pass
+
+
+def _run_hard_delete_series(
+    series_id: int,
+    *,
+    log_history: bool = False,
+    remove_files: bool = False,
+) -> _HardDeleteSeriesResult:
+    """Complete the DB purge, then perform disk cleanup after DB exit."""
+    with get_db() as db:
+        result = _prepare_hard_delete_series(
+            db,
+            series_id,
+            log_history=log_history,
+            remove_files=remove_files,
+        )
+    if result["status"] == "purged":
+        _remove_hard_delete_files(result)
+    return result
 
 
 @router.post("/series/{series_id}/delete")
@@ -1755,28 +1857,45 @@ async def restore_series(request: Request, series_id: int):
 @router.post("/series/{series_id}/purge")
 async def purge_series(request: Request, series_id: int):
     """Permanent delete from the recycle bin. Runs the destructive
-    cascade in `_hard_delete_series` and logs a 'series_purged' history
+    cascade in `_run_hard_delete_series` and logs a 'series_purged' history
     event. Refuses to purge a series that isn't currently soft-deleted —
     the only way into a permanent delete is via the recycle-bin UI,
     which only shows soft-deleted entries.
     """
-    with get_db() as db:
-        row = db.execute(
-            "SELECT deleted_at FROM series WHERE id=?", (series_id,)
-        ).fetchone()
-        if not row or not row["deleted_at"]:
-            # Not in the bin — refuse silently rather than 404 (the
-            # button is only rendered for binned entries; if it fires on
-            # a non-binned series, something stale-rendered).
-            if request.headers.get("HX-Request") == "true":
-                from fastapi.responses import Response as _Resp
+    result = _run_hard_delete_series(
+        series_id,
+        log_history=True,
+        remove_files=True,
+    )
+    if result["status"] == "not_eligible":
+        # Not in the bin — refuse silently rather than 404 (the button is only
+        # rendered for binned entries; this can only be a stale request).
+        if request.headers.get("HX-Request") == "true":
+            from fastapi.responses import Response as _Resp
 
-                return _Resp(headers={"HX-Redirect": "/recycle-bin"})
-            return RedirectResponse("/recycle-bin", status_code=303)
-        _hard_delete_series(db, series_id, log_history=True, remove_files=True)
+            return _Resp(headers={"HX-Redirect": "/recycle-bin"})
+        return RedirectResponse("/recycle-bin", status_code=303)
+    if result["status"] == "import_in_progress":
+        message = (
+            "Import is in progress; wait for it to finish before permanently "
+            "deleting this series"
+        )
+        if request.headers.get("HX-Request") == "true":
+            return HTMLResponse(
+                "",
+                headers={
+                    "HX-Trigger": json.dumps(
+                        {"showToast": {"msg": message, "type": "warning"}}
+                    ),
+                    "HX-Redirect": "/recycle-bin",
+                },
+            )
+        return RedirectResponse(
+            with_flash("/recycle-bin", message, "warning"),
+            status_code=303,
+        )
 
     if request.headers.get("HX-Request") == "true":
-        import json
         from fastapi.responses import Response as _Resp
 
         return _Resp(
@@ -1900,22 +2019,48 @@ async def recycle_bin_empty(request: Request):
     Files are removed from disk (same semantics as the per-row purge
     button) — this is the "free up disk space" action.
     """
-    purged = 0
+    purged = blocked = 0
     with get_db() as db:
-        rows = db.execute(
-            "SELECT id FROM series WHERE deleted_at IS NOT NULL"
-        ).fetchall()
-        for r in rows:
-            try:
-                _hard_delete_series(db, r["id"], log_history=True, remove_files=True)
+        series_ids = [
+            int(row["id"])
+            for row in db.execute(
+                "SELECT id FROM series WHERE deleted_at IS NOT NULL"
+            ).fetchall()
+        ]
+    for series_id in series_ids:
+        try:
+            result = _run_hard_delete_series(
+                series_id,
+                log_history=True,
+                remove_files=True,
+            )
+            if result["status"] == "purged":
                 purged += 1
-            except Exception:
-                # One failure shouldn't block the others; reaper will
-                # retry on its next sweep.
-                pass
+            elif result["status"] == "import_in_progress":
+                blocked += 1
+        except Exception:
+            # One failure shouldn't block the others; reaper will retry on its
+            # next sweep.
+            import logging as _logging
+
+            _logging.getLogger(__name__).exception(
+                "Recycle-bin purge failed for series %s", series_id
+            )
+
+    if blocked:
+        message = (
+            f"Permanently deleted {purged} series; skipped {blocked} with "
+            "imports in progress"
+        )
+        toast_type = "warning"
+    elif purged:
+        message = f"Permanently deleted {purged} series"
+        toast_type = "success"
+    else:
+        message = "Recycle bin is empty"
+        toast_type = "info"
 
     if request.headers.get("HX-Request") == "true":
-        import json
         from fastapi.responses import Response as _Resp
 
         return _Resp(
@@ -1923,15 +2068,18 @@ async def recycle_bin_empty(request: Request):
                 "HX-Trigger": json.dumps(
                     {
                         "showToast": {
-                            "msg": f"Permanently deleted {purged} series"
-                            if purged
-                            else "Recycle bin is empty",
-                            "type": "success" if purged else "info",
+                            "msg": message,
+                            "type": toast_type,
                         }
                     }
                 ),
                 "HX-Redirect": "/recycle-bin",
             }
+        )
+    if blocked:
+        return RedirectResponse(
+            with_flash("/recycle-bin", message, toast_type),
+            status_code=303,
         )
     return RedirectResponse("/recycle-bin", status_code=303)
 

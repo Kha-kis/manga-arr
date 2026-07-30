@@ -194,6 +194,75 @@ def test_init_db_creates_chapters_quality_and_imported_at(fresh_db):
     assert "imported_at" in cols, f"chapters.imported_at missing; got {sorted(cols)}"
 
 
+def test_init_db_creates_import_lease_columns_and_partial_expiry_index(fresh_db):
+    """Fresh installs carry nullable lease metadata and the expiry hot index."""
+    import main
+
+    main.init_db()
+    with sqlite3.connect(fresh_db) as conn:
+        columns = {
+            row[1]: row
+            for row in conn.execute("PRAGMA table_info(import_queue)").fetchall()
+        }
+        index_sql = conn.execute(
+            "SELECT sql FROM sqlite_master"
+            " WHERE type='index' AND name='idx_import_queue_importing_expiry'"
+        ).fetchone()[0]
+        volume_download_index = conn.execute(
+            "SELECT 1 FROM sqlite_master"
+            " WHERE type='index' AND name='idx_volumes_download_id'"
+        ).fetchone()
+
+    assert columns["lease_owner"][3] == 0
+    assert columns["lease_owner"][4] is None
+    assert columns["lease_expires_at"][3] == 0
+    assert columns["lease_expires_at"][4] is None
+    assert "ON import_queue(lease_expires_at)" in index_sql
+    assert "WHERE status='importing'" in index_sql
+    assert volume_download_index == (1,)
+
+
+def test_init_db_adds_import_lease_columns_to_existing_v2_database(fresh_db):
+    """The additive migration preserves rows without changing user_version."""
+    import main
+
+    main.init_db()
+    with sqlite3.connect(fresh_db) as conn:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("DROP TABLE import_queue")
+        conn.execute(
+            "CREATE TABLE import_queue ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " series_id INTEGER REFERENCES series(id),"
+            " download_id TEXT, torrent_name TEXT, torrent_url TEXT,"
+            " volume_num REAL, src_dir TEXT, status TEXT DEFAULT 'pending',"
+            " failed_at TIMESTAMP,"
+            " created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+            ")"
+        )
+        conn.execute(
+            "INSERT INTO import_queue(download_id, torrent_name, status)"
+            " VALUES('legacy-row', 'Keep Me', 'pending')"
+        )
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+
+    main.init_db()
+
+    with sqlite3.connect(fresh_db) as conn:
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(import_queue)").fetchall()
+        }
+        row = conn.execute(
+            "SELECT torrent_name, lease_owner, lease_expires_at"
+            " FROM import_queue WHERE download_id='legacy-row'"
+        ).fetchone()
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+    assert {"lease_owner", "lease_expires_at"} <= columns
+    assert row == ("Keep Me", None, None)
+    assert version == 2
+
+
 def test_init_db_is_idempotent(fresh_db):
     """Existing populated DBs must continue to start cleanly: running
     init_db a second time on an already-initialised DB is a no-op."""

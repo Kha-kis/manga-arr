@@ -47,6 +47,7 @@ def _make_zip(path: str, name: str = "page.png") -> str:
 @pytest.fixture
 def env(tmp_path):
     """Fresh DB + temp src/library dirs, pointed at main.load_config()."""
+    import import_execute
     import main, shared, security
     db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     db.close(); os.unlink(db.name)
@@ -54,6 +55,13 @@ def env(tmp_path):
 
     orig_main_db = main.DB_PATH
     orig_shared_db = shared.DB_PATH
+    original_sem = import_execute._IMPORT_SEM
+    original_sem_value = original_sem._value if original_sem is not None else None
+    original_main_config = main.CONFIG
+    original_main_values = dict(main.CONFIG)
+    original_shared_config = shared.CONFIG
+    original_shared_values = dict(shared.CONFIG)
+    original_cipher = security._SECRET_CIPHER
     main.DB_PATH = db.name
     shared.DB_PATH = db.name
     security._SECRET_CIPHER = None
@@ -81,6 +89,16 @@ def env(tmp_path):
     finally:
         main.DB_PATH = orig_main_db
         shared.DB_PATH = orig_shared_db
+        if original_sem is not None and original_sem_value is not None:
+            original_sem._value = original_sem_value
+        import_execute._IMPORT_SEM = original_sem
+        main.CONFIG = original_main_config
+        main.CONFIG.clear()
+        main.CONFIG.update(original_main_values)
+        shared.CONFIG = original_shared_config
+        shared.CONFIG.clear()
+        shared.CONFIG.update(original_shared_values)
+        security._SECRET_CIPHER = original_cipher
         for ext in ("", "-wal", "-shm"):
             p = db.name + ext
             if os.path.exists(p):
@@ -301,7 +319,17 @@ def test_import_plan_repairs_legacy_chapter_filename_tokens(env):
         )
 
     with main.get_db() as db:
-        plan = _plan_import(db, qid, {}, {}, set(), "copy")
+        assert main.claim_import_queue_row(db, qid, "mapping-plan-owner")
+        plan = _plan_import(
+            db,
+            qid,
+            "mapping-plan-owner",
+            {},
+            {},
+            set(),
+            "copy",
+            lease_seconds=300,
+        )
 
     assert plan is not None
     assert plan.files[0].filename == "Series - c001.cbz"

@@ -494,6 +494,21 @@ async def lifespan(app: FastAPI):
     # Initialize import concurrency semaphore (max_concurrent_imports setting)
     from import_pipeline import initialize_import_semaphore
     initialize_import_semaphore()
+    # Recover only expired (or legacy unleased) importing rows before the
+    # startup retry snapshot. Live leases remain importing and are never retried.
+    from import_lease import recover_expired_import_leases
+    with get_db() as _lease_db:
+        _recovered_import_leases = recover_expired_import_leases(
+            _lease_db,
+            max_rows=500,
+        )
+        if _recovered_import_leases:
+            log_event(
+                "stuck_cleanup",
+                f"recovered {_recovered_import_leases} expired/legacy "
+                "import lease(s) during startup",
+                db=_lease_db,
+            )
     backfill_pack_ranges()
     # Create qBit manga category on startup
     try:
@@ -558,12 +573,13 @@ async def lifespan(app: FastAPI):
     # snapshots instead of making live HTTP calls on every pageview.
     from status_cache import download_status_refresh_loop as _dl_status_loop
     create_background_task(_dl_status_loop(),                  name="download_status_refresh_loop")
-    # Re-process any import_queue entries that were left 'pending' from a previous
-    # run (e.g. app restarted mid-import). Only retry entries with no needs_review files.
+    # Re-process safe unleased retry rows, including rows recovered above.
+    # Live importing leases are excluded by both status and owner.
     with get_db() as _db:
         _stuck = _db.execute(
             "SELECT iq.id FROM import_queue iq"
-            " WHERE iq.status='pending'"
+            " WHERE iq.status IN ('pending','partial')"
+            " AND iq.lease_owner IS NULL"
             " AND NOT EXISTS ("
             "   SELECT 1 FROM import_queue_files f"
             "   WHERE f.queue_id=iq.id AND f.status='needs_review'"
