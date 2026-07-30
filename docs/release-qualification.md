@@ -5,10 +5,10 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## Release Under Test
 
-- Release candidate: `1.2.0-rc.7`
+- Release candidate: `1.2.0-rc.8`
 - Stable target: `1.2.0`
 - Qualified base: `1.1.0`
-- Candidate image: `ghcr.io/kha-kis/manga-arr:1.2.0-rc.7`
+- Candidate image: `ghcr.io/kha-kis/manga-arr:1.2.0-rc.8`
 - Platforms: `linux/amd64`, `linux/arm64`
 
 ## Production Evidence
@@ -46,7 +46,11 @@ can become a stable release. Passing unit tests alone is not sufficient.
   `httpx` exception strings produced blank application-error events. The
   candidate was rejected even though the container, database, canonical files,
   and import receipts remained stable.
-- The `1.2.0-rc.7` candidate must complete a fresh operational soak with hourly
+- The `1.2.0-rc.7` candidate completed a 72-hour production soak with zero
+  database-lock failures, tracebacks, HTTP 5xx responses, application errors,
+  or container restarts. The only recurring external noise was 192 Suwayomi
+  `No chapters found` responses, which did not affect Mangarr state.
+- The `1.2.0-rc.8` candidate must complete a fresh operational soak with daily
   health, restart, log, integrity, import-path, and backlog-search evidence.
   Recurring configuration errors, inaccessible completed downloads, unrelated
   automatic grabs, malformed volume numbers, or download-client
@@ -120,7 +124,7 @@ operational soak before stable promotion. Qualification evidence includes:
   transitions during the production soak;
 - public support, security, contribution, and conduct policies;
 - a protected default branch and immutable annotated release tags;
-- candidate publication verification that `1.2.0-rc.7` resolves to the tested
+- candidate publication verification that `1.2.0-rc.8` resolves to the tested
   multi-platform image digest without moving stable aliases;
 - stable publication verification that `1.2.0`, `1.2`, `1`, and `latest`
   resolve to the same stable image digest.
