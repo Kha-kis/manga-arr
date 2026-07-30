@@ -37,8 +37,8 @@ make test                                 # all three above (PR gate)
 
 # Isolated browser — spins up mangarr-test container with mock-qbit sidecar
 make test-browser-isolated-smoke          # 27 Playwright assertions
-make test-browser-isolated-integration    # 19 Playwright assertions
-make test-browser-isolated-e2e            # 24 Playwright assertions (real DB mutations)
+make test-browser-isolated-integration    # 22 Playwright assertions
+make test-browser-isolated-e2e            # browser E2E + isolated Settings mutations
 make test-browser-isolated                # all three above
 make test-release-safe                    # make test + make test-browser-isolated
 

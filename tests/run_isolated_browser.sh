@@ -152,11 +152,15 @@ cd tests
 case "$SUITE" in
   smoke)        node browser_smoke.js ;;
   integration)  node browser_integration.js ;;
-  e2e)          node browser_e2e.js ;;
+  e2e)
+    node browser_e2e.js
+    node browser_settings_e2e.js
+    ;;
   all)
     node browser_smoke.js
     node browser_integration.js
     node browser_e2e.js
+    node browser_settings_e2e.js
     ;;
   *)
     echo "unknown suite: $SUITE (use smoke|integration|e2e|all)"

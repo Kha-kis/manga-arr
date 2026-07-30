@@ -3872,11 +3872,16 @@
 
       // ── Unsaved-changes protection ───────────────────────────────────────────
       // Any <form data-track-changes> is watched; beforeunload fires if user edits
-      // without submitting. Submit auto-clears the dirty flag.
+      // without a successful save.
       (function() {
         const dirty = new WeakSet();
         function markDirty(form) { dirty.add(form); }
         function markClean(form) { dirty.delete(form); }
+        function isHtmxForm(form) {
+          return ['get', 'post', 'put', 'patch', 'delete'].some(method =>
+            form.hasAttribute(`hx-${method}`) || form.hasAttribute(`data-hx-${method}`)
+          );
+        }
         function isAnyDirty() {
           return document.querySelectorAll('form[data-track-changes]').length > 0
             && Array.from(document.querySelectorAll('form[data-track-changes]')).some(f => dirty.has(f));
@@ -3890,11 +3895,13 @@
           if (f) markDirty(f);
         }, true);
         document.addEventListener('submit', (e) => {
-          if (e.target && e.target.hasAttribute && e.target.hasAttribute('data-track-changes')) {
-            markClean(e.target);
+          const form = e.target;
+          if (form && form.hasAttribute && form.hasAttribute('data-track-changes')
+              && !isHtmxForm(form)) {
+            markClean(form);
           }
         }, true);
-        // HTMX form submissions don't cause navigation — catch success there too.
+        // HTMX submissions stay dirty through errors and clear only after success.
         document.body.addEventListener('htmx:afterRequest', (e) => {
           const form = e.detail && e.detail.elt && e.detail.elt.closest && e.detail.elt.closest('form[data-track-changes]');
           if (form && e.detail.successful) markClean(form);
