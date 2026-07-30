@@ -2,13 +2,16 @@
 
 import json
 import logging
-import secrets
 import os
+import secrets
 import sqlite3
+from collections.abc import Callable
+from typing import cast
 
 import httpx
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from starlette.datastructures import FormData
 
 from routers._templates import templates
 from shared import get_cfg, get_db, get_secret_health_summary, is_htmx
@@ -21,17 +24,17 @@ from security import (
 from config import SETTINGS_SECRET_KEYS, normalize_url_base
 
 
-def _encrypt_settings_secrets_in_place(fields: dict) -> dict:
+def _encrypt_settings_secrets_in_place(
+    fields: dict[str, str],
+) -> dict[str, str]:
     """Return a copy of `fields` with any keys in SETTINGS_SECRET_KEYS
     encrypted. Plaintext fall-through when the cipher is unavailable;
     the next migration_encrypt_settings_secrets() boot picks them up.
     """
-    from config import SETTINGS_SECRET_KEYS
-
     out = dict(fields)
     for k in list(out):
         if k in SETTINGS_SECRET_KEYS:
-            out[k] = encrypt_if_cipher_available(out[k])
+            out[k] = cast(str, encrypt_if_cipher_available(out[k]))
     return out
 
 
@@ -124,6 +127,157 @@ METADATA_SETTING_COERCERS = {
 }
 
 
+def _coerce_decimal_int_range(
+    value: object,
+    *,
+    minimum: int,
+    maximum: int,
+) -> str | None:
+    """Clamp a decimal form value, or skip it when it is not an integer."""
+    raw = str(value or "").strip()
+    if not raw.isdigit():
+        return None
+    return str(max(minimum, min(maximum, int(raw))))
+
+
+def _coerce_choice(value: object, *, default: str, choices: frozenset[str]) -> str:
+    raw = str(value or default)
+    return raw if raw in choices else default
+
+
+_IMPORT_MODES = frozenset({"hardlink", "move", "copy"})
+_PROPERS_AND_REPACKS_MODES = frozenset(
+    {"prefer_and_upgrade", "do_not_upgrade", "do_not_prefer"}
+)
+_DDL_GRAB_MODES = frozenset({"fallback", "prefer", "only", "off"})
+# Exact values offered by the Preferred Language select in settings.html.
+_DDL_LANGUAGES = frozenset(
+    {
+        "en",
+        "ja",
+        "zh-hant",
+        "zh-hans",
+        "ko",
+        "fr",
+        "de",
+        "es",
+        "pt-br",
+        "it",
+        "pl",
+        "ru",
+    }
+)
+# Match config.SETTINGS_VALIDATORS so invalid writes use its documented default.
+_QUALITY_CUTOFFS = frozenset(
+    {"", "pdf", "epub", "cbr", "cbz", "rar", "zip", "mobi"}
+)
+
+_SettingsFormCoercer = Callable[[object], str | None]
+
+_SETTINGS_FORM_COERCERS: dict[str, _SettingsFormCoercer] = {
+    # Media Management
+    "category": lambda v: str(v or ""),
+    "min_seeders": lambda v: _coerce_int_range(v, 0, 0, 10000000),
+    "torrent_save_path": lambda v: str(v or "").strip(),
+    "import_mode": lambda v: _coerce_choice(
+        v,
+        default="hardlink",
+        choices=_IMPORT_MODES,
+    ),
+    "remove_completed": _coerce_bool_string,
+    "minimum_free_space_mb": lambda v: _coerce_int_range(v, 0, 0, 10000000),
+    "propers_and_repacks": lambda v: _coerce_choice(
+        v,
+        default="prefer_and_upgrade",
+        choices=_PROPERS_AND_REPACKS_MODES,
+    ),
+    "file_format": lambda v: str(v or "").strip(),
+    "chapter_format": lambda v: str(v or "").strip(),
+    "folder_format": lambda v: str(v or "").strip(),
+    # Direct Download
+    "ddl_grab_mode": lambda v: _coerce_choice(
+        v,
+        default="fallback",
+        choices=_DDL_GRAB_MODES,
+    ),
+    "ddl_language": lambda v: _coerce_choice(
+        v,
+        default="en",
+        choices=_DDL_LANGUAGES,
+    ),
+    "suwayomi_check_interval": lambda v: _coerce_decimal_int_range(
+        v,
+        minimum=3600,
+        maximum=604800,
+    ),
+    # General
+    "rss_interval": lambda v: _coerce_decimal_int_range(
+        v,
+        minimum=60,
+        maximum=86400,
+    ),
+    "grab_delay_minutes": lambda v: _coerce_int_range(v, 0, 0, 10080),
+    "quality_cutoff": lambda v: _coerce_choice(
+        str(v or "").strip(),
+        default="",
+        choices=_QUALITY_CUTOFFS,
+    ),
+    "ignored_words": lambda v: str(v or ""),
+    "preferred_words": lambda v: str(v or ""),
+    "required_words": lambda v: str(v or ""),
+    "preferred_groups": lambda v: str(v or ""),
+    "blocked_groups": lambda v: str(v or ""),
+    # Metadata
+    "google_books_api_key": lambda v: str(v or "").strip(),
+    "komga_url": lambda v: str(v or ""),
+    "komga_user": lambda v: str(v or ""),
+    "komga_pass": lambda v: str(v or ""),
+    "komga_library_id": lambda v: str(v or ""),
+    "komga_scan_enabled": _coerce_bool_string,
+}
+
+_SETTINGS_FORM_CLEARABLE_KEYS = frozenset(
+    {
+        "torrent_save_path",
+        "file_format",
+        "chapter_format",
+        "folder_format",
+        "quality_cutoff",
+        "ignored_words",
+        "preferred_words",
+        "required_words",
+        "preferred_groups",
+        "blocked_groups",
+        "komga_url",
+        "komga_library_id",
+    }
+)
+
+
+def _last_form_value(form: FormData, key: str) -> object:
+    """Return the last value so hidden-input-first checkboxes work."""
+    values = form.getlist(key)
+    return values[-1] if values else ""
+
+
+def _submitted_settings_fields(form: FormData) -> dict[str, str]:
+    """Coerce only settings keys actually present in the submitted form."""
+    fields: dict[str, str] = {}
+    for key, coerce in _SETTINGS_FORM_COERCERS.items():
+        if key not in form:
+            continue
+        raw_value = _last_form_value(form, key)
+        if key in SETTINGS_SECRET_KEYS and not str(raw_value or "").strip():
+            # Password-like blanks mean "keep the stored credential".
+            continue
+        value = coerce(raw_value)
+        if value is None:
+            continue
+        if value or key in _SETTINGS_FORM_CLEARABLE_KEYS:
+            fields[key] = value
+    return _encrypt_settings_secrets_in_place(fields)
+
+
 def _write_settings_fields(fields: dict[str, str]) -> None:
     with get_db() as db:
         for key, value in fields.items():
@@ -214,104 +368,10 @@ async def settings_page(request: Request, saved: str = ""):
 
 
 @router.post("/settings")
-async def save_settings(
-    request: Request,
-    torrent_save_path: str = Form(""),
-    category: str = Form(""),
-    rss_interval: str = Form(""),
-    komga_url: str = Form(""),
-    komga_user: str = Form(""),
-    komga_pass: str = Form(""),
-    komga_library_id: str = Form(""),
-    komga_scan_enabled: str = Form(""),
-    ignored_words: str = Form(""),
-    preferred_words: str = Form(""),
-    required_words: str = Form(""),
-    preferred_groups: str = Form(""),
-    blocked_groups: str = Form(""),
-    import_mode: str = Form("hardlink"),
-    remove_completed: str = Form("false"),
-    minimum_free_space_mb: str = Form("0"),
-    grab_delay_minutes: str = Form("0"),
-    file_format: str = Form(""),
-    chapter_format: str = Form(""),
-    folder_format: str = Form(""),
-    quality_cutoff: str = Form(""),
-    google_books_api_key: str = Form(""),
-    ddl_language: str = Form("en"),
-    ddl_grab_mode: str = Form("fallback"),
-    suwayomi_check_interval: str = Form(""),
-):
-    fields = {
-        # Empty string means "fall back to save_path" — the old single-directory
-        # behaviour. Strip whitespace so accidental spaces don't make it look
-        # configured when it isn't.
-        "torrent_save_path": torrent_save_path.strip(),
-        "category": category,
-        "import_mode": import_mode
-        if import_mode in ("hardlink", "move", "copy")
-        else "hardlink",
-        "remove_completed": "true" if remove_completed == "true" else "false",
-        "minimum_free_space_mb": str(
-            max(
-                0,
-                min(
-                    10000000,
-                    int(minimum_free_space_mb)
-                    if minimum_free_space_mb.isdigit()
-                    else 0,
-                ),
-            )
-        ),
-        "grab_delay_minutes": str(max(0, min(10080, int(grab_delay_minutes))))
-        if grab_delay_minutes.isdigit()
-        else "0",
-        "file_format": file_format.strip(),
-        "chapter_format": chapter_format.strip(),
-        "folder_format": folder_format.strip(),
-        "quality_cutoff": quality_cutoff.strip(),
-        "komga_scan_enabled": "true" if komga_scan_enabled else "false",
-        "ignored_words": ignored_words,
-        "preferred_words": preferred_words,
-        "required_words": required_words,
-        "preferred_groups": preferred_groups,
-        "blocked_groups": blocked_groups,
-        "ddl_language": ddl_language if ddl_language else "en",
-        "ddl_grab_mode": ddl_grab_mode
-        if ddl_grab_mode in ("fallback", "prefer", "only", "off")
-        else "fallback",
-    }
-    if suwayomi_check_interval and suwayomi_check_interval.isdigit():
-        fields["suwayomi_check_interval"] = str(
-            max(3600, min(604800, int(suwayomi_check_interval)))
-        )
-    if komga_url:
-        fields["komga_url"] = komga_url
-    if komga_user:
-        fields["komga_user"] = komga_user
-    if komga_pass:
-        fields["komga_pass"] = komga_pass
-    if komga_library_id:
-        fields["komga_library_id"] = komga_library_id
-    if rss_interval and rss_interval.isdigit():
-        fields["rss_interval"] = str(max(60, min(86400, int(rss_interval))))
-    if google_books_api_key.strip():
-        fields["google_books_api_key"] = google_books_api_key.strip()
-
-    fields = _encrypt_settings_secrets_in_place(fields)
-    # Some settings are legitimately clearable via the form — their
-    # empty value is meaningful (e.g. torrent_save_path="" means "fall
-    # back to save_path"). For those keys we persist the empty value;
-    # for everything else we skip empties so a blank form field doesn't
-    # wipe an existing DB row.
-    _CLEARABLE_KEYS = {"torrent_save_path"}
-    with get_db() as db:
-        for k, v in fields.items():
-            if v or k in _CLEARABLE_KEYS:
-                db.execute(
-                    "INSERT OR REPLACE INTO settings(key, value) VALUES(?,?)", (k, v)
-                )
-    _reload_config()
+async def save_settings(request: Request) -> Response:
+    """Persist only settings keys present in this form submission."""
+    form = await request.form()
+    _write_settings_fields(_submitted_settings_fields(form))
     if is_htmx(request):
         return Response(
             headers={

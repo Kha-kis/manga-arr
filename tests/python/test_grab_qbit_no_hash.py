@@ -82,13 +82,27 @@ def _seed_series(
 
 
 def _stub_grab_url(
-    success: bool, client_healthy: bool, dl_id=None, client_name="qbittorrent"
+    success: bool,
+    client_healthy: bool,
+    dl_id=None,
+    client_name="qbittorrent",
+    download_client_id: int | None = None,
 ):
-    """Build an async stub that mimics grab_url's 4-tuple return."""
+    """Build an async stub with optional exact-client ownership."""
 
     async def _stub(
         url, protocol="", save_path=None, torrent_name=None, series_id=None
     ):
+        if download_client_id is not None:
+            from clients import GrabResult
+
+            return GrabResult(
+                success,
+                client_name,
+                dl_id,
+                client_healthy,
+                download_client_id,
+            )
         return success, client_name, dl_id, client_healthy
 
     return _stub
@@ -108,18 +122,63 @@ def _build_item(url, title, vol_num=None):
 # ───────────────────── grab_url tuple shape ─────────────────────
 
 
-def test_grab_url_returns_4_tuple_with_healthy_flag():
-    """The signature change: grab_url now returns
-    (ok, client_name, dl_id, client_healthy) — caller needs the
-    healthy flag to distinguish soft vs hard failure."""
+def test_grab_result_preserves_legacy_unpacking_and_exposes_client_id():
     import inspect
-    from clients import grab_url
+    from clients import GrabResult, grab_url
 
     sig = inspect.signature(grab_url)
     ann = str(sig.return_annotation)
-    assert "tuple" in ann.lower(), f"return annotation: {ann!r}"
-    # 3 commas = 4 elements in the tuple
-    assert ann.count(",") == 3, f"expected 4-tuple shape, got {ann!r}"
+    assert "GrabResult" in ann
+    result = GrabResult(True, "qbittorrent", "hash", True, 42)
+    assert tuple(result) == (True, "qbittorrent", "hash", True)
+    assert result.download_client_id == 42
+
+
+@pytest.mark.parametrize(
+    ("protocol", "client_type", "adapter_name"),
+    [
+        ("torrent", "qbittorrent", "qbit_grab"),
+        ("nzb", "sabnzbd", "sab_grab"),
+    ],
+)
+def test_grab_url_returns_exact_selected_client_id(
+    monkeypatch: pytest.MonkeyPatch,
+    protocol: str,
+    client_type: str,
+    adapter_name: str,
+) -> None:
+    import clients
+    import routers.download_clients as download_clients
+
+    selected_id = 4_242
+    monkeypatch.setattr(
+        download_clients,
+        "get_client_for_protocol",
+        lambda *args, **kwargs: {
+            "id": selected_id,
+            "name": "Selected client",
+            "type": client_type,
+        },
+    )
+    monkeypatch.setattr(download_clients, "_cb_is_open", lambda _client_id: False)
+    monkeypatch.setattr(download_clients, "_cb_record_success", lambda _client_id: None)
+    monkeypatch.setattr(download_clients, "_cb_record_failure", lambda _client_id: None)
+
+    async def _grab(*args, **kwargs):
+        del args, kwargs
+        return True, "download-id", True
+
+    monkeypatch.setattr(clients, adapter_name, _grab)
+    result = asyncio.run(
+        clients.grab_url(
+            "magnet:?xt=urn:btih:" + "a" * 40
+            if protocol == "torrent"
+            else "https://indexer.test/release.nzb",
+            protocol,
+        )
+    )
+    assert tuple(result) == (True, client_type, "download-id", True)
+    assert result.download_client_id == selected_id
 
 
 # ───────────────────── soft-failure dedup ─────────────────────
@@ -139,7 +198,12 @@ def test_qbit_no_hash_inserts_seen_for_url_dedup(env):
     with patch.object(
         grab_core,
         "grab_url",
-        _stub_grab_url(success=False, client_healthy=True, dl_id=None),
+        _stub_grab_url(
+            success=False,
+            client_healthy=True,
+            dl_id=None,
+            download_client_id=101,
+        ),
     ):
         result = asyncio.run(grab_core.grab_item(item, series_id=1))
 
@@ -148,7 +212,8 @@ def test_qbit_no_hash_inserts_seen_for_url_dedup(env):
     with sqlite3.connect(env["db_path"]) as c:
         c.row_factory = sqlite3.Row
         seen = c.execute(
-            "SELECT torrent_url, download_id FROM seen WHERE torrent_url=?",
+            "SELECT torrent_url, download_id, download_client_id"
+            " FROM seen WHERE torrent_url=?",
             (item["url"],),
         ).fetchone()
     assert seen is not None, (
@@ -156,6 +221,7 @@ def test_qbit_no_hash_inserts_seen_for_url_dedup(env):
         "infinite RSS retry loop"
     )
     assert seen["download_id"] is None, "no hash → NULL download_id"
+    assert seen["download_client_id"] == 101
 
 
 def test_qbit_no_hash_does_not_mark_volume_grabbed(env):
@@ -247,6 +313,15 @@ def test_qbit_full_success_still_marks_volume_grabbed(env):
     import grab_core
 
     _seed_series(env["db_path"], volume_num=8)
+    with sqlite3.connect(env["db_path"]) as c:
+        volume_id = c.execute(
+            "SELECT id FROM volumes WHERE series_id=1 AND volume_num=8"
+        ).fetchone()[0]
+        c.execute(
+            "INSERT INTO chapters(series_id,volume_id,chapter_num,status,monitored)"
+            " VALUES(1,?,80,'wanted',1)",
+            (volume_id,),
+        )
 
     item = _build_item(
         url="http://indexer.test/release-success.torrent",
@@ -257,7 +332,12 @@ def test_qbit_full_success_still_marks_volume_grabbed(env):
     with patch.object(
         grab_core,
         "grab_url",
-        _stub_grab_url(success=True, client_healthy=True, dl_id="abc123hashvalue"),
+        _stub_grab_url(
+            success=True,
+            client_healthy=True,
+            dl_id="abc123hashvalue",
+            download_client_id=808,
+        ),
     ):
         result = asyncio.run(grab_core.grab_item(item, series_id=1))
 
@@ -265,11 +345,20 @@ def test_qbit_full_success_still_marks_volume_grabbed(env):
     with sqlite3.connect(env["db_path"]) as c:
         c.row_factory = sqlite3.Row
         v = c.execute(
-            "SELECT status, download_id FROM volumes WHERE series_id=1 AND volume_num=8"
+            "SELECT status, download_id, download_client_id"
+            " FROM volumes WHERE series_id=1 AND volume_num=8"
         ).fetchone()
         s = c.execute(
-            "SELECT download_id FROM seen WHERE torrent_url=?", (item["url"],)
+            "SELECT download_id, download_client_id FROM seen WHERE torrent_url=?",
+            (item["url"],),
+        ).fetchone()
+        chapter = c.execute(
+            "SELECT status, download_id, download_client_id"
+            " FROM chapters WHERE series_id=1 AND chapter_num=80"
         ).fetchone()
     assert v["status"] == "grabbed"
     assert v["download_id"] == "abc123hashvalue"
+    assert v["download_client_id"] == 808
     assert s is not None and s["download_id"] == "abc123hashvalue"
+    assert s["download_client_id"] == 808
+    assert tuple(chapter) == ("grabbed", "abc123hashvalue", 808)

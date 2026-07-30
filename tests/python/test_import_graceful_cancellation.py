@@ -33,6 +33,12 @@ def fresh_db(monkeypatch):
     import main
     import import_execute
     import shared
+    original_sem = import_execute._IMPORT_SEM
+    original_sem_value = original_sem._value if original_sem is not None else None
+    original_main_config = main.CONFIG
+    original_main_values = dict(main.CONFIG)
+    original_shared_config = shared.CONFIG
+    original_shared_values = dict(shared.CONFIG)
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
     os.unlink(tmp.name)
@@ -43,6 +49,15 @@ def fresh_db(monkeypatch):
     try:
         yield tmp.name
     finally:
+        if original_sem is not None and original_sem_value is not None:
+            original_sem._value = original_sem_value
+        import_execute._IMPORT_SEM = original_sem
+        main.CONFIG = original_main_config
+        main.CONFIG.clear()
+        main.CONFIG.update(original_main_values)
+        shared.CONFIG = original_shared_config
+        shared.CONFIG.clear()
+        shared.CONFIG.update(original_shared_values)
         for ext in ("", "-wal", "-shm"):
             p = tmp.name + ext
             if os.path.exists(p):

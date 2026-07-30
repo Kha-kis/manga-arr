@@ -22,12 +22,111 @@ import asyncio
 import os
 import re
 import time
+from collections.abc import Iterator
+from dataclasses import dataclass
+from typing import Any, Literal
 
 import httpx
 
 from events import log_event
 from parsing import normalize
 from shared import get_cfg, get_db
+
+
+DownloadClientLoadReason = Literal[
+    "matched",
+    "deleted",
+    "disabled",
+    "identity_mismatch",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class BoundDownloadClient:
+    """Credentials loaded only after a journaled client identity matches."""
+
+    client: dict[str, Any] | None
+    reason: DownloadClientLoadReason
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class GrabResult:
+    """Download handoff result with exact, non-secret client ownership.
+
+    Iteration intentionally preserves the historical four-value unpacking
+    contract. New callers should read ``download_client_id`` directly.
+    """
+
+    success: bool
+    client_name: str
+    download_id: str | None
+    client_healthy: bool
+    download_client_id: int | None
+
+    def _legacy_tuple(self) -> tuple[bool, str, str | None, bool]:
+        return (
+            self.success,
+            self.client_name,
+            self.download_id,
+            self.client_healthy,
+        )
+
+    def __iter__(self) -> Iterator[bool | str | None]:
+        yield from self._legacy_tuple()
+
+    def __len__(self) -> int:
+        return 4
+
+    def __getitem__(self, index: int) -> bool | str | None:
+        return self._legacy_tuple()[index]
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, GrabResult):
+            return (
+                self._legacy_tuple() == other._legacy_tuple()
+                and self.download_client_id == other.download_client_id
+            )
+        if isinstance(other, tuple):
+            return self._legacy_tuple() == other
+        return False
+
+
+def load_bound_download_client(
+    client_id: int,
+    *,
+    expected_type: str,
+    expected_name: str,
+) -> BoundDownloadClient:
+    """Load one exact client without falling back to another configured server."""
+    with get_db() as db:
+        row = db.execute(
+            "SELECT * FROM download_clients WHERE id=?",
+            (client_id,),
+        ).fetchone()
+    if row is None:
+        return BoundDownloadClient(None, "deleted")
+
+    raw = dict(row)
+    if int(raw.get("enabled") or 0) != 1:
+        return BoundDownloadClient(None, "disabled")
+    if (
+        str(raw.get("type") or "") != expected_type
+        or str(raw.get("name") or "") != expected_name
+    ):
+        return BoundDownloadClient(None, "identity_mismatch")
+
+    # Identity is checked before the encrypted password is decrypted.
+    from routers.download_clients import client_base_url
+    from security import decrypt_secret_safe
+
+    client = raw
+    client["password"] = decrypt_secret_safe(
+        client.get("password"),
+        field_name="download_clients.password",
+        context=expected_name,
+    )
+    client["host"] = client_base_url(client)
+    return BoundDownloadClient(client, "matched")
 
 
 def extract_magnet_hash(magnet: str) -> str | None:
@@ -181,27 +280,35 @@ async def qbit_grab(
         return False, None, False
 
 
-async def qbit_remove(download_id: str, delete_files: bool = False) -> bool:
+async def qbit_remove(
+    download_id: str,
+    delete_files: bool = False,
+    *,
+    client: dict[str, Any] | None = None,
+) -> bool:
     """Remove a torrent from qBittorrent by hash. Returns True on success."""
     if not download_id:
         return False
-    from routers.download_clients import get_client_for_protocol
 
-    with get_db() as _rdb:
-        _c = get_client_for_protocol(_rdb, "torrent")
+    _c = client
+    if _c is None:
+        from routers.download_clients import get_client_for_protocol
+
+        with get_db() as _rdb:
+            _c = get_client_for_protocol(_rdb, "torrent")
     if not _c:
         return False
     host = (_c.get("host") or "").rstrip("/")
     user = _c.get("username") or ""
     pw = _c.get("password") or ""
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.post(
+        async with httpx.AsyncClient(timeout=10) as http_client:
+            r = await http_client.post(
                 f"{host}/api/v2/auth/login", data={"username": user, "password": pw}
             )
             if "Ok" not in r.text:
                 return False
-            r2 = await client.post(
+            r2 = await http_client.post(
                 f"{host}/api/v2/torrents/delete",
                 data={
                     "hashes": download_id,
@@ -214,21 +321,28 @@ async def qbit_remove(download_id: str, delete_files: bool = False) -> bool:
         return False
 
 
-async def sab_remove(nzo_id: str) -> bool:
+async def sab_remove(
+    nzo_id: str,
+    *,
+    client: dict[str, Any] | None = None,
+) -> bool:
     """Remove a completed job from SABnzbd. Returns True on success."""
     if not nzo_id:
         return False
-    from routers.download_clients import get_client_for_protocol
 
-    with get_db() as _rdb:
-        _c = get_client_for_protocol(_rdb, "nzb")
+    _c = client
+    if _c is None:
+        from routers.download_clients import get_client_for_protocol
+
+        with get_db() as _rdb:
+            _c = get_client_for_protocol(_rdb, "nzb")
     if not _c:
         return False
     host = (_c.get("host") or "").rstrip("/")
     apikey = _c.get("password") or ""
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(
+        async with httpx.AsyncClient(timeout=10) as http_client:
+            r = await http_client.get(
                 f"{host}/api",
                 params={
                     "mode": "history",
@@ -346,10 +460,12 @@ async def grab_url(
     save_path: str | None = None,
     torrent_name: str | None = None,
     series_id: int | None = None,
-) -> tuple[bool, str, str | None, bool]:
+) -> GrabResult:
     """Route to best available download client.
 
-    Returns (success, client_name, download_id, client_healthy).
+    Returns a :class:`GrabResult`. Its legacy four-value iteration is
+    ``(success, client_name, download_id, client_healthy)``; the exact selected
+    database identity is available as ``download_client_id``.
 
       success         — True iff the grab fully succeeded (added AND
                         the download_id is known).
@@ -392,16 +508,24 @@ async def grab_url(
 
     if not client:
         log_event("error", f"[grab_url] No download client configured for {detected_protocol}")
-        return False, "none", None, False
+        return GrabResult(False, "none", None, False, None)
 
-    client_id = client.get("id", 0) or 0
-    if _cb_is_open(client_id):
+    raw_client_id = client.get("id")
+    client_id = (
+        raw_client_id
+        if isinstance(raw_client_id, int)
+        and not isinstance(raw_client_id, bool)
+        and raw_client_id > 0
+        else None
+    )
+    breaker_client_id = client_id or 0
+    if _cb_is_open(breaker_client_id):
         log_event(
             "error",
             f"[grab_url] Circuit open for client {client['name']} — skipping grab",
             dedup=True,
         )
-        return False, client["name"], None, False
+        return GrabResult(False, client["name"], None, False, client_id)
 
     ctype = client["type"]
     if ctype == "qbittorrent":
@@ -418,10 +542,16 @@ async def grab_url(
         ok, dl_id, healthy = await nzbget_grab(url, client=client)
     else:
         log_event("error", f"[grab_url] Client type '{ctype}' not yet implemented")
-        return False, client["name"], None, False
+        return GrabResult(False, client["name"], None, False, client_id)
 
     if healthy:
-        _cb_record_success(client_id)
+        _cb_record_success(breaker_client_id)
     else:
-        _cb_record_failure(client_id)
-    return ok, (client.get("type") or client["name"]).lower(), dl_id, healthy
+        _cb_record_failure(breaker_client_id)
+    return GrabResult(
+        ok,
+        (client.get("type") or client["name"]).lower(),
+        dl_id,
+        healthy,
+        client_id,
+    )

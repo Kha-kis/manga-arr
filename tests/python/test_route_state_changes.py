@@ -17,9 +17,13 @@ Covers:
 """
 import json
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -39,6 +43,11 @@ def env(tmp_path):
 
     orig_main_db = main.DB_PATH
     orig_shared_db = shared.DB_PATH
+    orig_main_config = main.CONFIG
+    orig_main_config_values = dict(main.CONFIG)
+    orig_shared_config = shared.CONFIG
+    orig_shared_config_values = dict(shared.CONFIG)
+    orig_secret_cipher = security._SECRET_CIPHER
     main.DB_PATH = db.name
     shared.DB_PATH = db.name
     security._SECRET_CIPHER = None
@@ -107,10 +116,43 @@ def env(tmp_path):
     finally:
         main.DB_PATH = orig_main_db
         shared.DB_PATH = orig_shared_db
+        main.CONFIG = orig_main_config
+        main.CONFIG.clear()
+        main.CONFIG.update(orig_main_config_values)
+        shared.CONFIG = orig_shared_config
+        shared.CONFIG.clear()
+        shared.CONFIG.update(orig_shared_config_values)
+        security._SECRET_CIPHER = orig_secret_cipher
+        shutil.rmtree(key_dir)
         for ext in ("", "-wal", "-shm"):
             p = db.name + ext
             if os.path.exists(p):
                 os.unlink(p)
+
+
+@pytest.fixture
+def _config_restoration_probe():
+    """Verify the route fixture restores process globals and key directories."""
+    import main, security, shared
+
+    original_main_config = main.CONFIG
+    original_main_values = dict(main.CONFIG)
+    original_shared_config = shared.CONFIG
+    original_shared_values = dict(shared.CONFIG)
+    original_secret_cipher = security._SECRET_CIPHER
+    original_key_dirs = set(
+        Path(tempfile.gettempdir()).glob("mangarr-state-keys-*")
+    )
+    yield
+    assert main.CONFIG is original_main_config
+    assert main.CONFIG == original_main_values
+    assert shared.CONFIG is original_shared_config
+    assert shared.CONFIG == original_shared_values
+    assert security._SECRET_CIPHER is original_secret_cipher
+    assert (
+        set(Path(tempfile.gettempdir()).glob("mangarr-state-keys-*"))
+        == original_key_dirs
+    )
 
 
 def _client():
@@ -125,6 +167,118 @@ def _csrf_kwargs(tag: str = "test"):
         'cookies': {'csrftoken': tok},
         'headers': {'X-CSRFToken': tok},
     }
+
+
+def _seed_volume_publication(
+    env,
+    state: str,
+    *,
+    volume_id: int = 13,
+) -> tuple[int, str]:
+    file_path = os.path.join(
+        env["library_root"],
+        f"StateSeries v{volume_id - 10:02d}.cbz",
+    )
+    with open(file_path, "wb") as stream:
+        stream.write(b"published-volume")
+
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute(
+            "UPDATE volumes SET import_path=?, torrent_name='Published release'"
+            " WHERE id=?",
+            (file_path, volume_id),
+        )
+        volume_num = c.execute(
+            "SELECT volume_num FROM volumes WHERE id=?",
+            (volume_id,),
+        ).fetchone()[0]
+        queue_id = 700 + volume_id
+        queue_status = (
+            "importing"
+            if state in {
+                "staging",
+                "prepared",
+                "publishing",
+                "published",
+                "db_committed",
+                "cleaning",
+            }
+            else "imported"
+        )
+        c.execute(
+            "INSERT INTO import_queue(id, series_id, volume_num, status)"
+            " VALUES(?, 1, ?, ?)",
+            (queue_id, volume_num, queue_status),
+        )
+        publication_id = c.execute(
+            """
+            INSERT INTO import_publications(
+                queue_id, state, owner_token, series_id, dst_dir, import_mode,
+                staging_dir, queue_snapshot_json, series_tags_json,
+                queue_status, queue_volume_num
+            ) VALUES(
+                ?, ?, 'publication-owner', 1, ?, 'copy', ?,
+                '{}', '[]', 'importing', ?
+            )
+            """,
+            (
+                queue_id,
+                state,
+                env["library_root"],
+                os.path.join(
+                    env["library_root"],
+                    f".mangarr-publication-{queue_id}",
+                ),
+                volume_num,
+            ),
+        ).lastrowid
+        c.execute(
+            """
+            INSERT INTO import_publication_files(
+                publication_id, ordinal, file_id, src_path, filename,
+                dst_path, final_path, import_kind, file_type, proposed_vol,
+                is_special, has_volume_range, is_legacy_chapter_stub,
+                is_legacy_chapter_recheck, plan_status
+            ) VALUES(
+                ?, 0, ?, '/downloads/source.cbz', 'StateSeries.cbz',
+                ?, ?, 'volume', 'volume', ?, 0, 0, 0, 0, 'ready'
+            )
+            """,
+            (
+                publication_id,
+                queue_id,
+                file_path,
+                file_path,
+                volume_num,
+            ),
+        )
+    return publication_id, file_path
+
+
+def _volume_delete_domain(db_path: str, volume_id: int = 13):
+    with sqlite3.connect(db_path) as c:
+        return {
+            "volume": c.execute(
+                "SELECT status, import_path, download_id, torrent_name"
+                " FROM volumes WHERE id=?",
+                (volume_id,),
+            ).fetchone(),
+            "chapters": c.execute(
+                "SELECT id, status, import_path, download_id"
+                " FROM chapters WHERE volume_id=? ORDER BY id",
+                (volume_id,),
+            ).fetchall(),
+            "history": c.execute(
+                "SELECT event_type, series_id, data FROM history ORDER BY id"
+            ).fetchall(),
+            "events": c.execute(
+                "SELECT event_type, series_id, message FROM events ORDER BY id"
+            ).fetchall(),
+            "publication": c.execute(
+                "SELECT state, operation_owner, operation_expires_at"
+                " FROM import_publications ORDER BY id"
+            ).fetchall(),
+        }
 
 
 # ───────────────────── volume actions ─────────────────────
@@ -231,6 +385,369 @@ def test_volume_toggle_monitor_flips_bit(env):
     with sqlite3.connect(env['db_path']) as c:
         m = c.execute("SELECT monitored FROM volumes WHERE id=11").fetchone()[0]
     assert m == 1, f"second toggle should set 0→1, got {m}"
+
+
+def test_state_route_fixture_restores_global_config(
+    _config_restoration_probe,
+    env,
+):
+    """This module must not leak its temporary DB config into later suites."""
+    assert env["db_path"]
+
+
+@pytest.mark.parametrize("htmx", [False, True], ids=["plain", "htmx"])
+def test_volume_file_delete_active_publication_blocks_without_mutation(env, htmx):
+    """An active journal retains both its filesystem and database authority."""
+    _, file_path = _seed_volume_publication(env, "staging")
+    before = _volume_delete_domain(env["db_path"])
+    csrf = _csrf_kwargs(f"delete-active-{htmx}")
+    headers = dict(csrf["headers"])
+    if htmx:
+        headers["HX-Request"] = "true"
+
+    response = _client().post(
+        "/series/1/volumes/13/delete-file",
+        cookies=csrf["cookies"],
+        headers=headers,
+        follow_redirects=False,
+    )
+
+    if htmx:
+        assert response.status_code == 200
+        toast = json.loads(response.headers["HX-Trigger"])["showToast"]
+        assert toast["type"] == "warning"
+        assert "Import is in progress" in toast["msg"]
+    else:
+        assert response.status_code == 303
+        assert "flash_type=warning" in response.headers["location"]
+    assert os.path.exists(file_path)
+    with open(file_path, "rb") as stream:
+        assert stream.read() == b"published-volume"
+    assert _volume_delete_domain(env["db_path"]) == before
+
+
+@pytest.mark.parametrize(
+    ("range_start", "range_end", "pack_type"),
+    [(2.0, 4.0, "volume_range"), (None, None, "complete")],
+    ids=["volume-range", "complete-pack"],
+)
+def test_volume_file_delete_active_publication_file_coverage_blocks(
+    env,
+    range_start,
+    range_end,
+    pack_type,
+):
+    """File range/pack coverage fences deletion without scalar or path matches."""
+    _, file_path = _seed_volume_publication(env, "staging")
+    with sqlite3.connect(env["db_path"]) as db:
+        db.execute(
+            "UPDATE volumes SET download_id='volume-download' WHERE id=13"
+        )
+        db.execute(
+            "UPDATE import_publications"
+            " SET queue_volume_num=9.0,"
+            " queue_download_id='different-download'"
+        )
+        db.execute(
+            """
+            UPDATE import_publication_files
+            SET proposed_vol=9.0,
+                vol_range_start=?,
+                vol_range_end=?,
+                pack_type=?,
+                dst_path='/unrelated/destination.cbz',
+                final_path='/unrelated/final.cbz'
+            """,
+            (range_start, range_end, pack_type),
+        )
+    before = _volume_delete_domain(env["db_path"])
+    csrf = _csrf_kwargs(f"delete-active-{pack_type}")
+
+    response = _client().post(
+        "/series/1/volumes/13/delete-file",
+        cookies=csrf["cookies"],
+        headers=csrf["headers"],
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "flash_type=warning" in response.headers["location"]
+    assert os.path.exists(file_path)
+    assert _volume_delete_domain(env["db_path"]) == before
+    with sqlite3.connect(env["db_path"]) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM volume_file_deletions"
+        ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize("htmx", [False, True], ids=["plain", "htmx"])
+def test_volume_file_delete_pending_warns_and_defers_history(
+    env,
+    monkeypatch,
+    htmx,
+):
+    """A blocked replay is visible and emits history only after completion."""
+    import volume_file_deletion
+
+    file_path = os.path.join(env["library_root"], "StateSeries v03.cbz")
+    with open(file_path, "wb") as stream:
+        stream.write(b"pending-delete")
+    with sqlite3.connect(env["db_path"]) as db:
+        db.execute(
+            "UPDATE volumes SET import_path=?, torrent_name='Pending release'"
+            " WHERE id=13",
+            (file_path,),
+        )
+
+    real_unlink = volume_file_deletion._unlink_claim
+
+    def fail_unlink(_path):
+        raise OSError("simulated unlink failure")
+
+    monkeypatch.setattr(volume_file_deletion, "_unlink_claim", fail_unlink)
+    csrf = _csrf_kwargs(f"delete-pending-{htmx}")
+    headers = dict(csrf["headers"])
+    if htmx:
+        headers["HX-Request"] = "true"
+
+    response = _client().post(
+        "/series/1/volumes/13/delete-file",
+        cookies=csrf["cookies"],
+        headers=headers,
+        follow_redirects=False,
+    )
+
+    if htmx:
+        assert response.status_code == 200
+        toast = json.loads(response.headers["HX-Trigger"])["showToast"]
+        message = toast["msg"]
+        assert toast["type"] == "warning"
+    else:
+        assert response.status_code == 303
+        from urllib.parse import parse_qs, urlsplit
+
+        query = parse_qs(urlsplit(response.headers["location"]).query)
+        message = query["flash_msg"][0]
+        assert query["flash_type"] == ["warning"]
+    assert "pending recovery" in message
+    assert "simulated unlink failure" in message
+
+    with sqlite3.connect(env["db_path"]) as db:
+        journal = db.execute(
+            "SELECT id, state, claim_path FROM volume_file_deletions"
+        ).fetchone()
+        assert journal is not None
+        assert journal[1] == "active"
+        assert Path(journal[2]).exists()
+        assert db.execute(
+            "SELECT COUNT(*) FROM history WHERE event_type='file_deleted'"
+        ).fetchone()[0] == 0
+
+    monkeypatch.setattr(volume_file_deletion, "_unlink_claim", real_unlink)
+    assert volume_file_deletion.replay_volume_file_deletion(journal[0]) == "completed"
+    with sqlite3.connect(env["db_path"]) as db:
+        assert db.execute(
+            "SELECT state FROM volume_file_deletions WHERE id=?",
+            (journal[0],),
+        ).fetchone() == ("completed",)
+        assert db.execute(
+            "SELECT COUNT(*) FROM history WHERE event_type='file_deleted'"
+        ).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "lease_owner"),
+    [("importing", None), ("pending", "pre-journal-owner")],
+)
+def test_volume_file_delete_blocks_prejournal_import_without_mutation(
+    env,
+    status,
+    lease_owner,
+):
+    """A queue owner is authoritative before its publication row exists."""
+    file_path = os.path.join(env["library_root"], "StateSeries v03.cbz")
+    with open(file_path, "wb") as stream:
+        stream.write(b"pre-journal-import")
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute(
+            "UPDATE volumes SET import_path=?, torrent_name='Pre-journal release'"
+            " WHERE id=13",
+            (file_path,),
+        )
+        c.execute(
+            "INSERT INTO import_queue(id, series_id, volume_num, status,"
+            " lease_owner) VALUES(713, 1, 3.0, ?, ?)",
+            (status, lease_owner),
+        )
+    before = _volume_delete_domain(env["db_path"])
+
+    response = _client().post(
+        "/series/1/volumes/13/delete-file",
+        **_csrf_kwargs(f"delete-prejournal-{status}-{lease_owner}"),
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "flash_type=warning" in response.headers["location"]
+    assert os.path.exists(file_path)
+    assert _volume_delete_domain(env["db_path"]) == before
+    with sqlite3.connect(env["db_path"]) as c:
+        assert c.execute(
+            "SELECT COUNT(*) FROM volume_file_deletions"
+        ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("state", ["finalized", "deleted"])
+def test_volume_file_delete_terminal_publication_permits_delete(env, state):
+    """Terminal journals no longer own the volume or its published path."""
+    _, file_path = _seed_volume_publication(env, state)
+    csrf = _csrf_kwargs(f"delete-terminal-{state}")
+
+    response = _client().post(
+        "/series/1/volumes/13/delete-file",
+        **csrf,
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert not os.path.exists(file_path)
+    with sqlite3.connect(env["db_path"]) as c:
+        volume = c.execute(
+            "SELECT status, import_path, torrent_name FROM volumes WHERE id=13"
+        ).fetchone()
+        publication_state = c.execute(
+            "SELECT state FROM import_publications"
+        ).fetchone()[0]
+    assert volume == ("wanted", None, None)
+    assert publication_state == state
+
+
+def test_volume_file_delete_and_publication_claim_have_one_winner(
+    env,
+    monkeypatch,
+):
+    """A committed deletion reservation prevents a later queue claim."""
+    import volume_file_deletion
+    from import_lease import claim_import_queue_row
+
+    file_path = os.path.join(env["library_root"], "StateSeries v03.cbz")
+    with open(file_path, "wb") as stream:
+        stream.write(b"delete-race")
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute(
+            "UPDATE volumes SET import_path=?, torrent_name='Race release'"
+            " WHERE id=13",
+            (file_path,),
+        )
+        c.execute(
+            "INSERT INTO import_queue(id, series_id, volume_num, status)"
+            " VALUES(713, 1, 3.0, 'pending')"
+        )
+
+    csrf = _csrf_kwargs("delete-claim-race")
+    reservation_committed = threading.Event()
+    release_filesystem = threading.Event()
+    real_rename = volume_file_deletion._rename_noreplace
+
+    def paused_rename(source, destination):
+        reservation_committed.set()
+        assert release_filesystem.wait(timeout=5)
+        real_rename(source, destination)
+
+    monkeypatch.setattr(volume_file_deletion, "_rename_noreplace", paused_rename)
+
+    def claim_import():
+        assert reservation_committed.wait(timeout=5)
+        with sqlite3.connect(env["db_path"], timeout=5) as c:
+            c.execute("BEGIN IMMEDIATE")
+            return claim_import_queue_row(c, 713, "race-owner")
+
+    def delete_file():
+        return _client().post(
+            "/series/1/volumes/13/delete-file",
+            **csrf,
+            follow_redirects=False,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        delete_future = pool.submit(delete_file)
+        assert reservation_committed.wait(timeout=5)
+        claim_future = pool.submit(claim_import)
+        claim_won = claim_future.result(timeout=5)
+        release_filesystem.set()
+        response = delete_future.result(timeout=5)
+
+    delete_won = not os.path.exists(file_path)
+    assert sum((claim_won, delete_won)) == 1
+    assert delete_won
+    assert response.status_code == 303
+    with sqlite3.connect(env["db_path"]) as c:
+        assert c.execute(
+            "SELECT COUNT(*) FROM import_publications"
+        ).fetchone()[0] == 0
+        assert c.execute(
+            "SELECT status, import_path FROM volumes WHERE id=13"
+        ).fetchone() == ("wanted", None)
+
+
+def test_volume_file_delete_slow_cleanup_does_not_hold_writer(
+    env,
+    monkeypatch,
+):
+    """A concurrent low-timeout writer succeeds while detached cleanup pauses."""
+    import volume_file_deletion
+
+    file_path = os.path.join(env["library_root"], "StateSeries v03.cbz")
+    with open(file_path, "wb") as stream:
+        stream.write(b"slow-delete")
+    with sqlite3.connect(env["db_path"]) as c:
+        c.execute(
+            "UPDATE volumes SET import_path=?, torrent_name='Slow release'"
+            " WHERE id=13",
+            (file_path,),
+        )
+
+    cleanup_started = threading.Event()
+    cleanup_release = threading.Event()
+    real_unlink = volume_file_deletion._unlink_claim
+
+    def slow_unlink(path):
+        cleanup_started.set()
+        assert cleanup_release.wait(timeout=5)
+        real_unlink(path)
+
+    monkeypatch.setattr(volume_file_deletion, "_unlink_claim", slow_unlink)
+    csrf = _csrf_kwargs("slow-volume-delete")
+
+    def delete_file():
+        return _client().post(
+            "/series/1/volumes/13/delete-file",
+            **csrf,
+            follow_redirects=False,
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(delete_file)
+        assert cleanup_started.wait(timeout=2), "delete never reached detached cleanup"
+        try:
+            with sqlite3.connect(env["db_path"], timeout=0.05) as writer:
+                writer.execute("PRAGMA busy_timeout=50")
+                writer.execute(
+                    "UPDATE series SET title='Concurrent Writer' WHERE id=1"
+                )
+        finally:
+            cleanup_release.set()
+        response = future.result(timeout=5)
+
+    assert response.status_code == 303
+    assert not os.path.exists(file_path)
+    with sqlite3.connect(env["db_path"]) as c:
+        assert c.execute(
+            "SELECT title FROM series WHERE id=1"
+        ).fetchone()[0] == "Concurrent Writer"
+        assert c.execute(
+            "SELECT status, import_path FROM volumes WHERE id=13"
+        ).fetchone() == ("wanted", None)
 
 
 def test_set_pack_range_non_htmx_redirect_does_not_500(env):

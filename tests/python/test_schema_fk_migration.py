@@ -253,6 +253,59 @@ def test_legacy_db_without_fks_gets_migrated():
                 ).fetchone()[0]
                 assert n_orphan == 0, f"{tbl} still has orphan rows"
                 assert n_legit == 1, f"{tbl} lost the legitimate row"
+            c.execute(
+                "UPDATE seen SET download_id='ABCDEF',release_guid='release-guid'"
+                " WHERE torrent_url='ok-seen'"
+            )
+            c.execute(
+                "INSERT INTO volumes(series_id,volume_num,status,download_id)"
+                " VALUES(1,1,'grabbed','ABCDEF')"
+            )
+            c.execute(
+                "INSERT INTO import_queue(series_id,download_id,status)"
+                " VALUES(1,'ABCDEF','pending')"
+            )
+            seen_indexes = {
+                row[1] for row in c.execute("PRAGMA index_list(seen)").fetchall()
+            }
+            assert {
+                "idx_seen_series",
+                "idx_seen_dlid",
+                "idx_seen_dlid_nocase",
+                "idx_seen_guid",
+            } <= seen_indexes
+
+            query_plans = {
+                "idx_seen_series": c.execute(
+                    "EXPLAIN QUERY PLAN SELECT * FROM seen WHERE series_id=?",
+                    (1,),
+                ).fetchall(),
+                "idx_seen_dlid": c.execute(
+                    "EXPLAIN QUERY PLAN SELECT * FROM seen WHERE download_id=?",
+                    ("ABCDEF",),
+                ).fetchall(),
+                "idx_seen_dlid_nocase": c.execute(
+                    "EXPLAIN QUERY PLAN SELECT * FROM seen"
+                    " WHERE download_id=? COLLATE NOCASE",
+                    ("abcdef",),
+                ).fetchall(),
+                "idx_seen_guid": c.execute(
+                    "EXPLAIN QUERY PLAN SELECT * FROM seen WHERE release_guid=?",
+                    ("release-guid",),
+                ).fetchall(),
+                "idx_volumes_download_id_nocase": c.execute(
+                    "EXPLAIN QUERY PLAN SELECT * FROM volumes"
+                    " WHERE download_id=? COLLATE NOCASE",
+                    ("abcdef",),
+                ).fetchall(),
+                "idx_import_queue_dlid_nocase": c.execute(
+                    "EXPLAIN QUERY PLAN SELECT * FROM import_queue"
+                    " WHERE download_id=? COLLATE NOCASE",
+                    ("abcdef",),
+                ).fetchall(),
+            }
+            for index_name, plan in query_plans.items():
+                assert any(index_name in row[3] for row in plan), plan
 
         # user_version bumped + idempotent
         with sqlite3.connect(db.name) as c:
@@ -277,7 +330,7 @@ def test_fresh_install_sets_user_version(env):
     empty tables."""
     with sqlite3.connect(env) as c:
         ver = c.execute("PRAGMA user_version").fetchone()[0]
-    assert ver == 2
+    assert ver == 5
 
 
 def test_volumes_status_has_check_constraint(env):

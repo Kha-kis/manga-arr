@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -51,8 +52,36 @@ def _make_zip(path: str, name: str = "page.png") -> str:
 
 
 @pytest.fixture
-def env(tmp_path):
-    import main, shared, security
+def _process_globals_restored():
+    import import_execute
+    import main
+    import security
+    import shared
+
+    semaphore = import_execute._IMPORT_SEM
+    semaphore_value = semaphore._value if semaphore is not None else None
+    main_config = main.CONFIG
+    main_values = dict(main.CONFIG)
+    shared_config = shared.CONFIG
+    shared_values = dict(shared.CONFIG)
+    cipher = security._SECRET_CIPHER
+    yield
+    assert import_execute._IMPORT_SEM is semaphore
+    if semaphore is not None:
+        assert semaphore._value == semaphore_value
+    assert main.CONFIG is main_config
+    assert main.CONFIG == main_values
+    assert shared.CONFIG is shared_config
+    assert shared.CONFIG == shared_values
+    assert security._SECRET_CIPHER is cipher
+
+
+@pytest.fixture
+def env(tmp_path, _process_globals_restored):
+    import import_execute
+    import main
+    import security
+    import shared
 
     db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     db.close()
@@ -60,8 +89,16 @@ def env(tmp_path):
     key_dir = tempfile.mkdtemp(prefix="mangarr-evloop-keys-")
     orig_main_db = main.DB_PATH
     orig_shared_db = shared.DB_PATH
+    orig_sem = import_execute._IMPORT_SEM
+    orig_sem_value = orig_sem._value if orig_sem is not None else None
+    orig_main_config = main.CONFIG
+    orig_main_values = dict(main.CONFIG)
+    orig_shared_config = shared.CONFIG
+    orig_shared_values = dict(shared.CONFIG)
+    orig_cipher = security._SECRET_CIPHER
     main.DB_PATH = db.name
     shared.DB_PATH = db.name
+    import_execute._IMPORT_SEM = None
     security._SECRET_CIPHER = None
     security.load_or_create_secret_cipher(key_dir)
     main.init_db()
@@ -87,10 +124,21 @@ def env(tmp_path):
     finally:
         main.DB_PATH = orig_main_db
         shared.DB_PATH = orig_shared_db
+        if orig_sem is not None and orig_sem_value is not None:
+            orig_sem._value = orig_sem_value
+        import_execute._IMPORT_SEM = orig_sem
+        main.CONFIG = orig_main_config
+        main.CONFIG.clear()
+        main.CONFIG.update(orig_main_values)
+        shared.CONFIG = orig_shared_config
+        shared.CONFIG.clear()
+        shared.CONFIG.update(orig_shared_values)
+        security._SECRET_CIPHER = orig_cipher
         for ext in ("", "-wal", "-shm"):
             p = db.name + ext
             if os.path.exists(p):
                 os.unlink(p)
+        shutil.rmtree(key_dir)
 
 
 def _seed_chapter_queue(
@@ -135,6 +183,7 @@ def _seed_chapter_queue(
             (series_id,),
         )
         qid = cur.lastrowid
+        assert qid is not None
         c.execute(
             "INSERT INTO import_queue_files(queue_id, src_path, filename,"
             " file_type, proposed_volume, proposed_chapter, status)"
@@ -230,35 +279,23 @@ def test_execute_import_does_not_block_event_loop(env):
     )
 
 
-def test_rollback_also_runs_off_event_loop(env):
-    """The rollback path (shutil.rmtree on the staging dir) must also
-    yield. Simulate a failure mid-stage so rollback fires."""
-    import main
-
-    src = _make_zip(str(env["src_root"] / "c005.zip"))
-    qid = _seed_chapter_queue(env["db_path"], src, chap_num=5.0)
-
-    slow = _SlowCopyTracker(delay_seconds=0.2)  # succeed quickly so
-    # we don't blow the
-    # 30s test budget
-
-    # We don't have a reliable way to force a rollback without touching
-    # DB or FS mid-import. Instead, drive a successful import and pin
-    # that commit_all is invoked through asyncio.to_thread — the same
-    # mechanism rollback uses. If this test regresses, a grep for
-    # "await asyncio.to_thread(staging." in _execute_import_impl is the
-    # quickest way to triage. (PR #147 added a thin _execute_import
-    # wrapper for staging-dir cleanup; the actual import body lives in
-    # _execute_import_impl now.)
+def test_publication_and_rollback_filesystem_work_runs_off_event_loop(env):
+    """Publication preparation and rollback must both use worker threads."""
     import inspect
     from import_pipeline import _execute_import_impl
 
     src_code = inspect.getsource(_execute_import_impl)
-    assert "await asyncio.to_thread(staging.commit_all" in src_code, (
-        "_execute_import_impl must call staging.commit_all via asyncio.to_thread"
+    assert (
+        "await _run_blocking_uninterruptibly(\n"
+        "                    lambda: prepare_staged_artifacts("
+    ) in src_code, (
+        "_execute_import_impl must prepare publication artifacts off-loop"
     )
-    assert "await asyncio.to_thread(staging.rollback" in src_code, (
-        "_execute_import_impl must call staging.rollback via asyncio.to_thread"
+    assert (
+        "_run_blocking_uninterruptibly(\n"
+        "                staging.rollback"
+    ) in src_code, (
+        "_execute_import_impl must settle staging.rollback off-loop"
     )
 
 
@@ -266,46 +303,35 @@ def test_inject_comicinfo_runs_off_event_loop(env):
     """ComicInfo injection reads and rewrites a zip. That's blocking
     I/O; must go through asyncio.to_thread."""
     import inspect
-    from import_pipeline import _execute_import_impl
-
-    src = inspect.getsource(_execute_import_impl)
-    # Every _try_inject_comicinfo call inside _execute_import is
-    # prefixed with asyncio.to_thread. A bare `_try_inject_comicinfo(`
-    # call (no `to_thread` before it) would regress.
     import re
+    from import_staging import _stage_files
 
-    bare_calls = re.findall(
-        r"(?<!to_thread,\s)_try_inject_comicinfo\(",
+    src = inspect.getsource(_stage_files)
+    calls = re.findall(r"_try_inject_comicinfo,", src)
+    wrapped_calls = re.findall(
+        r"await asyncio\.to_thread\(\s+_try_inject_comicinfo,",
         src,
     )
-    # Filter out the to_thread-wrapped ones explicitly — count only
-    # calls that don't sit inside an `asyncio.to_thread(...)` call.
-    # Simplest check: the source must not contain the bare pattern
-    # directly preceded by whitespace-only (i.e. a statement-level call).
-    bad = re.findall(
-        r"^\s+_try_inject_comicinfo\(",
-        src,
-        flags=re.MULTILINE,
-    )
-    assert not bad, (
-        "_execute_import still has bare _try_inject_comicinfo calls — "
-        f"wrap them in asyncio.to_thread. Offenders:\n{bad}"
+    assert len(calls) == 2
+    assert len(wrapped_calls) == len(calls), (
+        "_stage_files must run every ComicInfo injection through "
+        "asyncio.to_thread"
     )
 
 
 def test_maybe_convert_to_cbz_runs_off_event_loop(env):
     """CBR→CBZ conversion is CPU+IO heavy (rarfile extraction + zip
     write). Same rule as above."""
-    import inspect, re
-    from import_pipeline import _execute_import_impl
+    import inspect
+    import re
+    from import_staging import _stage_files
 
-    src = inspect.getsource(_execute_import_impl)
-    bad = re.findall(
-        r"^\s+stage_after\s*=\s*_maybe_convert_to_cbz\(",
+    src = inspect.getsource(_stage_files)
+    assert re.search(
+        r"stage_after\s*=\s*await asyncio\.to_thread\(\s*"
+        r"_maybe_convert_to_cbz,\s*stage_path\s*\)",
         src,
-        flags=re.MULTILINE,
-    )
-    assert not bad, (
-        "_execute_import still has bare _maybe_convert_to_cbz calls — "
-        f"wrap them in asyncio.to_thread. Offenders:\n{bad}"
+    ), (
+        "_stage_files must run CBR-to-CBZ conversion through "
+        "asyncio.to_thread"
     )

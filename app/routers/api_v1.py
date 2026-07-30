@@ -6577,7 +6577,8 @@ async def api_v1_root_folder_adopt_unmapped(request: Request, root_folder_id: in
             {"error": "languageProfileId must be an integer"}, status_code=400
         )
 
-    result = adopt_unmapped_folder(
+    result = await asyncio.to_thread(
+        adopt_unmapped_folder,
         root_folder_id,
         path,
         title=title,
@@ -6597,7 +6598,8 @@ async def api_v1_root_folder_adopt_unmapped(request: Request, root_folder_id: in
         language_profile_id=language_profile_id,
     )
     if result.ok:
-        series_id = result.payload.get("series", {}).get("id")
+        response_payload = result.payload or {}
+        series_id = response_payload.get("series", {}).get("id")
         if series_id:
             import main as _m
             from metadata_service import refresh_series_metadata
@@ -6611,7 +6613,7 @@ async def api_v1_root_folder_adopt_unmapped(request: Request, root_folder_id: in
                 ),
                 name=f"adopt_series:{series_id}:metadata",
             )
-        return JSONResponse(result.payload)
+        return JSONResponse(response_payload)
     body = {"error": result.error or "adoption failed"}
     if result.description:
         body["description"] = result.description

@@ -4959,10 +4959,7 @@ def test_api_v1_queue_retry_import_entry_resets_failed_to_pending(env):
     from unittest.mock import patch
     import main
 
-    async def _noop(*args, **kwargs):
-        return None
-
-    with patch.object(main, "_process_auto_import", _noop):
+    with patch.object(main, "schedule_import_worker", return_value=object()):
         resp = _client().post(
             "/api/v1/queue/import/903/retry",
             headers={"X-Api-Key": _api_key(env)},
@@ -4979,6 +4976,20 @@ def test_api_v1_queue_retry_import_entry_resets_failed_to_pending(env):
         ).fetchone()[0]
     assert queue_status == "pending"
     assert file_status == "pending"
+
+
+def test_api_v1_queue_retry_reports_scheduler_rejection(env):
+    from unittest.mock import patch
+    import main
+
+    with patch.object(main, "schedule_import_worker", return_value=None):
+        resp = _client().post(
+            "/api/v1/queue/import/903/retry",
+            headers={"X-Api-Key": _api_key(env)},
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "id": 903, "queued": False}
 
 
 def test_api_v1_queue_retry_import_entry_requires_api_key(env):

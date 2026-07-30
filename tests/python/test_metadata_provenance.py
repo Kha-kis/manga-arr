@@ -400,11 +400,8 @@ def test_rescan_records_local_candidate_without_overwriting_locked_count(
     (library_dir / "Existing Title v14.cbz").write_bytes(b"not-a-real-archive")
     with shared.get_db() as db:
         backfill_metadata_provenance(db)
-        with (
-            patch.object(rescan, "_series_library_dir", return_value=str(library_dir)),
-            patch.object(rescan, "_try_inject_comicinfo"),
-        ):
-            result = rescan.rescan_series_folder(db, 7)
+    with patch.object(rescan, "_series_library_dir", return_value=str(library_dir)):
+        result = rescan.rescan_series_folder(7)
 
     assert result["created"] == 1
     with sqlite3.connect(provenance_db) as db:

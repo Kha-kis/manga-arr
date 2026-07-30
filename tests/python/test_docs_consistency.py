@@ -40,6 +40,14 @@ def test_compose_publishes_standard_lan_port_and_docs_show_host_only_option():
     assert "published directly to the internet" in deployment
 
 
+def test_public_compose_preserves_import_shutdown_grace_period():
+    """Durable import settlement must not be cut off by Docker's 10s default."""
+    compose = _read("compose.yaml")
+    assert re.search(r"(?m)^\s+stop_grace_period:\s*15m\s*$", compose), (
+        "public compose.yaml must retain stop_grace_period: 15m"
+    )
+
+
 def test_public_install_does_not_require_env_file():
     """Self-hosters configure the tracked Compose example directly."""
     assert not (REPO_ROOT / ".env.example").exists()

@@ -261,7 +261,7 @@ async def build_health_payload() -> dict:
             if free_gb < 10:
                 issues.append(f"Low disk space on {p}: {free_gb:.1f} GB free")
         if not folders:
-            return True, "No root folders configured"
+            return False, "No root folders configured — add one in Settings"
         if issues:
             return False, "; ".join(issues)
         return True, f"{len(folders)} root folder(s) OK"

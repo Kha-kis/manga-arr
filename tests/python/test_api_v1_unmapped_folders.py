@@ -1,8 +1,10 @@
+import multiprocessing
 import os
 import shutil
 import sqlite3
 import sys
 import tempfile
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -81,7 +83,7 @@ def env():
         shared.CONFIG.update(orig_shared_config)
         shutil.rmtree(library_root, ignore_errors=True)
         shutil.rmtree(key_dir, ignore_errors=True)
-        for ext in ("", "-wal", "-shm"):
+        for ext in ("", "-wal", "-shm", ".adoption.lock"):
             p = db.name + ext
             if os.path.exists(p):
                 os.unlink(p)
@@ -366,6 +368,119 @@ def test_unmapped_folder_adoption_rejects_already_mapped_path(env):
     assert _series_count(env["db_path"]) == before
 
 
+def test_unmapped_folder_adoption_rejects_sequential_physical_alias(env):
+    import library_scan
+
+    canonical = os.path.join(env["library_root"], "Canonical")
+    alias = os.path.join(env["library_root"], "Alias")
+    os.mkdir(canonical)
+    os.symlink(canonical, alias)
+    with open(os.path.join(canonical, "Canonical v01.cbz"), "wb") as archive:
+        archive.write(b"archive")
+
+    first = library_scan.adopt_unmapped_folder(1, canonical)
+    second = library_scan.adopt_unmapped_folder(1, alias)
+
+    assert first.ok
+    assert not second.ok
+    assert second.error == "path is already mapped"
+    with sqlite3.connect(env["db_path"]) as db:
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM series WHERE folder_name IN ('Canonical','Alias')"
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_unmapped_folder_adoption_serializes_concurrent_physical_aliases(env):
+    import library_scan
+
+    canonical = os.path.join(env["library_root"], "Canonical")
+    alias = os.path.join(env["library_root"], "Alias")
+    os.mkdir(canonical)
+    os.symlink(canonical, alias)
+    with open(os.path.join(canonical, "Canonical v01.cbz"), "wb") as archive:
+        archive.write(b"archive")
+
+    barrier = threading.Barrier(2)
+    results = []
+    errors: list[BaseException] = []
+
+    def adopt(path: str) -> None:
+        try:
+            barrier.wait(timeout=5)
+            results.append(library_scan.adopt_unmapped_folder(1, path))
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=adopt, args=(canonical,)),
+        threading.Thread(target=adopt, args=(alias,)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert not errors
+    assert len(results) == 2
+    assert sorted(result.ok for result in results) == [False, True]
+    loser = next(result for result in results if not result.ok)
+    assert loser.error == "path is already mapped"
+    with sqlite3.connect(env["db_path"]) as db:
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM series WHERE folder_name IN ('Canonical','Alias')"
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_unmapped_folder_adoption_serializes_cross_process_physical_aliases(env):
+    import library_scan
+
+    canonical = os.path.join(env["library_root"], "Canonical")
+    alias = os.path.join(env["library_root"], "Alias")
+    os.mkdir(canonical)
+    os.symlink(canonical, alias)
+    with open(os.path.join(canonical, "Canonical v01.cbz"), "wb") as archive:
+        archive.write(b"archive")
+
+    context = multiprocessing.get_context("fork")
+    start = context.Event()
+    results = context.Queue()
+
+    def adopt(path: str) -> None:
+        start.wait(timeout=5)
+        result = library_scan.adopt_unmapped_folder(1, path)
+        results.put((result.ok, result.error))
+
+    processes = [
+        context.Process(target=adopt, args=(canonical,)),
+        context.Process(target=adopt, args=(alias,)),
+    ]
+    for process in processes:
+        process.start()
+    start.set()
+    for process in processes:
+        process.join(timeout=15)
+
+    assert not any(process.is_alive() for process in processes)
+    assert [process.exitcode for process in processes] == [0, 0]
+    outcomes = sorted(results.get(timeout=2) for _ in processes)
+    assert outcomes == [(False, "path is already mapped"), (True, None)]
+    with sqlite3.connect(env["db_path"]) as db:
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM series"
+                " WHERE folder_name IN ('Canonical','Alias')"
+            ).fetchone()[0]
+            == 1
+        )
+
+
 def test_unmapped_folder_adoption_rejects_path_outside_root(env):
     outside = tempfile.mkdtemp(prefix="mangarr-unmapped-outside-")
     try:
@@ -377,6 +492,23 @@ def test_unmapped_folder_adoption_rejects_path_outside_root(env):
         )
         assert resp.status_code == 400
         assert resp.json()["error"] == "path is not an unmapped folder"
+        assert _series_count(env["db_path"]) == before
+    finally:
+        shutil.rmtree(outside, ignore_errors=True)
+
+
+def test_unmapped_folder_adoption_rejects_child_symlink_outside_root(env):
+    import library_scan
+
+    outside = tempfile.mkdtemp(prefix="mangarr-unmapped-outside-")
+    alias = os.path.join(env["library_root"], "Outside Alias")
+    os.symlink(outside, alias)
+    before = _series_count(env["db_path"])
+    try:
+        result = library_scan.adopt_unmapped_folder(1, alias)
+
+        assert not result.ok
+        assert result.error == "path is not an unmapped folder"
         assert _series_count(env["db_path"]) == before
     finally:
         shutil.rmtree(outside, ignore_errors=True)

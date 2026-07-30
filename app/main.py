@@ -14,6 +14,7 @@ from defusedxml.ElementTree import parse as _safe_xml_parse, fromstring as _safe
 from defusedxml.ElementTree import ParseError as _SafeXMLParseError
 from defusedxml.common import DefusedXmlException as _DefusedXmlException
 import zipfile
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from urllib.parse import quote_plus
@@ -422,7 +423,9 @@ from metadata_service import (  # noqa: F401
 # DB_PATH, router modules) are imported lazily inside the loops to break
 # cycles — same pattern as prior extractions.
 from tasks import (  # noqa: F401
-    rss_loop, status_loop, refresh_ongoing_loop,
+    rss_loop, status_loop, pack_cleanup_recovery_loop,
+    publication_replay_loop,
+    volume_deletion_replay_loop, refresh_ongoing_loop,
     _metadata_retry_loop, _backfill_metadata_loop, _stuck_state_cleanup_loop,
     backlog_search_loop, backlog_search,
     import_list_sync, rescan_loop,
@@ -432,6 +435,33 @@ from tasks import (  # noqa: F401
     cleanup_stuck_state,
     _BACKGROUND_TASKS, create_background_task, _cancel_background_tasks,
 )
+from import_workers import (  # noqa: F401
+    _IMPORT_WORKERS,
+    cancel_import_workers,
+    schedule_import_worker,
+    start_import_worker_scheduling,
+    stop_import_worker_scheduling,
+)
+from import_publication import drain_active_import_publications  # noqa: F401
+from import_pack_cleanup import recover_pack_cleanup_state  # noqa: F401
+from volume_file_deletion import (  # noqa: F401
+    drain_active_volume_file_deletions,
+)
+
+
+@asynccontextmanager
+async def _import_worker_lifecycle() -> AsyncGenerator[None, None]:
+    """Own import-worker admission and ordered producer/worker shutdown."""
+    start_import_worker_scheduling()
+    try:
+        yield
+    finally:
+        stop_import_worker_scheduling()
+        try:
+            await _cancel_background_tasks()
+        finally:
+            await cancel_import_workers()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -461,6 +491,10 @@ async def lifespan(app: FastAPI):
             "secret cipher unavailable at startup: %s — encryption-at-rest disabled", _e,
         )
     load_config()
+    # init_db() must run before DB-backed configuration can be loaded on a
+    # fresh install. Re-run the idempotent bootstrap now that environment and
+    # settings values are available so save_path can seed the first root.
+    _bootstrap_root_folders()
     # Defense in depth: if api_key is still blank after init_db + load_config
     # (DB row nulled, partial migration, etc.), generate one now. The
     # middleware fails closed on blank api_key, so the alternative is the
@@ -487,9 +521,70 @@ async def lifespan(app: FastAPI):
     # other flows that read settings post-migration get the plaintext
     # round-tripped through Fernet — same value, just paranoid consistency.
     load_config()
+    # Recover a bounded page of expired generated-pack reservations and
+    # tombstones before any import producer starts. Filesystem work runs off
+    # the event loop and the recovery helper closes each short DB transaction
+    # before touching disk. The runtime loop drains additional pages.
+    _pack_recovery = await asyncio.to_thread(
+        recover_pack_cleanup_state,
+        max_rows=100,
+    )
+    if (
+        _pack_recovery.reservations_recovered
+        or _pack_recovery.tombstones_removed
+        or _pack_recovery.tombstones_retained
+    ):
+        log_event(
+            "pack_cleanup_replay",
+            "startup import-pack recovery: "
+            f"{_pack_recovery.reservations_recovered} reservation(s) recovered, "
+            f"{_pack_recovery.tombstones_removed} tombstone(s) removed, "
+            f"{_pack_recovery.tombstones_retained} tombstone(s) retained",
+        )
+    # Deletion reservations already reset their volume rows and fence import
+    # admission. Replay them before publication recovery or any producer can
+    # attempt work for the same series.
+    _deletion_replay = await drain_active_volume_file_deletions(page_size=100)
+    if _deletion_replay.examined:
+        log_event(
+            "delete_replay",
+            "startup volume deletion replay: "
+            f"{_deletion_replay.completed} completed, "
+            f"{_deletion_replay.blocked} blocked",
+        )
+    # Durable publication replay is recovery authority after the prepared
+    # barrier. Drain active journals in bounded pages before lease recovery,
+    # download-client bootstrap, worker admission, or any producer can
+    # observe/import the same queue. Terminal pack/outbox work belongs to the
+    # cancellable runtime loop below.
+    _publication_replay = await drain_active_import_publications(page_size=100)
+    if _publication_replay.examined:
+        log_event(
+            "import_replay",
+            "startup import publication replay: "
+            f"{_publication_replay.completed} completed, "
+            f"{_publication_replay.aborted_staging} reversible staging aborted, "
+            f"{_publication_replay.deferred} deferred, "
+            f"{_publication_replay.blocked} blocked",
+        )
     # Initialize import concurrency semaphore (max_concurrent_imports setting)
     from import_pipeline import initialize_import_semaphore
     initialize_import_semaphore()
+    # Recover only expired (or legacy unleased) importing rows before the
+    # startup retry snapshot. Live leases remain importing and are never retried.
+    from import_lease import recover_expired_import_leases
+    with get_db() as _lease_db:
+        _recovered_import_leases = recover_expired_import_leases(
+            _lease_db,
+            max_rows=500,
+        )
+        if _recovered_import_leases:
+            log_event(
+                "stuck_cleanup",
+                f"recovered {_recovered_import_leases} expired/legacy "
+                "import lease(s) during startup",
+                db=_lease_db,
+            )
     backfill_pack_ranges()
     # Create qBit manga category on startup
     try:
@@ -535,60 +630,66 @@ async def lifespan(app: FastAPI):
     # stored reference — see create_background_task() docstring.
     # Event-loop lag watchdog — no-op unless MANGARR_DEBUG_TIMING=1.
     # Helps diagnose issue #31 follow-up A stalls during investigation.
-    from shared import event_loop_lag_monitor as _event_loop_lag
-    create_background_task(_event_loop_lag(),                  name="event_loop_lag_monitor")
+    # All producer registration and the fallible reconciliation that follows
+    # are protected by ordered producer/worker cleanup.
+    async with _import_worker_lifecycle():
+        from shared import event_loop_lag_monitor as _event_loop_lag
+        create_background_task(_event_loop_lag(),                  name="event_loop_lag_monitor")
 
-    create_background_task(rss_loop(),                         name="rss_loop")
-    create_background_task(status_loop(),                      name="status_loop")
-    create_background_task(refresh_ongoing_loop(),             name="refresh_ongoing_loop")
-    create_background_task(_metadata_retry_loop(),             name="metadata_retry_loop")
-    create_background_task(_backfill_metadata_loop(),          name="backfill_metadata_loop")
-    create_background_task(backlog_search_loop(),              name="backlog_search_loop")
-    create_background_task(_stuck_state_cleanup_loop(),        name="stuck_state_cleanup_loop")
-    create_background_task(_swy_router.suwayomi_monitor_loop(), name="suwayomi_monitor_loop")
-    create_background_task(rescan_loop(),                      name="rescan_loop")
-    create_background_task(_import_list_loop(),                name="import_list_loop")
-    create_background_task(_backup_loop(),                     name="backup_loop")
-    create_background_task(_recycle_bin_reaper_loop(),         name="recycle_bin_reaper")
-    # Poll qBit/SAB in the background so /queue renders from cached
-    # snapshots instead of making live HTTP calls on every pageview.
-    from status_cache import download_status_refresh_loop as _dl_status_loop
-    create_background_task(_dl_status_loop(),                  name="download_status_refresh_loop")
-    # Re-process any import_queue entries that were left 'pending' from a previous
-    # run (e.g. app restarted mid-import). Only retry entries with no needs_review files.
-    with get_db() as _db:
-        _stuck = _db.execute(
-            "SELECT iq.id FROM import_queue iq"
-            " WHERE iq.status='pending'"
-            " AND NOT EXISTS ("
-            "   SELECT 1 FROM import_queue_files f"
-            "   WHERE f.queue_id=iq.id AND f.status='needs_review'"
-            ")"
-        ).fetchall()
-        _stuck_ids = [r[0] for r in _stuck]
-        # Reset grabbed volumes with no download_id that somehow persisted through shutdown
-        _db.execute(
-            "UPDATE volumes SET status='wanted', grabbed_at=NULL, source_url=NULL,"
-            " download_id=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
-            " client=NULL, release_group=NULL, imported_at=NULL"
-            " WHERE status='grabbed' AND download_id IS NULL AND volume_num IS NOT NULL"
-            " AND (client IS NULL OR client != 'suwayomi')"
-        )
-        _db.execute(
-            "DELETE FROM volumes WHERE status='grabbed' AND download_id IS NULL AND volume_num IS NULL"
-        )
-    # Defer stuck-import retries until after startup completes to avoid blocking
-    # the event loop (since _execute_import is fully synchronous).
-    async def _retry_stuck():
-        await asyncio.sleep(5)
-        for _qid in _stuck_ids:
-            await _process_auto_import(_qid)
-    if _stuck_ids:
-        create_background_task(_retry_stuck(), name="retry_stuck_imports")
-    yield
-    # Cancel every registered background task and wait for graceful exit.
-    # Done-callbacks log unexpected exceptions; cancellations are silent.
-    await _cancel_background_tasks()
+        create_background_task(rss_loop(),                         name="rss_loop")
+        create_background_task(status_loop(),                      name="status_loop")
+        create_background_task(pack_cleanup_recovery_loop(),       name="pack_cleanup_recovery_loop")
+        create_background_task(publication_replay_loop(),          name="publication_replay_loop")
+        create_background_task(volume_deletion_replay_loop(),      name="volume_deletion_replay_loop")
+        create_background_task(refresh_ongoing_loop(),             name="refresh_ongoing_loop")
+        create_background_task(_metadata_retry_loop(),             name="metadata_retry_loop")
+        create_background_task(_backfill_metadata_loop(),          name="backfill_metadata_loop")
+        create_background_task(backlog_search_loop(),              name="backlog_search_loop")
+        create_background_task(_stuck_state_cleanup_loop(),        name="stuck_state_cleanup_loop")
+        create_background_task(_swy_router.suwayomi_monitor_loop(), name="suwayomi_monitor_loop")
+        create_background_task(rescan_loop(),                      name="rescan_loop")
+        create_background_task(_import_list_loop(),                name="import_list_loop")
+        create_background_task(_backup_loop(),                     name="backup_loop")
+        create_background_task(_recycle_bin_reaper_loop(),         name="recycle_bin_reaper")
+        # Poll qBit/SAB in the background so /queue renders from cached
+        # snapshots instead of making live HTTP calls on every pageview.
+        from status_cache import download_status_refresh_loop as _dl_status_loop
+        create_background_task(_dl_status_loop(),                  name="download_status_refresh_loop")
+        # Re-process safe unleased retry rows, including rows recovered above.
+        # Live importing leases are excluded by both status and owner.
+        with get_db() as _db:
+            _stuck = _db.execute(
+                "SELECT iq.id FROM import_queue iq"
+                " WHERE iq.status IN ('pending','partial')"
+                " AND iq.lease_owner IS NULL"
+                " AND NOT EXISTS ("
+                "   SELECT 1 FROM import_queue_files f"
+                "   WHERE f.queue_id=iq.id AND f.status='needs_review'"
+                ")"
+            ).fetchall()
+            _stuck_ids = [r[0] for r in _stuck]
+            # Reset grabbed volumes with no download_id that somehow persisted through shutdown
+            _db.execute(
+                "UPDATE volumes SET status='wanted', grabbed_at=NULL, source_url=NULL,"
+                " download_id=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
+                " client=NULL, release_group=NULL, imported_at=NULL"
+                " WHERE status='grabbed' AND download_id IS NULL AND volume_num IS NOT NULL"
+                " AND (client IS NULL OR client != 'suwayomi')"
+            )
+            _db.execute(
+                "DELETE FROM volumes WHERE status='grabbed' AND download_id IS NULL AND volume_num IS NULL"
+            )
+
+        # Defer stuck-import retries until after startup completes to avoid
+        # blocking the event loop (since _execute_import is synchronous).
+        async def _retry_stuck() -> None:
+            await asyncio.sleep(5)
+            for _qid in _stuck_ids:
+                _ = schedule_import_worker(_qid)
+
+        if _stuck_ids:
+            create_background_task(_retry_stuck(), name="retry_stuck_imports")
+        yield
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 # ── Helpers moved to helpers.py ─────────────────────────────────────────────

@@ -38,7 +38,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import time as _time
+from typing import Any
 
 from shared import get_db
 
@@ -114,20 +116,33 @@ def log_event(event_type: str, message: str, series_id: int | None = None,
         pass
 
 
-def add_history(db, event_type: str, series_id: int | None, series_title: str,
-                volume_label: str, source_title: str = '',
-                indexer: str = '', protocol: str = '', client: str = '',
-                download_id: str = '', size_bytes: int = 0,
-                release_group: str = '', data: dict | None = None,
-                torrent_url: str = ''):
+def add_history(
+    db: sqlite3.Connection,
+    event_type: str,
+    series_id: int | None,
+    series_title: str,
+    volume_label: str,
+    source_title: str = "",
+    indexer: str = "",
+    protocol: str = "",
+    client: str = "",
+    download_id: str = "",
+    size_bytes: int = 0,
+    release_group: str = "",
+    data: dict[str, Any] | None = None,
+    torrent_url: str = "",
+    download_client_id: int | None = None,
+) -> None:
     """Insert a history record."""
     db.execute(
         "INSERT INTO history(event_type, series_id, series_title, volume_label,"
-        " source_title, indexer, protocol, client, download_id, size_bytes, release_group, data, torrent_url)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " source_title, indexer, protocol, client, download_id,"
+        " download_client_id, size_bytes, release_group, data, torrent_url)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (event_type, series_id, series_title, volume_label, source_title,
-         indexer, protocol, client, download_id, size_bytes or 0, release_group,
-         json.dumps(data) if data else None, torrent_url or None)
+         indexer, protocol, client, download_id, download_client_id,
+         size_bytes or 0, release_group, json.dumps(data) if data else None,
+         torrent_url or None)
     )
 
 

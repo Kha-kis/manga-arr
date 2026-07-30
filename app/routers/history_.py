@@ -1,24 +1,115 @@
 """History, activity, and logs pages."""
 import csv
 import io
+import sqlite3
+from typing import Literal, TypedDict
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
+from download_identity import (
+    DownloadIdentity,
+    coerce_download_client_id,
+    download_identities_match,
+    normalize_download_protocol,
+    resolve_download_protocol,
+)
 from routers._templates import templates
-from shared import cascade_chapters, get_db
+from shared import cascade_chapters, get_db, with_flash
 
 router = APIRouter()
 
 
-def mark_history_failed(hist_id: int) -> dict:
+class MarkHistoryFailedResult(TypedDict):
+    ok: bool
+    status: Literal["not_found", "not_grabbed", "in_progress", "marked_failed"]
+
+
+def _history_download_identity(
+    db: sqlite3.Connection,
+    row: sqlite3.Row,
+) -> DownloadIdentity | None:
+    download_id = str(row["download_id"] or "")
+    if not download_id:
+        return None
+    owner_id = coerce_download_client_id(
+        row["download_client_id"] if "download_client_id" in row.keys() else None
+    )
+    protocol = normalize_download_protocol(
+        row["protocol"] if "protocol" in row.keys() else None
+    ) or resolve_download_protocol(
+        db,
+        download_client_id=owner_id,
+        series_id=row["series_id"] if "series_id" in row.keys() else None,
+        download_id=download_id,
+        source_url=(
+            str(row["torrent_url"] or "")
+            if "torrent_url" in row.keys()
+            else ""
+        ),
+        allow_client_configuration=False,
+    )
+    return DownloadIdentity(owner_id, protocol, download_id)
+
+
+def _same_owned_download(
+    db: sqlite3.Connection,
+    row: sqlite3.Row,
+    target: DownloadIdentity,
+) -> bool:
+    candidate = _history_download_identity(db, row)
+    return bool(
+        candidate is not None
+        and candidate.download_client_id == target.download_client_id
+        and download_identities_match(candidate, target)
+    )
+
+
+def mark_history_failed(hist_id: int) -> MarkHistoryFailedResult:
     """Mark a grabbed history entry failed and blocklist its release."""
     with get_db() as db:
+        # Reserve SQLite's sole writer before checking journal ownership. A
+        # publication claim and this destructive reset cannot both pass their
+        # eligibility checks on separate connections.
+        db.execute("BEGIN IMMEDIATE")
         h = db.execute("SELECT * FROM history WHERE id=?", (hist_id,)).fetchone()
         if not h:
             return {"ok": False, "status": "not_found"}
         if h['event_type'] != 'grabbed':
             return {"ok": False, "status": "not_grabbed"}
+        history_identity = _history_download_identity(db, h)
+        if history_identity is not None:
+            active_imports = db.execute(
+                """
+                SELECT iq.*
+                FROM import_queue AS iq
+                WHERE iq.series_id=?
+                  AND iq.download_id IS NOT NULL
+                  AND lower(iq.download_id)=lower(?)
+                  AND (
+                      iq.status='importing'
+                      OR iq.lease_owner IS NOT NULL
+                      OR EXISTS (
+                          SELECT 1
+                          FROM import_publications AS publication
+                          WHERE publication.queue_id=iq.id
+                            AND publication.state IN (
+                                'staging','prepared','publishing','published',
+                                'db_committed','cleaning'
+                            )
+                      )
+                  )
+                """,
+                (h["series_id"], h["download_id"]),
+            ).fetchall()
+            if any(
+                (
+                    candidate := _history_download_identity(db, active)
+                ) is not None
+                and download_identities_match(history_identity, candidate)
+                for active in active_imports
+            ):
+                return {"ok": False, "status": "in_progress"}
 
         bl_url = (h['torrent_url'] if 'torrent_url' in h.keys() and h['torrent_url']
                   else h['download_id'] or h['source_title'] or '')
@@ -31,31 +122,49 @@ def mark_history_failed(hist_id: int) -> dict:
              h['indexer'], h['protocol'], h['size_bytes'])
         )
         db.execute("UPDATE history SET event_type='grab_failed' WHERE id=?", (hist_id,))
-        if h['download_id']:
-            grabbed = db.execute(
-                "SELECT id FROM volumes WHERE series_id=? AND download_id=?"
-                " AND status='grabbed' AND volume_num IS NOT NULL",
-                (h['series_id'], h['download_id'])
-            ).fetchall()
+        if history_identity is not None:
+            grabbed = [
+                row
+                for row in db.execute(
+                    "SELECT * FROM volumes WHERE series_id=?"
+                    " AND download_id IS NOT NULL"
+                    " AND lower(download_id)=lower(?) AND status='grabbed'",
+                    (h["series_id"], h["download_id"]),
+                ).fetchall()
+                if _same_owned_download(db, row, history_identity)
+            ]
             vol_ids = [r['id'] for r in grabbed]
-            db.execute(
-                "DELETE FROM volumes WHERE series_id=? AND download_id=?"
-                " AND status='grabbed' AND volume_num IS NULL",
-                (h['series_id'], h['download_id'])
+            db.executemany(
+                "DELETE FROM volumes WHERE id=? AND status='grabbed'"
+                " AND volume_num IS NULL",
+                ((row["id"],) for row in grabbed if row["volume_num"] is None),
             )
-            db.execute(
+            db.executemany(
                 "UPDATE volumes SET status='wanted', download_id=NULL, grabbed_at=NULL,"
                 " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
-                " client=NULL, release_group=NULL "
-                "WHERE series_id=? AND download_id=? AND status='grabbed'",
-                (h['series_id'], h['download_id'])
+                " client=NULL, download_client_id=NULL, release_group=NULL "
+                "WHERE id=? AND status='grabbed'",
+                ((row["id"],) for row in grabbed if row["volume_num"] is not None),
             )
             if vol_ids:
                 cascade_chapters(db, h['series_id'], vol_ids, 'wanted',
                                  grabbed_at=None, torrent_name=None, torrent_url=None,
                                  indexer=None, protocol=None, client=None,
-                                 download_id=None, release_group=None)
-            db.execute("DELETE FROM seen WHERE download_id=?", (h['download_id'],))
+                                 download_client_id=None, download_id=None,
+                                 release_group=None)
+            seen_rows = [
+                row
+                for row in db.execute(
+                    "SELECT * FROM seen WHERE download_id IS NOT NULL"
+                    " AND lower(download_id)=lower(?)",
+                    (h["download_id"],),
+                ).fetchall()
+                if _same_owned_download(db, row, history_identity)
+            ]
+            db.executemany(
+                "DELETE FROM seen WHERE torrent_url=?",
+                ((row["torrent_url"],) for row in seen_rows),
+            )
 
     return {"ok": True, "status": "marked_failed"}
 
@@ -161,14 +270,33 @@ async def history_page(
 @router.post("/history/{hist_id}/mark-failed")
 async def history_mark_failed(request: Request, hist_id: int):
     """Mark a grabbed entry as failed and add to blocklist."""
-    mark_history_failed(hist_id)
+    result = mark_history_failed(hist_id)
+    if result["ok"]:
+        message = "Marked failed and added to blocklist"
+        toast_type = "success"
+    elif result["status"] == "in_progress":
+        message = (
+            "Import is in progress; wait for it to finish before marking "
+            "this release failed"
+        )
+        toast_type = "warning"
+    elif result["status"] == "not_found":
+        message = "History entry no longer exists"
+        toast_type = "warning"
+    else:
+        message = "History entry is not eligible to be marked failed"
+        toast_type = "warning"
+
     if request.headers.get("HX-Request") == "true":
         import json
         from fastapi.responses import Response as _Resp
         return _Resp(headers={"HX-Trigger": json.dumps({
-            "showToast": {"msg": "Marked failed and added to blocklist", "type": "success"}
+            "showToast": {"msg": message, "type": toast_type}
         }), "HX-Refresh": "true"})
-    return RedirectResponse("/history", status_code=303)
+    return RedirectResponse(
+        with_flash("/history", message, toast_type),
+        status_code=303,
+    )
 
 
 @router.post("/history/{hist_id}/delete")

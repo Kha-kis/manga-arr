@@ -146,24 +146,14 @@ def test_cleanup_stuck_state_uses_separate_transactions_per_phase(env):
 
 
 def test_orphan_cleanup_helper_per_row_transactions_still_correct(env):
-    """Regression guard for the _qbit_orphan_cleanup_sync split: the
-    output semantics are unchanged even though the transaction boundary
-    is now per-orphan. Test the split by seeding pre-conditions and
-    checking post-cleanup state."""
-    # The orphan cleanup is defined inside _check_download_status_impl
-    # as a nested function, so we can't call it directly. Instead, we
-    # verify the outer helpers it relies on (_cascade_chapters,
-    # log_event, add_history) accept db= and act on the current
-    # transaction — which is the contract the per-orphan split relies
-    # on.
-    import main
+    """qBit orphan enumeration closes before each per-orphan writer."""
     import inspect
 
-    # _qbit_orphan_cleanup_sync should no longer wrap everything in a
-    # single `with get_db()` block — verify by checking the source shape.
-    src = inspect.getsource(main._check_download_status_impl)
-    # Phase A (quick), Phase B (enumerate), Phase C (per-orphan) comments
-    # were added as landmarks.
-    assert 'Phase A' in src, 'orphan-cleanup Phase A landmark missing'
-    assert 'Phase B' in src, 'orphan-cleanup Phase B landmark missing'
-    assert 'Phase C' in src, 'orphan-cleanup Phase C landmark missing'
+    import import_discovery
+
+    src = inspect.getsource(import_discovery._poll_qbit_partition)
+    enumerate_writer = src.index("orphaned = [")
+    orphan_loop = src.index("for orphan in orphaned:")
+    per_orphan_writer = src.index("with get_db() as db:", orphan_loop)
+
+    assert enumerate_writer < orphan_loop < per_orphan_writer
