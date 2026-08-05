@@ -37,7 +37,7 @@ The release workflow publishes `ghcr.io/kha-kis/manga-arr` with these tags:
 
 | Release | Image tags |
 | --- | --- |
-| `1.2.0-rc.8` | `1.2.0-rc.8` |
+| `1.2.0-rc.9` | `1.2.0-rc.9` |
 | `1.2.0-rc.7` | `1.2.0-rc.7` |
 | `1.2.0-rc.6` | `1.2.0-rc.6` |
 | `1.2.0-rc.5` | `1.2.0-rc.5` |
@@ -118,7 +118,7 @@ If hosted Actions cannot run, an authenticated maintainer can use the local
 fallback after the full gate passes:
 
 ```bash
-make release-push CONFIRM_RELEASE=1.2.0-rc.8
+make release-push CONFIRM_RELEASE=1.2.0-rc.9
 ```
 
 The confirmation must exactly match `app/VERSION`. The Docker client must

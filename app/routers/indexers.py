@@ -23,6 +23,17 @@ from security import (
 router = APIRouter()
 
 
+def _normalize_indexer_protocol(value: object) -> Literal["torrent", "nzb"]:
+    """Normalize Prowlarr/Newznab protocol labels to Mangarr's values."""
+    normalized = str(value or "").strip().lower()
+    return "nzb" if normalized in {"usenet", "nzb"} else "torrent"
+
+
+def _indexer_type_for_protocol(value: object) -> Literal["torznab", "newznab"]:
+    """Return the indexer implementation matching a live protocol label."""
+    return "newznab" if _normalize_indexer_protocol(value) == "nzb" else "torznab"
+
+
 # ── Per-indexer backoff ──────────────────────────────────────────────────────
 # When an indexer rate-limits (429), forbids (403), or returns 5xx, retrying
 # at full speed on the next RSS/search cycle risks IP bans, especially on
@@ -759,7 +770,8 @@ async def prowlarr_sync_preview(request: Request, indexer_id: int):
 
     Flow: user clicks 'Sync indexers' on a Prowlarr row → this endpoint fetches
     the live sub-list with already-imported state marked → user picks which
-    ones to import → POST /indexers/{id}/sync-prowlarr commits as torznab rows."""
+    ones to import → POST /indexers/{id}/sync-prowlarr commits protocol-specific
+    rows."""
     with get_db() as db:
         idx = db.execute("SELECT * FROM indexers WHERE id=?", (indexer_id,)).fetchone()
         if not idx or idx["type"] != "prowlarr":
@@ -819,10 +831,10 @@ async def prowlarr_sync_preview(request: Request, indexer_id: int):
 
 @router.post("/indexers/{indexer_id}/sync-prowlarr")
 async def prowlarr_sync_commit(request: Request, indexer_id: int):
-    """Commit selected Prowlarr sub-indexers as new torznab rows.
+    """Commit selected Prowlarr sub-indexers as protocol-specific rows.
 
-    Each imported sub becomes a `type='torznab'` indexer with:
-      - url:  <prowlarr-base>/<sub-id>            (Prowlarr's per-indexer torznab façade)
+    Each imported sub becomes a `type='torznab'` or `type='newznab'` indexer with:
+      - url:  <prowlarr-base>/<sub-id>            (Prowlarr's per-indexer API façade)
       - api_key: copied from the parent Prowlarr row
       - categories: the sub's manga-relevant capability subset
       - parent_prowlarr_id: this Prowlarr row's id (for grouping in UI + dedup)
@@ -878,12 +890,20 @@ async def prowlarr_sync_commit(request: Request, indexer_id: int):
                 (indexer_id, sub_id),
             ).fetchone()
             if existing:
+                # Prowlarr can change a child's protocol after import. Correct
+                # only the implementation type; enabled state, priority,
+                # categories, client selection, and other user settings remain
+                # independently managed in Mangarr.
+                db.execute(
+                    "UPDATE indexers SET type=? WHERE id=?",
+                    (_indexer_type_for_protocol(sub.get("protocol")), existing["id"]),
+                )
                 skipped += 1
                 continue
 
-            # Per-sub URL is <parent>/<sub-id>; the existing torznab fetcher
+            # Per-sub URL is <parent>/<sub-id>; the existing newznab/torznab fetcher
             # appends "/api" so the final call is <parent>/<sub-id>/api which
-            # is Prowlarr's per-indexer torznab façade.
+            # is Prowlarr's per-indexer API façade.
             sub_url = f"{parent_url}/{sub_id}"
             # Filter sub categories to manga overlap (parent_cats); fall back
             # to parent_cats if the sub didn't declare capabilities.
@@ -894,14 +914,16 @@ async def prowlarr_sync_commit(request: Request, indexer_id: int):
             # Honor Prowlarr's per-indexer priority — admin tuned it for
             # a reason. _list_prowlarr_subs_for_ui already clamped to [1,50].
             sub_priority = sub.get("priority") or 25
+            sub_type = _indexer_type_for_protocol(sub.get("protocol"))
 
             db.execute(
                 "INSERT INTO indexers"
                 "(name, type, url, api_key, priority, enabled, categories,"
                 " min_seeders, seed_ratio, parent_prowlarr_id, prowlarr_indexer_id)"
-                " VALUES(?, 'torznab', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     sub["name"],
+                    sub_type,
                     sub_url,
                     parent_key,
                     sub_priority,
@@ -1310,10 +1332,11 @@ def _parse_torznab_rss(
     from defusedxml.ElementTree import fromstring as _safe_fromstring
 
     items: list[dict[str, Any]] = []
-    ns = {
-        "torznab": "http://torznab.com/api/2015/feed",
-        "newznab": "http://www.newznab.com/DTD/2010/feeds/attributes/",
-    }
+    attribute_namespaces = (
+        "http://torznab.com/api/2015/feed",
+        "http://torznab.com/schemas/2015/feed",
+        "http://www.newznab.com/DTD/2010/feeds/attributes/",
+    )
     try:
         root = _safe_fromstring(xml_text)
     except DefusedXmlException:
@@ -1322,7 +1345,7 @@ def _parse_torznab_rss(
         return items
 
     def _attr(item, name):
-        for ns_url in ns.values():
+        for ns_url in attribute_namespaces:
             el = item.find(f'{{{ns_url}}}attr[@name="{name}"]')
             if el is not None:
                 return el.get("value", "")
@@ -1338,7 +1361,7 @@ def _parse_torznab_rss(
         if not dl_url:
             continue
         proto_raw = _attr(item, "downloadProtocol") or default_protocol
-        protocol = "nzb" if proto_raw.lower() == "usenet" else "torrent"
+        protocol = _normalize_indexer_protocol(proto_raw)
         size_raw = _attr(item, "size") or (
             enclosure.get("length", "0") if enclosure is not None else "0"
         )
@@ -1568,11 +1591,12 @@ async def _search_indexer(
     return []
 
 
-def _parse_prowlarr_response(data: list, indexer_name: str = "") -> list[dict]:
-    results = []
+def _parse_prowlarr_response(
+    data: list[dict[str, Any]], indexer_name: str = ""
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
     for item in data:
-        raw_proto = (item.get("protocol") or "torrent").lower()
-        protocol = "nzb" if raw_proto == "usenet" else "torrent"
+        protocol = _normalize_indexer_protocol(item.get("protocol"))
         dl_url = item.get("downloadUrl") or item.get("magnetUrl", "")
         if not dl_url:
             continue
