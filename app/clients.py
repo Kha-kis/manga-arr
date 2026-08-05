@@ -19,6 +19,7 @@ Pure move from main.py — no behaviour changes.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
 import time
@@ -139,17 +140,221 @@ def extract_magnet_hash(magnet: str) -> str | None:
     return m.group(1).lower() if m else None
 
 
+def _skip_bencoded_value(data: bytes, offset: int, depth: int = 0) -> int:
+    """Return the offset immediately after one bounded bencoded value."""
+    if depth > 100 or offset >= len(data):
+        raise ValueError("invalid bencoded value")
+
+    marker = data[offset]
+    if marker == ord("i"):
+        end = data.find(b"e", offset + 1)
+        if end < 0 or end == offset + 1:
+            raise ValueError("invalid bencoded integer")
+        encoded_integer = data[offset + 1 : end]
+        digits = (
+            encoded_integer[1:] if encoded_integer.startswith(b"-") else encoded_integer
+        )
+        if not digits or not all(ord("0") <= byte <= ord("9") for byte in digits):
+            raise ValueError("invalid bencoded integer")
+        if (len(digits) > 1 and digits.startswith(b"0")) or encoded_integer == b"-0":
+            raise ValueError("non-canonical bencoded integer")
+        return end + 1
+
+    if marker in {ord("l"), ord("d")}:
+        cursor = offset + 1
+        is_dict = marker == ord("d")
+        while cursor < len(data) and data[cursor] != ord("e"):
+            if is_dict:
+                cursor = _skip_bencoded_string(data, cursor)[1]
+            cursor = _skip_bencoded_value(data, cursor, depth + 1)
+        if cursor >= len(data):
+            raise ValueError("unterminated bencoded collection")
+        return cursor + 1
+
+    if ord("0") <= marker <= ord("9"):
+        return _skip_bencoded_string(data, offset)[1]
+
+    raise ValueError("invalid bencoded marker")
+
+
+def _skip_bencoded_string(data: bytes, offset: int) -> tuple[bytes, int]:
+    """Return a bencoded byte string and the following offset."""
+    colon = data.find(b":", offset)
+    if colon < 0:
+        raise ValueError("invalid bencoded string")
+    length_bytes = data[offset:colon]
+    if not length_bytes or not all(
+        ord("0") <= byte <= ord("9") for byte in length_bytes
+    ):
+        raise ValueError("invalid bencoded string length")
+    if len(length_bytes) > 1 and length_bytes.startswith(b"0"):
+        raise ValueError("non-canonical bencoded string length")
+    length = int(length_bytes)
+    value_start = colon + 1
+    value_end = value_start + length
+    if value_end > len(data):
+        raise ValueError("truncated bencoded string")
+    return data[value_start:value_end], value_end
+
+
+@dataclass(frozen=True, slots=True)
+class _TorrentInfoIdentity:
+    qbit_hash: str
+    lookup_hashes: tuple[str, ...]
+
+
+def _torrent_info_identity(torrent_bytes: bytes) -> _TorrentInfoIdentity | None:
+    """Derive qBittorrent-compatible IDs from the exact raw ``info`` value."""
+    try:
+        if not torrent_bytes or torrent_bytes[0] != ord("d"):
+            return None
+        cursor = 1
+        info_span: tuple[int, int] | None = None
+        previous_key: bytes | None = None
+        while cursor < len(torrent_bytes) and torrent_bytes[cursor] != ord("e"):
+            key, cursor = _skip_bencoded_string(torrent_bytes, cursor)
+            if previous_key is not None and key <= previous_key:
+                return None
+            previous_key = key
+            value_start = cursor
+            cursor = _skip_bencoded_value(torrent_bytes, cursor, 1)
+            if key == b"info":
+                if info_span is not None or torrent_bytes[value_start] != ord("d"):
+                    return None
+                info_span = (value_start, cursor)
+        if cursor >= len(torrent_bytes) or cursor + 1 != len(torrent_bytes):
+            return None
+        if info_span is None:
+            return None
+        start, end = info_span
+
+        info_cursor = start + 1
+        info_keys: set[bytes] = set()
+        meta_version: int | None = None
+        previous_info_key: bytes | None = None
+        while info_cursor < end - 1:
+            key, info_cursor = _skip_bencoded_string(torrent_bytes, info_cursor)
+            if previous_info_key is not None and key <= previous_info_key:
+                return None
+            previous_info_key = key
+            info_keys.add(key)
+
+            value_start = info_cursor
+            info_cursor = _skip_bencoded_value(torrent_bytes, info_cursor, 2)
+            if key == b"meta version":
+                if torrent_bytes[value_start] != ord("i"):
+                    return None
+                meta_version = int(torrent_bytes[value_start + 1 : info_cursor - 1])
+
+        if info_cursor != end - 1:
+            return None
+
+        raw_info = torrent_bytes[start:end]
+        v1_hash = hashlib.sha1(raw_info, usedforsecurity=False).hexdigest()
+        if meta_version is None:
+            return _TorrentInfoIdentity(v1_hash, (v1_hash,))
+        if meta_version != 2 or b"file tree" not in info_keys:
+            return None
+
+        # qBittorrent's TorrentID is 160 bits. libtorrent's get_best() uses a
+        # truncated v2 hash when present, including for hybrid torrents.
+        v2_hash = hashlib.sha256(raw_info, usedforsecurity=False).digest()[:20].hex()
+        lookup_hashes = (v2_hash, v1_hash) if b"pieces" in info_keys else (v2_hash,)
+        return _TorrentInfoIdentity(v2_hash, lookup_hashes)
+    except (ValueError, OverflowError):
+        return None
+
+
+def _torrent_info_hash(torrent_bytes: bytes) -> str | None:
+    """Return the 40-hex ID qBittorrent exposes through its Web API."""
+    identity = _torrent_info_identity(torrent_bytes)
+    return identity.qbit_hash if identity is not None else None
+
+
+async def _find_qbit_torrent_hash(
+    http_client: httpx.AsyncClient,
+    host: str,
+    category: str,
+    *,
+    expected_hashes: tuple[str, ...],
+    torrent_name: str | None,
+    add_failed: bool,
+) -> tuple[str | None, bool]:
+    """Poll qBit after an add and return ``(hash, lookup_was_healthy)``."""
+    normalized_name = normalize(torrent_name) if torrent_name else ""
+    add_time = time.time()
+    lookup_was_healthy = False
+
+    for sleep_s, use_category, limit in (
+        (1.5, True, 10),
+        (2.0, False, 30),
+    ):
+        await asyncio.sleep(sleep_s)
+        if expected_hashes:
+            params: dict[str, str | int | bool] = {"hashes": "|".join(expected_hashes)}
+        else:
+            params = {"filter": "all"}
+            if use_category or add_failed:
+                params["category"] = category
+            if not add_failed:
+                params.update({"sort": "added_on", "reverse": "true", "limit": limit})
+        try:
+            response = await http_client.get(
+                f"{host}/api/v2/torrents/info", params=params
+            )
+        except httpx.RequestError:
+            continue
+        if response.status_code != 200:
+            continue
+
+        lookup_was_healthy = True
+        payload = response.json()
+        if not isinstance(payload, list):
+            continue
+        torrents = [torrent for torrent in payload if isinstance(torrent, dict)]
+        if expected_hashes:
+            for torrent in torrents:
+                reported_hash = str(torrent.get("hash") or "").lower()
+                if reported_hash in expected_hashes:
+                    return reported_hash, True
+            continue
+
+        for torrent in torrents:
+            reported_name = normalize(str(torrent.get("name") or ""))
+            if normalized_name and (
+                normalized_name == reported_name
+                or normalized_name in reported_name
+                or reported_name in normalized_name
+            ):
+                reported_hash = str(torrent.get("hash") or "").lower()
+                if reported_hash:
+                    return reported_hash, True
+        if not normalized_name and not add_failed and torrents:
+            newest = torrents[0]
+            added_on = newest.get("added_on")
+            if (
+                isinstance(added_on, (int, float))
+                and not isinstance(added_on, bool)
+                and time.time() - added_on < add_time + sleep_s + 1
+            ):
+                reported_hash = str(newest.get("hash") or "").lower()
+                if reported_hash:
+                    return reported_hash, True
+
+    return None, lookup_was_healthy
+
+
 async def qbit_grab(
     torrent_url: str,
-    client: dict | None = None,
+    client: dict[str, Any] | None = None,
     save_path: str | None = None,
     torrent_name: str | None = None,
 ) -> tuple[bool, str | None, bool]:
     """Add to qBittorrent. Returns (success, torrent_hash_or_None, client_healthy).
 
-    ``client_healthy`` is True when auth + add succeeded, even if the hash
-    couldn't be matched afterwards. Used by the circuit breaker so we don't
-    trip it on routine matching failures (qBit was reachable the whole time).
+    ``client_healthy`` is True when auth + add succeeded, or when an ambiguous
+    add request was followed by a healthy qBit lookup. Used by the circuit
+    breaker so routine matching failures do not trip it.
     """
     _cfg = client or {}
     host = (_cfg.get("host") or "").rstrip("/")
@@ -174,6 +379,8 @@ async def qbit_grab(
             # the raw bytes to qBit. Avoids qBit trying to fetch Docker-internal
             # hostnames from its VPN namespace.
             add_files = None
+            magnet_hash = extract_magnet_hash(torrent_url)
+            expected_hashes: tuple[str, ...] = (magnet_hash,) if magnet_hash else ()
             add_data = {"category": cat}
             if save_path:
                 add_data["savepath"] = save_path
@@ -193,6 +400,8 @@ async def qbit_grab(
                 try:
                     tf = await hc.get(torrent_url, follow_redirects=True, timeout=15)
                     if tf.status_code == 200 and tf.content:
+                        identity = _torrent_info_identity(tf.content)
+                        expected_hashes = identity.lookup_hashes if identity else ()
                         add_files = {
                             "torrents": (
                                 "upload.torrent",
@@ -205,65 +414,62 @@ async def qbit_grab(
                 except Exception:
                     add_data["urls"] = torrent_url  # fallback
 
-            if add_files:
-                r2 = await hc.post(
-                    f"{host}/api/v2/torrents/add", data=add_data, files=add_files
-                )
+            add_response: httpx.Response | None = None
+            add_request_error: httpx.RequestError | None = None
+            try:
+                if add_files:
+                    add_response = await hc.post(
+                        f"{host}/api/v2/torrents/add", data=add_data, files=add_files
+                    )
+                else:
+                    add_response = await hc.post(
+                        f"{host}/api/v2/torrents/add", data=add_data
+                    )
+            except httpx.RequestError as exc:
+                # A response timeout or connection loss after writing the body
+                # is ambiguous: qBit may have accepted the torrent. Reconcile
+                # below instead of immediately reporting a hard failure.
+                add_request_error = exc
+
+            if add_request_error is None:
+                assert add_response is not None
+                if add_response.status_code != 200:
+                    return False, None, False
+                add_failed = add_response.text.strip() == "Fails."
             else:
-                r2 = await hc.post(f"{host}/api/v2/torrents/add", data=add_data)
+                add_failed = False
 
-            if r2.status_code != 200:
-                return False, None, False
-            add_failed = r2.text.strip() == "Fails."
+            dl_id = magnet_hash if torrent_url.startswith("magnet:") else None
 
-            dl_id = (
-                extract_magnet_hash(torrent_url)
-                if torrent_url.startswith("magnet:")
-                else None
-            )
-
-            if not dl_id:
-                norm_name = normalize(torrent_name) if torrent_name else ""
-                add_time = time.time()
-
-                for attempt, (sleep_s, use_cat, limit) in enumerate(
-                    [
-                        (1.5, True, 10),  # pass 1: fast, category-scoped
-                        (2.0, False, 30),  # pass 2: slower, all categories
-                    ]
-                ):
-                    await asyncio.sleep(sleep_s)
-                    params: dict = {"filter": "all"}
-                    if use_cat or add_failed:
-                        params["category"] = cat
-                    if not add_failed:
-                        params.update(
-                            {"sort": "added_on", "reverse": "true", "limit": limit}
-                        )
-                    r3 = await hc.get(f"{host}/api/v2/torrents/info", params=params)
-                    if r3.status_code == 200:
-                        for t in r3.json():
-                            t_norm = normalize(t.get("name", ""))
-                            if norm_name and (
-                                norm_name == t_norm
-                                or norm_name in t_norm
-                                or t_norm in norm_name
-                            ):
-                                dl_id = t.get("hash", "").lower() or None
-                                break
-                        if not dl_id and not norm_name and not add_failed and r3.json():
-                            newest = r3.json()[0]
-                            if (
-                                time.time() - newest.get("added_on", 0)
-                                < add_time + sleep_s + 1
-                            ):
-                                dl_id = newest.get("hash", "").lower() or None
-                    if dl_id:
-                        break
+            lookup_was_healthy = True
+            if not dl_id or add_request_error is not None:
+                dl_id, lookup_was_healthy = await _find_qbit_torrent_hash(
+                    hc,
+                    host,
+                    cat,
+                    expected_hashes=expected_hashes,
+                    torrent_name=torrent_name,
+                    # An ambiguous request must match by exact hash or name;
+                    # never claim an unrelated concurrently-added "newest" row.
+                    add_failed=add_failed or add_request_error is not None,
+                )
 
             if not dl_id:
-                log_event("error", f"[qBit] grab added but hash not found for: {torrent_name!r}")
-                return False, None, True
+                if add_request_error is not None:
+                    detail = (
+                        str(add_request_error).strip()
+                        or type(add_request_error).__name__
+                    )
+                    log_event(
+                        "error",
+                        f"[qBit] add request {detail}; no matching torrent found",
+                    )
+                else:
+                    log_event(
+                        "error",
+                        f"[qBit] grab added but hash not found for: {torrent_name!r}",
+                    )
+                return False, None, lookup_was_healthy
 
             if _state == "forced" and dl_id:
                 try:

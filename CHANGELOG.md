@@ -5,6 +5,37 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.2.0-rc.10 - 2026-08-05
+
+Tenth release candidate for the 1.2.0 import-review and metadata-provenance
+release. RC9 restored correct Prowlarr release metadata, but its controlled
+import showed that qBittorrent can accept and complete a torrent after Mangarr
+times out waiting for the add response, leaving the download untracked.
+
+### Fixed
+
+- Torrent-file handoffs derive the qBittorrent-compatible identity from the raw
+  bencoded `info` dictionary before upload, including v1, pure v2, and hybrid
+  torrents.
+- Ambiguous qBittorrent add timeouts reconcile against the exact info hash and
+  recover the download identity instead of reporting a completed torrent as a
+  failed grab.
+- Re-submitting an already-present torrent can recover its exact hash even when
+  qBittorrent returns `Fails.`, while authentication failures, explicit HTTP
+  errors, malformed torrent metadata, and unmatched timeouts still fail closed.
+- Empty qBittorrent timeout messages now include the exception type in the
+  structured event log.
+
+### Validation
+
+- The info hash derived from the controlled One Piece volume 106 torrent bytes
+  exactly matches the completed qBittorrent download identity.
+- 2,174 Python tests, 13 confirmation-flow checks, and 10 route-sweep checks
+  pass.
+- Isolated browser smoke, integration, E2E, and settings suites pass 32/32,
+  22/22, 29/29, and 12/12 respectively.
+- `make test-release-safe`, Ruff, and repository whitespace checks pass.
+
 ## 1.2.0-rc.9 - 2026-08-05
 
 Ninth release candidate for the 1.2.0 import-review and metadata-provenance

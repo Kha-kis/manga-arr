@@ -5,10 +5,10 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## Release Under Test
 
-- Release candidate: `1.2.0-rc.9`
+- Release candidate: `1.2.0-rc.10`
 - Stable target: `1.2.0`
 - Qualified base: `1.1.0`
-- Candidate image: `ghcr.io/kha-kis/manga-arr:1.2.0-rc.9`
+- Candidate image: `ghcr.io/kha-kis/manga-arr:1.2.0-rc.10`
 - Platforms: `linux/amd64`, `linux/arm64`
 
 ## Production Evidence
@@ -56,7 +56,12 @@ can become a stable release. Passing unit tests alone is not sufficient.
   Prowlarr Torznab attributes were not parsed, Usenet defaults were classified
   as torrents, and manual grabs dropped seeder metadata before enforcing the
   configured minimum.
-- The `1.2.0-rc.9` candidate must complete a fresh operational soak with daily
+- The `1.2.0-rc.9` candidate started cleanly and restored current Prowlarr
+  release metadata, but its controlled import exposed an ambiguous
+  qBittorrent handoff. qBittorrent accepted and completed the torrent while
+  Mangarr timed out waiting for the add response, reported failure, and left
+  the download untracked. The candidate was rejected.
+- The `1.2.0-rc.10` candidate must complete a fresh operational soak with daily
   health, restart, log, integrity, import-path, and backlog-search evidence.
   Recurring configuration errors, inaccessible completed downloads, unrelated
   automatic grabs, malformed volume numbers, or download-client
@@ -90,7 +95,7 @@ reconciliation, and metadata-health rendering.
 
 | Area | Acceptance evidence |
 | --- | --- |
-| qBittorrent | Authentication/version probe, magnet and torrent handoff, missing-hash behavior, save-path routing, timeout, and circuit breaker |
+| qBittorrent | Authentication/version probe, magnet and torrent handoff, exact info-hash recovery after ambiguous add timeouts, missing-hash behavior, save-path routing, timeout, and circuit breaker |
 | SABnzbd | API-key-aware connection test, authenticated queue probe, accepted and rejected NZB handoff, transport failure, timeout, circuit recovery, and queue mapping |
 | Suwayomi | GraphQL connection probe, source/title confidence, chapter and volume jobs, retry exhaustion and recovery, filesystem import, and idempotency |
 | Shared import | Search-to-library E2E, short SQLite claims, bounded concurrency, cancellation, atomic copy/move/hardlink staging, rollback, duplicate quality handling, ranges, packs, specials, and split RAR |
@@ -130,7 +135,7 @@ operational soak before stable promotion. Qualification evidence includes:
   transitions during the production soak;
 - public support, security, contribution, and conduct policies;
 - a protected default branch and immutable annotated release tags;
-- candidate publication verification that `1.2.0-rc.9` resolves to the tested
+- candidate publication verification that `1.2.0-rc.10` resolves to the tested
   multi-platform image digest without moving stable aliases;
 - stable publication verification that `1.2.0`, `1.2`, `1`, and `latest`
   resolve to the same stable image digest.
