@@ -25,6 +25,8 @@ survive the interactive search-to-grab handoff correctly.
 - Interactive manual grabs preserve seeders, release GUIDs, and valid preferred
   client identities through the search-to-grab handoff, so minimum-seeder and
   deduplication policies evaluate the selected release accurately.
+- `cryptography` is updated to 50.0.0 to resolve three certificate-validation
+  and PKCS#7 vulnerabilities reported against 48.0.1.
 
 ### Validation
 
