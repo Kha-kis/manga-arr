@@ -50,6 +50,32 @@ def test_torznab_rss_parser_extracts_guid():
     )
 
 
+def test_current_prowlarr_schema_namespace_and_nzb_default_are_supported():
+    """Current Prowlarr feeds use the schemas URI and may supply ``nzb``
+    directly as the protocol default."""
+    from routers.indexers import _parse_torznab_rss
+
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+    <rss xmlns:torznab="http://torznab.com/schemas/2015/feed">
+      <channel>
+        <item>
+          <title>Berserk Vol 42 [Digital]</title>
+          <link>http://prowlarr/dl/berserk-v42.nzb</link>
+          <guid isPermaLink="false">berserk-v42-nzb</guid>
+          <torznab:attr name="size" value="60000000"/>
+          <torznab:attr name="seeders" value="6"/>
+        </item>
+      </channel>
+    </rss>"""
+
+    items = _parse_torznab_rss(xml, indexer="Prowlarr", default_protocol="nzb")
+
+    assert len(items) == 1
+    assert items[0]["seeders"] == 6
+    assert items[0]["protocol"] == "nzb"
+    assert items[0]["guid"] == "berserk-v42-nzb"
+
+
 def test_torznab_rss_parser_falls_back_to_torznab_guid_attr():
     """Some indexers surface guid via torznab:attr name='guid' instead
     of the standard <guid> element."""

@@ -5,6 +5,37 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.2.0-rc.9 - 2026-08-05
+
+Ninth release candidate for the 1.2.0 import-review and metadata-provenance
+release. RC8 remained operationally healthy, but its first controlled real
+import was stopped before download when live Prowlarr release metadata did not
+survive the interactive search-to-grab handoff correctly.
+
+### Fixed
+
+- Torznab parsing accepts both the legacy API namespace and the schema
+  namespace emitted by current Prowlarr releases, restoring live seed counts
+  and other release attributes.
+- `usenet` and `nzb` protocol labels both route to SABnzbd instead of being
+  misclassified as torrents.
+- Prowlarr child synchronization creates protocol-correct `torznab` or
+  `newznab` rows and corrects stale child types on re-sync without replacing
+  user-managed settings.
+- Interactive manual grabs preserve seeders, release GUIDs, and valid preferred
+  client identities through the search-to-grab handoff, so minimum-seeder and
+  deduplication policies evaluate the selected release accurately.
+
+### Validation
+
+- The production Prowlarr response for an exact Nyaa release now parses as a
+  torrent with six seeders; a DrunkenSlug response parses as NZB/Usenet.
+- 2,161 Python tests, 13 confirmation-flow checks, and 10 route-sweep checks
+  pass.
+- Isolated browser smoke, integration, E2E, and settings suites pass 32/32,
+  22/22, 29/29, and 12/12 respectively.
+- `make test-release-safe`, Ruff, and repository whitespace checks pass.
+
 ## 1.2.0-rc.8 - 2026-07-30
 
 Eighth release candidate for the 1.2.0 import-review and metadata-provenance

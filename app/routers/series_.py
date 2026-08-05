@@ -3255,25 +3255,30 @@ async def search_volume_releases(series_id: int, volume_id: int):
             if not any(_m.matches(p, item["title"]) for p in all_match_patterns):
                 continue
             ev = _m.evaluate_release(item, series_id, _eval_db)
-            results.append(
-                {
-                    "title": item["title"],
-                    "url": item["url"],
-                    "size_bytes": item.get("size_bytes", 0),
-                    "size": _m.format_bytes(item.get("size_bytes", 0)),
-                    "seeders": item.get("seeders", 0),
-                    "indexer": item.get("indexer", ""),
-                    "protocol": item.get("protocol", ""),
-                    "score": ev["score"],
-                    "status": ev["status"],
-                    "rejections": ev["rejections"],
-                    "custom_format_matches": ev["custom_format_matches"],
-                    "quality": ev["quality"],
-                    "size_mb": ev["size_mb"],
-                    "seen": item["url"] in seen_urls,
-                    "blocked": item["url"] in blocked_urls,
-                }
+            result = {
+                "title": item["title"],
+                "url": item["url"],
+                "size_bytes": item.get("size_bytes", 0),
+                "size": _m.format_bytes(item.get("size_bytes", 0)),
+                "seeders": item.get("seeders", 0),
+                "guid": item.get("guid", ""),
+                "indexer": item.get("indexer", ""),
+                "protocol": item.get("protocol", ""),
+                "score": ev["score"],
+                "status": ev["status"],
+                "rejections": ev["rejections"],
+                "custom_format_matches": ev["custom_format_matches"],
+                "quality": ev["quality"],
+                "size_mb": ev["size_mb"],
+                "seen": item["url"] in seen_urls,
+                "blocked": item["url"] in blocked_urls,
+            }
+            preferred_client_id = coerce_download_client_id(
+                item.get("preferred_client_id")
             )
+            if preferred_client_id is not None:
+                result["preferred_client_id"] = preferred_client_id
+            results.append(result)
 
     _status_order = {"would_grab": 0, "low_score": 1, "rejected": 2}
     results.sort(key=lambda r: (_status_order.get(r["status"], 9), -r["score"]))
@@ -3317,21 +3322,60 @@ async def grab_volume_ddl(series_id: int, volume_id: int):
 async def grab_volume_release(series_id: int, volume_id: int, request: Request):
     import main as _m
 
-    data = await request.json()
-    url = data.get("url", "")
-    title = data.get("title", "")
-    indexer = data.get("indexer", "")
-    protocol = data.get("protocol", "torrent")
-    size = data.get("size_bytes", 0)
+    try:
+        data = await request.json()
+    except (UnicodeDecodeError, ValueError):
+        return JSONResponse(
+            {"ok": False, "message": "Invalid JSON payload"}, status_code=400
+        )
+    if not isinstance(data, dict):
+        return JSONResponse(
+            {"ok": False, "message": "JSON payload must be an object"},
+            status_code=400,
+        )
+
+    url = data.get("url") if isinstance(data.get("url"), str) else ""
+    title = data.get("title") if isinstance(data.get("title"), str) else ""
+    indexer = data.get("indexer") if isinstance(data.get("indexer"), str) else ""
+    protocol = normalize_download_protocol(data.get("protocol")) or "torrent"
+
+    def _non_negative_int(value: object) -> int:
+        if isinstance(value, bool):
+            return 0
+        if isinstance(value, int):
+            parsed = value
+        elif isinstance(value, float):
+            if not math.isfinite(value):
+                return 0
+            parsed = int(value)
+        elif isinstance(value, str):
+            try:
+                parsed = int(value)
+            except ValueError:
+                return 0
+        else:
+            return 0
+        return max(0, parsed)
+
+    size = _non_negative_int(data.get("size_bytes"))
+    seeders = _non_negative_int(data.get("seeders"))
+    guid = data.get("guid") if isinstance(data.get("guid"), str) else ""
     if not url:
-        return JSONResponse({"ok": False, "message": "No URL provided"})
+        return JSONResponse(
+            {"ok": False, "message": "No URL provided"}, status_code=400
+        )
     item = {
         "title": title,
         "url": url,
         "indexer": indexer,
         "protocol": protocol,
         "size_bytes": size,
+        "seeders": seeders,
+        "guid": guid,
     }
+    preferred_client_id = coerce_download_client_id(data.get("preferred_client_id"))
+    if preferred_client_id is not None:
+        item["preferred_client_id"] = preferred_client_id
     ok = await _m.grab_item(item, series_id, respect_monitoring=False)
     return JSONResponse(
         {"ok": ok, "message": "Grabbed" if ok else "Failed or already grabbed"}

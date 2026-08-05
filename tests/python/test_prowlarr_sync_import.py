@@ -2,11 +2,11 @@
 
 Two endpoints under test:
   GET  /indexers/{id}/sync-prowlarr-preview  → modal partial with checkboxes
-  POST /indexers/{id}/sync-prowlarr           → commits selected subs as torznab rows
+  POST /indexers/{id}/sync-prowlarr           → commits protocol-specific child rows
 
 The headline behavior:
-  - Each imported sub becomes its own type='torznab' indexer row pointing at
-    Prowlarr's per-indexer torznab façade (<base>/<sub-id>/api).
+  - Each imported sub becomes its own torznab/newznab row pointing at
+    Prowlarr's per-indexer API façade (<base>/<sub-id>/api).
   - parent_prowlarr_id + prowlarr_indexer_id form the dedup key on re-sync.
   - The user can then enable/disable, prioritize, and tune each row independently
     via the regular /indexers UI.
@@ -265,6 +265,72 @@ def test_sync_is_idempotent_on_resync(env):
             "SELECT COUNT(*) FROM indexers WHERE parent_prowlarr_id=101"
         ).fetchone()[0]
     assert n == 2, f"re-sync must not duplicate; expected 2 rows total, got {n}"
+
+
+def test_sync_uses_live_protocol_for_insert_and_corrective_resync(env):
+    """Usenet children use newznab, and re-sync repairs only a stale type."""
+    live_subs = [
+        {
+            'id': 1, 'name': 'ExistingUsenet', 'enable': True,
+            'protocol': 'usenet', 'priority': 10,
+            'capabilities': {'categories': [{'id': 7000}]},
+        },
+        {
+            'id': 6, 'name': 'NewNzb', 'enable': True,
+            'protocol': 'nzb', 'priority': 12,
+            'capabilities': {'categories': [{'id': 7010}]},
+        },
+        {
+            'id': 7, 'name': 'NewTorrent', 'enable': True,
+            'protocol': 'torrent', 'priority': 14,
+            'capabilities': {'categories': [{'id': 7020}]},
+        },
+    ]
+    with sqlite3.connect(env['db_path']) as c:
+        c.execute(
+            "INSERT INTO indexers(name, type, url, api_key, priority, enabled,"
+            " categories, min_seeders, seed_ratio, use_rss, use_auto_search,"
+            " use_interactive_search, parent_prowlarr_id, prowlarr_indexer_id)"
+            " VALUES('Custom Name', 'torznab', 'http://custom.test', 'custom-key',"
+            " 49, 0, '[9999]', 17, 2.5, 0, 0, 0, 101, 1)"
+        )
+
+    client = _client()
+    csrf = _csrf("sync-protocol")
+    with patch('httpx.AsyncClient', new=_mock_prowlarr(live_subs)):
+        response = client.post(
+            "/indexers/101/sync-prowlarr",
+            data={
+                'csrf_token': csrf['headers']['X-CSRFToken'],
+                'selected': ['1', '6', '7'],
+            },
+            **csrf,
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303, response.text
+    with sqlite3.connect(env['db_path']) as c:
+        c.row_factory = sqlite3.Row
+        rows = c.execute(
+            "SELECT * FROM indexers WHERE parent_prowlarr_id=101"
+            " ORDER BY prowlarr_indexer_id"
+        ).fetchall()
+
+    existing, new_nzb, new_torrent = rows
+    assert existing['type'] == 'newznab'
+    assert new_nzb['type'] == 'newznab'
+    assert new_torrent['type'] == 'torznab'
+    assert existing['name'] == 'Custom Name'
+    assert existing['url'] == 'http://custom.test'
+    assert existing['api_key'] == 'custom-key'
+    assert existing['priority'] == 49
+    assert existing['enabled'] == 0
+    assert existing['categories'] == '[9999]'
+    assert existing['min_seeders'] == 17
+    assert existing['seed_ratio'] == 2.5
+    assert existing['use_rss'] == 0
+    assert existing['use_auto_search'] == 0
+    assert existing['use_interactive_search'] == 0
 
 
 def test_sync_with_no_selection_redirects_with_none_flag(env):

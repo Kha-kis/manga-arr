@@ -138,6 +138,18 @@ def test_parse_prowlarr_response_yields_expected_shape():
     assert item["size_bytes"] == 524288000
 
 
+@pytest.mark.parametrize("raw_protocol", ["usenet", "nzb"])
+def test_parse_prowlarr_response_normalizes_nzb_protocols(raw_protocol):
+    from routers.indexers import _parse_prowlarr_response
+
+    response = _fake_prowlarr_search_response()
+    response[0]["protocol"] = raw_protocol
+
+    items = _parse_prowlarr_response(response, "MockUsenetIndexer")
+
+    assert items[0]["protocol"] == "nzb"
+
+
 def test_pipeline_search_to_qbit_handoff(fresh_db_with_qbit):
     """End-to-end: parse Prowlarr search → grab_url → qBit add.
 
