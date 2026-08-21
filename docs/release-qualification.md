@@ -5,10 +5,11 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## Release Under Test
 
-- Release candidate: `1.2.0-rc.10`
-- Stable target: `1.2.0`
+- Release: `1.2.0`
+- Qualified candidate: `1.2.0-rc.10`
 - Qualified base: `1.1.0`
 - Candidate image: `ghcr.io/kha-kis/manga-arr:1.2.0-rc.10`
+- Candidate digest: `sha256:a99cb009ebd40686cf6002468b9032d1ef643b048e5755c70dbdce639f752664`
 - Platforms: `linux/amd64`, `linux/arm64`
 
 ## Production Evidence
@@ -61,12 +62,17 @@ can become a stable release. Passing unit tests alone is not sufficient.
   qBittorrent handoff. qBittorrent accepted and completed the torrent while
   Mangarr timed out waiting for the add response, reported failure, and left
   the download untracked. The candidate was rejected.
-- The `1.2.0-rc.10` candidate must complete a fresh operational soak with daily
-  health, restart, log, integrity, import-path, and backlog-search evidence.
-  Recurring configuration errors, inaccessible completed downloads, unrelated
-  automatic grabs, malformed volume numbers, or download-client
-  circuit-breaker transitions block promotion even when the container and
-  health endpoint remain available.
+- The `1.2.0-rc.10` candidate completed more than 15 days of production
+  qualification from August 5 through August 21. Every daily sample reported a
+  healthy container, zero restarts, HTTP 200, no database-lock failures,
+  tracebacks, application errors, or HTTP 5xx responses, schema version 5,
+  `PRAGMA integrity_check` = `ok`, no active recovery records, and no recurring
+  configuration errors or download-client circuit-breaker transitions.
+- The controlled One Piece volume 106 qBittorrent import remained internally
+  consistent throughout the soak: the source and destination stayed
+  accessible, the volume remained downloaded with exact client/hash ownership,
+  the imported history and seen records remained singular, and no import queue
+  item reappeared.
 - A completed download skipped because the canonical target has equal or better
   quality creates one terminal `import_skipped` receipt and does not reappear
   on later status polls.
@@ -124,8 +130,9 @@ Before stable release, verify all of the following using the published image:
 
 The `1.2.0` release retains the full `1.1.0` qualification and adds explicit
 ambiguous-import review, standalone specials, field-level metadata provenance,
-and hardened backup/recovery conventions. The candidate must complete an
-operational soak before stable promotion. Qualification evidence includes:
+and hardened backup/recovery conventions. RC10 met the operational soak gate
+and is approved as the runtime basis for stable promotion. Qualification
+evidence includes:
 
 - `make release-local` passing from the exact tagged commit;
 - browser smoke, integration, and E2E suites passing in isolation;
@@ -136,6 +143,8 @@ operational soak before stable promotion. Qualification evidence includes:
 - public support, security, contribution, and conduct policies;
 - a protected default branch and immutable annotated release tags;
 - candidate publication verification that `1.2.0-rc.10` resolves to the tested
-  multi-platform image digest without moving stable aliases;
-- stable publication verification that `1.2.0`, `1.2`, `1`, and `latest`
-  resolve to the same stable image digest.
+  multi-platform digest
+  `sha256:a99cb009ebd40686cf6002468b9032d1ef643b048e5755c70dbdce639f752664`
+  without moving stable aliases;
+- post-publication verification that `1.2.0`, `1.2`, `1`, and `latest` resolve
+  to the same stable image digest before production deployment.

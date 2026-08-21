@@ -5,6 +5,65 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.2.0 - 2026-08-21
+
+Stable release of Mangarr's import-review, metadata-provenance, and
+download-client ownership work. This release promotes the RC10 runtime after
+more than 15 days of clean production qualification.
+
+### Added
+
+- Ambiguous imports remain visible in a dedicated review workflow instead of
+  being guessed, silently discarded, or hidden by a completed sibling.
+- Field-level metadata provenance, health reporting, and operator-controlled
+  repair tools reconcile AniList, MangaDex, MangaUpdates, Kitsu, and local
+  observations without shrinking curated library state.
+- Crash-safe publication journals and durable outboxes recover interrupted
+  imports, cleanup, notifications, and post-import effects without repeating
+  completed work.
+- Exact download-client and protocol ownership now follows releases through
+  grab, queue, import, history, status, and destructive actions.
+
+### Changed
+
+- Import workers use short SQLite claims, DB-clock leases, heartbeats, and
+  guarded commits so filesystem I/O no longer holds a long-running writer
+  transaction.
+- Prowlarr parsing handles current Torznab namespaces and protocol-specific
+  child indexers while preserving seeders, GUIDs, and preferred clients through
+  interactive grabs.
+- Backup, restore, first-run administrator setup, container deployment, and
+  release automation now follow public self-hosting conventions with explicit
+  recovery evidence.
+- The build-system dependency on setuptools is updated to 83.0.0.
+- The immutable Python base is updated to 3.14.7, and release images upgrade
+  pinned base OS packages during the build so published Debian security fixes
+  are included even before the upstream Python image is rebuilt.
+
+### Fixed
+
+- qBittorrent handoffs recover exact v1, v2, and hybrid info hashes after
+  ambiguous add timeouts, preventing accepted downloads from becoming
+  untracked failures.
+- SABnzbd connection tests exercise authenticated queue access, and completed
+  downloads retain downloader-specific IDs and shared-path mappings.
+- Boundary-aware title matching, publication-year parsing, canonical volume
+  numbers, and terminal duplicate receipts prevent unrelated grabs, malformed
+  imports, and retry loops.
+- Hardlink imports use copy-on-write before metadata injection, preserving
+  source inodes used by torrent clients.
+
+### Validation
+
+- RC10 ran in production from August 5 through August 21 with zero container
+  restarts, database-lock failures, tracebacks, HTTP 5xx responses, application
+  errors, integrity failures, or active recovery records.
+- Daily qualification retained HTTP 200 health, SQLite schema version 5,
+  `PRAGMA integrity_check` = `ok`, stable library counts, and a valid controlled
+  qBittorrent-to-library import for One Piece volume 106.
+- 2,174 Python tests, 13 confirmation-flow checks, and 10 route-sweep checks
+  pass on the stable release branch before final qualification.
+
 ## 1.2.0-rc.10 - 2026-08-05
 
 Tenth release candidate for the 1.2.0 import-review and metadata-provenance
