@@ -36,6 +36,9 @@ more than 15 days of clean production qualification.
   release automation now follow public self-hosting conventions with explicit
   recovery evidence.
 - The build-system dependency on setuptools is updated to 83.0.0.
+- The immutable Python base is updated to 3.14.7, and release images upgrade
+  pinned base OS packages during the build so published Debian security fixes
+  are included even before the upstream Python image is rebuilt.
 
 ### Fixed
 

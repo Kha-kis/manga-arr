@@ -22,3 +22,16 @@
 CVE-2026-4111
 CVE-2026-4424
 CVE-2026-5121
+
+# ─── Official Python base SBOM: packages absent from runtime ──────
+# The python:3.14.7-slim upstream attestation lists msgpack 1.1.2 and
+# setuptools 70.3.0, but neither distribution exists in Mangarr's final
+# filesystem. `importlib.metadata` reports both absent, and Trivy warns that
+# this third-party SBOM can produce inaccurate detections. These suppressions
+# apply only to the advisory IDs emitted from that stale attestation; the
+# application dependency and filesystem scans remain enabled.
+#
+# Re-check: each Python base-image update; remove when the upstream SBOM no
+# longer reports packages that are absent from the built image.
+GHSA-6v7p-g79w-8964
+CVE-2025-47273
