@@ -10,9 +10,12 @@ locks, refresh state, and existing-library matching as implemented in 1.2.0.
 
 - A stored AniList ID is authoritative for AniList refreshes. Refresh uses an
   exact ID lookup and never replaces it with a title-search result.
-- Without an AniList ID, refresh searches by the persisted series title and
-  requires a normalized word F1 score of at least `0.85` before assigning an
-  AniList identity.
+- Without an AniList ID, a stored MAL ID anchors the result only when exactly
+  one distinct AniList candidate has that MAL ID. Conflicting or missing MAL
+  evidence fails closed.
+- Without a stored provider identity, refresh searches by the persisted series
+  title. It assigns an AniList identity only when exactly one distinct result
+  reaches the existing normalized word F1 acceptance threshold of `0.85`.
 - MangaDex matching prefers external AniList, MAL, or MangaUpdates links and
   otherwise requires a confident full-title match. Shortened-title matches do
   not silently establish an identity without an external-ID link.
@@ -75,13 +78,23 @@ The narrow correction is to select the search result whose `mu_id` equals the
 stored ID. If that identity is absent from the search response, refresh must not
 borrow metadata from another candidate.
 
-### Follow-up: AniList title-only refresh does not reject tied identities
+### Resolved: AniList title-only identity ambiguity
 
-When no AniList ID is stored, `_resolve_anilist_record()` checks only the best
-title score and has no ambiguity margin. Distinct works with the same normalized
-title can both score `1.0`; result ordering then decides which identity is
-persisted. This is independent of the stored-MU-ID defect and needs a separate
-policy for ID, year, alias, and score tie-breaking.
+AniList identity evidence now has explicit precedence: stored AniList ID,
+unique exact stored-MAL-ID match, then a unique accepted English/romaji title
+match. If multiple distinct candidates reach the existing `0.85` title
+acceptance threshold, result order and score rank do not break the tie. Refresh
+records an `identity_ambiguous` source failure without applying fields or
+recording candidates from the ambiguous AniList results. Cached AniList metadata
+remains available; independent MangaUpdates, MangaDex, and cover layers continue
+under their existing refresh policies.
+
+No new ambiguity margin was introduced. Publication year can be absent, shared,
+or represent a different publication boundary, so it does not establish
+identity. AniList format describes a media category and does not map safely to
+Mangarr edition types. Search results do not currently include synonyms, and
+aliases therefore cannot disambiguate candidates. These signals remain
+deferred until their semantics and operator-facing behavior are designed.
 
 ### Follow-up: initial title ownership is not initialized consistently
 

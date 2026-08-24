@@ -49,6 +49,11 @@ from volumes import create_volume_stubs
 _REFRESH_LOCKS: dict[int, asyncio.Lock] = {}
 _REFRESH_LOCKS_GUARD = asyncio.Lock()
 _PROTECTED_COUNT_SOURCES = {"manual", "google_books", "wikipedia"}
+_ANILIST_TITLE_ACCEPTANCE = 0.85
+
+
+class MetadataIdentityAmbiguityError(MetadataProviderError):
+    """Provider candidates cannot safely establish one canonical identity."""
 
 
 async def _refresh_lock(series_id: int) -> asyncio.Lock:
@@ -74,22 +79,60 @@ async def _resolve_anilist_record(series: dict) -> dict:
     results = await anilist_search(series["title"], strict=True)
     if not results:
         raise MetadataProviderError("AniList returned no candidates")
-    best = max(
-        results,
-        key=lambda item: max(
-            _title_f1(series["title"], item.get("title") or ""),
-            _title_f1(series["title"], item.get("romaji_title") or ""),
-        ),
+
+    def distinct_candidates(candidates: list[dict]) -> list[dict]:
+        distinct: dict[str, dict] = {}
+        for candidate in candidates:
+            candidate_id = candidate.get("anilist_id")
+            if candidate_id is not None:
+                distinct.setdefault(str(candidate_id), candidate)
+        return list(distinct.values())
+
+    stored_mal_id = str(series.get("mal_id") or "").strip()
+    if stored_mal_id:
+        mal_matches = distinct_candidates(
+            [
+                item
+                for item in results
+                if str(item.get("mal_id") or "").strip() == stored_mal_id
+            ]
+        )
+        if len(mal_matches) == 1:
+            return mal_matches[0]
+        if not mal_matches:
+            raise MetadataIdentityAmbiguityError(
+                f"AniList identity match was ambiguous: no candidate matched stored MAL ID {stored_mal_id}"
+            )
+        raise MetadataIdentityAmbiguityError(
+            f"AniList identity match was ambiguous: {len(mal_matches)} candidates matched stored MAL ID {stored_mal_id}"
+        )
+
+    scored = [
+        (
+            max(
+                _title_f1(series["title"], item.get("title") or ""),
+                _title_f1(series["title"], item.get("romaji_title") or ""),
+            ),
+            item,
+        )
+        for item in results
+    ]
+    accepted = distinct_candidates(
+        [item for confidence, item in scored if confidence >= _ANILIST_TITLE_ACCEPTANCE]
     )
-    confidence = max(
-        _title_f1(series["title"], best.get("title") or ""),
-        _title_f1(series["title"], best.get("romaji_title") or ""),
-    )
-    if confidence < 0.85:
+    if len(accepted) == 1:
+        return accepted[0]
+    if len(accepted) > 1:
+        raise MetadataIdentityAmbiguityError(
+            f"AniList identity match was ambiguous: {len(accepted)} candidates met the title acceptance threshold"
+        )
+
+    confidence = max((score for score, _item in scored), default=0.0)
+    if confidence < _ANILIST_TITLE_ACCEPTANCE:
         raise MetadataProviderError(
             f"AniList identity match was not confident ({confidence:.0%})"
         )
-    return best
+    raise MetadataProviderError("AniList returned no usable identity candidates")
 
 
 def _useful_alias(alias: str, main_title: str) -> bool:
@@ -424,6 +467,16 @@ async def refresh_series_metadata(
             core_ok = True
         except asyncio.CancelledError:
             raise
+        except MetadataIdentityAmbiguityError as exc:
+            error = f"AniList identity ambiguity: {str(exc)[:220]}"
+            mark_source_failure(
+                series_id,
+                SOURCE_ANILIST,
+                error,
+                details={"reason": "identity_ambiguous"},
+            )
+            sources[SOURCE_ANILIST] = "failed"
+            errors.append(error)
         except Exception as exc:
             error = f"AniList: {type(exc).__name__}: {str(exc)[:220]}"
             mark_source_failure(series_id, SOURCE_ANILIST, error)
