@@ -23,7 +23,12 @@ from download_identity import (
 from routers._templates import templates
 from files import sanitize_filename
 from import_kinds import VALID_IMPORT_KINDS, infer_import_kind
+from metadata import MetadataProviderError
 from metadata_provenance import record_initial_title
+from metadata_service import (
+    resolve_anilist_search_candidate,
+    resolve_mangaupdates_search_candidate,
+)
 from shared import cascade_chapters, get_cfg, get_db, vol_num_to_display, with_flash
 
 router = APIRouter()
@@ -1074,19 +1079,50 @@ async def manual_import_auto(request: Request):
 
     newly_added: list[dict] = []
     for detected_name, group_files in groups.items():
-        results_search, _ = await _m.search_series(detected_name)
-        if not results_search:
+        results_search, provider = await _m.search_series(detected_name)
+        try:
+            if provider == "anilist":
+                best = resolve_anilist_search_candidate(
+                    detected_name, results_search
+                )
+                provider_id = best.get("anilist_id")
+            elif provider == "mangaupdates":
+                best = resolve_mangaupdates_search_candidate(
+                    detected_name, results_search
+                )
+                provider_id = best.get("mu_id")
+            else:
+                continue
+        except MetadataProviderError:
             continue
-        best = results_search[0]
+
+        if provider_id is None or not str(provider_id).strip():
+            continue
+
         with get_db() as db:
-            existing = db.execute(
-                "SELECT id FROM series WHERE (anilist_id=? OR title=?)"
-                " AND deleted_at IS NULL",
-                (best["anilist_id"], best["title"]),
-            ).fetchone()
+            if provider == "anilist":
+                existing = db.execute(
+                    "SELECT id FROM series WHERE anilist_id=?"
+                    " AND COALESCE(edition_type,'standard')='standard'"
+                    " AND deleted_at IS NULL",
+                    (provider_id,),
+                ).fetchone()
+            else:
+                existing = db.execute(
+                    "SELECT id FROM series WHERE mu_id=?"
+                    " AND COALESCE(edition_type,'standard')='standard'"
+                    " AND deleted_at IS NULL",
+                    (str(provider_id),),
+                ).fetchone()
             if existing:
                 sid = existing["id"]
             else:
+                title_collision = db.execute(
+                    "SELECT id FROM series WHERE title=? AND deleted_at IS NULL",
+                    (best["title"],),
+                ).fetchone()
+                if title_collision:
+                    continue
                 rf_id = _m.resolve_root_folder_id(db)
                 if rf_id is None:
                     # No library destination possible → skip this entry.
@@ -1101,14 +1137,15 @@ async def manual_import_auto(request: Request):
                     )
                     continue
                 cur = db.execute(
-                    "INSERT INTO series(title, search_pattern, anilist_id, mal_id, cover_url,"
-                    " status, description, total_volumes, total_chapters, root_folder_id)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO series(title, search_pattern, anilist_id, mal_id, mu_id,"
+                    " cover_url, status, description, total_volumes, total_chapters,"
+                    " root_folder_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         best["title"],
                         best["title"],
-                        best["anilist_id"],
+                        best.get("anilist_id"),
                         best.get("mal_id"),
+                        best.get("mu_id"),
                         best.get("cover_url", ""),
                         best.get("status", ""),
                         best.get("description", ""),
@@ -1146,8 +1183,10 @@ async def manual_import_auto(request: Request):
                 raise RuntimeError(f"Newly added series {sid} could not be loaded")
             new_s_row = dict(new_s_row_raw)
 
-        series_list.append(new_s_row)
         newly_added.append({"id": sid, "title": best["title"]})
+        matched_series = {"id": sid, "title": new_s_row["title"]}
+        for group_file in group_files:
+            group_file["matched_series"] = matched_series
 
         from metadata_service import refresh_series_metadata
 
@@ -1157,20 +1196,6 @@ async def manual_import_auto(request: Request):
             ),
             name=f"manual_import:{sid}:metadata",
         )
-
-    if newly_added:
-        with get_db() as db:
-            alias_map = {}
-            for r in db.execute(
-                "SELECT series_id, alias FROM series_aliases"
-            ).fetchall():
-                alias_map.setdefault(r["series_id"], []).append(r["alias"])
-        series_patterns = _build_series_match_patterns(series_list, alias_map)
-        for f in file_entries:
-            if not f["matched_series"]:
-                f["matched_series"] = _match_file_to_series(
-                    f["filename"], series_patterns
-                )
 
     import_results = []
     for f in file_entries:

@@ -50,6 +50,7 @@ _REFRESH_LOCKS: dict[int, asyncio.Lock] = {}
 _REFRESH_LOCKS_GUARD = asyncio.Lock()
 _PROTECTED_COUNT_SOURCES = {"manual", "google_books", "wikipedia"}
 _ANILIST_TITLE_ACCEPTANCE = 0.85
+_MANGAUPDATES_TITLE_ACCEPTANCE = 0.7
 
 
 class MetadataIdentityAmbiguityError(MetadataProviderError):
@@ -72,53 +73,62 @@ def _title_f1(left: str, right: str) -> float:
     return 2 * recall * precision / (recall + precision) if overlap else 0.0
 
 
-async def _resolve_anilist_record(series: dict) -> dict:
-    if series.get("anilist_id"):
-        return await fetch_anilist_by_id(int(series["anilist_id"]))
+def _distinct_provider_candidates(
+    candidates: list[dict[str, Any]], provider_id: str
+) -> list[dict[str, Any]]:
+    distinct: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        candidate_id = candidate.get(provider_id)
+        if candidate_id is not None and str(candidate_id).strip():
+            distinct.setdefault(str(candidate_id), candidate)
+    return list(distinct.values())
 
-    results = await anilist_search(series["title"], strict=True)
-    if not results:
+
+def resolve_anilist_search_candidate(
+    title: str,
+    candidates: list[dict[str, Any]],
+    *,
+    stored_mal_id: int | str | None = None,
+) -> dict[str, Any]:
+    """Resolve one AniList search result without relying on result ordering."""
+    if not candidates:
         raise MetadataProviderError("AniList returned no candidates")
 
-    def distinct_candidates(candidates: list[dict]) -> list[dict]:
-        distinct: dict[str, dict] = {}
-        for candidate in candidates:
-            candidate_id = candidate.get("anilist_id")
-            if candidate_id is not None:
-                distinct.setdefault(str(candidate_id), candidate)
-        return list(distinct.values())
-
-    stored_mal_id = str(series.get("mal_id") or "").strip()
-    if stored_mal_id:
-        mal_matches = distinct_candidates(
+    normalized_mal_id = str(stored_mal_id or "").strip()
+    if normalized_mal_id:
+        mal_matches = _distinct_provider_candidates(
             [
                 item
-                for item in results
-                if str(item.get("mal_id") or "").strip() == stored_mal_id
-            ]
+                for item in candidates
+                if str(item.get("mal_id") or "").strip() == normalized_mal_id
+            ],
+            "anilist_id",
         )
         if len(mal_matches) == 1:
             return mal_matches[0]
         if not mal_matches:
             raise MetadataIdentityAmbiguityError(
-                f"AniList identity match was ambiguous: no candidate matched stored MAL ID {stored_mal_id}"
+                "AniList identity match was ambiguous: no candidate matched "
+                f"stored MAL ID {normalized_mal_id}"
             )
         raise MetadataIdentityAmbiguityError(
-            f"AniList identity match was ambiguous: {len(mal_matches)} candidates matched stored MAL ID {stored_mal_id}"
+            "AniList identity match was ambiguous: "
+            f"{len(mal_matches)} candidates matched stored MAL ID {normalized_mal_id}"
         )
 
     scored = [
         (
             max(
-                _title_f1(series["title"], item.get("title") or ""),
-                _title_f1(series["title"], item.get("romaji_title") or ""),
+                _title_f1(title, item.get("title") or ""),
+                _title_f1(title, item.get("romaji_title") or ""),
             ),
             item,
         )
-        for item in results
+        for item in candidates
     ]
-    accepted = distinct_candidates(
-        [item for confidence, item in scored if confidence >= _ANILIST_TITLE_ACCEPTANCE]
+    accepted = _distinct_provider_candidates(
+        [item for confidence, item in scored if confidence >= _ANILIST_TITLE_ACCEPTANCE],
+        "anilist_id",
     )
     if len(accepted) == 1:
         return accepted[0]
@@ -133,6 +143,52 @@ async def _resolve_anilist_record(series: dict) -> dict:
             f"AniList identity match was not confident ({confidence:.0%})"
         )
     raise MetadataProviderError("AniList returned no usable identity candidates")
+
+
+def resolve_mangaupdates_search_candidate(
+    title: str, candidates: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Resolve one qualifying MangaUpdates result without ordering tie-breaks."""
+    if not candidates:
+        raise MetadataProviderError("MangaUpdates returned no candidates")
+
+    scored = [(_title_f1(title, item.get("title") or ""), item) for item in candidates]
+    accepted = _distinct_provider_candidates(
+        [
+            item
+            for confidence, item in scored
+            if confidence >= _MANGAUPDATES_TITLE_ACCEPTANCE
+        ],
+        "mu_id",
+    )
+    if len(accepted) == 1:
+        return accepted[0]
+    if len(accepted) > 1:
+        raise MetadataIdentityAmbiguityError(
+            "MangaUpdates identity match was ambiguous: "
+            f"{len(accepted)} candidates met the title acceptance threshold"
+        )
+
+    confidence = max((score for score, _item in scored), default=0.0)
+    if confidence < _MANGAUPDATES_TITLE_ACCEPTANCE:
+        raise MetadataProviderError(
+            f"MangaUpdates identity match was not confident ({confidence:.0%})"
+        )
+    raise MetadataProviderError("MangaUpdates returned no usable identity candidates")
+
+
+async def _resolve_anilist_record(
+    series: dict[str, Any],
+) -> dict[str, Any]:
+    if series.get("anilist_id"):
+        return await fetch_anilist_by_id(int(series["anilist_id"]))
+
+    results = await anilist_search(series["title"], strict=True)
+    return resolve_anilist_search_candidate(
+        series["title"],
+        results,
+        stored_mal_id=series.get("mal_id"),
+    )
 
 
 def _useful_alias(alias: str, main_title: str) -> bool:
