@@ -92,6 +92,67 @@ def test_unlock_allows_provider_candidate_to_replace_manual_value(provenance_db)
     assert unlocked["conflict"] is False
 
 
+def test_manual_title_unlock_behavior_remains_compatible(provenance_db):
+    from metadata_provenance import (
+        record_manual_metadata,
+        record_metadata_candidates,
+        set_metadata_field_lock,
+    )
+
+    record_manual_metadata(7, {"title": "Existing Title"})
+    record_metadata_candidates(7, "anilist", {"title": "Provider Title"})
+
+    set_metadata_field_lock(7, "title", False)
+    state = _state(7, "title")
+    assert state["selected_source"] == "manual"
+    assert state["locked"] is False
+    assert state["recommended"]["source"] == "anilist"
+    assert state["pending"] is True
+    assert state["conflict"] is False
+    assert {candidate["source"] for candidate in state["candidates"]} == {
+        "anilist",
+        "manual",
+    }
+
+
+def test_unlocked_local_count_candidates_keep_global_priority(provenance_db):
+    from metadata_provenance import (
+        record_metadata_candidates,
+        record_metadata_selections,
+    )
+
+    with sqlite3.connect(provenance_db) as db:
+        db.execute(
+            "UPDATE series SET vol_count_source='local',"
+            " chapter_count_source='local' WHERE id=7"
+        )
+    record_metadata_selections(
+        7,
+        {"total_volumes": 12, "total_chapters": 90},
+        {"total_volumes": "local", "total_chapters": "local"},
+        locks={"total_volumes": False, "total_chapters": False},
+    )
+    record_metadata_candidates(
+        7,
+        "local",
+        {"total_volumes": 12, "total_chapters": 90},
+    )
+    record_metadata_candidates(
+        7,
+        "anilist",
+        {"total_volumes": 14, "total_chapters": 100},
+    )
+
+    for field_name in ("total_volumes", "total_chapters"):
+        state = _state(7, field_name)
+        assert state["selected_source"] == "local"
+        assert state["locked"] is False
+        assert state["recommended"]["source"] == "local"
+        assert state["recommended"]["is_current"] is True
+        assert state["pending"] is False
+        assert state["conflict"] is True
+
+
 def test_candidate_apply_guards_decreases_and_records_selection(provenance_db):
     import shared
     from metadata_provenance import (

@@ -299,6 +299,152 @@ def test_unmapped_folder_adoption_can_seed_selected_metadata(env):
     assert [v["status"] for v in volumes] == ["downloaded", "wanted", "wanted"]
 
 
+def test_local_title_unlock_relinquishes_recommendation_without_losing_history(
+    env, monkeypatch
+):
+    import main
+    import metadata_service
+    from metadata_provenance import (
+        apply_recommended_candidates,
+        get_metadata_field_states,
+        record_metadata_candidates,
+        set_metadata_field_lock,
+    )
+
+    def close_background_task(coro, *, name):
+        del name
+        coro.close()
+
+    monkeypatch.setattr(main, "create_background_task", close_background_task)
+    response = _client().post(
+        "/api/v1/rootfolder/1/unmappedfolders/adopt",
+        json={
+            "path": os.path.join(env["library_root"], "Unmapped A"),
+            "metadataTitle": "Official Unmapped A",
+            "anilistId": 123,
+            "totalVolumes": 3,
+            "totalChapters": 24,
+            "metadataSource": "anilist",
+        },
+        headers={"X-Api-Key": _api_key(env["db_path"])},
+    )
+    assert response.status_code == 200, response.text
+    series_id = response.json()["series"]["id"]
+
+    def title_state():
+        return next(
+            field
+            for field in get_metadata_field_states(series_id)
+            if field["field_name"] == "title"
+        )
+
+    initial = title_state()
+    assert initial["value"] == "Unmapped A"
+    assert initial["selected_source"] == "local"
+    assert initial["locked"] is True
+    assert initial["recommended"]["source"] == "local"
+    assert initial["recommended"]["is_current"] is True
+
+    metadata_service._apply_anilist_record(
+        series_id,
+        {
+            "anilist_id": 123,
+            "mal_id": None,
+            "title": "Official Unmapped A",
+            "cover_url": None,
+            "status": "FINISHED",
+            "description": None,
+            "pub_year": None,
+            "volumes": 3,
+            "chapters": 24,
+        },
+    )
+    locked = title_state()
+    assert locked["value"] == "Unmapped A"
+    assert locked["recommended"]["source"] == "local"
+    assert locked["recommended"]["is_current"] is True
+    assert locked["pending"] is False
+    assert locked["conflict"] is True
+
+    set_metadata_field_lock(series_id, "title", False)
+    unlocked = title_state()
+    assert unlocked["value"] == "Unmapped A"
+    assert unlocked["selected_source"] == "local"
+    assert unlocked["locked"] is False
+    assert unlocked["recommended"]["source"] == "anilist"
+    assert unlocked["recommended"]["value"] == "Official Unmapped A"
+    assert unlocked["pending"] is True
+    assert unlocked["conflict"] is False
+    assert {
+        candidate["source"]: candidate["value"]
+        for candidate in unlocked["candidates"]
+    } == {
+        "anilist": "Official Unmapped A",
+        "local": "Unmapped A",
+    }
+
+    with sqlite3.connect(env["db_path"]) as db:
+        assert db.execute(
+            "SELECT title FROM series WHERE id=?", (series_id,)
+        ).fetchone()[0] == "Unmapped A"
+
+    safe_result = apply_recommended_candidates(series_id)
+    assert {
+        "field_name": "title",
+        "source": "anilist",
+        "value": "Official Unmapped A",
+    } in safe_result["applied"]
+    assert not any(
+        skipped["field_name"] == "title" for skipped in safe_result["skipped"]
+    )
+    selected = title_state()
+    assert selected["value"] == "Official Unmapped A"
+    assert selected["selected_source"] == "anilist"
+    assert selected["locked"] is False
+    assert selected["recommended"]["source"] == "anilist"
+    assert selected["recommended"]["is_current"] is True
+    assert selected["conflict"] is False
+    assert {
+        candidate["source"]: candidate["value"]
+        for candidate in selected["candidates"]
+    } == {
+        "anilist": "Official Unmapped A",
+        "local": "Unmapped A",
+    }
+
+    record_metadata_candidates(
+        series_id,
+        "mangaupdates",
+        {"title": "MangaUpdates Unmapped A"},
+    )
+    provider_conflict = title_state()
+    assert provider_conflict["conflict"] is True
+    safe_result = apply_recommended_candidates(series_id)
+    assert {"field_name": "title", "reason": "conflict"} in safe_result["skipped"]
+    with sqlite3.connect(env["db_path"]) as db:
+        assert db.execute(
+            "SELECT title FROM series WHERE id=?", (series_id,)
+        ).fetchone()[0] == "Official Unmapped A"
+
+    set_metadata_field_lock(series_id, "title", True)
+    record_metadata_candidates(
+        series_id,
+        "anilist",
+        {"title": "Future AniList Title"},
+    )
+    relocked = title_state()
+    assert relocked["value"] == "Official Unmapped A"
+    assert relocked["selected_source"] == "anilist"
+    assert relocked["locked"] is True
+    assert relocked["pending"] is False
+    assert relocked["recommended"]["source"] == "local"
+    assert relocked["conflict"] is True
+    with sqlite3.connect(env["db_path"]) as db:
+        assert db.execute(
+            "SELECT title FROM series WHERE id=?", (series_id,)
+        ).fetchone()[0] == "Official Unmapped A"
+
+
 def test_unmapped_folder_match_proposals_search_metadata(env, monkeypatch):
     import routers.api_v1 as api_v1
 
