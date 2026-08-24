@@ -275,6 +275,25 @@ def test_unmapped_folder_adoption_can_seed_selected_metadata(env):
     assert row["pub_year"] == 2020
     assert row["vol_count_source"] == "anilist"
 
+    with sqlite3.connect(env["db_path"]) as c:
+        c.row_factory = sqlite3.Row
+        title_selection = c.execute(
+            "SELECT value_json,selected_source,locked FROM series_metadata_fields"
+            " WHERE series_id=? AND field_name='title'",
+            (row["id"],),
+        ).fetchone()
+        title_candidate = c.execute(
+            "SELECT value_json FROM series_metadata_candidates"
+            " WHERE series_id=? AND field_name='title' AND source='local'",
+            (row["id"],),
+        ).fetchone()
+    assert dict(title_selection) == {
+        "value_json": '"Unmapped A"',
+        "selected_source": "local",
+        "locked": 1,
+    }
+    assert title_candidate["value_json"] == '"Unmapped A"'
+
     volumes = _volume_rows(env["db_path"], row["id"])
     assert [v["volume_num"] for v in volumes] == [1.0, 2.0, 3.0]
     assert [v["status"] for v in volumes] == ["downloaded", "wanted", "wanted"]
@@ -534,6 +553,25 @@ def test_unmapped_folder_adoption_pins_existing_folder_for_custom_title(env):
     row = _series_row(env["db_path"], "Other Title")
     assert row is not None
     assert row["folder_name"] == "Unmapped A"
+
+    with sqlite3.connect(env["db_path"]) as c:
+        c.row_factory = sqlite3.Row
+        title_selection = c.execute(
+            "SELECT value_json,selected_source,locked FROM series_metadata_fields"
+            " WHERE series_id=? AND field_name='title'",
+            (row["id"],),
+        ).fetchone()
+        title_candidate = c.execute(
+            "SELECT value_json FROM series_metadata_candidates"
+            " WHERE series_id=? AND field_name='title' AND source='manual'",
+            (row["id"],),
+        ).fetchone()
+    assert dict(title_selection) == {
+        "value_json": '"Other Title"',
+        "selected_source": "manual",
+        "locked": 1,
+    }
+    assert title_candidate["value_json"] == '"Other Title"'
 
     import rescan
     import shared

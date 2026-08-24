@@ -12,6 +12,7 @@ from typing import Any, Iterator
 
 import shared
 from files import MANGA_EXTENSIONS
+from metadata_provenance import record_initial_title
 from rescan import (
     SeriesRescanSnapshot,
     _series_library_dir,
@@ -318,6 +319,7 @@ def _adopt_unmapped_folder_locked(
         )
 
     folder_name = os.path.basename(requested_path)
+    explicit_title = bool(title and title.strip())
     series_title = (title or folder_name).strip()
     if not series_title:
         return AdoptUnmappedFolderResult(False, 400, "title is required")
@@ -418,6 +420,13 @@ def _adopt_unmapped_folder_locked(
         if cur.lastrowid is None:
             raise RuntimeError("series insert did not return an id")
         series_id = cur.lastrowid
+        record_initial_title(
+            series_id,
+            series_title,
+            "manual" if explicit_title else "local",
+            locked=True,
+            db=db,
+        )
 
         if total_volumes and total_volumes > 0:
             create_volume_stubs(db, series_id, total_volumes)

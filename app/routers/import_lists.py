@@ -11,6 +11,7 @@ from routers._templates import templates
 from shared import get_db, from_json
 from security import validate_outbound_url, UnsafeURLError
 from events import log_event
+from metadata_provenance import record_initial_title
 
 router = APIRouter()
 
@@ -353,7 +354,22 @@ async def _sync_list(lst: dict):
                  lst.get('quality_profile_id'),
                  rf_id)
             )
-            new_id = cur.lastrowid
+            new_id = cur.lastrowid if cur.rowcount == 1 else None
+            if new_id:
+                title_source = (
+                    "anilist"
+                    if t in {"anilist_user", "anilist_top", "anilist_popular"}
+                    else "myanimelist"
+                    if t == "mal_user"
+                    else "custom_rss"
+                )
+                record_initial_title(
+                    new_id,
+                    title,
+                    title_source,
+                    locked=False,
+                    db=db,
+                )
             if new_id and total_volumes and total_volumes > 0:
                 try:
                     from volumes import create_volume_stubs

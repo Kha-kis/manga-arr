@@ -389,6 +389,25 @@ def test_auto_import_materializes_new_series_row(
     assert response.json()["new_series"] == [
         {"id": response.json()["new_series"][0]["id"], "title": "Brand New Series"}
     ]
+    series_id = response.json()["new_series"][0]["id"]
+    with sqlite3.connect(row_lifetime_env["db_path"]) as db:
+        db.row_factory = sqlite3.Row
+        title_selection = db.execute(
+            "SELECT value_json,selected_source,locked FROM series_metadata_fields"
+            " WHERE series_id=? AND field_name='title'",
+            (series_id,),
+        ).fetchone()
+        title_candidate = db.execute(
+            "SELECT value_json FROM series_metadata_candidates"
+            " WHERE series_id=? AND field_name='title' AND source='anilist'",
+            (series_id,),
+        ).fetchone()
+    assert dict(title_selection) == {
+        "value_json": '"Brand New Series"',
+        "selected_source": "anilist",
+        "locked": 0,
+    }
+    assert title_candidate["value_json"] == '"Brand New Series"'
 
 
 def _is_get_db_with(node: ast.With) -> bool:

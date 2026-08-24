@@ -23,6 +23,7 @@ from download_identity import (
 from routers._templates import templates
 from files import sanitize_filename
 from import_kinds import VALID_IMPORT_KINDS, infer_import_kind
+from metadata_provenance import record_initial_title
 from shared import cascade_chapters, get_cfg, get_db, vol_num_to_display, with_flash
 
 router = APIRouter()
@@ -1120,6 +1121,22 @@ async def manual_import_auto(request: Request):
                 if inserted_series_id is None:
                     raise RuntimeError("New series insert did not return an id")
                 sid = inserted_series_id
+                title_source = best.get("source")
+                if not title_source:
+                    title_source = (
+                        "anilist"
+                        if best.get("anilist_id")
+                        else "mangaupdates"
+                        if best.get("mu_id")
+                        else "metadata"
+                    )
+                record_initial_title(
+                    sid,
+                    best["title"],
+                    title_source,
+                    locked=False,
+                    db=db,
+                )
                 if best.get("volumes"):
                     _m.create_volume_stubs(db, sid, int(best["volumes"]))
             new_s_row_raw = db.execute(

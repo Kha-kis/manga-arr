@@ -27,6 +27,7 @@ from files import build_chapter_label
 from library_scan import adopt_unmapped_folder, scan_unmapped_root_folder
 from metadata import search_series
 from metadata_enrichment import _NON_STANDARD_STUB_EDITIONS
+from metadata_provenance import record_initial_title
 from parsing import normalize
 from rename_plan import (
     build_library_rename_preview,
@@ -5521,7 +5522,16 @@ async def api_v1_create_series(request: Request):
                 language_profile_id,
             ),
         )
+        if cur.lastrowid is None:
+            raise RuntimeError("series insert did not return an id")
         series_id = cur.lastrowid
+        record_initial_title(
+            series_id,
+            title,
+            "api",
+            locked=False,
+            db=db,
+        )
         if (
             total_volumes
             and total_volumes > 0
