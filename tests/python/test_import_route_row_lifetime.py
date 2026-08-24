@@ -351,7 +351,7 @@ def test_auto_import_materializes_new_series_row(
     source = scan_path / "Brand New Series v01.cbz"
     source.write_bytes(b"test archive")
 
-    async def _search_series(_title: str) -> tuple[list[dict[str, Any]], None]:
+    async def _search_series(_title: str) -> tuple[list[dict[str, Any]], str]:
         return (
             [
                 {
@@ -365,7 +365,7 @@ def test_auto_import_materializes_new_series_row(
                     "chapters": None,
                 }
             ],
-            None,
+            "anilist",
         )
 
     async def _noop_scan() -> None:

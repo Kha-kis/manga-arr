@@ -7,18 +7,20 @@ test_import_atomicity.py, but the route entry points themselves
 test. A 500 on first-time setup or a path-traversal regression would
 only surface in production.
 
-Auto-import (POST /api/manual-import/auto-import) is intentionally
-out of scope here — it calls AniList for series detection and would
-require mocking the search API on top of filesystem fixtures. The
-scan + manual-import paths cover 2/3 of the entry surface and are
-the ones a typical operator hits during initial library bootstrap.
+Auto-import (POST /api/manual-import/auto-import) uses the same real
+filesystem and database boundaries while replacing only provider search,
+background refresh scheduling, and external notification.
 """
+import asyncio
 import json
 import os
 import sqlite3
 import sys
 import tempfile
+from typing import Any
+from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 sys.path.insert(0, "tests/python")
@@ -377,3 +379,458 @@ def test_import_unknown_series_id_returns_per_entry_error(env):
     assert body['imported'] == 0
     assert body['results'][0]['ok'] is False
     assert 'series not found' in body['results'][0]['message'].lower()
+
+
+# ───────────────── /api/manual-import/auto-import ─────────────────
+
+
+def _metadata_result(
+    title: str,
+    *,
+    anilist_id: int | None,
+    mal_id: int | None = None,
+    mu_id: str | None = None,
+    romaji_title: str = "",
+    source: str = "anilist",
+    volumes: int | None = 3,
+) -> dict[str, Any]:
+    return {
+        "anilist_id": anilist_id,
+        "mal_id": mal_id,
+        "mu_id": mu_id,
+        "title": title,
+        "romaji_title": romaji_title,
+        "aliases": [],
+        "genres": [],
+        "cover_url": "https://cdn.example.test/cover.jpg",
+        "status": "FINISHED",
+        "format": "MANGA",
+        "volumes": volumes,
+        "chapters": 12,
+        "pub_year": 2020,
+        "description": "Provider description",
+        "source": source,
+    }
+
+
+def _run_auto_import(
+    env: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    detected_title: str,
+    results: list[dict[str, Any]],
+    provider: str,
+) -> tuple[httpx.Response, str, list[str], AsyncMock]:
+    import main
+
+    source_path = os.path.join(env["completed"], f"{detected_title} v01.cbz")
+    _make_cbz(source_path)
+
+    async def _search_series(query: str) -> tuple[list[dict[str, Any]], str]:
+        assert query == detected_title
+        return results, provider
+
+    scheduled_tasks: list[str] = []
+
+    def _record_background_task(coro: Any, *, name: str) -> None:
+        scheduled_tasks.append(name)
+        coro.close()
+
+    komga_scan = AsyncMock()
+    monkeypatch.setattr(main, "search_series", _search_series)
+    monkeypatch.setattr(main, "create_background_task", _record_background_task)
+    monkeypatch.setattr(main, "trigger_komga_scan", komga_scan)
+
+    async def _post() -> httpx.Response:
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            return await client.post(
+                "/api/manual-import/auto-import",
+                json={"path": env["completed"], "remove_source": False},
+                headers={"X-Api-Key": str(main.CONFIG["api_key"])},
+            )
+
+    response = asyncio.run(_post())
+    return response, source_path, scheduled_tasks, komga_scan
+
+
+def _assert_auto_import_left_group_unmatched(
+    env: dict[str, str],
+    response: httpx.Response,
+    source_path: str,
+    scheduled_tasks: list[str],
+    komga_scan: AsyncMock,
+) -> None:
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["imported"] == 0
+    assert body["new_series"] == []
+    assert body["results"] == [
+        {
+            "path": source_path,
+            "ok": False,
+            "message": f"No series match for: {os.path.basename(source_path)}",
+        }
+    ]
+    assert os.path.isfile(source_path)
+    assert os.listdir(env["library_root"]) == []
+    assert scheduled_tasks == []
+    assert komga_scan.await_count == 0
+
+    with sqlite3.connect(env["db_path"]) as db:
+        assert db.execute(
+            "SELECT id,anilist_id,mal_id,mu_id FROM series WHERE id<>7"
+        ).fetchall() == []
+        assert db.execute(
+            "SELECT series_id FROM series_metadata_fields WHERE series_id<>7"
+        ).fetchall() == []
+        assert db.execute(
+            "SELECT series_id FROM series_metadata_candidates WHERE series_id<>7"
+        ).fetchall() == []
+        assert db.execute(
+            "SELECT series_id FROM volumes WHERE series_id<>7"
+        ).fetchall() == []
+
+
+def test_auto_import_equal_title_anilist_ambiguity_does_not_select_first_result(
+    env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    title = "Shared AniList Title"
+    response, source_path, scheduled_tasks, komga_scan = _run_auto_import(
+        env,
+        monkeypatch,
+        detected_title=title,
+        results=[
+            _metadata_result(title, anilist_id=4101, mal_id=5101),
+            _metadata_result(title, anilist_id=4102, mal_id=5102),
+        ],
+        provider="anilist",
+    )
+
+    _assert_auto_import_left_group_unmatched(
+        env, response, source_path, scheduled_tasks, komga_scan
+    )
+
+
+def test_auto_import_rejects_multiple_distinct_accepted_anilist_scores(
+    env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    title = "Alpha Beta Gamma"
+    response, source_path, scheduled_tasks, komga_scan = _run_auto_import(
+        env,
+        monkeypatch,
+        detected_title=title,
+        results=[
+            _metadata_result(title, anilist_id=4201),
+            _metadata_result(f"{title} Deluxe", anilist_id=4202),
+        ],
+        provider="anilist",
+    )
+
+    _assert_auto_import_left_group_unmatched(
+        env, response, source_path, scheduled_tasks, komga_scan
+    )
+
+
+def test_auto_import_creates_series_for_one_unique_acceptable_anilist_result(
+    env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    title = "Clearly Unique Title"
+    response, source_path, scheduled_tasks, komga_scan = _run_auto_import(
+        env,
+        monkeypatch,
+        detected_title=title,
+        results=[
+            _metadata_result(title, anilist_id=4301, mal_id=5301),
+            _metadata_result("Completely Different Work", anilist_id=4302),
+        ],
+        provider="anilist",
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["imported"] == 1
+    assert body["new_series"] == [{"id": body["new_series"][0]["id"], "title": title}]
+    assert body["results"][0]["ok"] is True
+    assert os.path.isfile(body["results"][0]["dst"])
+    assert os.path.isfile(source_path)
+    assert scheduled_tasks == [f"manual_import:{body['new_series'][0]['id']}:metadata"]
+    assert komga_scan.await_count == 1
+
+    series_id = body["new_series"][0]["id"]
+    with sqlite3.connect(env["db_path"]) as db:
+        db.row_factory = sqlite3.Row
+        series = db.execute(
+            "SELECT title,anilist_id,mal_id,mu_id FROM series WHERE id=?",
+            (series_id,),
+        ).fetchone()
+        title_field = db.execute(
+            "SELECT value_json,selected_source,locked FROM series_metadata_fields"
+            " WHERE series_id=? AND field_name='title'",
+            (series_id,),
+        ).fetchone()
+        title_candidate = db.execute(
+            "SELECT value_json FROM series_metadata_candidates"
+            " WHERE series_id=? AND field_name='title' AND source='anilist'",
+            (series_id,),
+        ).fetchone()
+        volumes = db.execute(
+            "SELECT volume_num,status FROM volumes WHERE series_id=? ORDER BY volume_num",
+            (series_id,),
+        ).fetchall()
+    assert dict(series) == {
+        "title": title,
+        "anilist_id": 4301,
+        "mal_id": 5301,
+        "mu_id": None,
+    }
+    assert dict(title_field) == {
+        "value_json": f'"{title}"',
+        "selected_source": "anilist",
+        "locked": 0,
+    }
+    assert title_candidate["value_json"] == f'"{title}"'
+    assert [tuple(row) for row in volumes] == [
+        (1.0, "downloaded"),
+        (2.0, "wanted"),
+        (3.0, "wanted"),
+    ]
+
+
+def test_auto_import_deduplicates_accepted_rows_with_same_anilist_id(
+    env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    title = "Duplicate Alpha Beta"
+    response, _source_path, scheduled_tasks, _komga_scan = _run_auto_import(
+        env,
+        monkeypatch,
+        detected_title=title,
+        results=[
+            _metadata_result(title, anilist_id=4401),
+            _metadata_result(f"{title} Deluxe", anilist_id=4401),
+        ],
+        provider="anilist",
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["imported"] == 1
+    assert len(body["new_series"]) == 1
+    assert len(scheduled_tasks) == 1
+    with sqlite3.connect(env["db_path"]) as db:
+        rows = db.execute(
+            "SELECT id,title,anilist_id FROM series WHERE anilist_id=4401"
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][1:] == (title, 4401)
+
+
+def test_auto_import_creates_series_for_one_unique_mangaupdates_result(
+    env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    title = "Unique MangaUpdates Work"
+    response, _source_path, scheduled_tasks, _komga_scan = _run_auto_import(
+        env,
+        monkeypatch,
+        detected_title=title,
+        results=[
+            _metadata_result(
+                title,
+                anilist_id=None,
+                mu_id="4451",
+                source="mangaupdates",
+            )
+        ],
+        provider="mangaupdates",
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["imported"] == 1
+    assert len(body["new_series"]) == 1
+    series_id = body["new_series"][0]["id"]
+    assert scheduled_tasks == [f"manual_import:{series_id}:metadata"]
+
+    with sqlite3.connect(env["db_path"]) as db:
+        db.row_factory = sqlite3.Row
+        series = db.execute(
+            "SELECT mu_id FROM series WHERE id=?", (series_id,)
+        ).fetchone()
+        title_field = db.execute(
+            "SELECT selected_source,locked FROM series_metadata_fields"
+            " WHERE series_id=? AND field_name='title'",
+            (series_id,),
+        ).fetchone()
+        imported = db.execute(
+            "SELECT status FROM volumes WHERE series_id=? AND volume_num=1",
+            (series_id,),
+        ).fetchone()
+    assert dict(title_field) == {"selected_source": "mangaupdates", "locked": 0}
+    assert imported["status"] == "downloaded"
+    assert series["mu_id"] == "4451"
+
+
+def test_auto_import_reuses_existing_series_by_exact_anilist_identity(
+    env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with sqlite3.connect(env["db_path"]) as db:
+        db.execute(
+            "INSERT INTO series(id,title,search_pattern,anilist_id,edition_type,root_folder_id)"
+            " VALUES(8,'Stored Canonical Title','Stored Canonical Title',4501,'standard',1)"
+        )
+
+    detected_title = "Provider Discovery Alias"
+    response, _source_path, _scheduled_tasks, _komga_scan = _run_auto_import(
+        env,
+        monkeypatch,
+        detected_title=detected_title,
+        results=[_metadata_result(detected_title, anilist_id=4501)],
+        provider="anilist",
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["imported"] == 1
+    with sqlite3.connect(env["db_path"]) as db:
+        identity_rows = db.execute(
+            "SELECT id FROM series WHERE anilist_id=4501"
+        ).fetchall()
+        imported = db.execute(
+            "SELECT series_id,status FROM volumes WHERE series_id=8"
+        ).fetchall()
+    assert identity_rows == [(8,)]
+    assert imported == [(8, "downloaded")]
+
+
+def test_auto_import_does_not_reuse_nonstandard_exact_anilist_identity(
+    env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with sqlite3.connect(env["db_path"]) as db:
+        db.execute(
+            "INSERT INTO series(id,title,search_pattern,anilist_id,edition_type,root_folder_id)"
+            " VALUES(8,'Stored Omnibus','Stored Omnibus',4551,'omnibus',1)"
+        )
+
+    detected_title = "Standard Provider Title"
+    response, _source_path, scheduled_tasks, _komga_scan = _run_auto_import(
+        env,
+        monkeypatch,
+        detected_title=detected_title,
+        results=[_metadata_result(detected_title, anilist_id=4551)],
+        provider="anilist",
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["imported"] == 1
+    new_series_id = body["new_series"][0]["id"]
+    assert new_series_id != 8
+    assert scheduled_tasks == [f"manual_import:{new_series_id}:metadata"]
+    with sqlite3.connect(env["db_path"]) as db:
+        identities = db.execute(
+            "SELECT id,edition_type FROM series WHERE anilist_id=4551 ORDER BY id"
+        ).fetchall()
+        omnibus_volumes = db.execute(
+            "SELECT COUNT(*) FROM volumes WHERE series_id=8"
+        ).fetchone()[0]
+        imported = db.execute(
+            "SELECT series_id,status FROM volumes"
+            " WHERE series_id=? AND volume_num=1",
+            (new_series_id,),
+        ).fetchall()
+    assert identities == [(8, "omnibus"), (new_series_id, "standard")]
+    assert omnibus_volumes == 0
+    assert imported == [(new_series_id, "downloaded")]
+
+
+def test_auto_import_does_not_reuse_same_title_with_different_anilist_identity(
+    env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    canonical_title = "Shared Canonical Work"
+    with sqlite3.connect(env["db_path"]) as db:
+        db.execute(
+            "INSERT INTO series(id,title,search_pattern,anilist_id,edition_type,root_folder_id)"
+            " VALUES(8,?,?,4601,'standard',1)",
+            (canonical_title, canonical_title),
+        )
+
+    detected_title = "Localized Discovery Name"
+    response, source_path, scheduled_tasks, komga_scan = _run_auto_import(
+        env,
+        monkeypatch,
+        detected_title=detected_title,
+        results=[
+            _metadata_result(
+                canonical_title,
+                anilist_id=4602,
+                romaji_title=detected_title,
+            )
+        ],
+        provider="anilist",
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["imported"] == 0
+    assert body["new_series"] == []
+    assert body["results"] == [
+        {
+            "path": source_path,
+            "ok": False,
+            "message": f"No series match for: {os.path.basename(source_path)}",
+        }
+    ]
+    assert os.path.isfile(source_path)
+    assert os.listdir(env["library_root"]) == []
+    assert scheduled_tasks == []
+    assert komga_scan.await_count == 0
+    with sqlite3.connect(env["db_path"]) as db:
+        identities = db.execute(
+            "SELECT id,anilist_id FROM series WHERE title=? ORDER BY id",
+            (canonical_title,),
+        ).fetchall()
+        extra_series = db.execute(
+            "SELECT id FROM series WHERE id NOT IN (7,8)"
+        ).fetchall()
+        side_effects = db.execute(
+            "SELECT series_id FROM volumes WHERE series_id<>7"
+        ).fetchall()
+        provenance = db.execute(
+            "SELECT series_id FROM series_metadata_fields WHERE series_id<>7"
+        ).fetchall()
+    assert identities == [(8, 4601)]
+    assert extra_series == []
+    assert side_effects == []
+    assert provenance == []
+
+
+def test_auto_import_rejects_ambiguous_mangaupdates_fallback(
+    env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    title = "Shared MangaUpdates Title"
+    response, source_path, scheduled_tasks, komga_scan = _run_auto_import(
+        env,
+        monkeypatch,
+        detected_title=title,
+        results=[
+            _metadata_result(
+                title,
+                anilist_id=None,
+                mu_id="4701",
+                source="mangaupdates",
+            ),
+            _metadata_result(
+                title,
+                anilist_id=None,
+                mu_id="4702",
+                source="mangaupdates",
+            ),
+        ],
+        provider="mangaupdates",
+    )
+
+    _assert_auto_import_left_group_unmatched(
+        env, response, source_path, scheduled_tasks, komga_scan
+    )

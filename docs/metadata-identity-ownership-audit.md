@@ -96,6 +96,40 @@ Mangarr edition types. Search results do not currently include synonyms, and
 aliases therefore cannot disambiguate candidates. These signals remain
 deferred until their semantics and operator-facing behavior are designed.
 
+### Resolved: manual-import auto-add identity safety
+
+Manual-import automatic creation applies the same pure AniList candidate
+resolver as routine metadata refresh. With no persisted series row available,
+there is no stored provider identity to anchor the search: exactly one distinct
+AniList ID must satisfy the existing English/romaji title F1 threshold of
+`0.85`. Duplicate search rows for that ID count as one identity. Multiple
+qualifying identities, no qualifying identity, or a result without an identity
+fails closed; provider ordering is never a tie-breaker.
+
+MangaUpdates fallback follows the existing background-enrichment title F1
+threshold of `0.7`, but creation is more conservative than ranking alone:
+exactly one distinct qualifying MU ID is required. A successful fallback
+persists that MU ID with the new series so later refreshes remain anchored.
+Routine MangaUpdates enrichment keeps its existing stored-ID behavior; this
+creation contract does not change provider precedence or refresh policy.
+
+After candidate resolution, an existing standard-edition series is reused only
+by the selected provider's exact ID. Manual-import auto-add has no edition
+evidence and creates standard editions, so an exact-ID omnibus, deluxe, or
+other non-standard row is not reused. Files in the detected group are bound
+directly to the resolved standard series, so exact-ID reuse also works when the
+local filename and persisted title differ.
+
+If no exact standard-edition identity exists but an active series already has
+the selected provider title, creation fails closed. Auto-import cannot safely
+reuse the different identity or invent a second filesystem destination for the
+same title without operator input.
+
+Ambiguous or unresolved groups remain unmatched for operator handling. They do
+not create a series, provider IDs, title provenance or candidates, volume
+stubs, or a metadata-refresh task, and their source files are not moved,
+linked, copied, or removed.
+
 ### Resolved: initial title ownership by creation path
 
 Every production path initializes title selection and its initial candidate in
@@ -113,7 +147,7 @@ persisted title rather than treating every submitted string as manual:
 | AniList import list | Automated AniList list entry | `anilist` | No |
 | MyAnimeList import list | Automated MAL list entry | `myanimelist` | No |
 | Custom RSS import list | Automated external feed entry | `custom_rss` | No |
-| Manual-import auto-add | Selected metadata search result | Result provider, or `metadata` when unspecified | No |
+| Manual-import auto-add | Unique accepted AniList or MangaUpdates result | Selected provider | No |
 
 Local and explicit adoption titles are locked because the persisted title names
 an existing library folder or an operator choice; `metadataTitle` remains the
