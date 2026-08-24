@@ -379,9 +379,15 @@ def get_metadata_field_states(series_id: int) -> list[dict[str, Any]]:
         selected_source = selected.get("selected_source") or "legacy"
         locked = bool(selected.get("locked", selected_source == "manual"))
 
+        def candidate_is_relinquished(item: dict[str, Any]) -> bool:
+            return not locked and (
+                item["source"] == "manual"
+                or (field_name == "title" and item["source"] == "local")
+            )
+
         def candidate_priority(item: dict[str, Any]) -> tuple[int, str]:
             priority = _priority(field_name, item["source"])
-            if item["source"] == "manual" and not locked:
+            if candidate_is_relinquished(item):
                 priority = 0
             return (-priority, item["source"])
 
@@ -396,7 +402,7 @@ def get_metadata_field_states(series_id: int) -> list[dict[str, Any]]:
             if item["value"] is not None
             and item["value"] != ""
             and item["source"] != "legacy"
-            and (item["source"] != "manual" or locked)
+            and not candidate_is_relinquished(item)
         }
         pending = bool(
             recommended

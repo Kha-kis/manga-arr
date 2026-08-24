@@ -123,10 +123,29 @@ visible, and unlocked provider/API selections can participate in normal
 candidate review. Legacy rows remain compatible with startup provenance
 backfill.
 
-Unlocking a locally adopted title does not currently demote its `local`
-candidate below later provider candidates. Changing recommendation behavior
-after that explicit operator action is a separate source-priority decision and
-is deferred from this creation-time ownership change.
+### Resolved: unlocking a locally owned title relinquishes local priority
+
+A locally adopted title starts as `local` and locked. While locked, its local
+candidate remains current and recommended; differing provider titles remain
+visible as conflicts but cannot become pending or change the persisted title.
+
+Unlocking is an ownership decision, not a value change. The persisted title and
+`selected_source` remain unchanged, and the historical local candidate remains
+visible. For an unlocked `title` only, local candidates are treated like
+unlocked manual candidates: they are demoted below provider candidates and
+excluded from conflict calculation. One credible provider title can therefore
+become recommended without conflicting solely with the relinquished local
+value. Differing provider candidates still conflict with each other and require
+explicit review.
+
+Accepting a provider candidate updates the persisted title and selected source
+through the existing candidate-application path. Relocking preserves that
+value and source and prevents later candidates from becoming pending. Relocking
+also restores ordinary locked candidate ranking and conflict participation, so
+the historical local candidate can rank first again without being applied over
+the protected current value. This rule does not change global `local` priority;
+local volume and chapter observations retain their existing recommendation and
+conflict behavior.
 
 ### Follow-up: equal persisted and candidate values can hide source drift
 
