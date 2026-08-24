@@ -90,6 +90,191 @@ def _anilist_record(**overrides):
     return record
 
 
+def test_anilist_title_only_resolution_rejects_equal_identity_candidates():
+    import metadata_service as service
+    from metadata import MetadataProviderError
+
+    candidates = [
+        _anilist_record(anilist_id=101, mal_id=1001, title="Shared Title"),
+        _anilist_record(anilist_id=202, mal_id=2002, title="Shared Title"),
+    ]
+    with patch.object(service, "anilist_search", AsyncMock(return_value=candidates)):
+        with pytest.raises(MetadataProviderError, match="ambiguous"):
+            _run(
+                service._resolve_anilist_record(
+                    {"title": "Shared Title", "anilist_id": None, "mal_id": None}
+                )
+            )
+
+
+def test_anilist_title_only_resolution_rejects_multiple_accepted_scores():
+    import metadata_service as service
+    from metadata import MetadataProviderError
+
+    candidates = [
+        _anilist_record(anilist_id=101, title="Alpha Beta Gamma"),
+        _anilist_record(anilist_id=202, title="Alpha Beta Gamma Deluxe"),
+    ]
+    with patch.object(service, "anilist_search", AsyncMock(return_value=candidates)):
+        with pytest.raises(MetadataProviderError, match="ambiguous"):
+            _run(
+                service._resolve_anilist_record(
+                    {
+                        "title": "Alpha Beta Gamma",
+                        "anilist_id": None,
+                        "mal_id": None,
+                    }
+                )
+            )
+
+
+def test_anilist_resolution_prefers_exact_stored_mal_identity():
+    import metadata_service as service
+
+    candidates = [
+        _anilist_record(anilist_id=101, mal_id=1001, title="Shared Title"),
+        _anilist_record(anilist_id=202, mal_id=2002, title="Alternate Localized Name"),
+    ]
+    with patch.object(service, "anilist_search", AsyncMock(return_value=candidates)):
+        resolved = _run(
+            service._resolve_anilist_record(
+                {"title": "Shared Title", "anilist_id": None, "mal_id": 2002}
+            )
+        )
+
+    assert resolved["anilist_id"] == 202
+    assert resolved["mal_id"] == 2002
+
+
+def test_anilist_resolution_rejects_candidates_conflicting_with_stored_mal_id():
+    import metadata_service as service
+    from metadata import MetadataProviderError
+
+    candidates = [
+        _anilist_record(anilist_id=101, mal_id=1001, title="Shared Title"),
+    ]
+    with patch.object(service, "anilist_search", AsyncMock(return_value=candidates)):
+        with pytest.raises(MetadataProviderError, match="stored MAL ID"):
+            _run(
+                service._resolve_anilist_record(
+                    {"title": "Shared Title", "anilist_id": None, "mal_id": 9999}
+                )
+            )
+
+
+def test_anilist_title_only_resolution_accepts_one_high_confidence_candidate():
+    import metadata_service as service
+
+    candidates = [
+        _anilist_record(anilist_id=101, title="Clearly Unique Title"),
+        _anilist_record(anilist_id=202, title="Different Work"),
+    ]
+    with patch.object(service, "anilist_search", AsyncMock(return_value=candidates)):
+        resolved = _run(
+            service._resolve_anilist_record(
+                {
+                    "title": "Clearly Unique Title",
+                    "anilist_id": None,
+                    "mal_id": None,
+                }
+            )
+        )
+
+    assert resolved["anilist_id"] == 101
+
+
+def test_anilist_resolution_uses_stored_anilist_id_without_search():
+    import metadata_service as service
+
+    by_id = AsyncMock(return_value=_anilist_record(anilist_id=303, mal_id=3003))
+    search = AsyncMock(side_effect=AssertionError("title search must not run"))
+    with (
+        patch.object(service, "fetch_anilist_by_id", by_id),
+        patch.object(service, "anilist_search", search),
+    ):
+        resolved = _run(
+            service._resolve_anilist_record(
+                {"title": "Cached Title", "anilist_id": 303, "mal_id": 3003}
+            )
+        )
+
+    assert resolved["anilist_id"] == 303
+    by_id.assert_awaited_once_with(303)
+    search.assert_not_awaited()
+
+
+def test_ambiguous_anilist_refresh_preserves_cached_series_metadata(db_path):
+    import metadata_service as service
+
+    _seed_series(
+        db_path,
+        anilist_id=None,
+        mal_id=None,
+        cover_url="https://cdn.example.test/cached.jpg",
+        description="Cached description",
+        pub_year=2018,
+    )
+    candidates = [
+        _anilist_record(
+            anilist_id=101,
+            mal_id=1001,
+            title="Exact Series",
+            description="Wrong first candidate",
+            pub_year=2020,
+        ),
+        _anilist_record(
+            anilist_id=202,
+            mal_id=2002,
+            title="Exact Series",
+            description="Wrong second candidate",
+            pub_year=2021,
+        ),
+    ]
+    with (
+        patch.object(service, "anilist_search", AsyncMock(return_value=candidates)),
+        patch.object(service, "fetch_mu_metadata", AsyncMock(return_value=None)),
+        patch.object(service, "refresh_mangadex_map", AsyncMock(return_value=True)),
+        patch.object(
+            service, "refresh_series_cover", AsyncMock(return_value=(True, None))
+        ),
+    ):
+        result = _run(
+            service.refresh_series_metadata(
+                7, force=True, include_manifest=False, reason="ambiguity_test"
+            )
+        )
+
+    assert result["status"] == "failed"
+    assert "identity ambiguity" in result["errors"][0]
+    with sqlite3.connect(db_path) as db:
+        db.row_factory = sqlite3.Row
+        series = db.execute(
+            "SELECT anilist_id,mal_id,cover_url,description,pub_year,total_volumes,"
+            " total_chapters FROM series WHERE id=7"
+        ).fetchone()
+        source = db.execute(
+            "SELECT status,error,details FROM series_metadata_sources"
+            " WHERE series_id=7 AND source='anilist'"
+        ).fetchone()
+        candidate_count = db.execute(
+            "SELECT COUNT(*) FROM series_metadata_candidates"
+            " WHERE series_id=7 AND source='anilist'"
+        ).fetchone()[0]
+    assert dict(series) == {
+        "anilist_id": None,
+        "mal_id": None,
+        "cover_url": "https://cdn.example.test/cached.jpg",
+        "description": "Cached description",
+        "pub_year": 2018,
+        "total_volumes": 12,
+        "total_chapters": 1,
+    }
+    assert source["status"] == "failed"
+    assert "identity ambiguity" in source["error"]
+    assert '"reason":"identity_ambiguous"' in source["details"]
+    assert candidate_count == 0
+
+
 def test_refresh_uses_exact_id_and_preserves_manual_counts(db_path):
     import metadata_service as service
 
