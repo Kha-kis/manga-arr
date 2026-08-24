@@ -1115,15 +1115,21 @@ async def apply_safe_series_metadata(request: Request, series_id: int):
 
     result = apply_recommended_candidates(series_id)
     applied = len(result["applied"])
+    reconciled = len(result["reconciled"])
     skipped = len(result["skipped"])
-    message = f"Applied {applied} safe metadata candidate(s)"
+    if reconciled and not applied:
+        message = f"Reconciled {reconciled} metadata source(s)"
+    else:
+        message = f"Applied {applied} safe metadata candidate(s)"
+        if reconciled:
+            message += f"; reconciled {reconciled} metadata source(s)"
     if skipped:
         message += f"; left {skipped} for review"
     return _metadata_sources_response(
         request,
         series_id,
         message=message,
-        tone="success" if applied or not skipped else "warning",
+        tone="success" if applied or reconciled or not skipped else "warning",
     )
 
 

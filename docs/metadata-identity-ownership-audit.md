@@ -181,12 +181,32 @@ the protected current value. This rule does not change global `local` priority;
 local volume and chapter observations retain their existing recommendation and
 conflict behavior.
 
-### Follow-up: equal persisted and candidate values can hide source drift
+### Resolved: equal values can reconcile stale source ownership
 
-Candidate application is driven by value differences. If the persisted value
-equals a recommended candidate but `selected_source` is stale or missing,
-`pending` is false and safe apply does not reconcile the provenance source.
-The application value is correct, but the ownership display can remain wrong.
+`pending` remains reserved for value changes. An unlocked, conflict-free field
+instead reports `source_drift` when its recommended, non-relinquished candidate
+has exactly the persisted `series` value but a different `selected_source`.
+The comparison deliberately uses the live series column rather than the stored
+provenance `value_json`, so reconciliation also repairs a stale selection value.
+
+Safe apply handles source drift separately from value changes. It updates the
+field selection value, source, and timestamp while preserving the unlocked
+state. For count and chapter-map fields it also updates the corresponding
+source column. It does not rewrite the application value, create volume stubs,
+populate chapters, refresh the chapter-map timestamp, or trigger any other
+value-change side effect. Eligibility is revalidated after reserving SQLite's
+writer lock, so concurrent candidate, value, source, or lock changes cause the
+safe action to be skipped as stale. Explicit candidate selection also reserves
+the writer before reading its lock, candidate, and persisted value, preventing
+a concurrent manual edit from leaving mixed application/provenance state.
+Explicitly selecting an equal-valued candidate then uses the same source-only
+write behavior.
+
+Locked fields, provider conflicts, and relinquished unlocked manual candidates
+remain ineligible. Unlocked local title candidates retain the relinquishment
+semantics established above. If multiple providers offer the same value, the
+existing deterministic field/source priority chooses the recommendation; this
+policy adds no new provider ordering.
 
 ### Follow-up: existing-library confidence does not express ambiguity
 

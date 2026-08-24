@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from shared import get_db
 
@@ -146,6 +146,28 @@ def _priority(field_name: str, source: str) -> int:
     return _FIELD_SOURCE_PRIORITY.get(field_name, {}).get(
         source, _SOURCE_PRIORITY.get(source, 500)
     )
+
+
+def _candidate_is_relinquished(
+    field_name: str,
+    locked: bool,
+    candidate: dict[str, Any],
+) -> bool:
+    return not locked and (
+        candidate["source"] == "manual"
+        or (field_name == "title" and candidate["source"] == "local")
+    )
+
+
+def _candidate_priority(
+    field_name: str,
+    locked: bool,
+    candidate: dict[str, Any],
+) -> tuple[int, str]:
+    priority = _priority(field_name, candidate["source"])
+    if _candidate_is_relinquished(field_name, locked, candidate):
+        priority = 0
+    return (-priority, candidate["source"])
 
 
 def _display_value(field_name: str, value: Any) -> str:
@@ -379,21 +401,9 @@ def get_metadata_field_states(series_id: int) -> list[dict[str, Any]]:
         selected_source = selected.get("selected_source") or "legacy"
         locked = bool(selected.get("locked", selected_source == "manual"))
 
-        def candidate_is_relinquished(item: dict[str, Any]) -> bool:
-            return not locked and (
-                item["source"] == "manual"
-                or (field_name == "title" and item["source"] == "local")
-            )
-
-        def candidate_priority(item: dict[str, Any]) -> tuple[int, str]:
-            priority = _priority(field_name, item["source"])
-            if candidate_is_relinquished(item):
-                priority = 0
-            return (-priority, item["source"])
-
         candidates = sorted(
             by_field.get(field_name, []),
-            key=candidate_priority,
+            key=lambda item: _candidate_priority(field_name, locked, item),
         )
         recommended = candidates[0] if candidates else None
         candidate_values = {
@@ -402,12 +412,21 @@ def get_metadata_field_states(series_id: int) -> list[dict[str, Any]]:
             if item["value"] is not None
             and item["value"] != ""
             and item["source"] != "legacy"
-            and not candidate_is_relinquished(item)
+            and not _candidate_is_relinquished(field_name, locked, item)
         }
         pending = bool(
             recommended
             and _encode(recommended["value"]) != _encode(current)
             and not locked
+        )
+        conflict = len(candidate_values) > 1
+        source_drift = bool(
+            recommended
+            and not locked
+            and not conflict
+            and not _candidate_is_relinquished(field_name, locked, recommended)
+            and _encode(recommended["value"]) == _encode(current)
+            and recommended["source"] != selected_source
         )
         for candidate in candidates:
             candidate["is_current"] = _encode(candidate["value"]) == _encode(current)
@@ -431,7 +450,8 @@ def get_metadata_field_states(series_id: int) -> list[dict[str, Any]]:
                 "selected_at": selected.get("selected_at"),
                 "locked": locked,
                 "pending": pending,
-                "conflict": len(candidate_values) > 1,
+                "source_drift": source_drift,
+                "conflict": conflict,
                 "recommended": recommended,
                 "candidates": candidates,
                 "alternative_count": alternative_count,
@@ -481,6 +501,7 @@ def apply_metadata_candidate(
         raise ValueError(f"unsupported metadata field: {field_name}")
     config = FIELD_CONFIG[field_name]
     with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
         selected = db.execute(
             "SELECT locked FROM series_metadata_fields WHERE series_id=? AND field_name=?",
             (series_id, field_name),
@@ -511,10 +532,34 @@ def apply_metadata_candidate(
         ):
             raise ValueError("lower counts require explicit confirmation")
 
+        result = _write_metadata_candidate(
+            db,
+            series_id,
+            field_name,
+            source,
+            current,
+            value,
+        )
+
+    return result
+
+
+def _write_metadata_candidate(
+    db: sqlite3.Connection,
+    series_id: int,
+    field_name: str,
+    source: str,
+    current: Any,
+    value: Any,
+) -> dict[str, Any]:
+    config = FIELD_CONFIG[field_name]
+    column = str(config["column"])
+    source_column = config["source_column"]
+    value_changed = _encode(value) != _encode(current)
+    if value_changed:
         stored_value = _value_for_storage(field_name, value)
         assignments = [f"{column}=?"]
         params: list[Any] = [stored_value]
-        source_column = config["source_column"]
         if source_column:
             assignments.append(f"{source_column}=?")
             params.append(source)
@@ -523,26 +568,122 @@ def apply_metadata_candidate(
             params.append(_now())
         params.append(series_id)
         db.execute(f"UPDATE series SET {', '.join(assignments)} WHERE id=?", params)
-        _record_selection(db, series_id, field_name, value, source, locked=False)
+    elif source_column:
+        db.execute(
+            f"UPDATE series SET {source_column}=? WHERE id=?",
+            (source, series_id),
+        )
+    _record_selection(db, series_id, field_name, value, source, locked=False)
 
-        if field_name == "total_volumes" and value:
-            from volumes import create_volume_stubs
+    if value_changed and field_name == "total_volumes" and value:
+        from volumes import create_volume_stubs
 
-            create_volume_stubs(db, series_id, int(value))
-        elif field_name == "chapter_vol_map" and value:
-            from metadata_enrichment import populate_chapters
+        create_volume_stubs(db, series_id, int(value))
+    elif value_changed and field_name == "chapter_vol_map" and value:
+        from metadata_enrichment import populate_chapters
 
-            populate_chapters(db, series_id)
+        populate_chapters(db, series_id)
 
     return {"field_name": field_name, "source": source, "value": value}
 
 
+def _apply_safe_metadata_candidate(
+    series_id: int,
+    field_name: str,
+    expected_source: str,
+    expected_value: Any,
+    *,
+    allow_value_change: bool,
+) -> tuple[Literal["applied", "reconciled"], dict[str, Any]] | None:
+    """Atomically revalidate and apply one previously safe recommendation."""
+    config = FIELD_CONFIG[field_name]
+    column = str(config["column"])
+    with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        current_row = db.execute(
+            f"SELECT {column} FROM series WHERE id=?",
+            (series_id,),
+        ).fetchone()
+        if not current_row:
+            return None
+        current = _value_from_storage(field_name, current_row[column])
+        selected = db.execute(
+            "SELECT selected_source,locked FROM series_metadata_fields"
+            " WHERE series_id=? AND field_name=?",
+            (series_id, field_name),
+        ).fetchone()
+        selected_source = (
+            (selected["selected_source"] if selected else None) or "legacy"
+        )
+        locked = bool(selected["locked"]) if selected else False
+        candidates = [
+            dict(row)
+            for row in db.execute(
+                "SELECT source,value_json FROM series_metadata_candidates"
+                " WHERE series_id=? AND field_name=?",
+                (series_id, field_name),
+            ).fetchall()
+        ]
+        for candidate in candidates:
+            candidate["value"] = _decode(candidate["value_json"])
+        candidates.sort(
+            key=lambda item: _candidate_priority(field_name, locked, item)
+        )
+        recommended = candidates[0] if candidates else None
+        candidate_values = {
+            _encode(candidate["value"])
+            for candidate in candidates
+            if candidate["value"] is not None
+            and candidate["value"] != ""
+            and candidate["source"] != "legacy"
+            and not _candidate_is_relinquished(field_name, locked, candidate)
+        }
+        if (
+            not recommended
+            or locked
+            or len(candidate_values) > 1
+            or _candidate_is_relinquished(field_name, locked, recommended)
+            or recommended["source"] != expected_source
+            or _encode(recommended["value"]) != _encode(expected_value)
+        ):
+            return None
+
+        value = recommended["value"]
+        value_changed = _encode(value) != _encode(current)
+        if value_changed:
+            if not allow_value_change:
+                return None
+            if (
+                field_name in {"total_volumes", "total_chapters"}
+                and isinstance(current, (int, float))
+                and isinstance(value, (int, float))
+                and value < current
+            ):
+                return None
+            category: Literal["applied", "reconciled"] = "applied"
+        else:
+            if selected_source == expected_source:
+                return None
+            category = "reconciled"
+
+        result = _write_metadata_candidate(
+            db,
+            series_id,
+            field_name,
+            expected_source,
+            current,
+            value,
+        )
+    return category, result
+
+
 def apply_recommended_candidates(series_id: int) -> dict[str, Any]:
     applied: list[dict[str, Any]] = []
+    reconciled: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
     for state in get_metadata_field_states(series_id):
         candidate = state["recommended"]
-        if not candidate or not state["pending"]:
+        if not candidate or not (state["pending"] or state["source_drift"]):
             continue
         if state["conflict"]:
             skipped.append({"field_name": state["field_name"], "reason": "conflict"})
@@ -550,12 +691,22 @@ def apply_recommended_candidates(series_id: int) -> dict[str, Any]:
         if candidate["is_decrease"]:
             skipped.append({"field_name": state["field_name"], "reason": "decrease"})
             continue
-        applied.append(
-            apply_metadata_candidate(
-                series_id, state["field_name"], candidate["source"]
-            )
+        safe_result = _apply_safe_metadata_candidate(
+            series_id,
+            state["field_name"],
+            candidate["source"],
+            candidate["value"],
+            allow_value_change=bool(state["pending"]),
         )
-    return {"applied": applied, "skipped": skipped}
+        if safe_result is None:
+            skipped.append({"field_name": state["field_name"], "reason": "stale"})
+            continue
+        category, result = safe_result
+        if category == "applied":
+            applied.append(result)
+        else:
+            reconciled.append(result)
+    return {"applied": applied, "reconciled": reconciled, "skipped": skipped}
 
 
 def build_metadata_repair_report(series_id: int) -> dict[str, Any]:
@@ -564,6 +715,7 @@ def build_metadata_repair_report(series_id: int) -> dict[str, Any]:
         "series_id": series_id,
         "fields": fields,
         "pending_count": sum(1 for field in fields if field["pending"]),
+        "source_drift_count": sum(1 for field in fields if field["source_drift"]),
         "conflict_count": sum(1 for field in fields if field["conflict"]),
         "locked_count": sum(1 for field in fields if field["locked"]),
         "candidate_count": sum(len(field["candidates"]) for field in fields),
