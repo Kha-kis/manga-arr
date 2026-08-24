@@ -683,6 +683,16 @@ def test_api_v1_create_series_adds_row_stubs_and_history(env):
             " AND series_id=?",
             (series_id,),
         ).fetchone()
+        title_selection = c.execute(
+            "SELECT value_json,selected_source,locked FROM series_metadata_fields"
+            " WHERE series_id=? AND field_name='title'",
+            (series_id,),
+        ).fetchone()
+        title_candidate = c.execute(
+            "SELECT value_json FROM series_metadata_candidates"
+            " WHERE series_id=? AND field_name='title' AND source='api'",
+            (series_id,),
+        ).fetchone()
 
     assert dict(row) == {
         "search_pattern": "New Manga Deluxe",
@@ -710,6 +720,49 @@ def test_api_v1_create_series_adds_row_stubs_and_history(env):
         "source_title": "New Manga",
         "data": '{"total_volumes": 3, "status": "releasing"}',
     }
+    assert dict(title_selection) == {
+        "value_json": '"New Manga"',
+        "selected_source": "api",
+        "locked": 0,
+    }
+    assert title_candidate["value_json"] == '"New Manga"'
+
+    import metadata_service
+    from metadata_provenance import get_metadata_field_states
+
+    metadata_service._apply_anilist_record(
+        series_id,
+        {
+            "anilist_id": 1234,
+            "mal_id": 5678,
+            "title": "AniList Canonical Title",
+            "cover_url": "https://example.invalid/provider-cover.jpg",
+            "status": "FINISHED",
+            "description": "Provider description",
+            "pub_year": 2026,
+            "volumes": 3,
+            "chapters": 30,
+        },
+    )
+    title_state = next(
+        field
+        for field in get_metadata_field_states(series_id)
+        if field["field_name"] == "title"
+    )
+    with sqlite3.connect(env) as c:
+        persisted_title = c.execute(
+            "SELECT title FROM series WHERE id=?", (series_id,)
+        ).fetchone()[0]
+    assert persisted_title == "New Manga"
+    assert title_state["selected_source"] == "api"
+    assert title_state["locked"] is False
+    assert title_state["pending"] is True
+    assert title_state["conflict"] is True
+    assert next(
+        candidate
+        for candidate in title_state["candidates"]
+        if candidate["source"] == "anilist"
+    )["value"] == "AniList Canonical Title"
 
 
 def test_api_v1_create_series_returns_existing_active_match(env):

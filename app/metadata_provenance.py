@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
@@ -285,6 +286,24 @@ def record_metadata_selections(
     else:
         with get_db() as connection:
             write(connection)
+
+
+def record_initial_title(
+    series_id: int,
+    title: str,
+    source: str,
+    *,
+    locked: bool,
+    db: sqlite3.Connection,
+) -> None:
+    """Initialize title ownership inside the series creation transaction."""
+    _record_selection(db, series_id, "title", title, source, locked=locked)
+    record_metadata_candidates(
+        series_id,
+        source,
+        {"title": title},
+        db=db,
+    )
 
 
 def record_manual_metadata(

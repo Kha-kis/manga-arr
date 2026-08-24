@@ -96,15 +96,37 @@ Mangarr edition types. Search results do not currently include synonyms, and
 aliases therefore cannot disambiguate candidates. These signals remain
 deferred until their semantics and operator-facing behavior are designed.
 
-### Follow-up: initial title ownership is not initialized consistently
+### Resolved: initial title ownership by creation path
 
-Manual edit paths explicitly lock title ownership, but series creation and
-existing-library adoption insert the title after startup provenance backfill has
-already run. Until a later backfill or manual edit, title can appear as `legacy`
-with no selected row even when it was intentionally supplied by the operator.
-An AniList title candidate can consequently appear as a safe pending change.
-Creation-path ownership needs a separate decision because search additions,
-API additions, and folder adoption do not all imply the same title owner.
+Every production path initializes title selection and its initial candidate in
+the same transaction as the new series row. Ownership follows the origin of the
+persisted title rather than treating every submitted string as manual:
+
+| Creation path | Title origin | Selected source | Locked |
+| --- | --- | --- | --- |
+| Browser search/add with AniList result | Selected AniList result | `anilist` | No |
+| Browser search/add with MangaUpdates fallback | Selected MangaUpdates result | `mangaupdates` | No |
+| Browser add without a provider identity | Explicit submitted title | `manual` | Yes |
+| API series creation | API caller payload | `api` | No |
+| Existing-library folder adoption without `title` | Local folder name | `local` | Yes |
+| Existing-library folder adoption with `title` | Explicit adoption title | `manual` | Yes |
+| AniList import list | Automated AniList list entry | `anilist` | No |
+| MyAnimeList import list | Automated MAL list entry | `myanimelist` | No |
+| Custom RSS import list | Automated external feed entry | `custom_rss` | No |
+| Manual-import auto-add | Selected metadata search result | Result provider, or `metadata` when unspecified | No |
+
+Local and explicit adoption titles are locked because the persisted title names
+an existing library folder or an operator choice; `metadataTitle` remains the
+search pattern and does not take ownership of the library title. API and
+automated paths are deliberately not classified as manual. Their origin remains
+visible, and unlocked provider/API selections can participate in normal
+candidate review. Legacy rows remain compatible with startup provenance
+backfill.
+
+Unlocking a locally adopted title does not currently demote its `local`
+candidate below later provider candidates. Changing recommendation behavior
+after that explicit operator action is a separate source-priority decision and
+is deferred from this creation-time ownership change.
 
 ### Follow-up: equal persisted and candidate values can hide source drift
 

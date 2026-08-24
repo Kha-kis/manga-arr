@@ -22,6 +22,7 @@ from download_identity import (
     normalize_download_protocol,
 )
 from events import add_history
+from metadata_provenance import record_initial_title
 from routers._templates import templates
 from shared import (
     build_order_by,
@@ -1616,7 +1617,16 @@ async def add_series(
                 1 if _monitored else 0,
             ),
         )
+        if cur.lastrowid is None:
+            raise RuntimeError("series insert did not return an id")
         series_id = cur.lastrowid
+        record_initial_title(
+            series_id,
+            title,
+            "anilist" if anilist_id else "mangaupdates" if mu_id else "manual",
+            locked=not (anilist_id or mu_id),
+            db=db,
+        )
         if (
             total_volumes
             and total_volumes > 0
