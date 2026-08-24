@@ -493,6 +493,98 @@ def test_mangaupdates_records_but_does_not_apply_locked_fields(provenance_db):
     ]
 
 
+def test_mangaupdates_refresh_uses_stored_identity_for_same_title_results(
+    provenance_db,
+):
+    import metadata_enrichment
+
+    with sqlite3.connect(provenance_db) as db:
+        db.execute(
+            "UPDATE series SET mu_id='stored-id',vol_count_source='anilist' WHERE id=7"
+        )
+    with patch.object(
+        metadata_enrichment,
+        "mu_search",
+        AsyncMock(
+            return_value=[
+                {
+                    "title": "Existing Title",
+                    "mu_id": "different-id",
+                    "volumes": 20,
+                },
+                {
+                    "title": "Existing Title",
+                    "mu_id": "stored-id",
+                    "volumes": 14,
+                },
+            ]
+        ),
+    ):
+        result = asyncio.run(metadata_enrichment.fetch_mu_metadata(7, "Existing Title"))
+
+    assert result == {"mu_id": "stored-id", "volumes": 14, "updated_vols": True}
+    with sqlite3.connect(provenance_db) as db:
+        db.row_factory = sqlite3.Row
+        series = db.execute(
+            "SELECT mu_id,total_volumes,vol_count_source FROM series WHERE id=7"
+        ).fetchone()
+        candidates = db.execute(
+            "SELECT field_name,value_json FROM series_metadata_candidates"
+            " WHERE series_id=7 AND source='mangaupdates' ORDER BY field_name"
+        ).fetchall()
+    assert dict(series) == {
+        "mu_id": "stored-id",
+        "total_volumes": 14,
+        "vol_count_source": "mangaupdates",
+    }
+    assert [tuple(row) for row in candidates] == [
+        ("mu_id", '"stored-id"'),
+        ("total_volumes", "14"),
+    ]
+
+
+def test_mangaupdates_refresh_preserves_cache_when_stored_identity_is_absent(
+    provenance_db,
+):
+    import metadata_enrichment
+
+    with sqlite3.connect(provenance_db) as db:
+        db.execute(
+            "UPDATE series SET mu_id='stored-id',vol_count_source='anilist' WHERE id=7"
+        )
+    with patch.object(
+        metadata_enrichment,
+        "mu_search",
+        AsyncMock(
+            return_value=[
+                {
+                    "title": "Existing Title",
+                    "mu_id": "different-id",
+                    "volumes": 20,
+                }
+            ]
+        ),
+    ):
+        result = asyncio.run(metadata_enrichment.fetch_mu_metadata(7, "Existing Title"))
+
+    assert result is None
+    with sqlite3.connect(provenance_db) as db:
+        db.row_factory = sqlite3.Row
+        series = db.execute(
+            "SELECT mu_id,total_volumes,vol_count_source FROM series WHERE id=7"
+        ).fetchone()
+        candidate_count = db.execute(
+            "SELECT COUNT(*) FROM series_metadata_candidates"
+            " WHERE series_id=7 AND source='mangaupdates'"
+        ).fetchone()[0]
+    assert dict(series) == {
+        "mu_id": "stored-id",
+        "total_volumes": 12,
+        "vol_count_source": "anilist",
+    }
+    assert candidate_count == 0
+
+
 def test_mangadex_records_but_does_not_apply_locked_map_or_id(provenance_db):
     import metadata_enrichment
     from metadata_provenance import record_manual_metadata

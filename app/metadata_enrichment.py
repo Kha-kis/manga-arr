@@ -899,9 +899,22 @@ async def fetch_mu_metadata(
         prec = len(inter) / len(r_words)
         return 2 * rec * prec / (rec + prec) if (rec + prec) else 0.0
 
-    best = max(results, key=lambda r: _f1(r["title"]))
-    if _f1(best["title"]) < 0.7:
-        return None  # not confident enough for silent background enrichment
+    stored_mu_id = str(s_row["mu_id"] or "").strip()
+    if stored_mu_id:
+        best = next(
+            (
+                result
+                for result in results
+                if str(result.get("mu_id") or "").strip() == stored_mu_id
+            ),
+            None,
+        )
+        if best is None:
+            return None
+    else:
+        best = max(results, key=lambda r: _f1(r["title"]))
+        if _f1(best["title"]) < 0.7:
+            return None  # not confident enough for silent background enrichment
 
     matched_mu_id = best["mu_id"]
     mu_vol_count = best[
