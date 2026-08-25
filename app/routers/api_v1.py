@@ -15,6 +15,7 @@ import re
 import shutil
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -1108,7 +1109,9 @@ def _match_confidence(query: str, title: str) -> int:
     return int(round(difflib.SequenceMatcher(None, q, t).ratio() * 100))
 
 
-def _metadata_match_payload(query: str, result: dict) -> dict:
+def _metadata_match_payload(
+    query: str, result: dict[str, Any]
+) -> dict[str, Any]:
     title = result.get("title") or ""
     return {
         "title": title,
@@ -1123,6 +1126,150 @@ def _metadata_match_payload(query: str, result: dict) -> dict:
         "chapters": result.get("chapters"),
         "year": result.get("pub_year"),
         "description": result.get("description") or "",
+    }
+
+
+def _unmapped_match_basis(query: str, match: dict[str, Any]) -> str:
+    source = str(match.get("source") or "").strip().lower()
+    anilist_url = re.search(r"anilist\.co/(?:manga|anime)/(\d+)", query)
+    if (
+        source == "anilist"
+        and anilist_url
+        and str(match.get("anilistId") or "") == anilist_url.group(1)
+    ):
+        return "exact_provider_id"
+
+    normalized_query = normalize(query)
+    normalized_title = normalize(str(match.get("title") or ""))
+    if normalized_query and normalized_query == normalized_title:
+        return "exact_title"
+    if normalized_query and normalized_title and (
+        normalized_query in normalized_title or normalized_title in normalized_query
+    ):
+        return "title_contains"
+    return "fuzzy_title"
+
+
+def _unmapped_provider_identity(
+    match: dict[str, Any],
+) -> tuple[str, str] | None:
+    source = str(match.get("source") or "").strip().lower()
+    anilist_id = match.get("anilistId")
+    manga_updates_id = match.get("mangaUpdatesId")
+    mal_id = match.get("malId")
+    if source == "anilist":
+        return (
+            ("anilist", str(anilist_id))
+            if anilist_id not in (None, "")
+            else None
+        )
+    if source == "mangaupdates":
+        return (
+            ("mangaupdates", str(manga_updates_id))
+            if manga_updates_id not in (None, "")
+            else None
+        )
+    if source in {"mal", "myanimelist"} and mal_id not in (None, ""):
+        return "myanimelist", str(mal_id)
+    if source:
+        return None
+
+    if anilist_id not in (None, ""):
+        return "anilist", str(anilist_id)
+    if manga_updates_id not in (None, ""):
+        return "mangaupdates", str(manga_updates_id)
+    if mal_id not in (None, ""):
+        return "myanimelist", str(mal_id)
+    return None
+
+
+def _unmapped_match_order_key(
+    match: dict[str, Any],
+) -> tuple[int, str, str, str, str, str]:
+    identity = _unmapped_provider_identity(match)
+    identity_source, provider_id = identity or ("", "")
+    evidence = json.dumps(match, sort_keys=True, separators=(",", ":"), default=str)
+    return (
+        -int(match["confidence"]),
+        str(match.get("source") or "").strip().lower(),
+        identity_source,
+        provider_id,
+        normalize(str(match.get("title") or "")),
+        evidence,
+    )
+
+
+def _prepare_unmapped_metadata_matches(
+    query: str, results: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], dict[str, object]]:
+    candidates = []
+    for result in results:
+        match = _metadata_match_payload(query, result)
+        match["matchBasis"] = _unmapped_match_basis(query, match)
+        candidates.append(match)
+    candidates.sort(key=_unmapped_match_order_key)
+
+    matches = []
+    seen_identities: set[tuple[str, str]] = set()
+    for match in candidates:
+        identity = _unmapped_provider_identity(match)
+        if identity is not None:
+            if identity in seen_identities:
+                continue
+            seen_identities.add(identity)
+        matches.append(match)
+
+    for index, match in enumerate(matches):
+        identity = _unmapped_provider_identity(match)
+        match["matchKey"] = (
+            f"{identity[0]}:{identity[1]}"
+            if identity is not None
+            else f"candidate:{index}"
+        )
+
+    if not matches:
+        return matches, {
+            "matchState": "none",
+            "ambiguous": False,
+            "topConfidence": None,
+            "topMatchCount": 0,
+            "confidenceGap": None,
+        }
+
+    top_confidence = int(matches[0]["confidence"])
+    top_match_count = sum(
+        int(match["confidence"]) == top_confidence for match in matches
+    )
+    top_tie = top_match_count > 1
+    previous_confidence: int | None = None
+    rank = 0
+    for index, match in enumerate(matches):
+        confidence = int(match["confidence"])
+        if confidence != previous_confidence:
+            rank = index + 1
+            previous_confidence = confidence
+        is_top_match = confidence == top_confidence
+        match["rank"] = rank
+        match["isTopMatch"] = is_top_match
+        match["isTopTie"] = is_top_match and top_tie
+
+    lower_confidence = next(
+        (
+            int(match["confidence"])
+            for match in matches
+            if int(match["confidence"]) < top_confidence
+        ),
+        None,
+    )
+    confidence_gap = (
+        top_confidence - lower_confidence if lower_confidence is not None else None
+    )
+    return matches, {
+        "matchState": "ambiguous" if top_tie else "unique",
+        "ambiguous": top_tie,
+        "topConfidence": top_confidence,
+        "topMatchCount": top_match_count,
+        "confidenceGap": confidence_gap,
     }
 
 
@@ -6526,8 +6673,9 @@ async def api_v1_root_folder_unmapped_matches(
 
     search_query = (query or "").strip() or folder["name"]
     results, source = await search_series(search_query)
-    matches = [_metadata_match_payload(search_query, item) for item in results]
-    matches.sort(key=lambda item: item["confidence"], reverse=True)
+    matches, match_summary = _prepare_unmapped_metadata_matches(
+        search_query, results
+    )
     return JSONResponse(
         {
             "rootFolderId": scan["rootFolderId"],
@@ -6535,6 +6683,7 @@ async def api_v1_root_folder_unmapped_matches(
             "query": search_query,
             "source": source,
             "matches": matches,
+            **match_summary,
         }
     )
 
