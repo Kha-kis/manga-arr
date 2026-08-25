@@ -285,6 +285,29 @@
                 No metadata matches
               </div>
 
+              <div class="settings-unmapped-match-notice is-unique"
+                   x-show="!matchLoading && matchState === 'unique'" x-cloak>
+                <i class="bi bi-check2-circle text-jade" aria-hidden="true"></i>
+                <div>
+                  <div class="fw-semibold">One metadata match has the strongest lexical score.</div>
+                  <div class="text-xs text-muted-3" x-show="confidenceGap !== null"
+                       x-text="`The next alternative is ${confidenceGap} points lower.`"></div>
+                </div>
+              </div>
+
+              <div class="settings-unmapped-match-notice is-ambiguous"
+                   x-show="!matchLoading && matchState === 'ambiguous'" x-cloak>
+                <i class="bi bi-exclamation-triangle-fill text-gold" aria-hidden="true"></i>
+                <div>
+                  <div class="fw-semibold">Multiple equally strong metadata matches found. Choose the correct series.</div>
+                  <div class="text-xs text-muted-3">
+                    <span x-text="`${topMatchCount} proposals share a score of ${topConfidence}.`"></span>
+                    <span x-show="confidenceGap !== null"
+                          x-text="` The next alternative is ${confidenceGap} points lower.`"></span>
+                  </div>
+                </div>
+              </div>
+
               <div class="table-wrap mb-3" x-show="matches.length">
                 <table class="table table-sm mb-0">
                   <thead>
@@ -297,15 +320,32 @@
                     </tr>
                   </thead>
                   <tbody>
-                    <template x-for="match in matches" :key="match.source + ':' + (match.anilistId || match.mangaUpdatesId || match.title)">
-                      <tr :class="selectedMatch === match ? 'settings-unmapped-selected' : ''">
+                    <template x-for="match in matches" :key="match.matchKey">
+                      <tr :class="{
+                        'settings-unmapped-selected': selectedMatch === match,
+                        'settings-unmapped-top-match': match.isTopMatch && !match.isTopTie,
+                        'settings-unmapped-top-tie': match.isTopTie
+                      }">
                         <td>
-                          <div class="settings-base-cell fw-semibold" x-text="match.title"></div>
+                          <div class="d-flex align-items-center gap-2 flex-wrap">
+                            <span class="settings-base-cell fw-semibold" x-text="match.title"></span>
+                            <span class="badge-status badge-downloaded" x-show="match.isTopMatch && !match.isTopTie">Strongest</span>
+                            <span class="badge-status badge-wanted" x-show="match.isTopTie">Top tie</span>
+                            <span class="text-2xs text-muted-3" x-text="`Rank ${match.rank}`"></span>
+                          </div>
+                          <div class="settings-mono-cell text-muted-3 d-flex gap-2 flex-wrap">
+                            <span x-show="match.anilistId">AniList ID <span x-text="match.anilistId"></span></span>
+                            <span x-show="match.malId">MAL ID <span x-text="match.malId"></span></span>
+                            <span x-show="match.mangaUpdatesId">MangaUpdates ID <span x-text="match.mangaUpdatesId"></span></span>
+                          </div>
                           <div class="settings-mono-cell text-muted-3"
                                x-text="[match.year, match.status].filter(Boolean).join(' · ') || '—'"></div>
                         </td>
                         <td><span class="badge-status badge-unknown" x-text="match.source || 'metadata'"></span></td>
-                        <td><span class="badge-status badge-grabbed" x-text="match.confidence"></span></td>
+                        <td>
+                          <span class="badge-status badge-grabbed" x-text="match.confidence"></span>
+                          <div class="text-2xs text-muted-3 mt-1" x-text="formatMatchBasis(match.matchBasis)"></div>
+                        </td>
                         <td x-text="match.volumes || '—'"></td>
                         <td class="text-end">
                           <button type="button" class="btn btn-outline-ember btn-sm"
@@ -911,9 +951,30 @@
 .settings-unmapped-matches {
   margin-bottom: var(--space-xl);
 }
+.settings-unmapped-match-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  border: var(--line-hairline) solid var(--edge-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  background: var(--ink-3);
+}
+.settings-unmapped-match-notice.is-unique {
+  border-color: var(--jade-soft);
+  background: var(--jade-tint);
+}
+.settings-unmapped-match-notice.is-ambiguous {
+  border-color: var(--gold-soft);
+  background: var(--gold-tint);
+}
 .settings-unmapped-selected {
   background: var(--jade-bg);
 }
+.settings-unmapped-top-match { box-shadow: inset var(--line-strong) 0 0 var(--jade); }
+.settings-unmapped-top-tie { box-shadow: inset var(--line-strong) 0 0 var(--gold); }
 .settings-unmapped-selected-copy {
   color: var(--text-2);
   font-size: var(--text-base);
@@ -943,6 +1004,11 @@ function unmappedAdoption() {
     matchLoading: false,
     matchQuery: '',
     matches: [],
+    matchState: 'none',
+    ambiguous: false,
+    topConfidence: null,
+    topMatchCount: 0,
+    confidenceGap: null,
     selectedMatch: null,
     adopting: false,
     adopted: false,
@@ -965,6 +1031,15 @@ function unmappedAdoption() {
         unit += 1;
       }
       return `${value.toFixed(value >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+    },
+    formatMatchBasis(basis) {
+      const labels = {
+        exact_provider_id: 'Exact provider ID',
+        exact_title: 'Exact title',
+        title_contains: 'Title contains',
+        fuzzy_title: 'Fuzzy title'
+      };
+      return labels[basis] || 'Lexical title';
     },
     async scan(rootId) {
       this.loadingRootId = rootId;
@@ -993,6 +1068,11 @@ function unmappedAdoption() {
       this.languageProfileId = '';
       this.matchQuery = folder.name || '';
       this.matches = [];
+      this.matchState = 'none';
+      this.ambiguous = false;
+      this.topConfidence = null;
+      this.topMatchCount = 0;
+      this.confidenceGap = null;
       this.selectedMatch = null;
       this.adopted = false;
       this.lastSeriesUrl = '';
@@ -1007,6 +1087,11 @@ function unmappedAdoption() {
       this.languageProfileId = '';
       this.matchQuery = '';
       this.matches = [];
+      this.matchState = 'none';
+      this.ambiguous = false;
+      this.topConfidence = null;
+      this.topMatchCount = 0;
+      this.confidenceGap = null;
       this.selectedMatch = null;
       this.matchLoading = false;
       this.adopted = false;
@@ -1023,9 +1108,19 @@ function unmappedAdoption() {
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.description || data.error || data.message || 'Match search failed');
         this.matches = data.matches || [];
+        this.matchState = data.matchState;
+        this.ambiguous = data.ambiguous;
+        this.topConfidence = data.topConfidence;
+        this.topMatchCount = data.topMatchCount;
+        this.confidenceGap = data.confidenceGap;
         this.selectedMatch = null;
       } catch (err) {
         this.matches = [];
+        this.matchState = 'none';
+        this.ambiguous = false;
+        this.topConfidence = null;
+        this.topMatchCount = 0;
+        this.confidenceGap = null;
         this.selectedMatch = null;
         showToast(err.message || 'Match search failed', 'error');
       } finally {

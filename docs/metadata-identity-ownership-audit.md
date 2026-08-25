@@ -208,13 +208,38 @@ semantics established above. If multiple providers offer the same value, the
 existing deterministic field/source priority chooses the recommendation; this
 policy adds no new provider ordering.
 
-### Follow-up: existing-library confidence does not express ambiguity
+### Resolved: existing-library matches express result-set ambiguity
 
-Unmapped-folder matching scores the canonical candidate title and can return
-multiple candidates with the same confidence. This is currently data-safe
-because the operator must select a candidate, but the response does not label a
-tie or incorporate aliases, year, or external IDs into confidence. This is a UX
-and matching-policy follow-up, not part of the selected identity fix.
+Unmapped-folder `confidence` remains the backwards-compatible lexical title
+score: normalized exact title, title containment, or fuzzy title similarity.
+Ambiguity is separate result-set state. A result is `unique` when exactly one
+distinct provider identity has the highest score, `ambiguous` when multiple
+distinct identities share it, and `none` when no usable proposals exist. Exact
+top-score ties are ambiguous; lower-scoring alternatives are not. No near-tie
+threshold was added.
+
+AniList identity is keyed by AniList ID and MangaUpdates identity by
+MangaUpdates ID. Duplicate rows for one stable provider identity are collapsed
+deterministically and cannot create a false tie. Different provider identities
+remain distinct even when their titles are identical. Identity-less rows are
+kept separate so missing IDs cannot manufacture false certainty. Equal scores
+share a rank, while stable source, provider-ID, title, and evidence ordering
+make JSON and UI display independent of provider return order.
+
+The response exposes match state, top score/count, the gap to the next lower
+distinct score, and per-candidate rank/top/basis annotations. It also exposes a
+source-specific `matchKey` so direct UI consumers can reconcile rows without
+colliding on cross-provider IDs. Publication year,
+status, provider IDs, and other existing evidence remain informational only;
+none automatically resolves a tie. Matching still proposes, the operator still
+chooses any candidate, and adoption persists only that explicit selection.
+
+AniList URLs whose returned AniList ID matches the URL are labeled as exact
+provider-ID lookups without changing their lexical confidence. Bare numeric
+queries are not labeled exact because `search_series()` may fall back from ID
+lookup to title search without exposing that resolution path. Carrying exact
+numeric-query provenance or provider aliases through the search API remains a
+separately designed improvement.
 
 ### Follow-up: candidate confidence can overstate fuzzy AniList resolution
 
