@@ -31,6 +31,11 @@ import httpx
 
 from events import log_event
 from parsing import normalize
+from qbit_auth import (
+    QbitLoginMode,
+    classify_qbit_login,
+    is_valid_qbit_version_response,
+)
 from shared import get_cfg, get_db
 
 
@@ -370,9 +375,16 @@ async def qbit_grab(
             r = await hc.post(
                 f"{host}/api/v2/auth/login", data={"username": user, "password": pw}
             )
-            if "Ok" not in r.text:
+            login_mode = classify_qbit_login(r.status_code, r.text)
+            if login_mode is QbitLoginMode.REJECTED:
                 # Auth fail = real client-health problem → trip CB
                 return False, None, False
+            if login_mode is QbitLoginMode.BYPASS_PROBE_REQUIRED:
+                proof = await hc.get(f"{host}/api/v2/app/version")
+                if not is_valid_qbit_version_response(
+                    proof.status_code, proof.text
+                ):
+                    return False, None, False
 
             # For non-magnet URLs, pre-fetch the .torrent file from within the
             # container (where Prowlarr/indexer URLs are reachable) and upload
@@ -512,8 +524,15 @@ async def qbit_remove(
             r = await http_client.post(
                 f"{host}/api/v2/auth/login", data={"username": user, "password": pw}
             )
-            if "Ok" not in r.text:
+            login_mode = classify_qbit_login(r.status_code, r.text)
+            if login_mode is QbitLoginMode.REJECTED:
                 return False
+            if login_mode is QbitLoginMode.BYPASS_PROBE_REQUIRED:
+                proof = await http_client.get(f"{host}/api/v2/app/version")
+                if not is_valid_qbit_version_response(
+                    proof.status_code, proof.text
+                ):
+                    return False
             r2 = await http_client.post(
                 f"{host}/api/v2/torrents/delete",
                 data={

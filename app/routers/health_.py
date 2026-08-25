@@ -9,6 +9,11 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from routers._templates import templates
+from qbit_auth import (
+    QbitLoginMode,
+    classify_qbit_login,
+    is_valid_qbit_version_response,
+)
 from shared import get_cfg, get_db
 
 router = APIRouter()
@@ -206,9 +211,15 @@ async def build_health_payload() -> dict:
         async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT_HIGH) as client:
             r = await client.post(f"{host}/api/v2/auth/login",
                 data={'username': c.get('username') or '', 'password': c.get('password') or ''})
-            if 'Ok' not in r.text:
+            login_mode = classify_qbit_login(r.status_code, r.text)
+            if login_mode is QbitLoginMode.REJECTED:
                 return False, 'Auth failed'
             r2 = await client.get(f"{host}/api/v2/app/version")
+            if (
+                login_mode is QbitLoginMode.BYPASS_PROBE_REQUIRED
+                and not is_valid_qbit_version_response(r2.status_code, r2.text)
+            ):
+                return False, f'Auth-bypass proof failed (HTTP {r2.status_code})'
             return True, f"qBittorrent {r2.text.strip()}"
 
     async def _sab():

@@ -292,6 +292,11 @@ from clients import (  # noqa: F401
     nzbget_grab, blackhole_grab,
     grab_url,
 )
+from qbit_auth import (
+    QbitLoginMode,
+    classify_qbit_login,
+    is_valid_qbit_version_response,
+)
 
 
 # ── Filename / release-metadata / file-type helpers moved to files.py ────────
@@ -608,7 +613,14 @@ async def lifespan(app: FastAPI):
                     f"{_qhost}/api/v2/auth/login",
                     data={'username': _quser, 'password': _qpw}
                 )
-                if 'Ok' in r.text:
+                login_mode = classify_qbit_login(r.status_code, r.text)
+                bypass_proven = login_mode is QbitLoginMode.NORMAL_AUTH
+                if login_mode is QbitLoginMode.BYPASS_PROBE_REQUIRED:
+                    proof = await client.get(f"{_qhost}/api/v2/app/version")
+                    bypass_proven = is_valid_qbit_version_response(
+                        proof.status_code, proof.text
+                    )
+                if bypass_proven:
                     await client.post(
                         f"{_qhost}/api/v2/torrents/createCategory",
                         data={'category': _qcat, 'savePath': _qbit_save}
