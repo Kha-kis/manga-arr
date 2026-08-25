@@ -241,10 +241,23 @@ lookup to title search without exposing that resolution path. Carrying exact
 numeric-query provenance or provider aliases through the search API remains a
 separately designed improvement.
 
-### Follow-up: candidate confidence can overstate fuzzy AniList resolution
+### Resolved: AniList candidate confidence reflects current identity evidence
 
-After a title-only AniList resolution passes the `0.85` threshold, all fields
-are recorded with confidence `1.0`. The persisted identity may be acceptable,
-but the candidate record does not preserve the actual title-match confidence.
-Changing this requires carrying resolution evidence through the service and is
-separate from identity anchoring.
+AniList candidate confidence represents the evidence that the currently
+resolved AniList record belongs to the intended series. A refresh anchored by a
+stored AniList ID records confidence `1.0`. A unique result anchored by the
+stored MAL ID also records `1.0`. Title-only resolution records the actual,
+unrounded accepted English/romaji word-F1 score; the acceptance threshold
+remains `0.85`.
+
+Every field observed from one resolved AniList record receives the same
+identity-resolution confidence. This value is exposed with candidate state for
+provenance diagnostics, but recommendation, conflict, pending, source-drift,
+locking, and safe-apply decisions remain source/field-priority based. Confidence
+is not a recommendation weight or a field-specific truth probability.
+
+Candidate confidence describes the current observation. After a fuzzy
+title-resolved refresh persists the AniList ID, a later exact-ID refresh may
+legitimately replace that candidate confidence with `1.0`. The current schema
+does not preserve original discovery confidence as historical provenance;
+adding that separate lifecycle remains intentionally deferred.

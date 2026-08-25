@@ -600,7 +600,7 @@ def test_auto_import_creates_series_for_one_unique_acceptable_anilist_result(
     ]
 
 
-def test_auto_import_deduplicates_accepted_rows_with_same_anilist_id(
+def test_auto_import_shared_resolver_selects_strongest_duplicate_anilist_row(
     env: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     title = "Duplicate Alpha Beta"
@@ -609,8 +609,8 @@ def test_auto_import_deduplicates_accepted_rows_with_same_anilist_id(
         monkeypatch,
         detected_title=title,
         results=[
-            _metadata_result(title, anilist_id=4401),
             _metadata_result(f"{title} Deluxe", anilist_id=4401),
+            _metadata_result(title, anilist_id=4401),
         ],
         provider="anilist",
     )

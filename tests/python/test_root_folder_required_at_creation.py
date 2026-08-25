@@ -364,8 +364,14 @@ def test_browser_manual_title_stays_owned_across_metadata_refresh(env, monkeypat
     with (
         patch.object(
             metadata_service,
-            "_resolve_anilist_record",
-            AsyncMock(return_value=record),
+            "_resolve_anilist_resolution",
+            AsyncMock(
+                return_value=metadata_service.AniListResolution(
+                    record=record,
+                    confidence=1.0,
+                    basis="stored_anilist_id",
+                )
+            ),
         ),
         patch.object(
             metadata_service, "fetch_mu_metadata", AsyncMock(return_value=None)

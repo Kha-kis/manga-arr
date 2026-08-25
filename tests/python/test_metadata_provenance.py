@@ -952,11 +952,16 @@ def test_explicit_equal_candidate_cannot_overwrite_concurrent_manual_ownership(
 def test_preview_refresh_records_candidates_without_mutating_series(provenance_db):
     import metadata_service as service
 
+    with sqlite3.connect(provenance_db) as db:
+        db.execute(
+            "UPDATE series SET title='Existing Title Definitive Edition' WHERE id=7"
+        )
+
     record = {
         "anilist_id": 123,
         "mal_id": 456,
-        "title": "Existing Title",
-        "romaji_title": "Existing Title Romaji",
+        "title": "Existing Title Definitive",
+        "romaji_title": "Different Romaji Work",
         "aliases": ["Provider Alternate"],
         "genres": ["Drama"],
         "cover_url": "https://example.test/cover.jpg",
@@ -994,14 +999,17 @@ def test_preview_refresh_records_candidates_without_mutating_series(provenance_d
             " FROM series WHERE id=7"
         ).fetchone()
         candidate = db.execute(
-            "SELECT value_json FROM series_metadata_candidates"
+            "SELECT value_json,confidence FROM series_metadata_candidates"
             " WHERE series_id=7 AND field_name='description' AND source='anilist'"
         ).fetchone()
         aliases = db.execute(
             "SELECT COUNT(*) FROM series_aliases WHERE series_id=7"
         ).fetchone()[0]
+        tags = db.execute(
+            "SELECT COUNT(*) FROM series_tags WHERE series_id=7"
+        ).fetchone()[0]
     assert dict(series) == {
-        "title": "Existing Title",
+        "title": "Existing Title Definitive Edition",
         "anilist_id": None,
         "total_volumes": 12,
         "total_chapters": 90,
@@ -1011,7 +1019,135 @@ def test_preview_refresh_records_candidates_without_mutating_series(provenance_d
         "metadata_last_attempt": None,
     }
     assert candidate["value_json"] == '"Provider description"'
+    assert candidate["confidence"] == pytest.approx(6 / 7)
     assert aliases == 0
+    assert tags == 0
+
+
+def test_anilist_resolution_confidence_is_persisted_and_serialized(provenance_db):
+    import main
+    import metadata_service
+    from fastapi.testclient import TestClient
+
+    record = {
+        "anilist_id": 123,
+        "mal_id": 456,
+        "title": "Provider Title",
+        "cover_url": "https://example.test/cover.jpg",
+        "status": "FINISHED",
+        "description": "Provider description",
+        "pub_year": 2024,
+        "volumes": 14,
+        "chapters": 100,
+    }
+    confidence = 10 / 11
+
+    metadata_service._apply_anilist_record(
+        7,
+        record,
+        resolution_confidence=confidence,
+        apply_changes=False,
+    )
+
+    with sqlite3.connect(provenance_db) as db:
+        candidate_confidences = db.execute(
+            "SELECT field_name,confidence FROM series_metadata_candidates"
+            " WHERE series_id=7 AND source='anilist' ORDER BY field_name"
+        ).fetchall()
+    expected_fields = {
+        "title",
+        "anilist_id",
+        "mal_id",
+        "cover_url",
+        "status",
+        "description",
+        "pub_year",
+        "total_volumes",
+        "total_chapters",
+    }
+    assert {(row[0], row[1]) for row in candidate_confidences} == {
+        (field_name, confidence) for field_name in expected_fields
+    }
+
+    with TestClient(main.app) as client:
+        response = client.get(
+            "/api/series/7/metadata-sources",
+            headers={"X-Api-Key": main.get_cfg("api_key")},
+        )
+
+    assert response.status_code == 200, response.text
+    title_state = next(
+        field for field in response.json()["fields"] if field["field_name"] == "title"
+    )
+    anilist_candidate = next(
+        candidate
+        for candidate in title_state["candidates"]
+        if candidate["source"] == "anilist"
+    )
+    assert anilist_candidate["confidence"] == pytest.approx(confidence)
+
+
+def test_candidate_confidence_does_not_change_metadata_decisions(provenance_db):
+    from metadata_provenance import (
+        apply_recommended_candidates,
+        record_metadata_candidates,
+        set_metadata_field_lock,
+    )
+
+    _record_selection("title", "Existing Title", "api")
+    record_metadata_candidates(
+        7, "anilist", {"title": "Existing Title"}, confidence=0.99
+    )
+    record_metadata_candidates(
+        7, "mangaupdates", {"title": "Other Title"}, confidence=0.01
+    )
+    before = _state(7, "title")
+
+    record_metadata_candidates(
+        7, "anilist", {"title": "Existing Title"}, confidence=0.01
+    )
+    record_metadata_candidates(
+        7, "mangaupdates", {"title": "Other Title"}, confidence=0.99
+    )
+    after = _state(7, "title")
+
+    for state in (before, after):
+        assert state["recommended"]["source"] == "mangaupdates"
+        assert state["pending"] is True
+        assert state["conflict"] is True
+        assert state["source_drift"] is False
+        assert state["locked"] is False
+    assert apply_recommended_candidates(7) == {
+        "applied": [],
+        "reconciled": [],
+        "skipped": [{"field_name": "title", "reason": "conflict"}],
+    }
+
+    set_metadata_field_lock(7, "title", True)
+    locked = _state(7, "title")
+    assert locked["recommended"]["source"] == "mangaupdates"
+    assert locked["pending"] is False
+    assert locked["conflict"] is True
+    assert locked["locked"] is True
+    assert apply_recommended_candidates(7) == {
+        "applied": [],
+        "reconciled": [],
+        "skipped": [],
+    }
+
+    with sqlite3.connect(provenance_db) as db:
+        db.execute(
+            "DELETE FROM series_metadata_candidates"
+            " WHERE series_id=7 AND field_name='title' AND source='mangaupdates'"
+        )
+    set_metadata_field_lock(7, "title", False)
+    drift = _state(7, "title")
+    assert drift["pending"] is False
+    assert drift["conflict"] is False
+    assert drift["source_drift"] is True
+    assert apply_recommended_candidates(7)["reconciled"] == [
+        {"field_name": "title", "source": "anilist", "value": "Existing Title"}
+    ]
 
 
 def test_series_detail_and_htmx_route_render_source_panel(provenance_db):
