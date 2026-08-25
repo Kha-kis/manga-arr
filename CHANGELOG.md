@@ -5,6 +5,57 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.3.0-rc.1 - 2026-08-25
+
+First release candidate for Mangarr's metadata identity and ownership
+correctness milestone. The current stable release remains 1.2.0 while this
+candidate receives fresh-install, upgrade, rollback, and production
+qualification.
+
+### Added
+
+- Existing-library matching now reports equal-strength identity ambiguity and
+  exposes the evidence needed for an operator-selected adoption.
+- Integrated metadata lifecycle acceptance covers series creation and adoption,
+  ownership transitions, grab and import, filesystem publication, rescan, and
+  later metadata refresh.
+
+### Changed
+
+- Metadata identity resolution is conservative and anchored to persisted
+  provider IDs, including exact AniList and MangaUpdates identities and unique
+  stored-MAL evidence.
+- Title provenance is initialized deterministically for every production
+  creation and adoption path, with explicit ownership and locking semantics for
+  provider, API, manual, automated, and locally adopted titles.
+- Source-only reconciliation and AniList candidate confidence now represent the
+  current metadata ownership and identity evidence accurately.
+
+### Fixed
+
+- Same-title MangaUpdates enrichment can no longer cross persisted identities,
+  and ambiguous AniList searches cannot establish a canonical identity from
+  provider result ordering.
+- Manual-import automatic series creation now fails closed on ambiguous
+  provider identities instead of selecting the first search result.
+- Unlocking a locally adopted title relinquishes its recommendation dominance
+  without changing the persisted title or weakening local count observations.
+- Equal-value metadata can repair stale provenance ownership without rewriting
+  application values, and safe application revalidates concurrent state before
+  committing.
+- Fuzzy AniList resolutions retain their actual title-match confidence instead
+  of recording false exact confidence.
+
+### Validation
+
+- Focused release metadata and documentation consistency tests pass 51/51;
+  prerelease metadata validation emits only the exact `1.3.0-rc.1` image tag.
+- 2,255 Python tests pass with 5 skipped, together with 13/13 confirmation-flow
+  checks and 10/10 route-sweep checks.
+- Isolated browser smoke, integration, E2E, and settings suites pass 32/32,
+  22/22, 29/29, and 12/12 respectively.
+- `make test-release-safe` passes on the release-preparation branch.
+
 ## 1.2.0 - 2026-08-21
 
 Stable release of Mangarr's import-review, metadata-provenance, and
