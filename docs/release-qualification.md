@@ -5,16 +5,16 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## Release Under Test
 
-- Release candidate: `1.3.0-rc.1`
+- Release candidate: `1.3.0-rc.2`
 - Stable target: `1.3.0`
-- Qualified base / previous stable: `1.2.0`
-- Candidate image: `ghcr.io/kha-kis/manga-arr:1.3.0-rc.1`
-- Candidate digest: `sha256:cac61b6e632418d63d3856de7eac5fe39421ae0bddc7a63ef1876bc0d22ce62c`
+- Previous stable: `1.2.0`
+- Candidate image: `ghcr.io/kha-kis/manga-arr:1.3.0-rc.2`
+- Candidate digest: pending publication
 - Platforms: `linux/amd64`, `linux/arm64`
 
-The current stable release remains 1.2.0. The candidate tag and image have been
-published without moving any stable image alias. Qualification stopped at the
-authenticated download-client gate described below. Stable 1.3.0 remains
+The current stable release remains 1.2.0. RC1 is an immutable rejected
+candidate whose publication and qualification evidence is preserved below.
+RC2 is not yet tagged, published, deployed, or qualified. Stable 1.3.0 remains
 blocked.
 
 ## Release Preparation Evidence
@@ -27,7 +27,7 @@ The release-preparation branch must record fresh evidence from its exact tree:
 - `make release-local`, including dependency, secret, configuration, image
   identity/content, and fixed High/Critical vulnerability gates;
 - generated image tags containing only
-  `ghcr.io/kha-kis/manga-arr:1.3.0-rc.1`.
+  `ghcr.io/kha-kis/manga-arr:1.3.0-rc.2`.
 
 Results are recorded in the candidate changelog and pull request after the
 commands complete. A passing preparation branch does not qualify an unpublished
@@ -73,13 +73,13 @@ identity policy makes these non-blocking for 1.3.
 1. Merge the reviewed release-preparation PR without changing its qualified
    content.
 2. Run `make release-local` from the exact merge commit.
-3. Create immutable tag `v1.3.0-rc.1` on that exact commit only after the local
+3. Create immutable tag `v1.3.0-rc.2` on that exact commit only after the local
    gate passes.
 4. Confirm the release workflow publishes both amd64 and arm64 manifests and
    record the resulting candidate digest.
-5. Verify the image reports version `1.3.0-rc.1`, the tagged commit revision,
+5. Verify the image reports version `1.3.0-rc.2`, the tagged commit revision,
    the expected non-root user, and the allowlisted runtime files.
-6. Confirm publication creates only `1.3.0-rc.1`; `1.3`, `1`, and `latest`
+6. Confirm publication creates only `1.3.0-rc.2`; `1.3`, `1`, and `latest`
    must not move. Existing stable tags `1.2.0` and `1.2` must remain unchanged.
 
 ### Fresh Installation
@@ -151,7 +151,54 @@ authentication and shared-path configuration, title-boundary matching,
 publication-year volume parsing, terminal duplicate receipts, duplicate
 Prowlarr polling, current Torznab parsing, protocol routing, and ambiguous
 qBittorrent handoff recovery. That history remains useful regression context,
-but neither the RC10 digest nor its production soak qualifies 1.3.0-rc.1.
+but neither the RC10 digest nor its production soak qualifies 1.3.0-rc.2.
+
+## 1.3.0-rc.2 Qualification Plan
+
+Status: **PENDING PUBLICATION AND FRESH QUALIFICATION**. RC2 must repeat every
+RC1 gate that did not complete; no RC1 runtime result is inherited as RC2
+evidence.
+
+### RC1 blocker
+
+- Configured qBittorrent 5.2.3 returned HTTP 204 with an empty login body.
+- Protected read-only version and torrent-list APIs returned HTTP 200.
+- RC1 required the historical `Ok.` login body and therefore rejected the
+  configured downloader before authenticated operation could be qualified.
+
+### RC2 correction
+
+- Every production qBittorrent login response uses one central classifier.
+- Historical HTTP 200 plus `Ok.` remains supported; empty HTTP 204 is
+  provisional only.
+- A valid read-only qBittorrent API response must prove a provisional session
+  before Mangarr considers it usable, and no mutation can occur before proof.
+- Status and import paths validate the HTTP status and torrent-list response
+  shape before publishing status, processing completion, or cleaning orphans.
+- Circuit-breaker thresholds, success handling, and exact download-client
+  ownership remain unchanged.
+
+### Required fresh RC2 evidence
+
+1. Candidate image identity, digest, architectures, SBOM, and provenance.
+2. Stable aliases remain on exact 1.2.0; no `1.3`, `1`, or `latest` RC2 alias.
+3. Fresh-install startup, administrator lifecycle, health, integrity, and smoke.
+4. Upgrade from a stopped 1.2.0 config and database copy.
+5. Saved qBittorrent connection test against the configured client.
+6. qBittorrent status polling through the proven session.
+7. Controlled search, grab, completion, import, publication, and rescan.
+8. Exact qBittorrent download-client ownership through that lifecycle.
+9. Closed qBittorrent circuit breaker after healthy operation.
+10. SABnzbd and Suwayomi credentialed read-only probes.
+11. Candidate-specific metadata identity and ownership cases on the upgrade.
+12. Rollback using the matching stopped 1.2.0 snapshot.
+13. One complete configured background polling and refresh cycle.
+14. Health, HTTP 5xx, application errors, database-lock errors, integrity, and
+    foreign-key state throughout qualification.
+
+The qBittorrent connection test, controlled import, upgraded metadata cases,
+rollback, and operational background cycle must all be executed fresh against
+the published RC2 image.
 
 ## 1.3.0-rc.1 Publication And Qualification Evidence
 
@@ -243,7 +290,7 @@ HTTP 200; no candidate was run against its database.
 ## Stable Release Decision
 
 Stable 1.3.0 is not yet approved. Promotion requires the published
-`1.3.0-rc.1` image to satisfy the fresh-install, 1.2.0 upgrade and rollback,
-metadata lifecycle, import, integrity, and operational gates above. The
-candidate digest and results must be recorded before a stable release PR is
-prepared.
+`1.3.0-rc.2` image to satisfy the fresh-install, 1.2.0 upgrade and rollback,
+metadata lifecycle, downloader, import, integrity, and operational gates above.
+RC1 remains rejected and immutable. The RC2 digest and fresh results must be
+recorded before a stable release PR is prepared.

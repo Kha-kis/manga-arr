@@ -5,6 +5,35 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.3.0-rc.2 - 2026-08-25
+
+Replacement release candidate after 1.3.0-rc.1 was rejected during
+qualification. The blocker was Mangarr treating qBittorrent 5.2.3's empty HTTP
+204 login response as an authentication failure even though protected read-only
+WebAPI requests succeeded. RC2 corrects that compatibility issue and requires a
+fresh qualification pass; it does not inherit RC1 qualification evidence.
+
+### Fixed
+
+- qBittorrent sessions that return an empty HTTP 204 login response now require
+  a successful read-only WebAPI proof instead of being rejected solely because
+  the historical `Ok.` body is absent.
+- Connection testing, torrent grab and removal, status polling,
+  completed-download discovery, startup and category operations, health, queue
+  operations, and series status now share one fail-closed login contract.
+- Failed provisional sessions cannot reach torrent mutations, import
+  processing, orphan cleanup, or false healthy status.
+
+### Validation
+
+- The focused qBittorrent authentication, reconciliation, status, discovery,
+  ownership, breaker, health, and client-route gate passes 169/169.
+- 2,317 Python tests pass with 5 skipped, together with 13/13
+  confirmation-flow checks and 10/10 route-sweep checks.
+- Isolated browser smoke, integration, E2E, and settings suites pass 32/32,
+  22/22, 29/29, and 12/12 respectively.
+- `make test-release-safe` passes on the RC2 release-preparation branch.
+
 ## 1.3.0-rc.1 - 2026-08-25
 
 First release candidate for Mangarr's metadata identity and ownership
