@@ -183,6 +183,107 @@ def test_anilist_title_only_resolution_accepts_one_high_confidence_candidate():
     assert resolved["anilist_id"] == 101
 
 
+def test_anilist_title_resolution_reports_exact_unrounded_word_f1():
+    import metadata_service as service
+
+    title = "Alpha Beta Gamma Delta Epsilon Zeta"
+    candidates = [
+        _anilist_record(
+            anilist_id=101,
+            title="Alpha Beta Gamma Delta",
+            romaji_title="Different Work",
+            description="weaker duplicate",
+        ),
+        _anilist_record(
+            anilist_id=101,
+            title="Different Localized Name",
+            romaji_title="Alpha Beta Gamma Delta Epsilon",
+            description="stronger duplicate",
+        ),
+    ]
+
+    forward = service.resolve_anilist_search_candidate_with_evidence(
+        title, candidates
+    )
+    reverse = service.resolve_anilist_search_candidate_with_evidence(
+        title, list(reversed(candidates))
+    )
+
+    assert forward.record["description"] == "stronger duplicate"
+    assert reverse.record == forward.record
+    assert forward.confidence == pytest.approx(10 / 11)
+    assert reverse.confidence == forward.confidence
+    assert forward.basis == reverse.basis == "title_f1"
+    assert service.resolve_anilist_search_candidate(title, candidates) == forward.record
+
+
+@pytest.mark.parametrize(
+    ("english_title", "romaji_title"),
+    [
+        ("Exact Search Title", "Different Romaji Work"),
+        ("Different English Work", "Exact Search Title"),
+    ],
+)
+def test_anilist_exact_title_search_uses_title_f1_basis(
+    english_title, romaji_title
+):
+    import metadata_service as service
+
+    candidate = _anilist_record(
+        anilist_id=111,
+        mal_id=222,
+        title=english_title,
+        romaji_title=romaji_title,
+    )
+    search = AsyncMock(return_value=[candidate])
+    with patch.object(service, "anilist_search", search):
+        resolution = _run(
+            service._resolve_anilist_resolution(
+                {
+                    "title": "Exact Search Title",
+                    "anilist_id": None,
+                    "mal_id": None,
+                }
+            )
+        )
+
+    assert resolution.record == candidate
+    assert resolution.confidence == 1.0
+    assert resolution.basis == "title_f1"
+    search.assert_awaited_once_with("Exact Search Title", strict=True)
+
+
+def test_anilist_stored_mal_resolution_reports_exact_identity_confidence():
+    import metadata_service as service
+
+    title = "Stored Local Title"
+    candidates = [
+        _anilist_record(
+            anilist_id=202,
+            mal_id=2002,
+            title="Weak Duplicate",
+            description="weaker duplicate",
+        ),
+        _anilist_record(
+            anilist_id=202,
+            mal_id=2002,
+            title=title,
+            description="stronger duplicate",
+        ),
+        _anilist_record(anilist_id=303, mal_id=3003, title=title),
+    ]
+
+    resolution = service.resolve_anilist_search_candidate_with_evidence(
+        title,
+        list(reversed(candidates)),
+        stored_mal_id=2002,
+    )
+
+    assert resolution.record["description"] == "stronger duplicate"
+    assert resolution.confidence == 1.0
+    assert resolution.basis == "stored_mal_id"
+
+
 def test_anilist_resolution_uses_stored_anilist_id_without_search():
     import metadata_service as service
 
@@ -199,6 +300,28 @@ def test_anilist_resolution_uses_stored_anilist_id_without_search():
         )
 
     assert resolved["anilist_id"] == 303
+    by_id.assert_awaited_once_with(303)
+    search.assert_not_awaited()
+
+
+def test_anilist_stored_id_resolution_reports_exact_identity_confidence():
+    import metadata_service as service
+
+    by_id = AsyncMock(return_value=_anilist_record(anilist_id=303, mal_id=3003))
+    search = AsyncMock(side_effect=AssertionError("title search must not run"))
+    with (
+        patch.object(service, "fetch_anilist_by_id", by_id),
+        patch.object(service, "anilist_search", search),
+    ):
+        resolution = _run(
+            service._resolve_anilist_resolution(
+                {"title": "Cached Title", "anilist_id": 303, "mal_id": 3003}
+            )
+        )
+
+    assert resolution.record["anilist_id"] == 303
+    assert resolution.confidence == 1.0
+    assert resolution.basis == "stored_anilist_id"
     by_id.assert_awaited_once_with(303)
     search.assert_not_awaited()
 
@@ -275,6 +398,189 @@ def test_ambiguous_anilist_refresh_preserves_cached_series_metadata(db_path):
     assert candidate_count == 0
 
 
+def test_low_confidence_anilist_refresh_preserves_cache_and_records_no_candidates(
+    db_path,
+):
+    import metadata_service as service
+
+    _seed_series(
+        db_path,
+        anilist_id=None,
+        mal_id=None,
+        cover_url="https://cdn.example.test/cached.jpg",
+        description="Cached description",
+        pub_year=2018,
+    )
+    with (
+        patch.object(
+            service,
+            "anilist_search",
+            AsyncMock(
+                return_value=[
+                    _anilist_record(
+                        anilist_id=404,
+                        title="Completely Different Work",
+                        romaji_title="Another Unrelated Series",
+                    )
+                ]
+            ),
+        ),
+        patch.object(service, "fetch_mu_metadata", AsyncMock(return_value=None)),
+        patch.object(service, "refresh_mangadex_map", AsyncMock(return_value=True)),
+        patch.object(
+            service, "refresh_series_cover", AsyncMock(return_value=(True, None))
+        ),
+    ):
+        result = _run(
+            service.refresh_series_metadata(
+                7, force=True, include_manifest=False, reason="low_confidence_test"
+            )
+        )
+
+    assert result["status"] == "failed"
+    with sqlite3.connect(db_path) as db:
+        series = db.execute(
+            "SELECT anilist_id,cover_url,description,pub_year FROM series WHERE id=7"
+        ).fetchone()
+        candidate_count = db.execute(
+            "SELECT COUNT(*) FROM series_metadata_candidates"
+            " WHERE series_id=7 AND source='anilist'"
+        ).fetchone()[0]
+    assert series == (
+        None,
+        "https://cdn.example.test/cached.jpg",
+        "Cached description",
+        2018,
+    )
+    assert candidate_count == 0
+
+
+def test_refresh_uses_stored_mal_identity_with_exact_candidate_confidence(db_path):
+    import metadata_service as service
+
+    _seed_series(
+        db_path,
+        title="Local Library Name",
+        search_pattern="Local Library Name",
+        anilist_id=None,
+        mal_id=8008,
+    )
+    stored_mal_match = _anilist_record(
+        anilist_id=818,
+        mal_id=8008,
+        title="Lexically Unrelated Provider Title",
+        romaji_title="Another Distant Name",
+        description="Selected by stored MAL identity",
+    )
+    lexical_match = _anilist_record(
+        anilist_id=919,
+        mal_id=9009,
+        title="Local Library Name",
+        description="Must not be selected by title",
+    )
+    search = AsyncMock(return_value=[lexical_match, stored_mal_match])
+    with (
+        patch.object(service, "anilist_search", search),
+        patch.object(service, "fetch_mu_metadata", AsyncMock(return_value=None)),
+        patch.object(service, "refresh_mangadex_map", AsyncMock(return_value=True)),
+        patch.object(
+            service, "refresh_series_cover", AsyncMock(return_value=(True, None))
+        ),
+    ):
+        result = _run(
+            service.refresh_series_metadata(
+                7, force=True, include_manifest=False, reason="stored_mal_test"
+            )
+        )
+
+    with sqlite3.connect(db_path) as db:
+        db.row_factory = sqlite3.Row
+        series = db.execute(
+            "SELECT anilist_id,mal_id,description FROM series WHERE id=7"
+        ).fetchone()
+        candidate = db.execute(
+            "SELECT value_json,confidence FROM series_metadata_candidates"
+            " WHERE series_id=7 AND field_name='title' AND source='anilist'"
+        ).fetchone()
+        source = db.execute(
+            "SELECT details FROM series_metadata_sources"
+            " WHERE series_id=7 AND source='anilist'"
+        ).fetchone()
+
+    assert result["ok"] is True
+    assert dict(series) == {
+        "anilist_id": 818,
+        "mal_id": 8008,
+        "description": "Selected by stored MAL identity",
+    }
+    assert candidate["value_json"] == '"Lexically Unrelated Provider Title"'
+    assert candidate["confidence"] == 1.0
+    assert '"resolution_basis":"stored_mal_id"' in source["details"]
+    search.assert_awaited_once_with("Local Library Name", strict=True)
+
+
+def test_later_stored_id_refresh_upgrades_anilist_candidate_confidence(db_path):
+    import metadata_service as service
+
+    title = "Alpha Beta Gamma Delta Epsilon Zeta"
+    record = _anilist_record(
+        anilist_id=707,
+        title="Alpha Beta Gamma Delta Epsilon",
+        romaji_title="Different Work",
+    )
+    _seed_series(db_path, title=title, search_pattern=title, anilist_id=None, mal_id=None)
+    search = AsyncMock(return_value=[record])
+    by_id = AsyncMock(return_value=record)
+    with (
+        patch.object(service, "anilist_search", search),
+        patch.object(service, "fetch_anilist_by_id", by_id),
+        patch.object(service, "fetch_mu_metadata", AsyncMock(return_value=None)),
+        patch.object(service, "refresh_mangadex_map", AsyncMock(return_value=True)),
+        patch.object(
+            service, "refresh_series_cover", AsyncMock(return_value=(True, None))
+        ),
+    ):
+        first = _run(
+            service.refresh_series_metadata(
+                7, force=True, include_manifest=False, reason="fuzzy_refresh"
+            )
+        )
+        with sqlite3.connect(db_path) as db:
+            first_confidence = db.execute(
+                "SELECT confidence FROM series_metadata_candidates"
+                " WHERE series_id=7 AND field_name='title' AND source='anilist'"
+            ).fetchone()[0]
+            first_details = db.execute(
+                "SELECT details FROM series_metadata_sources"
+                " WHERE series_id=7 AND source='anilist'"
+            ).fetchone()[0]
+
+        second = _run(
+            service.refresh_series_metadata(
+                7, force=True, include_manifest=False, reason="stored_id_refresh"
+            )
+        )
+
+    with sqlite3.connect(db_path) as db:
+        second_confidence = db.execute(
+            "SELECT confidence FROM series_metadata_candidates"
+            " WHERE series_id=7 AND field_name='title' AND source='anilist'"
+        ).fetchone()[0]
+        second_details = db.execute(
+            "SELECT details FROM series_metadata_sources"
+            " WHERE series_id=7 AND source='anilist'"
+        ).fetchone()[0]
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert first_confidence == pytest.approx(10 / 11)
+    assert second_confidence == 1.0
+    assert '"resolution_basis":"title_f1"' in first_details
+    assert '"resolution_basis":"stored_anilist_id"' in second_details
+    search.assert_awaited_once_with(title, strict=True)
+    by_id.assert_awaited_once_with(707)
+
+
 def test_refresh_uses_exact_id_and_preserves_manual_counts(db_path):
     import metadata_service as service
 
@@ -326,6 +632,11 @@ def test_refresh_uses_exact_id_and_preserves_manual_counts(db_path):
         tags = db.execute(
             "SELECT tag,source FROM series_tags WHERE series_id=7 ORDER BY tag"
         ).fetchall()
+        candidate_confidences = db.execute(
+            "SELECT source,confidence FROM series_metadata_candidates"
+            " WHERE series_id=7 AND field_name='total_chapters'"
+            " ORDER BY source"
+        ).fetchall()
 
     assert series["total_volumes"] == 12
     assert series["vol_count_source"] == "manual"
@@ -345,6 +656,10 @@ def test_refresh_uses_exact_id_and_preserves_manual_counts(db_path):
         ("action", "manual"),
         ("drama", "anilist"),
         ("operator-tag", "manual"),
+    ]
+    assert [(row["source"], row["confidence"]) for row in candidate_confidences] == [
+        ("anilist", 1.0),
+        ("local", 1.0),
     ]
 
 

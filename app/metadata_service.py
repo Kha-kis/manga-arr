@@ -9,10 +9,12 @@ state.
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import os
 from collections import Counter
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from cover_images import COVERS_DIR, cached_cover_is_valid, download_cover
 from events import log_event
@@ -57,6 +59,15 @@ class MetadataIdentityAmbiguityError(MetadataProviderError):
     """Provider candidates cannot safely establish one canonical identity."""
 
 
+@dataclass(frozen=True, slots=True)
+class AniListResolution:
+    """One accepted AniList identity and the evidence used to resolve it."""
+
+    record: dict[str, Any]
+    confidence: float
+    basis: Literal["stored_anilist_id", "stored_mal_id", "title_f1"]
+
+
 async def _refresh_lock(series_id: int) -> asyncio.Lock:
     async with _REFRESH_LOCKS_GUARD:
         return _REFRESH_LOCKS.setdefault(series_id, asyncio.Lock())
@@ -84,28 +95,71 @@ def _distinct_provider_candidates(
     return list(distinct.values())
 
 
-def resolve_anilist_search_candidate(
+def _anilist_title_score(title: str, candidate: dict[str, Any]) -> float:
+    return max(
+        _title_f1(title, candidate.get("title") or ""),
+        _title_f1(title, candidate.get("romaji_title") or ""),
+    )
+
+
+def _stable_candidate_key(candidate: dict[str, Any]) -> str:
+    return json.dumps(
+        candidate,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        default=str,
+    )
+
+
+def _strongest_anilist_identities(
+    title: str, candidates: list[dict[str, Any]]
+) -> list[tuple[float, dict[str, Any]]]:
+    strongest: dict[str, tuple[float, str, dict[str, Any]]] = {}
+    for candidate in candidates:
+        candidate_id = candidate.get("anilist_id")
+        if candidate_id is None or not str(candidate_id).strip():
+            continue
+        score = _anilist_title_score(title, candidate)
+        stable_key = _stable_candidate_key(candidate)
+        identity = str(candidate_id)
+        current = strongest.get(identity)
+        if current is None or score > current[0] or (
+            score == current[0] and stable_key < current[1]
+        ):
+            strongest[identity] = (score, stable_key, candidate)
+    return [
+        (score, candidate)
+        for identity, (score, _stable_key, candidate) in sorted(strongest.items())
+    ]
+
+
+def resolve_anilist_search_candidate_with_evidence(
     title: str,
     candidates: list[dict[str, Any]],
     *,
     stored_mal_id: int | str | None = None,
-) -> dict[str, Any]:
-    """Resolve one AniList search result without relying on result ordering."""
+) -> AniListResolution:
+    """Resolve one AniList search identity and retain its resolution evidence."""
     if not candidates:
         raise MetadataProviderError("AniList returned no candidates")
 
     normalized_mal_id = str(stored_mal_id or "").strip()
     if normalized_mal_id:
-        mal_matches = _distinct_provider_candidates(
+        mal_matches = _strongest_anilist_identities(
+            title,
             [
                 item
                 for item in candidates
                 if str(item.get("mal_id") or "").strip() == normalized_mal_id
             ],
-            "anilist_id",
         )
         if len(mal_matches) == 1:
-            return mal_matches[0]
+            return AniListResolution(
+                record=mal_matches[0][1],
+                confidence=1.0,
+                basis="stored_mal_id",
+            )
         if not mal_matches:
             raise MetadataIdentityAmbiguityError(
                 "AniList identity match was ambiguous: no candidate matched "
@@ -116,33 +170,46 @@ def resolve_anilist_search_candidate(
             f"{len(mal_matches)} candidates matched stored MAL ID {normalized_mal_id}"
         )
 
-    scored = [
-        (
-            max(
-                _title_f1(title, item.get("title") or ""),
-                _title_f1(title, item.get("romaji_title") or ""),
-            ),
-            item,
-        )
-        for item in candidates
+    scored_identities = _strongest_anilist_identities(title, candidates)
+    accepted = [
+        (confidence, item)
+        for confidence, item in scored_identities
+        if confidence >= _ANILIST_TITLE_ACCEPTANCE
     ]
-    accepted = _distinct_provider_candidates(
-        [item for confidence, item in scored if confidence >= _ANILIST_TITLE_ACCEPTANCE],
-        "anilist_id",
-    )
     if len(accepted) == 1:
-        return accepted[0]
+        confidence, record = accepted[0]
+        return AniListResolution(
+            record=record,
+            confidence=confidence,
+            basis="title_f1",
+        )
     if len(accepted) > 1:
         raise MetadataIdentityAmbiguityError(
             f"AniList identity match was ambiguous: {len(accepted)} candidates met the title acceptance threshold"
         )
 
-    confidence = max((score for score, _item in scored), default=0.0)
+    confidence = max(
+        (_anilist_title_score(title, item) for item in candidates), default=0.0
+    )
     if confidence < _ANILIST_TITLE_ACCEPTANCE:
         raise MetadataProviderError(
             f"AniList identity match was not confident ({confidence:.0%})"
         )
     raise MetadataProviderError("AniList returned no usable identity candidates")
+
+
+def resolve_anilist_search_candidate(
+    title: str,
+    candidates: list[dict[str, Any]],
+    *,
+    stored_mal_id: int | str | None = None,
+) -> dict[str, Any]:
+    """Resolve one AniList search result without relying on result ordering."""
+    return resolve_anilist_search_candidate_with_evidence(
+        title,
+        candidates,
+        stored_mal_id=stored_mal_id,
+    ).record
 
 
 def resolve_mangaupdates_search_candidate(
@@ -180,11 +247,21 @@ def resolve_mangaupdates_search_candidate(
 async def _resolve_anilist_record(
     series: dict[str, Any],
 ) -> dict[str, Any]:
+    return (await _resolve_anilist_resolution(series)).record
+
+
+async def _resolve_anilist_resolution(
+    series: dict[str, Any],
+) -> AniListResolution:
     if series.get("anilist_id"):
-        return await fetch_anilist_by_id(int(series["anilist_id"]))
+        return AniListResolution(
+            record=await fetch_anilist_by_id(int(series["anilist_id"])),
+            confidence=1.0,
+            basis="stored_anilist_id",
+        )
 
     results = await anilist_search(series["title"], strict=True)
-    return resolve_anilist_search_candidate(
+    return resolve_anilist_search_candidate_with_evidence(
         series["title"],
         results,
         stored_mal_id=series.get("mal_id"),
@@ -246,7 +323,11 @@ def _store_aliases_and_genres(
 
 
 def _apply_anilist_record(
-    series_id: int, record: dict, *, apply_changes: bool = True
+    series_id: int,
+    record: dict[str, Any],
+    *,
+    resolution_confidence: float = 1.0,
+    apply_changes: bool = True,
 ) -> list[str]:
     """Apply canonical fields while preserving manual and observed counts."""
     record_metadata_candidates(
@@ -263,7 +344,7 @@ def _apply_anilist_record(
             "total_volumes": record.get("volumes"),
             "total_chapters": record.get("chapters"),
         },
-        confidence=1.0,
+        confidence=resolution_confidence,
     )
     with get_db() as db:
         row = db.execute("SELECT * FROM series WHERE id=?", (series_id,)).fetchone()
@@ -508,16 +589,27 @@ async def refresh_series_metadata(
 
         mark_source_attempt(series_id, SOURCE_ANILIST)
         core_ok = False
-        record: dict | None = None
+        record: dict[str, Any] | None = None
         try:
-            record = await _resolve_anilist_record(series)
+            resolution = await _resolve_anilist_resolution(series)
+            record = resolution.record
             changed_fields.extend(
-                _apply_anilist_record(series_id, record, apply_changes=apply_changes)
+                _apply_anilist_record(
+                    series_id,
+                    record,
+                    resolution_confidence=resolution.confidence,
+                    apply_changes=apply_changes,
+                )
             )
             mark_source_success(
                 series_id,
                 SOURCE_ANILIST,
-                details={"anilist_id": record["anilist_id"], "reason": reason},
+                details={
+                    "anilist_id": record["anilist_id"],
+                    "reason": reason,
+                    "resolution_basis": resolution.basis,
+                    "resolution_confidence": resolution.confidence,
+                },
             )
             sources[SOURCE_ANILIST] = "healthy"
             core_ok = True
