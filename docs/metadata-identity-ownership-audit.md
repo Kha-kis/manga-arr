@@ -66,17 +66,13 @@ locks, refresh state, and existing-library matching as implemented in 1.2.0.
 
 ## Observed disagreement cases
 
-### Selected for this PR: stored MangaUpdates identity is not used for selection
+### Resolved: stored MangaUpdates identity anchors enrichment
 
-`fetch_mu_metadata()` searches by title and chooses the highest title score even
-when `series.mu_id` is already populated. If two MangaUpdates works share a
-title, the first result can supply the volume count while the persisted MU ID
-continues to identify a different work. The row, selected count provenance, and
-provider identity can therefore disagree.
-
-The narrow correction is to select the search result whose `mu_id` equals the
-stored ID. If that identity is absent from the search response, refresh must not
-borrow metadata from another candidate.
+When `series.mu_id` is populated, MangaUpdates enrichment selects only the
+search result whose `mu_id` exactly matches that stored identity. Same-title
+results for another MangaUpdates work cannot supply counts or metadata. If the
+stored identity is absent from the response, enrichment fails closed and keeps
+the existing series row, provenance, and cached metadata unchanged.
 
 ### Resolved: AniList title-only identity ambiguity
 
@@ -261,3 +257,38 @@ title-resolved refresh persists the AniList ID, a later exact-ID refresh may
 legitimately replace that candidate confidence with `1.0`. The current schema
 does not preserve original discovery confidence as historical provenance;
 adding that separate lifecycle remains intentionally deferred.
+
+## 1.3 metadata lifecycle acceptance
+
+`tests/python/test_metadata_milestone_lifecycle.py` protects three integrated
+production lifecycles:
+
+- API creation proceeds through fuzzy AniList resolution, exact-ID refresh,
+  manual title ownership, unlock and explicit candidate application, real grab
+  state, completed-download import, filesystem publication, rescan, and a later
+  lower-count refresh against downloaded content.
+- Existing-library matching exposes an equal-score identity tie without writing
+  state, then explicit adoption pins the chosen provider identity and physical
+  folder through local-title unlock, provider-title acceptance, and rescan.
+- An ambiguous title-only AniList refresh fails closed over cached metadata and
+  a real local file, after which explicit candidate acceptance establishes an
+  identity and the next refresh uses exact lookup successfully.
+
+The tests replace only external AniList, MangaUpdates, MangaDex, cover-download,
+metadata-search, and download-client calls. Series creation and adoption routes,
+SQLite writes, provenance state, lock and candidate routes, grab transitions,
+dedup state, import staging and publication, real temporary CBZ files, and
+rescan/reconcile all execute through production code.
+
+Together the scenarios establish that persisted IDs anchor refreshes;
+same-title foreign and ambiguous candidates cannot leak metadata; title
+ownership is initialized, protected, relinquished, and transferred only by the
+defined operator actions; equal-value source drift reconciles without rewriting
+the application value; fuzzy confidence is retained until exact evidence
+updates it; downloaded observations remain count floors; and metadata work does
+not detach, duplicate, or remove imported library content.
+
+Publication-year or format disambiguation, exact provenance for bare numeric
+search queries, and historical storage of discovery confidence remain
+explicitly deferred. Their semantics require separate design, and the fail-closed
+identity and current-confidence policies make them non-blocking for 1.3.
