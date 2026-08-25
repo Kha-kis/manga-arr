@@ -8,6 +8,11 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from routers._templates import templates
 
+from qbit_auth import (
+    QbitLoginMode,
+    classify_qbit_login,
+    is_valid_qbit_version_response,
+)
 from shared import get_db, from_json, get_secret_health_summary
 from security import decrypt_secret_safe, encrypt_if_cipher_available
 
@@ -522,8 +527,20 @@ async def _test_client(c: dict) -> tuple[bool, str]:
                         "password": c["password"] or "",
                     },
                 )
-            if "Ok" in r.text:
-                return True, "Connected to qBittorrent"
+                login_mode = classify_qbit_login(r.status_code, r.text)
+                if login_mode is QbitLoginMode.NORMAL_AUTH:
+                    return True, "Connected to qBittorrent"
+                if login_mode is QbitLoginMode.BYPASS_PROBE_REQUIRED:
+                    proof = await cli.get(f"{host}/api/v2/app/version")
+                    if is_valid_qbit_version_response(
+                        proof.status_code, proof.text
+                    ):
+                        return True, "Connected to qBittorrent"
+                    return (
+                        False,
+                        "qBittorrent auth-bypass proof failed: "
+                        f"app/version HTTP {proof.status_code}",
+                    )
             body = r.text.strip()[:120]
             if "Unauthorized" in body or r.status_code == 403:
                 return (

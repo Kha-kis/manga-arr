@@ -22,6 +22,7 @@ from events import add_history, log_event
 from routers.download_clients import apply_remote_path_mapping
 from import_queue import _queue_import
 from import_workers import schedule_import_worker
+from qbit_auth import QbitLoginMode, classify_qbit_login
 
 log = logging.getLogger(__name__)
 
@@ -469,7 +470,8 @@ async def _poll_qbit_partition(
                 f"{host}/api/v2/auth/login",
                 data={"username": user, "password": password},
             )
-            if "Ok" not in response.text:
+            login_mode = classify_qbit_login(response.status_code, response.text)
+            if login_mode is QbitLoginMode.REJECTED:
                 raise RuntimeError("authentication rejected")
             torrents_response = await client.get(
                 f"{host}/api/v2/torrents/info",
@@ -480,6 +482,10 @@ async def _poll_qbit_partition(
                     f"torrent listing returned HTTP {torrents_response.status_code}"
                 )
             all_torrents = torrents_response.json()
+            if not isinstance(all_torrents, list) or not all(
+                isinstance(torrent, dict) for torrent in all_torrents
+            ):
+                raise RuntimeError("torrent listing returned an invalid response")
 
         all_hashes = {
             str(torrent.get("hash") or "").lower()
