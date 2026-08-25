@@ -9,12 +9,13 @@ can become a stable release. Passing unit tests alone is not sufficient.
 - Stable target: `1.3.0`
 - Qualified base / previous stable: `1.2.0`
 - Candidate image: `ghcr.io/kha-kis/manga-arr:1.3.0-rc.1`
-- Candidate digest: pending publication
+- Candidate digest: `sha256:cac61b6e632418d63d3856de7eac5fe39421ae0bddc7a63ef1876bc0d22ce62c`
 - Platforms: `linux/amd64`, `linux/arm64`
 
-The current stable release remains 1.2.0. This preparation branch does not tag,
-publish, deploy, or move any stable image alias. Stable 1.3.0 remains blocked
-until the exact reviewed candidate commit satisfies every applicable gate below.
+The current stable release remains 1.2.0. The candidate tag and image have been
+published without moving any stable image alias. Qualification stopped at the
+authenticated download-client gate described below. Stable 1.3.0 remains
+blocked.
 
 ## Release Preparation Evidence
 
@@ -151,6 +152,93 @@ publication-year volume parsing, terminal duplicate receipts, duplicate
 Prowlarr polling, current Torznab parsing, protocol routing, and ambiguous
 qBittorrent handoff recovery. That history remains useful regression context,
 but neither the RC10 digest nor its production soak qualifies 1.3.0-rc.1.
+
+## 1.3.0-rc.1 Publication And Qualification Evidence
+
+Status: **INCOMPLETE - RELEASE BLOCKER FOUND**. The candidate is rejected for
+stable promotion. The hard-stop policy prevented later content, rollback, and
+operational-cycle gates from running after the blocker was reproduced.
+
+### Release identity and publication
+
+- PR #370 merge and qualified commit:
+  `adb486e5cc8beb5f8cb095dfbf690132b917ea68`
+- Annotated tag: `v1.3.0-rc.1`; tag object:
+  `e07284b49b97dd6776b8a4ea82eea7e68f6fc87e`
+- Release workflow:
+  [run 32863777924](https://github.com/Kha-kis/manga-arr/actions/runs/32863777924),
+  successful for the exact release commit
+- Published image:
+  `ghcr.io/kha-kis/manga-arr@sha256:cac61b6e632418d63d3856de7eac5fe39421ae0bddc7a63ef1876bc0d22ce62c`
+- The image contains `linux/amd64` and `linux/arm64` manifests and per-platform
+  SBOM/provenance attestations. Exact-digest verification confirmed version
+  `1.3.0-rc.1`, the release revision, non-root runtime, labels, and contents.
+- Before and after publication, `1.2.0`, `1.2`, `1`, and `latest` all resolved
+  to stable digest
+  `sha256:2750ee8d8f6e5d08703a5bb9c145185052ef0cc13e0f2a76dbdef2e2040cf864`.
+  Alias `1.3` was not published.
+- GitHub prerelease:
+  [Mangarr 1.3.0-rc.1](https://github.com/Kha-kis/manga-arr/releases/tag/v1.3.0-rc.1)
+
+### Exact-commit local gate
+
+`make release-local` passed from the merge commit: Ruff and format checks;
+2,255 Python tests passed with 5 skipped; confirmation flow 13/13; route sweep
+10/10; browser smoke 32/32; integration 22/22; E2E 29/29; settings 12/12.
+`pip-audit` found no known vulnerabilities, gitleaks found no leaks in 413
+commits, Trivy configuration found zero High/Critical issues, image identity
+passed, and the fixed High/Critical image vulnerability scan found zero issues.
+
+### Fresh installation
+
+The exact digest started against empty isolated config and data directories as
+UID/GID 1000 with zero restarts. Health returned HTTP 200; System Status showed
+`V1.3.0-RC.1`; configured paths were writable; integrity check returned `ok`;
+and the foreign-key check returned no rows. Browser-first administrator
+creation, login, logout, offline reset, replacement creation, and replacement
+login passed.
+
+A real AniList lookup returned a unique 100-confidence Mob Psycho 100 match.
+Creation persisted AniList `85189`, MAL `60783`, MangaUpdates `605012986`, API
+title ownership, provider candidates, and counts. Optional chapter-map
+enrichment returned no usable map and marked the series degraded while all
+identity providers remained healthy and cached state remained intact.
+
+An isolated Akira folder produced an ambiguous two-candidate top match. The
+match endpoint did not adopt it. Explicitly choosing AniList `105483` persisted
+that identity, retained the folder title as locked `local` ownership, and
+mapped its controlled CBZ as downloaded. Integrity and foreign keys remained
+clean. No HTTP 5xx or startup error was observed. A normal controlled shutdown
+logged an asyncio `CancelledError` traceback from the Suwayomi monitor; this is
+recorded for follow-up and was not the gate that stopped qualification.
+
+### 1.2.0 upgrade and blocker
+
+A stopped copy of the production-style 1.2.0 config was used. Baseline and
+post-start state matched: 30 series, 797 volumes, 5,957 chapters, 736 downloaded,
+61 wanted, 13,424 history rows, 596 seen rows, two terminal import-queue rows,
+and zero active imports. Provider identities, titles, title provenance/locks,
+root folders, encrypted integration rows, and library mappings were preserved.
+Database integrity returned `ok` and foreign-key checks returned no rows.
+Automatic RSS was disabled only in the qualification copy to prevent
+uncontrolled grabs.
+
+The authenticated download-client gate then failed for configured qBittorrent
+5.2.3. Its authentication-bypass response is HTTP 204 with an empty body, while
+read-only version and torrent-list endpoints return HTTP 200. Mangarr requires
+the login body to contain `Ok`, so its connection test returned
+`ok=false` / `HTTP 204`. Status, grab, and import paths use the same assumption.
+The stopped 1.2.0 baseline already contained a qBittorrent circuit breaker at
+three failures, confirming a pre-existing integration incompatibility rather
+than migration damage. This is a release blocker because authenticated client
+operation and stable circuit-breaker behavior cannot be qualified.
+
+Per the hard-stop policy, SABnzbd/Suwayomi credential probes, controlled real
+search/grab/download/import/rescan, candidate-specific upgraded metadata cases,
+matched-snapshot rollback, and a complete operational background cycle were not
+run. The candidate and baseline config copies were preserved for diagnosis.
+The live stable service remained on exact 1.2.0, healthy with zero restarts and
+HTTP 200; no candidate was run against its database.
 
 ## Stable Release Decision
 
