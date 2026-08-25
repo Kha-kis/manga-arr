@@ -5,146 +5,157 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## Release Under Test
 
-- Release: `1.2.0`
-- Qualified candidate: `1.2.0-rc.10`
-- Qualified base: `1.1.0`
-- Candidate image: `ghcr.io/kha-kis/manga-arr:1.2.0-rc.10`
-- Candidate digest: `sha256:a99cb009ebd40686cf6002468b9032d1ef643b048e5755c70dbdce639f752664`
+- Release candidate: `1.3.0-rc.1`
+- Stable target: `1.3.0`
+- Qualified base / previous stable: `1.2.0`
+- Candidate image: `ghcr.io/kha-kis/manga-arr:1.3.0-rc.1`
+- Candidate digest: pending publication
 - Platforms: `linux/amd64`, `linux/arm64`
 
-## Production Evidence
+The current stable release remains 1.2.0. This preparation branch does not tag,
+publish, deploy, or move any stable image alias. Stable 1.3.0 remains blocked
+until the exact reviewed candidate commit satisfies every applicable gate below.
 
-- Mangarr has been used in production across the pre-1.0 release line since
-  April 2026.
-- The `1.2.0-rc.1` production soak found repeatable 10-second health-probe
-  timeouts while CPU-bound RSS matching processed large multi-indexer feeds;
-  that candidate was rejected rather than promoted.
-- The `1.2.0-rc.2` soak completed 74 hourly samples with no health failures,
-  restarts, critical logs, or database-integrity errors. It was still rejected:
-  a missing SABnzbd API key passed the version-only connection probe, then
-  opened the circuit breaker during each daily backlog search and produced
-  hundreds of skipped-grab events.
-- The `1.2.0-rc.3` soak exposed two independent blockers. SABnzbd had been
-  changed from the shared `/data/usenet/complete` folder to its private
-  `/config/Downloads/complete` folder, and backlog search matched a series
-  alias inside an unrelated release's uploader tag. The deployment path was
-  restored and the matcher now shares the boundary-aware RSS behavior.
-- The `1.2.0-rc.4` live backlog pass confirmed the boundary-aware title fix,
-  then exposed a separate parser defect: dot-delimited publication years such
-  as `v63.2012` became decimal volume numbers. Mangarr was stopped before the
-  remaining completed downloads could import. Reconciliation preserved all
-  history and SAB files, quarantined 14 duplicate imports, corrected dedup
-  mappings, and restored an integrity-clean database.
-- The `1.2.0-rc.5` parser fixes preserved canonical volume numbers during
-  production recovery, but equal-or-better completed downloads were recorded
-  as failures and retried every five minutes. Two polls created 100 false
-  failure records without changing canonical files. The candidate was stopped
-  and rejected.
-- The `1.2.0-rc.6` import receipt fix remained stable, but its soak exposed
-  duplicate Prowlarr polling and an observability defect. Imported child rows
-  polled directly while the enabled parent fanned out to the same Prowlarr IDs.
-  Intermittent upstream timeouts were therefore recorded in pairs, and empty
-  `httpx` exception strings produced blank application-error events. The
-  candidate was rejected even though the container, database, canonical files,
-  and import receipts remained stable.
-- The `1.2.0-rc.7` candidate completed a 72-hour production soak with zero
-  database-lock failures, tracebacks, HTTP 5xx responses, application errors,
-  or container restarts. The only recurring external noise was 192 Suwayomi
-  `No chapters found` responses, which did not affect Mangarr state.
-- The `1.2.0-rc.8` candidate remained healthy for more than 35 hours with zero
-  restarts, database-lock failures, tracebacks, or HTTP 5xx responses. It was
-  rejected when the first controlled real-import attempt showed that current
-  Prowlarr Torznab attributes were not parsed, Usenet defaults were classified
-  as torrents, and manual grabs dropped seeder metadata before enforcing the
-  configured minimum.
-- The `1.2.0-rc.9` candidate started cleanly and restored current Prowlarr
-  release metadata, but its controlled import exposed an ambiguous
-  qBittorrent handoff. qBittorrent accepted and completed the torrent while
-  Mangarr timed out waiting for the add response, reported failure, and left
-  the download untracked. The candidate was rejected.
-- The `1.2.0-rc.10` candidate completed more than 15 days of production
-  qualification from August 5 through August 21. Every daily sample reported a
-  healthy container, zero restarts, HTTP 200, no database-lock failures,
-  tracebacks, application errors, or HTTP 5xx responses, schema version 5,
-  `PRAGMA integrity_check` = `ok`, no active recovery records, and no recurring
-  configuration errors or download-client circuit-breaker transitions.
-- The controlled One Piece volume 106 qBittorrent import remained internally
-  consistent throughout the soak: the source and destination stayed
-  accessible, the volume remained downloaded with exact client/hash ownership,
-  the imported history and seen records remained singular, and no import queue
-  item reappeared.
-- A completed download skipped because the canonical target has equal or better
-  quality creates one terminal `import_skipped` receipt and does not reappear
-  on later status polls.
-- A queue item that cannot infer a safe volume remains in `needs_review`
-  instead of being imported incorrectly or hidden by terminal evidence for an
-  imported sibling.
+## Release Preparation Evidence
 
-## Metadata Acceptance
+The release-preparation branch must record fresh evidence from its exact tree:
 
-`tests/fixtures/metadata_acceptance.json` and
-`tests/python/test_metadata_acceptance_corpus.py` cover:
+- focused release metadata and documentation consistency tests;
+- `make test-release-safe` with Python, confirmation-flow, route-sweep, and all
+  isolated browser suite counts;
+- `make release-local`, including dependency, secret, configuration, image
+  identity/content, and fixed High/Critical vulnerability gates;
+- generated image tags containing only
+  `ghcr.io/kha-kis/manga-arr:1.3.0-rc.1`.
 
-- finished standard manga and automatic update-strategy convergence;
-- ongoing series whose locally observed counts exceed provider counts;
-- one-shot volume and chapter counts;
-- omnibus and curated manual-count protection;
-- light-novel count protection;
-- alternate-title and genre curation;
-- conflicting MangaUpdates counts without catalogue shrinkage.
+Results are recorded in the candidate changelog and pull request after the
+commands complete. A passing preparation branch does not qualify an unpublished
+image or authorize stable promotion.
 
-The broader lifecycle gate also covers provider backoff, cached-map
-preservation, cover validation, MangaDex manifests, half chapters, map drift,
-reconciliation, and metadata-health rendering.
+## 1.3 Metadata Acceptance
 
-## Download And Import Matrix
+The 1.3 milestone establishes these operator-facing invariants:
 
-| Area | Acceptance evidence |
-| --- | --- |
-| qBittorrent | Authentication/version probe, magnet and torrent handoff, exact info-hash recovery after ambiguous add timeouts, missing-hash behavior, save-path routing, timeout, and circuit breaker |
-| SABnzbd | API-key-aware connection test, authenticated queue probe, accepted and rejected NZB handoff, transport failure, timeout, circuit recovery, and queue mapping |
-| Suwayomi | GraphQL connection probe, source/title confidence, chapter and volume jobs, retry exhaustion and recovery, filesystem import, and idempotency |
-| Shared import | Search-to-library E2E, short SQLite claims, bounded concurrency, cancellation, atomic copy/move/hardlink staging, rollback, duplicate quality handling, ranges, packs, specials, and split RAR |
+- stored AniList and MangaUpdates identities anchor future enrichment;
+- one unique stored-MAL match can anchor AniList resolution, while ambiguous
+  title-only results fail closed and preserve cached metadata;
+- every production creation and adoption path initializes deterministic title
+  provenance and locking in the series-creation transaction;
+- unlocking a local title relinquishes its recommendation dominance without
+  mutating the title, and explicit candidate application transfers ownership;
+- equal-value source drift can reconcile provenance without rewriting the
+  application value or triggering value-change side effects;
+- metadata application revalidates current values, candidates, conflicts, and
+  locks before committing;
+- existing-library matching reports equal-strength identity ambiguity while
+  preserving explicit operator selection;
+- AniList candidate confidence records the actual current identity evidence;
+- downloaded and local count observations remain lower bounds, and ambiguous or
+  failed provider resolution cannot remove cached metadata or local files.
 
-Live connection probes are read-only. They must never enqueue a release merely
-to prove connectivity. A public version endpoint alone is insufficient: the
-probe must exercise an authenticated operation that requires the configured
-credential.
+`tests/python/test_metadata_milestone_lifecycle.py` is the final integrated
+acceptance gate added by PR #369. Its three scenarios exercise production
+creation/adoption routes, provenance and lock transitions, search and grab,
+completed-download import, durable filesystem publication, rescan, and later
+metadata refresh while replacing only external provider, indexer, cover, and
+download-client I/O.
 
-## Installation And Recovery
+Publication year or format as automatic identity tie-break evidence, exact
+provenance for bare numeric metadata searches, and historical/original
+discovery-confidence storage remain intentionally deferred. The fail-closed
+identity policy makes these non-blocking for 1.3.
 
-Before stable release, verify all of the following using the published image:
+## Candidate Qualification Gates
 
-1. Anonymous clone and unmodified image resolution from the public Compose
-   configuration.
-2. Non-root startup against empty host directories.
-3. Health, browser-first administrator creation, login, logout, and offline
+### Exact Commit And Publication
+
+1. Merge the reviewed release-preparation PR without changing its qualified
+   content.
+2. Run `make release-local` from the exact merge commit.
+3. Create immutable tag `v1.3.0-rc.1` on that exact commit only after the local
+   gate passes.
+4. Confirm the release workflow publishes both amd64 and arm64 manifests and
+   record the resulting candidate digest.
+5. Verify the image reports version `1.3.0-rc.1`, the tagged commit revision,
+   the expected non-root user, and the allowlisted runtime files.
+6. Confirm publication creates only `1.3.0-rc.1`; `1.3`, `1`, and `latest`
+   must not move. Existing stable tags `1.2.0` and `1.2` must remain unchanged.
+
+### Fresh Installation
+
+1. Pull the candidate by exact version or digest from the public registry.
+2. Start it as a non-root user against empty `/config` and library directories
+   using the public Compose configuration.
+3. Complete browser-first administrator creation, login, logout, and offline
    administrator recovery.
-4. Restore of a real database together with its matching secret key.
-5. Library counts, administrator login, and decryption of stored integration
-   credentials after restore.
-6. Upgrade from the previous stable release and rollback using the matching stopped
-   `/config` snapshot.
+4. Verify `/healthz`, System Status version/revision, database integrity,
+   foreign keys, and writable configured paths.
+5. Add a representative series and complete metadata refresh,
+   existing-library adoption, and search/grab/import workflows.
+
+### Upgrade And Rollback
+
+1. Stop stable 1.2.0 and create a matching copy or snapshot of realistic
+   `/config` data, including the database and secret key.
+2. Start the candidate against a copy of that snapshot and verify migrations,
+   administrator login, stored credential decryption, library counts, provider
+   identities, title ownership, downloaded state, and folder mappings.
+3. Refresh representative existing libraries, including manual, local, and
+   provider-owned titles, and verify no unexpected identity or ownership
+   changes.
+4. Exercise existing-library adoption and one representative
+   search/grab/download/import/rescan lifecycle.
+5. Stop the candidate, restore the matching stopped 1.2.0 `/config` snapshot,
+   and verify rollback with the stable image. Never run 1.2.0 against a database
+   already migrated by the candidate.
+
+### Integrity And Operational Evidence
+
+Record all of the following from the qualification environment:
+
+- `PRAGMA integrity_check` returns `ok` and `PRAGMA foreign_key_check` returns
+  no rows before and after the representative workflows;
+- `/healthz` remains HTTP 200, with no unexpected HTTP 5xx responses,
+  application errors, tracebacks, container restarts, or database-lock errors;
+- metadata refresh preserves cached values during provider failures and makes
+  no unexpected provider-ID, title-ownership, downloaded-count, or local-file
+  changes;
+- search/grab/import completes with exact download-client ownership and one
+  durable imported result;
+- each configured download client completes an authenticated operation that
+  requires its stored credential; a public version endpoint alone is not
+  sufficient evidence;
+- existing-library adoption preserves the explicitly selected identity and
+  folder mapping;
+- no recurring configuration errors or circuit-breaker transitions occur for
+  any download client;
+- at least one full configured background polling/refresh cycle completes after
+  the interactive checks, so scheduled behavior is observed rather than
+  inferred from startup alone.
+
+Qualification is evidence-driven. A fixed multi-week soak is not required by
+policy, but any blocker or unexplained operational signal resets the affected
+gate and requires a corrected candidate.
+
+## Historical 1.2 Evidence
+
+The 1.2.0 release was promoted from `1.2.0-rc.10` after more than 15 days of
+production qualification. Its evidence included HTTP 200 health, zero
+container restarts, database-lock failures, tracebacks, HTTP 5xx responses, or
+application errors, schema version 5, `PRAGMA integrity_check` = `ok`, no
+active recovery records, and a controlled qBittorrent-to-library import.
+
+Earlier 1.2 candidates exposed and corrected health-probe starvation, SABnzbd
+authentication and shared-path configuration, title-boundary matching,
+publication-year volume parsing, terminal duplicate receipts, duplicate
+Prowlarr polling, current Torznab parsing, protocol routing, and ambiguous
+qBittorrent handoff recovery. That history remains useful regression context,
+but neither the RC10 digest nor its production soak qualifies 1.3.0-rc.1.
 
 ## Stable Release Decision
 
-The `1.2.0` release retains the full `1.1.0` qualification and adds explicit
-ambiguous-import review, standalone specials, field-level metadata provenance,
-and hardened backup/recovery conventions. RC10 met the operational soak gate
-and is approved as the runtime basis for stable promotion. Qualification
-evidence includes:
-
-- `make release-local` passing from the exact tagged commit;
-- browser smoke, integration, and E2E suites passing in isolation;
-- dependency, secret, configuration, and image scans without release blockers;
-- fresh-install and upgrade/rollback evidence;
-- no recurring configuration errors or download-client circuit-breaker
-  transitions during the production soak;
-- public support, security, contribution, and conduct policies;
-- a protected default branch and immutable annotated release tags;
-- candidate publication verification that `1.2.0-rc.10` resolves to the tested
-  multi-platform digest
-  `sha256:a99cb009ebd40686cf6002468b9032d1ef643b048e5755c70dbdce639f752664`
-  without moving stable aliases;
-- post-publication verification that `1.2.0`, `1.2`, `1`, and `latest` resolve
-  to the same stable image digest before production deployment.
+Stable 1.3.0 is not yet approved. Promotion requires the published
+`1.3.0-rc.1` image to satisfy the fresh-install, 1.2.0 upgrade and rollback,
+metadata lifecycle, import, integrity, and operational gates above. The
+candidate digest and results must be recorded before a stable release PR is
+prepared.
