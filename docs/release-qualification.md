@@ -155,9 +155,8 @@ but neither the RC10 digest nor its production soak qualifies 1.3.0-rc.2.
 
 ## 1.3.0-rc.2 Qualification Plan
 
-Status: **PENDING PUBLICATION AND FRESH QUALIFICATION**. RC2 must repeat every
-RC1 gate that did not complete; no RC1 runtime result is inherited as RC2
-evidence.
+Status: **COMPLETE**. The evidence below is entirely RC2-specific; no RC1
+runtime result was inherited as RC2 evidence.
 
 ### RC1 blocker
 
@@ -199,6 +198,166 @@ evidence.
 The qBittorrent connection test, controlled import, upgraded metadata cases,
 rollback, and operational background cycle must all be executed fresh against
 the published RC2 image.
+
+## 1.3.0-rc.2 Publication And Qualification Evidence
+
+Status: **QUALIFIED**. Every mandatory RC2 gate completed against the published
+exact-digest image. Stable 1.3.0 was not prepared or published by this work.
+
+### Release identity and publication
+
+- PR #373 merge and qualified commit:
+  `88d3d1ddc8089815caa538fea1e74fef2d30d28a`
+- Annotated tag: `v1.3.0-rc.2`; tag object:
+  `c48bb75235a6aece637777a26c523319c7d75c08`
+- Release workflow:
+  [run 32890569706](https://github.com/Kha-kis/manga-arr/actions/runs/32890569706),
+  successful for the exact release commit
+- Published image:
+  `ghcr.io/kha-kis/manga-arr@sha256:8011aaf983ad5a2ec0c85d263b59d6df3b8b1c461974363a81338a7fa32f17de`
+- The index contains `linux/amd64` and `linux/arm64` manifests. Per-platform
+  SBOM and provenance attestations were published, and exact-image verification
+  confirmed version `1.3.0-rc.2`, the release revision, non-root runtime,
+  labels, and allowlisted files.
+- GitHub prerelease:
+  [Mangarr 1.3.0-rc.2](https://github.com/Kha-kis/manga-arr/releases/tag/v1.3.0-rc.2)
+- Before and after publication, `1.2.0`, `1.2`, `1`, and `latest` all resolved
+  to stable digest
+  `sha256:2750ee8d8f6e5d08703a5bb9c145185052ef0cc13e0f2a76dbdef2e2040cf864`.
+  RC1 remained on
+  `sha256:cac61b6e632418d63d3856de7eac5fe39421ae0bddc7a63ef1876bc0d22ce62c`,
+  and alias `1.3` remained absent.
+
+### Exact-commit local gate
+
+`make release-local` completed outside the command sandbox from the exact merge
+commit. Ruff and format checks passed; 2,317 Python tests passed with 5 skipped;
+confirmation flow passed 13/13; route sweep passed 10/10; browser smoke passed
+32/32; browser integration passed 22/22; browser E2E passed 29/29; and settings
+regression passed 12/12. `pip-audit` found no known vulnerabilities, gitleaks
+found no leaks across 416 commits, Trivy configuration and fixed image scans
+found zero High/Critical issues, and release-image identity/content verification
+passed.
+
+The known host-only TestClient stall reproduced only inside the command
+sandbox. It was not counted as a pass. The complete exact-commit gate above
+finished in the documented outside-sandbox environment.
+
+### Fresh installation and upgrade
+
+The exact RC2 digest started as UID/GID 1000 against empty isolated config and
+data directories with zero restarts. Health returned HTTP 200; System Status
+showed version RC2, while the exact running image's OCI revision label separately
+confirmed `88d3d1ddc8089815caa538fea1e74fef2d30d28a`; configured paths were writable;
+integrity returned `ok`; foreign keys returned no rows; and startup had no
+tracebacks or HTTP 5xx responses. Browser-first administrator creation, login,
+logout, stopped-container recovery, replacement creation, and replacement login
+passed. System Status does not currently render the OCI revision.
+
+Qualification ruling: Phase 7's deployed-identity gate is satisfied by pairing
+the version rendered by System Status with the exact running image's verified
+OCI revision label. Exposing that revision in the application is an observability
+follow-up, not an artifact-identity or data-safety failure.
+
+A real unique AniList result was added and refreshed with its AniList and MAL
+identities intact. A controlled existing-library folder returned an ambiguous
+two-candidate proposal and was not adopted automatically. Explicit adoption
+persisted the chosen identity, locked the local title, and associated the
+controlled CBZ as downloaded. No unexpected recovery record was created.
+
+The 1.2 upgrade used a fresh copy of the preserved stopped baseline, whose
+database and secret-key hashes were reverified before use. Baseline and RC2
+matched at 30 series, 797 volumes, 5,957 chapters, 736 downloaded, 61 wanted,
+zero grabbed, 13,424 history rows, 596 seen rows, two terminal import rows, and
+zero active imports. All 30 AniList, MAL, and MangaUpdates identities, all 30
+title-provenance selections, root mappings, download-client identities, and
+indexer identities retained their baseline fingerprints. Encrypted credentials
+decrypted successfully; upgraded administrator login passed; no unexpected
+duplicate, migration, or recovery record appeared; integrity returned `ok`; and
+foreign keys returned no rows.
+
+An initial qualification start occurred before RSS was disabled and grabbed one
+release. The candidate was stopped immediately, that exact torrent was removed,
+and the entire working database was discarded. Qualification restarted from a
+new hash-matching copy of the pristine baseline, so no evidence or state from
+that setup error was retained.
+
+### qBittorrent and controlled lifecycle
+
+Configured qBittorrent 5.2.3 returned the expected empty HTTP 204 login response.
+RC2 treated it as provisional and required a successful HTTP 200 read-only
+`/app/version` proof before use. The saved-client test reported connected. A
+seeded three-failure breaker cleared through the normal successful saved-client
+path; subsequent status polling remained live and healthy, and the breaker table
+finished empty. The status cache successfully polled `/torrents/info`, displayed
+`qBit live`, and the Health panel reported qBittorrent v5.2.3 healthy. The normal
+HTTP 200 plus `Ok.` path remained covered by the release test suite.
+
+One deliberately selected One Piece series ID 37, volume 111 release completed
+the real stack from search through rescan. Mangarr selected download-client ID 1
+and persisted exact download ID
+`5c368ab155c203210109e5d3091007c9321f76a7`. The selected provider GUID and URL
+were retained in the database and recorded without publishing private tracker
+material as SHA-256
+`1f9e37ce5a1ef704d59dbf955ba47b21ea9a99f2b1bd2fd98d7bda71d7322bd8`
+and
+`b46cc7807a71f1e147894e17b3e0c2366c397bd458e7e052478d6eac6bcb1fde`,
+respectively. The intended release moved from wanted to grabbed to downloaded,
+produced one seen row, one grab history row, one import history row, and one
+215,511,425-byte canonical CBZ with `ComicInfo.xml`. The import queue and
+publication journal had no active residue. A second status poll and second
+rescan left one downloaded volume, one import, and the original association. The
+exact qualification torrent and source payload were then removed while the
+isolated imported copy remained intact.
+
+Credentialed read-only probes also reported SABnzbd 5.1.1, Suwayomi connected
+with 79 sources, and Prowlarr 2.5.2.5491. No download-client breaker recurred.
+
+### Metadata, rollback, and operations
+
+A real forced refresh of an upgraded anchored series completed healthy with
+zero warnings or errors and no application-field change. AniList, MAL, and
+MangaUpdates identities, title ownership, a locked manual volume count,
+downloaded volume/chapter floors, and cached metadata remained intact.
+
+A deterministic harness ran production metadata helpers against an online
+SQLite backup of the upgraded database with controlled provider responses. All
+12 required cases passed: AniList anchoring; MangaUpdates identity isolation;
+ambiguous AniList fail-closed and cache preservation; manual and local title
+locks; unlock without mutation; explicit ownership transfer; equal-value source
+reconciliation; downloaded count floors; operator-controlled existing-library
+ambiguity; and confidence as observability only. Nine bounded targeted tests
+passed; Ruff, Bandit, and format checks passed; BasedPyright reported zero errors
+and warnings; and the copied database retained clean integrity and foreign keys.
+
+Rollback stopped RC2 and preserved its working copy, then started exact stable
+1.2.0 against a fresh hash-matching copy of the original stopped snapshot. The
+original administrator username and password hash matched before supported
+offline recovery. Health, replacement login, all baseline counts and
+fingerprints, integrity, foreign keys, library access, SABnzbd, Suwayomi, and
+Prowlarr passed. Stable 1.2.0 reproduced its known qBittorrent HTTP 204 rejection,
+as expected; it was never run against an RC2-migrated database. The original
+production stable container was restored on the exact 1.2.0 digest and returned
+healthy with zero restarts.
+
+The first RC2 operational run lasted 22 minutes 17 seconds and covered repeated
+automatic qBittorrent status polling, the real import worker and publication
+flow, rescans, one explicit RSS/indexer cycle, one metadata refresh, health
+scheduling, and recovery cleanup. A second scheduler-strengthening run retained
+the real persisted `rss_interval=900` setting and observed RSS polls at 20:38:05
+and 20:53:07 UTC, plus a scheduled import-list sync at 20:42:57. The two RSS
+passes checked 979 and 977 releases. Every series was temporarily unmonitored,
+so both passes grabbed zero and created no pending release. Monitoring and RSS
+flags were then restored before stopping RC2.
+
+Final operational evidence recorded zero container restarts, Python tracebacks,
+HTTP 5xx responses, SQLite lock errors, recovery/replay failures, qBittorrent
+authentication failures, breaker rows, integrity failures, or foreign-key
+failures. Four application error events came from concurrent TorrentDay HTTP 410
+responses during earlier search probes; indexer backoff activated and prevented
+recurrence. Suwayomi also reported upstream `No chapters found` responses for
+some titles without corrupting local state. These contained external-provider
+conditions did not repeat as downloader, database, or identity failures.
 
 ## 1.3.0-rc.1 Publication And Qualification Evidence
 
@@ -289,8 +448,9 @@ HTTP 200; no candidate was run against its database.
 
 ## Stable Release Decision
 
-Stable 1.3.0 is not yet approved. Promotion requires the published
-`1.3.0-rc.2` image to satisfy the fresh-install, 1.2.0 upgrade and rollback,
-metadata lifecycle, downloader, import, integrity, and operational gates above.
-RC1 remains rejected and immutable. The RC2 digest and fresh results must be
-recorded before a stable release PR is prepared.
+RC1 remains rejected and immutable. RC2 completed the fresh-install, 1.2.0
+upgrade and rollback, metadata lifecycle, downloader, import, integrity, and
+operational gates above. Stable 1.3.0 preparation may now be considered as a
+separate task; it was not performed here.
+
+1.3.0-rc.2 QUALIFIED
