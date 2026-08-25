@@ -37,6 +37,11 @@ from shared import (
 # so tests can swap the module singleton — a name-level import would snapshot
 # the old reference.
 import status_cache as _sc
+from qbit_auth import (
+    QbitLoginMode,
+    classify_qbit_login,
+    is_valid_qbit_version_response,
+)
 
 
 def _queue_status_context() -> dict[str, dict[str, object]]:
@@ -1530,7 +1535,16 @@ async def _remove_from_queue(
                         f"{_cc_host}/api/v2/auth/login",
                         data={"username": _cc_user, "password": _cc_pw},
                     )
-                    if "Ok" in r.text:
+                    login_mode = classify_qbit_login(r.status_code, r.text)
+                    bypass_proven = login_mode is QbitLoginMode.NORMAL_AUTH
+                    if login_mode is QbitLoginMode.BYPASS_PROBE_REQUIRED:
+                        proof = await client.get(
+                            f"{_cc_host}/api/v2/app/version"
+                        )
+                        bypass_proven = is_valid_qbit_version_response(
+                            proof.status_code, proof.text
+                        )
+                    if bypass_proven:
                         await client.post(
                             f"{_cc_host}/api/v2/torrents/createCategory",
                             data={"category": cat_new, "savePath": ""},
@@ -1826,7 +1840,14 @@ async def _set_torrent_category(
                 f"{host}/api/v2/auth/login",
                 data={"username": user, "password": password},
             )
-            if "Ok" in response.text:
+            login_mode = classify_qbit_login(response.status_code, response.text)
+            bypass_proven = login_mode is QbitLoginMode.NORMAL_AUTH
+            if login_mode is QbitLoginMode.BYPASS_PROBE_REQUIRED:
+                proof = await client.get(f"{host}/api/v2/app/version")
+                bypass_proven = is_valid_qbit_version_response(
+                    proof.status_code, proof.text
+                )
+            if bypass_proven:
                 await client.post(
                     f"{host}/api/v2/torrents/createCategory",
                     data={"category": normalized_category, "savePath": ""},

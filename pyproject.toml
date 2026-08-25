@@ -31,7 +31,7 @@ mangarr = "cli:main"
 
 [tool.setuptools]
 package-dir = { "" = "app" }
-py-modules = ["auth", "backups", "cli", "shared", "version"]
+py-modules = ["auth", "backups", "cli", "qbit_auth", "shared", "version"]
 
 [tool.setuptools.dynamic]
 version = { file = ["app/VERSION"] }

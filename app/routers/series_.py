@@ -36,6 +36,7 @@ from shared import (
     with_flash,
 )
 from volume_file_deletion import delete_volume_file as run_volume_file_deletion
+from qbit_auth import QbitLoginMode, classify_qbit_login
 
 router = APIRouter()
 
@@ -932,12 +933,18 @@ async def series_detail(request: Request, series_id: int):
                     f"{_qb_host}/api/v2/auth/login",
                     data={"username": _qb_user, "password": _qb_pw},
                 )
-                if "Ok" in _r.text:
+                login_mode = classify_qbit_login(_r.status_code, _r.text)
+                if login_mode is not QbitLoginMode.REJECTED:
                     _r2 = await _qb.get(
                         f"{_qb_host}/api/v2/torrents/info", params={"category": _qb_cat}
                     )
                     if _r2.status_code == 200:
-                        for _t in _r2.json():
+                        _payload = _r2.json()
+                        if not isinstance(_payload, list):
+                            raise RuntimeError("qBit torrents/info returned invalid data")
+                        for _t in _payload:
+                            if not isinstance(_t, dict):
+                                raise RuntimeError("qBit torrents/info returned invalid data")
                             _h = _t.get("hash", "").lower()
                             if _h:
                                 dl_stages[_h] = _s_stage(_t.get("state", ""))

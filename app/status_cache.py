@@ -38,6 +38,7 @@ from download_identity import (
     protocol_for_client_type,
 )
 from shared import get_cfg, get_db
+from qbit_auth import QbitLoginMode, classify_qbit_login
 
 log = logging.getLogger(__name__)
 
@@ -104,7 +105,8 @@ async def _fetch_qbit(
             f"{host}/api/v2/auth/login",
             data={"username": user, "password": pw},
         )
-        if "Ok" not in r.text:
+        login_mode = classify_qbit_login(r.status_code, r.text)
+        if login_mode is QbitLoginMode.REJECTED:
             raise RuntimeError(f"qBit auth failed (HTTP {r.status_code})")
         r2 = await client.get(
             f"{host}/api/v2/torrents/info",
@@ -112,8 +114,13 @@ async def _fetch_qbit(
         )
         if r2.status_code != 200:
             raise RuntimeError(f"qBit torrents/info HTTP {r2.status_code}")
+        payload = r2.json()
+        if not isinstance(payload, list):
+            raise RuntimeError("qBit torrents/info returned a non-list response")
         out: dict[str, dict[str, Any]] = {}
-        for t in r2.json():
+        for t in payload:
+            if not isinstance(t, dict):
+                raise RuntimeError("qBit torrents/info returned an invalid item")
             h = t.get("hash", "").lower()
             out[h] = {
                 "hash": h,
