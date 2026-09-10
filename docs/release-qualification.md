@@ -9,13 +9,13 @@ can become a stable release. Passing unit tests alone is not sufficient.
 - Stable target: `1.3.0`
 - Previous stable: `1.2.0`
 - Candidate image: `ghcr.io/kha-kis/manga-arr:1.3.0-rc.2`
-- Candidate digest: pending publication
+- Candidate digest: `sha256:8011aaf983ad5a2ec0c85d263b59d6df3b8b1c461974363a81338a7fa32f17de`
 - Platforms: `linux/amd64`, `linux/arm64`
 
 The current stable release remains 1.2.0. RC1 is an immutable rejected
 candidate whose publication and qualification evidence is preserved below.
-RC2 is not yet tagged, published, deployed, or qualified. Stable 1.3.0 remains
-blocked.
+RC2 is published and qualified against its exact digest. Stable 1.3.0
+preparation may proceed separately; stable publication has not occurred.
 
 ## Release Preparation Evidence
 
