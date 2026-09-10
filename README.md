@@ -21,10 +21,12 @@ files into an organized library. It understands volumes, chapters, editions,
 omnibuses, specials, and multi-volume packs instead of treating manga like a
 generic TV or book collection.
 
-The current stable release is **1.2.0**. **1.3.0-rc.2** is the current candidate
-under preparation for operators evaluating the metadata identity and ownership
-improvements. Mangarr is self-hosted, designed for a single administrator, and
-distributed as a multi-platform container image.
+**1.3.0** is prepared for stable release following qualification of
+**1.3.0-rc.2**, with metadata identity and title-ownership improvements and
+qBittorrent authentication-bypass compatibility. The published stable release
+remains **1.2.0** until 1.3.0 publication completes. Mangarr is self-hosted,
+designed for a single administrator, and distributed as a multi-platform
+container image.
 
 ## Features
 
