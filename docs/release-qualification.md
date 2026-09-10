@@ -17,7 +17,38 @@ candidate whose publication and qualification evidence is preserved below.
 RC2 is published and qualified against its exact digest. Stable 1.3.0
 preparation may proceed separately; stable publication has not occurred.
 
-## Release Preparation Evidence
+## 1.3.0 Stable Preparation
+
+Status: **PREPARED FOR REVIEW; NOT PUBLISHED**. The stable preparation changes
+only `app/VERSION` and release documentation from qualified RC2. It introduces
+no application behavior, schema, dependency, or image-build changes. RC2's
+runtime evidence below remains candidate evidence, not proof of the new stable
+artifact.
+
+Before stable publication:
+
+1. Complete `make release-local` on the preparation branch and record results
+   in its pull request, including isolated browser and security/image gates.
+2. Merge the reviewed release PR and repeat `make release-local` on the exact
+   merge commit. Stop on a failed gate; do not tag or publish.
+3. Verify stable metadata emits exactly `1.3.0`, `1.3`, `1`, and `latest`.
+   Create annotated tag `v1.3.0` on the qualified merge commit only after all
+   exact-commit gates pass. Never move an existing tag or exact-version image.
+4. Verify the successful release workflow, amd64/arm64 manifests, SBOM,
+   provenance, image version/revision, and exact stable digest. Confirm `1.3`,
+   `1`, and `latest` resolve to it, while 1.2.0, 1.2, and both RC artifacts
+   retain their recorded digests.
+5. Smoke-test the exact stable digest on a fresh install and a separate upgrade
+   copy, including login, metadata refresh, downloader connectivity, and
+   database integrity. Preserve the matching stopped snapshot for rollback.
+6. Publish the GitHub stable release with the exact digest and upgrade/rollback
+   notes. Update the README's published-stable status and record stable
+   artifact evidence separately from the RC2 results.
+
+Production remains on 1.2.0 during preparation. A production upgrade requires
+the verified stable artifact and a fresh stopped config snapshot.
+
+## RC2 Release Preparation Evidence
 
 The release-preparation branch must record fresh evidence from its exact tree:
 

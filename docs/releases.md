@@ -37,6 +37,7 @@ The release workflow publishes `ghcr.io/kha-kis/manga-arr` with these tags:
 
 | Release | Image tags |
 | --- | --- |
+| `1.3.0` (prepared) | `1.3.0`, `1.3`, `1`, `latest` |
 | `1.3.0-rc.2` | `1.3.0-rc.2` |
 | `1.3.0-rc.1` | `1.3.0-rc.1` |
 | `1.2.0` | `1.2.0`, `1.2`, `1`, `latest` |
@@ -59,6 +60,11 @@ The release workflow publishes `ghcr.io/kha-kis/manga-arr` with these tags:
 The exact image digest recorded by GitHub Container Registry is the strongest
 deployment pin. Version tags are intended to remain immutable, but a digest
 also protects against registry-side tag changes.
+
+The 1.3.0 row describes the planned stable publication. Until that publication
+completes, `1` and `latest` remain on 1.2.0 and `1.3` is not published. The
+historical rows describe tags emitted at each release, not ownership of the
+moving aliases today. Exact 1.2.0 and RC tags remain immutable after promotion.
 
 ## Release Checklist
 
@@ -122,7 +128,7 @@ If hosted Actions cannot run, an authenticated maintainer can use the local
 fallback after the full gate passes:
 
 ```bash
-make release-push CONFIRM_RELEASE=1.3.0-rc.2
+make release-push CONFIRM_RELEASE=1.3.0
 ```
 
 The confirmation must exactly match `app/VERSION`. The Docker client must

@@ -5,6 +5,53 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.3.0 - 2026-09-10
+
+Stable release preparation for the metadata identity and title-ownership
+milestone, based on qualified 1.3.0-rc.2. Application behavior is unchanged
+from RC2; publication requires fresh verification of the exact stable merge
+commit and image.
+
+### Added
+
+- Existing-library matching exposes equal-strength identity ambiguity for
+  explicit operator selection before adoption.
+- Integrated metadata lifecycle coverage follows creation, adoption, ownership
+  changes, download, import, rescan, and subsequent refresh.
+
+### Changed
+
+- Stored AniList and MangaUpdates IDs anchor enrichment. Unique stored MAL
+  identity evidence can resolve AniList searches; ambiguous title-only results
+  preserve cached metadata instead of choosing by result order.
+- Every series creation path initializes title provenance with deterministic
+  provider, API, manual, automated, or local ownership.
+- Unlocking a local title permits provider recommendations without changing
+  its value. Explicit candidate application transfers ownership, while local
+  volume and chapter observations retain their count priority.
+- Equal-value source reconciliation repairs ownership without rewriting the
+  application value. Candidate application revalidates current values and
+  locks, and fuzzy AniList matches retain their actual confidence.
+
+### Fixed
+
+- Same-title results cannot cross stored MangaUpdates identities, and
+  ambiguous manual-import searches cannot silently create the wrong series.
+- qBittorrent's empty HTTP 204 login response is accepted only after successful
+  read-only WebAPI proof. Failed proof prevents mutation or import processing;
+  the normal HTTP 200 plus `Ok.` authentication path remains supported.
+
+### Upgrade And Recovery
+
+- Preserve a stopped snapshot of `/config`, including the database and matching
+  encryption key, before upgrading from 1.2.0.
+- Rollback requires restoring that snapshot with the matching 1.2.0 image.
+  Never run an older image against a database already migrated by 1.3.0.
+- RC1 remains rejected and immutable. RC2 qualification covers fresh install,
+  upgrade, snapshot rollback, metadata ownership, a real qBittorrent
+  search-to-import lifecycle, and scheduled background operation. Full evidence
+  and remaining publication gates are in `docs/release-qualification.md`.
+
 ## 1.3.0-rc.2 - 2026-08-25
 
 Replacement release candidate after 1.3.0-rc.1 was rejected during
