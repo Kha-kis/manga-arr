@@ -5,6 +5,26 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.3.1 - 2026-09-15
+
+Security patch preparation for the published 1.3.0 container. Publication and
+qualification of the new image are pending; the immutable 1.3.0 image and tag
+will not be replaced.
+
+### Security
+
+- Refresh Debian packages for each new release version, preventing reuse of a
+  previous release's cached OS-update layer. This addresses the stale `gzip`,
+  PCRE2, SQLite, and Perl packages flagged during 1.3.0 qualification.
+- Keep the pinned Python base and Python requirements unchanged. No metadata,
+  downloader, schema, or application behavior changes are included.
+
+### Upgrade And Recovery
+
+- Back up the complete stopped `/config` directory before upgrading.
+- Upgrades from 1.2.0 include the metadata changes described under 1.3.0 below;
+  rollback to 1.2.0 requires its matching pre-upgrade config snapshot.
+
 ## 1.3.0 - 2026-09-10
 
 Container publication for the metadata identity and title-ownership milestone,

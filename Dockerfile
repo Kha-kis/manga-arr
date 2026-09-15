@@ -2,6 +2,9 @@ FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9
 
 WORKDIR /app
 
+# A new release must refresh OS fixes even when the pinned base is unchanged.
+ARG MANGARR_VERSION=dev
+
 RUN apt-get update \
  && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends 7zip \
@@ -39,9 +42,8 @@ RUN useradd --uid 1000 --user-group \
  && chmod 0755 /usr/local/bin/mangarr \
  && chown -R mangarr:mangarr /app /config
 
-# Release metadata is declared after dependency and source layers so changing
+# Volatile metadata is declared after dependency and source layers so changing
 # build timestamps or commit identities does not invalidate those caches.
-ARG MANGARR_VERSION=dev
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
 
