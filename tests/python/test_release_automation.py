@@ -178,6 +178,84 @@ def test_dockerfile_has_release_identity_labels():
     assert dockerfile.index("RUN pip install") < dockerfile.index("ARG BUILD_DATE")
 
 
+def test_release_version_invalidates_os_package_layer() -> None:
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    instructions = [
+        line.strip()
+        for line in dockerfile.replace("\\\n", " ").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    apt_runs = [
+        index
+        for index, instruction in enumerate(instructions)
+        if instruction.startswith("RUN ") and "apt-get update" in instruction
+    ]
+    assert len(apt_runs) == 1
+    apt_index = apt_runs[0]
+    apt_run = instructions[apt_index]
+    assert "apt-get upgrade -y" in apt_run
+    assert apt_run.index("apt-get update") < apt_run.index("apt-get upgrade")
+    stage_start = max(
+        index
+        for index, instruction in enumerate(instructions[:apt_index])
+        if instruction.startswith("FROM ")
+    )
+    assert instructions.count("ARG MANGARR_VERSION=dev") == 1
+    assert "ARG MANGARR_VERSION=dev" in instructions[stage_start + 1 : apt_index], (
+        "Declare MANGARR_VERSION inside the apt stage before RUN apt-get update "
+        "so a new release version invalidates cached OS upgrades"
+    )
+
+
+@pytest.mark.parametrize("argument", ["VCS_REF=unknown", "BUILD_DATE=unknown"])
+def test_volatile_release_arguments_stay_after_dependency_and_source_layers(
+    argument: str,
+) -> None:
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    instructions = [line.strip() for line in dockerfile.splitlines()]
+    assert instructions.count(f"ARG {argument}") == 1
+    argument_index = instructions.index(f"ARG {argument}")
+    assert all(
+        index < argument_index
+        for index, instruction in enumerate(instructions)
+        if instruction.startswith(("RUN ", "COPY "))
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_builds", "version_argument"),
+    [
+        ("Makefile", 2, '--build-arg MANGARR_VERSION="$(VERSION)"'),
+        (
+            ".github/workflows/release.yml",
+            1,
+            '--build-arg MANGARR_VERSION="${{ steps.release.outputs.version }}"',
+        ),
+    ],
+)
+def test_release_shell_builds_supply_version_cache_key(
+    path: str, expected_builds: int, version_argument: str
+) -> None:
+    source = (REPO_ROOT / path).read_text(encoding="utf-8").replace("\\\n", " ")
+    builds = re.findall(r"(?m)^\s*docker (?:build|buildx build)\s+([^\n]+)", source)
+    assert len(builds) == expected_builds
+    for build in builds:
+        assert version_argument in build, f"{path}: release build lacks version"
+
+
+def test_release_publish_action_supplies_version_cache_key() -> None:
+    workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    assert workflow.count("uses: docker/build-push-action@") == 1
+    publish_step = workflow.split("uses: docker/build-push-action@", 1)[1].split(
+        "\n      - ", 1
+    )[0]
+    assert re.search(
+        r"build-args: \|\n(?:[ \t]+[^\n]*\n)*?"
+        r"[ \t]+MANGARR_VERSION=\$\{\{ steps\.release\.outputs\.version \}\}\n",
+        publish_step,
+    )
+
+
 def test_local_publish_requires_clean_tagged_commit_and_refuses_replacement():
     makefile = (REPO_ROOT / "Makefile").read_text()
     for marker in (

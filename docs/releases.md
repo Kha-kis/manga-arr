@@ -37,6 +37,7 @@ The release workflow publishes `ghcr.io/kha-kis/manga-arr` with these tags:
 
 | Release | Image tags |
 | --- | --- |
+| `1.3.1` (prepared; not published) | `1.3.1`, `1.3`, `1`, `latest` |
 | `1.3.0` (image published; qualification pending) | `1.3.0`, `1.3`, `1`, `latest` |
 | `1.3.0-rc.2` | `1.3.0-rc.2` |
 | `1.3.0-rc.1` | `1.3.0-rc.1` |
@@ -85,6 +86,13 @@ not ownership of moving aliases today. Exact 1.2.0 and RC tags are unchanged.
 10. For a stable release, verify that `latest` resolves to the same digest.
 
 The stable-release evidence is tracked in `docs/release-qualification.md`.
+
+Starting with 1.3.1, the release version is a cache input before the Dockerfile's
+OS-package update step. A new version refreshes Debian packages even when the
+pinned base is unchanged. Code-only builds of the same version can reuse that
+layer; commit IDs and timestamps remain late build arguments. A retry of an
+unpublished version after new security updates may still need `docker build
+--no-cache`. Never rebuild an already published exact-version tag in place.
 
 Release candidates are promoted by creating a new stable release from a tested
 commit. An RC tag itself is never renamed or converted into a stable tag.

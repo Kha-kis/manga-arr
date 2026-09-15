@@ -3,7 +3,23 @@
 This document defines the evidence required before a Mangarr release candidate
 can become a stable release. Passing unit tests alone is not sufficient.
 
-## Release Under Test
+## 1.3.1 Security Patch Preparation
+
+Status: **PREPARED; NOT PUBLISHED OR QUALIFIED**.
+
+The replacement patch makes the release version invalidate the OS-package
+update layer. It retains the pinned Python base and requirements, with no
+application or schema changes. The 1.3.0 image, Git tag, and evidence below
+remain immutable.
+
+Before announcing 1.3.1, run `make release-local`, review and merge the patch,
+verify the exact merge, and publish a new multi-platform image. Scan and verify
+the published digest, then repeat fresh-install and copied-config upgrade
+checks against that digest. Record the installed package versions and current
+scanner results; the September 10 clean scan is not evidence for this patch.
+Production remains on 1.2.0 during qualification.
+
+## 1.3.0 Release Under Test
 
 - Release under qualification: `1.3.0`
 - Qualified release candidate: `1.3.0-rc.2`
