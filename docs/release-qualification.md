@@ -5,27 +5,200 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## Release Under Test
 
-- Release candidate: `1.3.0-rc.2`
-- Stable target: `1.3.0`
+- Release under qualification: `1.3.0`
+- Qualified release candidate: `1.3.0-rc.2`
 - Previous stable: `1.2.0`
-- Candidate image: `ghcr.io/kha-kis/manga-arr:1.3.0-rc.2`
-- Candidate digest: `sha256:8011aaf983ad5a2ec0c85d263b59d6df3b8b1c461974363a81338a7fa32f17de`
+- Published image: `ghcr.io/kha-kis/manga-arr:1.3.0`
+- Stable digest: `sha256:f9b9d9785d23e8632af0430909b90867ce3759e2c0297cb15cffea9cddf0187f`
 - Platforms: `linux/amd64`, `linux/arm64`
 
-The current stable release remains 1.2.0. RC1 is an immutable rejected
-candidate whose publication and qualification evidence is preserved below.
-RC2 is published and qualified against its exact digest. Stable 1.3.0
-preparation may proceed separately; stable publication has not occurred.
+The 1.3.0 container is published and owns `1.3`, `1`, and `latest`. AniList
+recovery checks passed on September 15, but final qualification and the GitHub
+stable-release announcement are now blocked by fixable OS-package findings in
+a refreshed image scan. The previous qualified stable is 1.2.0; production
+remains pinned to its unchanged digest. RC1's rejection and RC2's successful
+qualification remain separate historical evidence below.
+
+## 1.3.0 Publication Evidence
+
+Status: **IMAGE PUBLISHED; SECURITY GATE BLOCKED** (2026-09-15).
+The September 10 AniList qualification hold is resolved; no GitHub stable
+release has been announced.
+
+- Reviewed preparation: [PR #375](https://github.com/Kha-kis/manga-arr/pull/375).
+- Exact merge and tagged revision: `d79d6aae1424734b31a2ed18756f2ebdcfe54c6d`.
+- Annotated tag: `v1.3.0`; tag object `b9252a763fff483779b7c8992677232749897b90`.
+- [Release Image run 34502316638](https://github.com/Kha-kis/manga-arr/actions/runs/34502316638)
+  succeeded on that revision.
+- Index digest: `sha256:f9b9d9785d23e8632af0430909b90867ce3759e2c0297cb15cffea9cddf0187f`.
+- amd64 manifest: `sha256:edf4d49df574fc11bdf282ebd8403049621d170a44e9d94a4e7f873398c6ffe4`.
+- arm64 manifest: `sha256:6e11ac1e90abfabf7ce5d5c6e55cc97866a33b7c16be0d9e80bf7fc631e55f79`.
+- Both platforms include SPDX 2.3 SBOMs and SLSA provenance identifying
+  version 1.3.0 and the exact merge revision. Runtime smoke checks use amd64;
+  arm64 manifest and attestations are verified, not runtime-tested here.
+
+### Exact-Merge And Artifact Gates
+
+On September 10, `make release-local` passed on the exact merge: 2,317 Python tests with 5
+skipped; Ruff lint and formatting; 13/13 confirmation-flow and 10/10 route
+checks; isolated browser smoke 32/32, integration 22/22, E2E 29/29, and
+settings 12/12. Dependency audit and secret scan passed. Configuration and
+image scans found no blocking High/Critical findings. Published-image
+verification passed for version, revision, non-root user, and runtime files;
+a separate Trivy scan of that exact digest found no fixed High/Critical
+vulnerabilities on that date. This historical scan does not supersede the
+September 15 security findings below.
+
+Registry checks confirmed `1.3.0`, `1.3`, `1`, and `latest` all resolve to the
+stable digest. `1.2.0` and `1.2` retain
+`sha256:2750ee8d8f6e5d08703a5bb9c145185052ef0cc13e0f2a76dbdef2e2040cf864`.
+Both RC digests below are unchanged. No existing Git release tag or
+exact-version image was moved; only the documented moving aliases advanced.
+
+### Published-Image Smoke Checks
+
+The exact digest started with empty config/data directories as UID 1000,
+using the public container conventions and a loopback-only test port. Browser
+setup, login, logout/relogin, offline administrator reset, replacement setup,
+System Status version, and `/healthz` passed. SQLite integrity was `ok`,
+foreign-key violations were zero, and title provenance was present for the
+newly created series. No live library data was used for the fresh install.
+
+A separate upgrade copy came from the preserved stopped 1.2.0 config/key
+snapshot. Preparation verified byte-identical copies and left the original
+snapshot unchanged. In the copy only, series monitoring, RSS, import lists,
+and download clients were disabled and DDL mode was set to `off`. The original
+flag values were retained privately. One historical grabbed chapter and one
+queued Suwayomi job remained unchanged; no work was cleared to make the audit
+pass. The library mount was read-only, and client probes were explicit
+read-only connectivity checks with the copied credentials.
+
+Exact 1.2.0 started on that copy, a temporary administrator was created through
+browser setup, and logout/relogin passed. After shutdown, the matching config
+and key were preserved as a rollback snapshot. Exact published 1.3.0 then
+started on the working copy and accepted the same administrator without reset
+or recreation. Login/logout, System Status version, `/healthz`, and connection
+checks for qBittorrent, SABnzbd, Suwayomi, and Prowlarr passed.
+
+After upgrade and a forced provider-failure refresh, the complete database
+audit still matched the stopped 1.2.0 baseline: 30 series, 797 volumes, 5,957
+chapters, 736 downloaded and 61 wanted volumes, 13,424 history rows, 596 seen
+rows, two terminal import records, and zero active imports. Provider/title
+identity, title-provenance, root-folder, indexer, and client fingerprints were
+unchanged. Integrity was `ok` with zero foreign-key violations.
+
+An anchored series with cached description/cover references, two manual/local
+fields, and two protected count fields received an actual AniList failure.
+Its provider-attempt timestamp advanced, the AniList source became `degraded`
+with a recorded error, and the series metadata status became `failed`;
+persisted metadata, selected values/sources/locks, and downloaded volume/chapter
+counts stayed identical. The last-success timestamp did not advance. This
+checks cached cover references, not a new image-byte or visual comparison.
+
+Fresh and upgrade browser checks reported no page errors or local HTTP 5xx
+responses. Both qualification containers were stopped afterward. Production
+and live downloader configuration were not changed. RC2's real acquisition,
+import, rescan, scheduled-operation, and snapshot-restore evidence remains
+recorded below; those full workflows were not repeated for this stable-image
+smoke pass. The prepared stopped 1.2.0 rollback snapshot is retained.
+
+### Historical AniList Qualification Hold
+
+On 2026-09-10, a direct request to `https://graphql.anilist.co` returned HTTP
+403 with an explicit message that its API was temporarily disabled due to
+severe stability issues. The fresh AniList success-path smoke check therefore
+did not pass. No substitute identity was accepted to make that check green.
+
+Mangarr's search fell back to MangaUpdates. Explicit selection created the
+intended work with its MangaUpdates identity, no inferred AniList identity,
+and an API-owned title. The series/source metadata state reported the provider
+failure. This verifies fallback behavior, not a successful AniList refresh.
+
+That hold required live AniList search/add on a new empty fixture and anchored
+refresh on the upgrade copy against the same digest after recovery. Those
+checks passed on September 15, as recorded below. The outage evidence and
+original fresh-install files were preserved; no tag or image was rebuilt.
+
+The task API reports a normally returned refresh as `completed` even when
+the metadata result is failed. Qualification checks must inspect the series
+and source metadata states, not just command completion. Exposing that
+domain-level failure in command results is a separate follow-up; no runtime
+change was bundled into this publication-evidence update.
+
+### AniList Recovery Verification
+
+On 2026-09-15, the AniList endpoint returned HTTP 200 with the expected manga
+identity. The remaining checks ran against the same published 1.3.0 digest,
+not a new local build:
+
+- A new empty config/data fixture passed administrator setup, login,
+  logout/relogin, and System Status version checks. Live lookup and explicit
+  add selected AniList 85189 / MAL 60783. Refresh retained both IDs and added
+  the matching MangaUpdates identity. AniList, aliases, MangaUpdates, cover,
+  and MangaDex-manifest source states were healthy.
+- The fresh series had 16 volume rows and an initialized title selection.
+  Its overall metadata state was `degraded` because the chapter-map provider
+  returned no usable map. This is not an AniList failure or a claim that all
+  provider data is complete. SQLite integrity was `ok`, foreign-key violations
+  were zero, and no import was queued.
+- The upgraded anchored series refreshed to `healthy`. AniList's attempt and
+  success timestamps advanced, its failure count reset to zero, and the series
+  last-success timestamp advanced. Persisted metadata, identities, title,
+  field selections/locks, protected count fields, and downloaded counts matched
+  the pre-refresh snapshot exactly.
+- The database-wide upgrade audit still matched the retained September 10
+  audit. Explicit credential probes for qBittorrent, SABnzbd, Suwayomi, and
+  Prowlarr passed again. Browser checks reported no page errors or local HTTP
+  5xx responses. Both qualification containers were stopped afterward;
+  production and live downloader configuration remained unchanged.
+
+These checks clear the AniList success-path gap. The full September 10 test
+gate remains evidence for the unchanged release commit; it was not repeated
+or presented as a new September 15 full-suite run.
+
+### Current Security Blocker
+
+The September 15 Trivy scan refreshed its vulnerability database and scanned
+the exact published amd64 image with `--ignore-unfixed --severity HIGH,CRITICAL
+--exit-code 1`. It exited 1 with **12 findings: 9 High and 3 Critical**. All
+were in Debian packages; no Python-package findings appeared in this filtered
+scan. Installed versions were independently checked with `dpkg-query` inside
+the qualification container.
+
+| Package | Installed | Fixed Version | Findings |
+| --- | --- | --- | --- |
+| `gzip` | `1.13-1` | `1.13-1+deb13u1` | 1 High |
+| `libpcre2-8-0` | `10.46-1~deb13u1` | `10.46-1~deb13u2` | 2 High |
+| `libsqlite3-0` | `3.46.1-7+deb13u1` | `3.46.1-7+deb13u2` | 2 High |
+| `perl-base` | `5.40.1-6` | `5.40.1-6+deb13u1` | 4 High, 3 Critical |
+
+Debian's tracker confirms the fixed package versions for
+[gzip](https://security-tracker.debian.org/tracker/CVE-2026-41992),
+[PCRE2](https://security-tracker.debian.org/tracker/CVE-2026-86145),
+[SQLite](https://security-tracker.debian.org/tracker/CVE-2026-11822), and
+[Perl](https://security-tracker.debian.org/tracker/CVE-2026-13221).
+The complete scanner findings are CVE-2026-41992, CVE-2026-86145,
+CVE-2026-89161, CVE-2026-11822, CVE-2026-11824, CVE-2026-13221,
+CVE-2026-42496, CVE-2026-8376, CVE-2026-42497, CVE-2026-48962,
+CVE-2026-57432, and CVE-2026-57433.
+
+These are scanner severity/applicability results, not proof of an exploitable
+Mangarr request path. No reachability assessment, severity waiver, or ignore
+entry was used to bypass the release gate. The GitHub stable-release
+announcement remains withheld. Prepare and review a new patch release with
+the fixed OS packages, then qualify its new digest. Preserve immutable
+`v1.3.0` and its exact-version image; a version-only change must not reuse a
+stale cached package-install layer.
 
 ## 1.3.0 Stable Preparation
 
-Status: **PREPARED FOR REVIEW; NOT PUBLISHED**. The stable preparation changes
+Historical preparation checklist, now merged as PR #375. The preparation changes
 only `app/VERSION` and release documentation from qualified RC2. It introduces
 no application behavior, schema, dependency, or image-build changes. RC2's
 runtime evidence below remains candidate evidence, not proof of the new stable
 artifact.
 
-Before stable publication:
+Publication and qualification sequence:
 
 1. Complete `make release-local` on the preparation branch and record results
    in its pull request, including isolated browser and security/image gates.
@@ -477,11 +650,12 @@ run. The candidate and baseline config copies were preserved for diagnosis.
 The live stable service remained on exact 1.2.0, healthy with zero restarts and
 HTTP 200; no candidate was run against its database.
 
-## Stable Release Decision
+## Historical RC2 Qualification Decision
 
 RC1 remains rejected and immutable. RC2 completed the fresh-install, 1.2.0
 upgrade and rollback, metadata lifecycle, downloader, import, integrity, and
-operational gates above. Stable 1.3.0 preparation may now be considered as a
-separate task; it was not performed here.
+operational gates above. That RC2 decision authorized separate stable
+preparation; it did not qualify the later 1.3.0 image. Current stable-image
+publication and its qualification hold are recorded at the top of this file.
 
 1.3.0-rc.2 QUALIFIED

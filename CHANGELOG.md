@@ -7,10 +7,14 @@ All notable changes to this project. Format roughly follows
 
 ## 1.3.0 - 2026-09-10
 
-Stable release preparation for the metadata identity and title-ownership
-milestone, based on qualified 1.3.0-rc.2. Application behavior is unchanged
-from RC2; publication requires fresh verification of the exact stable merge
-commit and image.
+Container publication for the metadata identity and title-ownership milestone,
+based on qualified 1.3.0-rc.2. Application behavior is unchanged from RC2.
+The exact stable merge and published image passed local and hosted gates on
+September 10. AniList recovery checks passed on September 15, but that day's
+refreshed image scan found 12 fixable OS-package findings (9 High, 3 Critical).
+Final qualification and the GitHub stable-release announcement remain on hold
+for a patched release. `latest` already resolves to 1.3.0; pin `1.2.0` to remain
+on the previous qualified stable.
 
 ### Added
 
