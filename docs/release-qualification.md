@@ -12,15 +12,18 @@ can become a stable release. Passing unit tests alone is not sufficient.
 - Stable digest: `sha256:f9b9d9785d23e8632af0430909b90867ce3759e2c0297cb15cffea9cddf0187f`
 - Platforms: `linux/amd64`, `linux/arm64`
 
-The 1.3.0 container is published and owns `1.3`, `1`, and `latest`. Final
-qualification and the GitHub stable-release announcement are pending during
-an AniList API outage. The previous qualified stable is 1.2.0; production
+The 1.3.0 container is published and owns `1.3`, `1`, and `latest`. AniList
+recovery checks passed on September 15, but final qualification and the GitHub
+stable-release announcement are now blocked by fixable OS-package findings in
+a refreshed image scan. The previous qualified stable is 1.2.0; production
 remains pinned to its unchanged digest. RC1's rejection and RC2's successful
 qualification remain separate historical evidence below.
 
 ## 1.3.0 Publication Evidence
 
-Status: **IMAGE PUBLISHED; FINAL QUALIFICATION ON HOLD** (2026-09-10).
+Status: **IMAGE PUBLISHED; SECURITY GATE BLOCKED** (2026-09-15).
+The September 10 AniList qualification hold is resolved; no GitHub stable
+release has been announced.
 
 - Reviewed preparation: [PR #375](https://github.com/Kha-kis/manga-arr/pull/375).
 - Exact merge and tagged revision: `d79d6aae1424734b31a2ed18756f2ebdcfe54c6d`.
@@ -36,14 +39,15 @@ Status: **IMAGE PUBLISHED; FINAL QUALIFICATION ON HOLD** (2026-09-10).
 
 ### Exact-Merge And Artifact Gates
 
-`make release-local` passed on the exact merge: 2,317 Python tests with 5
+On September 10, `make release-local` passed on the exact merge: 2,317 Python tests with 5
 skipped; Ruff lint and formatting; 13/13 confirmation-flow and 10/10 route
 checks; isolated browser smoke 32/32, integration 22/22, E2E 29/29, and
 settings 12/12. Dependency audit and secret scan passed. Configuration and
 image scans found no blocking High/Critical findings. Published-image
 verification passed for version, revision, non-root user, and runtime files;
 a separate Trivy scan of that exact digest found no fixed High/Critical
-vulnerabilities.
+vulnerabilities on that date. This historical scan does not supersede the
+September 15 security findings below.
 
 Registry checks confirmed `1.3.0`, `1.3`, `1`, and `latest` all resolve to the
 stable digest. `1.2.0` and `1.2` retain
@@ -98,7 +102,7 @@ import, rescan, scheduled-operation, and snapshot-restore evidence remains
 recorded below; those full workflows were not repeated for this stable-image
 smoke pass. The prepared stopped 1.2.0 rollback snapshot is retained.
 
-### External Qualification Gap
+### Historical AniList Qualification Hold
 
 On 2026-09-10, a direct request to `https://graphql.anilist.co` returned HTTP
 403 with an explicit message that its API was temporarily disabled due to
@@ -110,16 +114,81 @@ intended work with its MangaUpdates identity, no inferred AniList identity,
 and an API-owned title. The series/source metadata state reported the provider
 failure. This verifies fallback behavior, not a successful AniList refresh.
 
-Before announcing the GitHub stable release, repeat the live AniList
-search/add check on a new empty fixture and anchored-refresh checks on the
-upgrade copy against this same digest after API recovery. Preserve the current
-failure evidence. Do not rebuild or move the tag to clear an external outage.
+That hold required live AniList search/add on a new empty fixture and anchored
+refresh on the upgrade copy against the same digest after recovery. Those
+checks passed on September 15, as recorded below. The outage evidence and
+original fresh-install files were preserved; no tag or image was rebuilt.
 
 The task API reports a normally returned refresh as `completed` even when
 the metadata result is failed. Qualification checks must inspect the series
 and source metadata states, not just command completion. Exposing that
 domain-level failure in command results is a separate follow-up; no runtime
 change was bundled into this publication-evidence update.
+
+### AniList Recovery Verification
+
+On 2026-09-15, the AniList endpoint returned HTTP 200 with the expected manga
+identity. The remaining checks ran against the same published 1.3.0 digest,
+not a new local build:
+
+- A new empty config/data fixture passed administrator setup, login,
+  logout/relogin, and System Status version checks. Live lookup and explicit
+  add selected AniList 85189 / MAL 60783. Refresh retained both IDs and added
+  the matching MangaUpdates identity. AniList, aliases, MangaUpdates, cover,
+  and MangaDex-manifest source states were healthy.
+- The fresh series had 16 volume rows and an initialized title selection.
+  Its overall metadata state was `degraded` because the chapter-map provider
+  returned no usable map. This is not an AniList failure or a claim that all
+  provider data is complete. SQLite integrity was `ok`, foreign-key violations
+  were zero, and no import was queued.
+- The upgraded anchored series refreshed to `healthy`. AniList's attempt and
+  success timestamps advanced, its failure count reset to zero, and the series
+  last-success timestamp advanced. Persisted metadata, identities, title,
+  field selections/locks, protected count fields, and downloaded counts matched
+  the pre-refresh snapshot exactly.
+- The database-wide upgrade audit still matched the retained September 10
+  audit. Explicit credential probes for qBittorrent, SABnzbd, Suwayomi, and
+  Prowlarr passed again. Browser checks reported no page errors or local HTTP
+  5xx responses. Both qualification containers were stopped afterward;
+  production and live downloader configuration remained unchanged.
+
+These checks clear the AniList success-path gap. The full September 10 test
+gate remains evidence for the unchanged release commit; it was not repeated
+or presented as a new September 15 full-suite run.
+
+### Current Security Blocker
+
+The September 15 Trivy scan refreshed its vulnerability database and scanned
+the exact published amd64 image with `--ignore-unfixed --severity HIGH,CRITICAL
+--exit-code 1`. It exited 1 with **12 findings: 9 High and 3 Critical**. All
+were in Debian packages; no Python-package findings appeared in this filtered
+scan. Installed versions were independently checked with `dpkg-query` inside
+the qualification container.
+
+| Package | Installed | Fixed Version | Findings |
+| --- | --- | --- | --- |
+| `gzip` | `1.13-1` | `1.13-1+deb13u1` | 1 High |
+| `libpcre2-8-0` | `10.46-1~deb13u1` | `10.46-1~deb13u2` | 2 High |
+| `libsqlite3-0` | `3.46.1-7+deb13u1` | `3.46.1-7+deb13u2` | 2 High |
+| `perl-base` | `5.40.1-6` | `5.40.1-6+deb13u1` | 4 High, 3 Critical |
+
+Debian's tracker confirms the fixed package versions for
+[gzip](https://security-tracker.debian.org/tracker/CVE-2026-41992),
+[PCRE2](https://security-tracker.debian.org/tracker/CVE-2026-86145),
+[SQLite](https://security-tracker.debian.org/tracker/CVE-2026-11822), and
+[Perl](https://security-tracker.debian.org/tracker/CVE-2026-13221).
+The complete scanner findings are CVE-2026-41992, CVE-2026-86145,
+CVE-2026-89161, CVE-2026-11822, CVE-2026-11824, CVE-2026-13221,
+CVE-2026-42496, CVE-2026-8376, CVE-2026-42497, CVE-2026-48962,
+CVE-2026-57432, and CVE-2026-57433.
+
+These are scanner severity/applicability results, not proof of an exploitable
+Mangarr request path. No reachability assessment, severity waiver, or ignore
+entry was used to bypass the release gate. The GitHub stable-release
+announcement remains withheld. Prepare and review a new patch release with
+the fixed OS packages, then qualify its new digest. Preserve immutable
+`v1.3.0` and its exact-version image; a version-only change must not reuse a
+stale cached package-install layer.
 
 ## 1.3.0 Stable Preparation
 

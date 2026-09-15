@@ -24,7 +24,8 @@ generic TV or book collection.
 **1.3.0** brings metadata identity and title-ownership improvements and
 qBittorrent authentication-bypass compatibility. Its container image is
 published, but final qualification and the GitHub stable-release announcement
-are on hold during an AniList API outage. `latest` already points to 1.3.0;
+are on hold after a refreshed image scan found fixable OS-package
+vulnerabilities. The AniList recovery checks passed. `latest` points to 1.3.0;
 operators staying on the previous qualified stable should pin `1.2.0`.
 See the [qualification status](docs/release-qualification.md) before upgrading.
 Mangarr is self-hosted, designed for a single administrator, and distributed

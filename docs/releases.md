@@ -62,8 +62,10 @@ deployment pin. Version tags are intended to remain immutable, but a digest
 also protects against registry-side tag changes.
 
 The 1.3.0 image was published on 2026-09-10. `1.3`, `1`, and `latest` resolve
-to its digest. Final qualification and the GitHub stable-release announcement
-remain pending during an AniList API outage; see the qualification record.
+to its digest. AniList recovery checks passed on September 15. Final
+qualification and the GitHub stable-release announcement remain blocked by
+fixable OS-package findings in a refreshed image scan; see the qualification
+record. Address these in a new patch release, not by replacing the 1.3.0 image.
 Operators staying on the previous qualified stable should pin `1.2.0` rather
 than a moving alias. Historical rows describe tags emitted at each release,
 not ownership of moving aliases today. Exact 1.2.0 and RC tags are unchanged.
