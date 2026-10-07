@@ -558,6 +558,27 @@ def _ddl_enabled() -> bool:
     return get_cfg("ddl_grab_mode", "fallback") != "off"
 
 
+_STARTUP_ERROR_PREFIX = "startDownloader failed:"
+
+
+async def _start_downloader(c: dict, chapters: list[dict], job_id: int) -> None:
+    """Start pending downloads, retaining ambiguous failures for the next poll."""
+    if chapters and all(ch.get("isDownloaded") is True for ch in chapters):
+        return
+    try:
+        await _gql(c, "mutation { startDownloader(input: {}) { clientMutationId } }")
+    except Exception as e:
+        # Enqueue already succeeded. A timeout may still have started downloads;
+        # let one successful poll decide between importing and a visible retry.
+        error = f"{_STARTUP_ERROR_PREFIX} {type(e).__name__}: {e}"[:500]
+        with get_db() as db:
+            db.execute(
+                "UPDATE suwayomi_downloads SET error=? WHERE id=? AND status='queued'",
+                (error, job_id),
+            )
+        log.warning("Suwayomi job %d: %s", job_id, error)
+
+
 async def suwayomi_grab(series_id: int, volume_num: float) -> bool:
     """
     Queue a volume download via Suwayomi DDL.
@@ -627,8 +648,6 @@ async def suwayomi_grab(series_id: int, volume_num: float) -> bool:
         """,
             {"ids": chapter_ids},
         )
-        await _gql(c, "mutation { startDownloader(input: {}) { clientMutationId } }")
-
         with get_db() as db:
             source_url = (
                 source_info.get("source_manga_url")
@@ -659,6 +678,10 @@ async def suwayomi_grab(series_id: int, volume_num: float) -> bool:
             db.execute(
                 "UPDATE series SET suwayomi_id=? WHERE id=?", (manga_id, series_id)
             )
+            job_id = cur.lastrowid
+            assert job_id is not None
+
+        await _start_downloader(c, vol_chs, job_id)
 
         vol_label = _m.build_volume_label(volume_num, None, None)
         _m.log_event(
@@ -761,8 +784,6 @@ async def suwayomi_chapter_grab(series_id: int, chapter_num: float) -> bool:
         """,
             {"ids": chapter_ids},
         )
-        await _gql(c, "mutation { startDownloader(input: {}) { clientMutationId } }")
-
         with get_db() as db:
             torrent_name = f"Suwayomi DDL: {sd['title']} ch {chapter_num:g}"
             db.execute(
@@ -772,7 +793,7 @@ async def suwayomi_chapter_grab(series_id: int, chapter_num: float) -> bool:
                 " WHERE series_id=? AND chapter_num=? AND status='wanted'",
                 (torrent_name, f"suwayomi:{manga_id}", series_id, chapter_num),
             )
-            db.execute(
+            cur = db.execute(
                 "INSERT INTO suwayomi_downloads"
                 "(series_id, chapter_num, suwayomi_manga_id, chapter_ids, status, total)"
                 " VALUES(?,?,?,?,?,?)",
@@ -788,6 +809,10 @@ async def suwayomi_chapter_grab(series_id: int, chapter_num: float) -> bool:
             db.execute(
                 "UPDATE series SET suwayomi_id=? WHERE id=?", (manga_id, series_id)
             )
+            job_id = cur.lastrowid
+            assert job_id is not None
+
+        await _start_downloader(c, matched[:1], job_id)
 
         ch_label = (
             f"Ch {int(chapter_num)}"
@@ -1064,7 +1089,16 @@ async def _process_suwayomi_job(c: dict, job) -> None:
         )
 
     if done < len(chapter_ids):
-        return  # still downloading — recheck next cycle
+        if (job["error"] or "").startswith(_STARTUP_ERROR_PREFIX):
+            # Startup was ambiguous, but this poll proves it has not completed.
+            # Expose the existing retry controls instead of waiting indefinitely.
+            with get_db() as db:
+                db.execute(
+                    "UPDATE suwayomi_downloads SET status='error'"
+                    " WHERE id=? AND status='queued'",
+                    (job["id"],),
+                )
+        return  # ordinary downloads remain queued for the next cycle
 
     if job["chapter_num"] is not None:
         # ── Chapter-level job ─────────────────────────────────────
@@ -1089,7 +1123,7 @@ async def _process_suwayomi_job(c: dict, job) -> None:
             return
         with get_db() as db:
             db.execute(
-                "UPDATE suwayomi_downloads SET status='completed' WHERE id=?",
+                "UPDATE suwayomi_downloads SET status='completed', error=NULL WHERE id=?",
                 (job["id"],),
             )
             db.execute(
@@ -1157,7 +1191,7 @@ async def _process_suwayomi_job(c: dict, job) -> None:
             return
         with get_db() as db:
             db.execute(
-                "UPDATE suwayomi_downloads SET status='completed' WHERE id=?",
+                "UPDATE suwayomi_downloads SET status='completed', error=NULL WHERE id=?",
                 (job["id"],),
             )
             db.execute(
@@ -1504,10 +1538,17 @@ async def retry_suwayomi_job(job_id: int):
                 """,
                     {"ids": chapter_ids},
                 )
-                await _gql(
-                    c, "mutation { startDownloader(input: {}) { clientMutationId } }"
+                chapters = await fetch_chapters(c, job["suwayomi_manga_id"])
+                ch_map = {ch["id"]: ch for ch in chapters}
+                await _start_downloader(
+                    c, [ch_map.get(cid, {}) for cid in chapter_ids], job_id
                 )
         except Exception as e:
+            with get_db() as db:
+                db.execute(
+                    "UPDATE suwayomi_downloads SET status='error', error=? WHERE id=?",
+                    (f"{type(e).__name__}: {e}"[:500], job_id),
+                )
             log.warning(
                 "retry_suwayomi_job: re-enqueue failed for job %d: %s", job_id, e
             )
