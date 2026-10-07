@@ -21,15 +21,13 @@ files into an organized library. It understands volumes, chapters, editions,
 omnibuses, specials, and multi-volume packs instead of treating manga like a
 generic TV or book collection.
 
-**1.3.1** is being prepared as a container security patch for **1.3.0**, which
-brings metadata identity and title-ownership improvements and qBittorrent
-authentication-bypass compatibility. The 1.3.0 image is published, but its
-final qualification and GitHub stable-release announcement remain on hold
-after a refreshed image scan found fixable OS-package vulnerabilities.
-The AniList recovery checks passed. Until the patch is published, `latest`
-points to 1.3.0. Publishing 1.3.1 advances the stable aliases; qualification
-and the stable-release announcement then follow. Operators staying on the
-previous qualified stable should pin `1.2.0`.
+**1.3.1** is the current qualified stable release. It includes the 1.3 metadata
+identity and title-ownership improvements, qBittorrent authentication-bypass
+compatibility, refreshed container security packages, and AnyIO security
+fixes. The published amd64/arm64 image passed fresh-install, copied-config
+upgrade, rollback, and current vulnerability checks. `1.3.1`, `1.3`, `1`, and
+`latest` resolve to the qualified image; exact older version tags remain
+immutable.
 See the [qualification status](docs/release-qualification.md) before upgrading.
 Mangarr is self-hosted, designed for a single administrator, and distributed
 as a multi-platform container image.

@@ -3,23 +3,65 @@
 This document defines the evidence required before a Mangarr release candidate
 can become a stable release. Passing unit tests alone is not sufficient.
 
-## 1.3.1 Security Patch Preparation
+## 1.3.1 Stable Qualification
 
-Status: **PREPARED; NOT PUBLISHED OR QUALIFIED**.
+Status: **QUALIFIED** (2026-10-07).
 
-The replacement patch makes the release version invalidate the OS-package
-update layer, updates AnyIO from 4.13.0 to 4.14.2 for two security fixes, and
-removes build-only `pip` from the runtime image so its vulnerable vendored
-`urllib3` is not shipped. It retains the pinned Python base, with no
-application-source, API, or schema changes. The 1.3.0 image, Git tag, and
-evidence below remain immutable.
+- Git tag: `v1.3.1`
+- Merge revision: `b653ce423abddaec1faa1e3283f32de503d335b6`
+- Published image: `ghcr.io/kha-kis/manga-arr:1.3.1`
+- Stable digest: `sha256:556c657abe60518695d799f00a2c38abd43d762d57b257cc6ef649d8f3c45b7e`
+- Platforms: `linux/amd64`, `linux/arm64`
+- Publication: [Release Image run 37661034801](https://github.com/Kha-kis/manga-arr/actions/runs/37661034801)
 
-Before announcing 1.3.1, run `make release-local`, review and merge the patch,
-verify the exact merge, and publish a new multi-platform image. Scan and verify
-the published digest, then repeat fresh-install and copied-config upgrade
-checks against that digest. Record the installed package versions and current
-scanner results; the September 10 clean scan is not evidence for this patch.
-Production remains on 1.2.0 during qualification.
+The patch makes the release version invalidate the OS-package update layer,
+updates AnyIO from 4.13.0 to 4.14.2 for two security fixes, and removes
+build-only `pip` from the runtime image so its vulnerable vendored `urllib3`
+is not shipped. It retains the pinned Python base and makes no application,
+API, schema, metadata, or downloader behavior changes.
+
+### Source, Image, And Security Evidence
+
+- PR #377 merged the exact reviewed head. `make release-local` then passed on
+  the merge revision: 2,324 Python tests passed with 5 skipped; confirmation
+  flow passed 13/13; route sweep passed 10/10; isolated browser smoke passed
+  32/32, integration 22/22, E2E 29/29, and settings regression 12/12.
+- Python 3.11 also passed the complete Python suite: 2,324 passed and 5 skipped.
+- The tag workflow passed release metadata, dependency audit, image identity,
+  fixed High/Critical vulnerability, immutable-tag, and multi-platform publish
+  gates. A fresh scan of the published digest found zero fixed High/Critical
+  OS or Python findings.
+- The amd64 runtime reports AnyIO 4.14.2, has no importable or installed `pip`,
+  imports Mangarr successfully, runs as the expected non-root user, and carries
+  version `1.3.1` plus the exact merge revision in its OCI labels.
+- The registry index contains amd64 and arm64 runtime manifests. Both platforms
+  have SBOM and provenance attestations.
+- `1.3.1`, `1.3`, `1`, and `latest` resolve to the stable digest above. Exact
+  1.3.0 and 1.2.0 remain unchanged at
+  `sha256:f9b9d9785d23e8632af0430909b90867ce3759e2c0297cb15cffea9cddf0187f`
+  and `sha256:2750ee8d8f6e5d08703a5bb9c145185052ef0cc13e0f2a76dbdef2e2040cf864`.
+
+### Runtime Qualification
+
+- A fresh isolated config completed startup, administrator creation, logout,
+  login, authenticated page access, and health checks. SQLite integrity passed,
+  foreign-key checks returned no rows, and logs contained no traceback,
+  database-lock, or critical errors.
+- A compact SQLite snapshot of the running 1.2.0 config was mounted separately
+  with an empty `/data` directory and no network access. The published 1.3.1
+  digest started successfully and preserved 30 series, 797 volumes, 5,970
+  chapters, 360 metadata selections, 409 metadata candidates, all 30 AniList,
+  MAL, and MangaUpdates identities, and the existing administrator record.
+- The copied secret key decrypted both stored download-client credentials.
+  Administrator recovery, replacement setup, logout, login, health, database
+  integrity, foreign keys, and the same library/identity/provenance counts all
+  passed afterward. No live downloader operation or production data mutation
+  occurred.
+- The exact 1.2.0 digest also started against a fresh matching snapshot for the
+  rollback check. Health, login, 30-series preservation, integrity, foreign
+  keys, and clean logs passed.
+
+Production remained on the pinned 1.2.0 image throughout qualification.
 
 ## 1.3.0 Release Under Test
 
