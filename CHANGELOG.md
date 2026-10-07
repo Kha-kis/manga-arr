@@ -18,8 +18,8 @@ will not be replaced.
   PCRE2, SQLite, and Perl packages flagged during 1.3.0 qualification.
 - Update AnyIO from 4.13.0 to 4.14.2 to address its TLS hostname-encoding and
   process-pool stderr security advisories.
-- Keep the pinned Python base unchanged. No metadata, downloader, schema, or
-  application behavior changes are included.
+- Keep the pinned Python base unchanged. No application-source, API, schema,
+  metadata, or downloader changes are included.
 
 ### Upgrade And Recovery
 
