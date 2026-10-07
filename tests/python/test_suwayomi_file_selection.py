@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
@@ -14,6 +16,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from routers import suwayomi_ as swy
+from test_suwayomi_local_coverage import GuardedRow
 
 
 def cbz(path: Path, page: bytes = b"page") -> None:
@@ -32,6 +35,14 @@ def cbz(path: Path, page: bytes = b"page") -> None:
         ("Official_quest 81.cbz", 81),
         ("Official_Chime 14.cbz", 14),
         ("Delta_Chapter 17.5.cbz", 17.5),
+        ("Chime Scanlations_Chapter 17.cbz", 17),
+        ("Mission Scanlations_Chapter 17.cbz", 17),
+        ("Quest Scanlations_Chapter 17.cbz", 17),
+        ("Chapterhouse_Chapter 17.cbz", 17),
+        ("Volcano_Chapter 17.cbz", 17),
+        ("Chapter 10 - Extra_Chapter 17.cbz", 10),
+        ("Vol.1 Chapter 10 - Extra_Chapter 17.cbz", 10),
+        ("Group_Chapter 10 - Extra_Chapter 17.cbz", 10),
     ],
 )
 def test_reported_chapter_names(tmp_path: Path, name: str, number: float) -> None:
@@ -57,6 +68,16 @@ def test_reported_chapter_names(tmp_path: Path, name: str, number: float) -> Non
         ("Group_Two Words 17.cbz", 17),
         ("Mission 17.cbz", 17),
         ("Group_Chapter 17.5.1.cbz", 17.5),
+        ("Chapter 10.5.1 - Extra_Chapter 17.cbz", 17),
+        ("Ch.10.5.1 - Extra_Chapter 17.cbz", 17),
+        ("# 10.5.1 - Extra_Chapter 17.cbz", 17),
+        ("Vol.1.2.3 - Extra_Chapter 17.cbz", 17),
+        ("Vol.1 Chapter 10.5.1 - Extra_Chapter 17.cbz", 17),
+        ("Chapter17 - Extra_Chapter 17.cbz", 17),
+        ("Chapter unknown_Chapter 17.cbz", 17),
+        (" Ch.unknown_Chapter 17.cbz", 17),
+        ("# unknown_Mission 17.cbz", 17),
+        ("Vol.unknown_Mission 17.cbz", 17),
     ],
 )
 def test_no_numeric_prefix_or_title_number_matches(
@@ -64,6 +85,40 @@ def test_no_numeric_prefix_or_title_number_matches(
 ) -> None:
     cbz(tmp_path / name)
     assert swy._chapter_cbz(str(tmp_path), number) is None
+
+
+@pytest.mark.parametrize("label", ["Mission", "Chime", "quest"])
+@pytest.mark.parametrize("separator", [" ", ""])
+def test_bare_custom_title_cannot_match_secondary(
+    tmp_path: Path, label: str, separator: str
+) -> None:
+    name = f"{label}{separator}10 - Extra_Chapter 17.cbz"
+    cbz(tmp_path / name, b"not-chapter-17")
+    assert swy._chapter_cbz(str(tmp_path), 17) is None
+
+
+@pytest.mark.parametrize("label", ["Mission", "Chime", "quest"])
+@pytest.mark.parametrize("merge", [True, False])
+def test_bare_custom_title_cannot_complete_volume(
+    env: ImportEnv, label: str, merge: bool
+) -> None:
+    env.client["merge_chapters"] = merge
+    cbz(env.manga_dir / f"{label} 10 - Extra_Chapter 17.cbz", b"chapter-ten")
+    env.queue([node(17, 17)])
+    before = env.row("volumes")
+    env.process()
+    assert env.row("suwayomi_downloads")["status"] == "error"
+    assert env.row("volumes") == before
+    assert not env.library.exists()
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["Episode 10.5.1 - Extra", "Scene10x5", "Part -10", "Act .5", "Team7", "2000"],
+)
+def test_numeric_scanlator_prefix_is_ambiguous(tmp_path: Path, prefix: str) -> None:
+    cbz(tmp_path / f"{prefix}_Chapter 17.cbz")
+    assert swy._chapter_cbz(str(tmp_path), 17) is None
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -101,6 +156,10 @@ def test_duplicate_tie_is_deterministic(
     [
         "Group_Mission 10 - Extra_Chapter 17.cbz",
         "Group_Chapter 10.5.1 - Extra_Chapter 17.cbz",
+        "Chapter 10.5.1 - Extra_Chapter 17.cbz",
+        "Ch.10.5.1 - Extra_Chapter 17.cbz",
+        "# 10.5.1 - Extra_Chapter 17.cbz",
+        "Vol.1.2.3 - Extra_Chapter 17.cbz",
     ],
 )
 def test_secondary_title_identity_cannot_complete_volume(
@@ -549,6 +608,131 @@ def test_real_grab_cannot_publish_subset_of_split_metadata(
     assert env.row("series") == before_series
     assert env.row("chapters") == before_chapter
     assert not env.library.exists()
+
+
+@pytest.mark.parametrize("merge", [True, False])
+@pytest.mark.parametrize("bad", [{"unknown": 1}, {"99": "unknown"}])
+def test_malformed_authoritative_map_cannot_enable_cached_subset(
+    env: ImportEnv, merge: bool, bad: dict[str, Any]
+) -> None:
+    env.client["merge_chapters"] = merge
+    env.configure_grab(
+        json.dumps({"43": 1, "44.1": 1, "44.2": 1, **bad}), map_source="manual"
+    )
+    with sqlite3.connect(env.db_path) as db:
+        db.execute(
+            "INSERT INTO mangadex_chapters(mangadex_chapter_id,series_id,chapter_num,volume_num)"
+            " VALUES('cached-43',1,43,1)"
+        )
+    env.nodes = [
+        {**node(4300, 43), "name": "Chapter 43", "sourceOrder": 2},
+        {**node(4400, 44), "name": "Chapter 44", "sourceOrder": 1},
+    ]
+    cbz(env.manga_dir / "Official_Chapter 43.cbz", b"chapter-43-only")
+    cbz(env.manga_dir / "Official_Chapter 44.cbz", b"whole-44")
+    before_series = env.row("series")
+    before_volume = env.row("volumes")
+    grabbed = asyncio.run(swy.suwayomi_grab(1, 1))
+    asyncio.run(swy.check_suwayomi_jobs())
+    with sqlite3.connect(env.db_path) as db:
+        jobs = db.execute(
+            "SELECT status,chapter_ids FROM suwayomi_downloads"
+        ).fetchall()
+    assert (grabbed, jobs, env.row("volumes")["status"]) == (
+        False,
+        [],
+        before_volume["status"],
+    )
+    assert env.row("series") == before_series
+    assert env.enqueued == []
+    assert not env.library.exists()
+
+
+@pytest.mark.parametrize(
+    "chapter_map",
+    [
+        "not-json",
+        "[]",
+        "null",
+        "false",
+        '"map"',
+        '{"43":true}',
+        '{"43":null}',
+        '{"43":[]}',
+        '{"43":{}}',
+        '{"43":"NaN"}',
+        '{"43":Infinity}',
+        '{"43":-1}',
+        '{"NaN":1}',
+        '{"Infinity":1}',
+        '{"-1":1}',
+        '{"43":1,"unknown":2}',
+        '{"43":1,"99":false}',
+    ],
+)
+def test_invalid_map_is_not_membership_proof(env: ImportEnv, chapter_map: str) -> None:
+    env.configure_grab(chapter_map)
+    with sqlite3.connect(env.db_path) as db:
+        db.execute(
+            "INSERT INTO mangadex_chapters(mangadex_chapter_id,series_id,chapter_num,volume_num)"
+            " VALUES('cached-43',1,43,1)"
+        )
+    assert swy._chapters_for_volume([node(4300, 43)], 1, 1) == []
+
+
+@pytest.mark.parametrize("chapter_map", [None, "", "{}"])
+def test_empty_map_retains_cached_membership(
+    env: ImportEnv, chapter_map: str | None
+) -> None:
+    env.configure_grab("{}")
+    with sqlite3.connect(env.db_path) as db:
+        db.execute("UPDATE series SET chapter_vol_map=? WHERE id=1", (chapter_map,))
+        db.execute(
+            "INSERT INTO mangadex_chapters(mangadex_chapter_id,series_id,chapter_num,volume_num)"
+            " VALUES('cached-43',1,43,1)"
+        )
+    chapters = [node(4300, 43)]
+    assert swy._chapters_for_volume(chapters, 1, 1) == chapters
+
+
+@pytest.mark.parametrize("mode", ["series-map", "cached-map"])
+def test_selector_rows_materialized_inside_context(
+    env: ImportEnv, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    env.configure_grab('{"43":1}' if mode == "series-map" else "{}")
+    with sqlite3.connect(env.db_path) as db:
+        db.execute(
+            "INSERT INTO mangadex_chapters(mangadex_chapter_id,series_id,chapter_num,volume_num)"
+            " VALUES('cached-43',1,43,1)"
+        )
+    real_get_db = swy.get_db
+
+    @contextmanager
+    def guarded_db() -> Generator[sqlite3.Connection, None, None]:
+        active = [True]
+        with real_get_db() as db:
+
+            def row_factory(
+                cursor: sqlite3.Cursor, row: tuple[Any, ...]
+            ) -> GuardedRow | dict[str, Any]:
+                result = sqlite3.Row(cursor, row)
+                # Isolate the cached read from the series-map lifetime check.
+                if (
+                    mode == "cached-map"
+                    and cursor.description[0][0] == "chapter_vol_map"
+                ):
+                    return dict(result)
+                return GuardedRow(result, active)
+
+            db.row_factory = row_factory
+            try:
+                yield db
+            finally:
+                active[0] = False
+
+    monkeypatch.setattr(swy, "get_db", guarded_db)
+    chapters = [node(4300, 43)]
+    assert swy._chapters_for_volume(chapters, 1, 1) == chapters
 
 
 @pytest.mark.parametrize("mapping", ["chapter-map", "mangadex-cache"])

@@ -6,10 +6,25 @@ exactly: chapter 17 is not 17.5 or 170, and 17.5 is not 17.55. A narrow
 fallback accepts `<scanlator>_<one word> <number>.cbz`, including `Mission`,
 `quest`, and `Chime`, only when the number ends the chapter title.
 Both explicit labels and this fallback require a single scanlator-prefix
-segment. Extra underscores could instead be chapter-title text and are not
+segment containing no digits or path separators. Any digit in the prefix
+makes it ambiguous with a leading chapter identity, regardless of its word
+label, spacing, or malformed numeric suffix. Thus bare `Mission 10`,
+`Chime10`, `quest 10.5.1 - Extra`, and arbitrary similar prefixes cannot be
+consumed to select a later chapter label. Numerically named scanlators such
+as `Team7` are intentionally refused; filenames alone cannot distinguish
+them from chapter-title text. Ordinary digit-free scanlator names remain
+supported. Extra underscores could instead be chapter-title text and are not
 consumed to discover a secondary chapter label. Malformed first identities and
 unsupported multi-underscore prefixes fail closed rather than selecting a
 number from later title text.
+Leading `Ch.`, `#`, `Vol.`, or `Chapter` followed by a non-letter (or the end
+of the prefix) is reserved for a bare identity, case-insensitively and even
+after leading whitespace. It is never consumed as a scanlator name, even
+when its number is malformed or absent. Thus `Chapter 10.5.1 - Extra_Chapter
+17.cbz` cannot supply chapter 17. A valid bare first identity still supplies
+its own number, not a later title number. Names such as `Chapterhouse`,
+`Chime Scanlations`, and `Volcano` remain eligible scanlator prefixes; a
+scanlator name starting with a reserved marker is conservatively refused.
 
 Duplicate variants are selected deterministically. Explicit chapter labels
 rank before the single-word fallback. Within that identity class, an
@@ -102,6 +117,16 @@ feed, for both the series map and the cached MangaDex fallback. For example,
 `43: 1, 44.1: 1, 44.2: 1` cannot queue only 43 when the source offers 43 and
 whole 44. Unknown source numbers cannot bypass that guard via a less complete
 cached mapping. The grab remains unsuccessful and no volume output is created.
+When map-based selection is needed, a malformed nonempty series map is not
+permission to fall back to the cache. The map must be a JSON object with
+finite, nonnegative numeric chapter keys and volume values (numeric strings
+remain accepted); booleans, nulls, containers, and invalid numbers cannot
+prove membership. All entries are validated, including entries for other
+volumes. Invalid JSON or entries refuse selection without consulting a smaller
+cached chapter set. An absent map, empty string, or valid empty object retains
+the legacy cache path. The existing source-volume-name rule is unchanged.
+The selector materializes its series-map and cached chapter rows as dictionaries
+inside their database contexts before reading them outside those contexts.
 This guard prevents new subset jobs; it does not infer coverage or retroactively
 rewrite previously stored job IDs. Historical subset jobs require operator
 review because their original intended chapter set is not stored separately.

@@ -386,14 +386,10 @@ def _chapters_for_volume(
     if series_id is None:
         return []
 
-    def complete_matches(ch_nums: set[float]) -> list[dict[str, Any]]:
-        matches = [
-            ch
-            for ch in chapters
-            if ch.get("chapterNumber") is not None
-            and float(ch["chapterNumber"]) in ch_nums
-        ]
-        present = {float(ch["chapterNumber"]) for ch in matches}
+    def complete_matches(ch_nums: set[Decimal]) -> list[dict[str, Any]]:
+        numbered = [(ch, _chapter_number(ch.get("chapterNumber"))) for ch in chapters]
+        matches = [ch for ch, number in numbered if number in ch_nums]
+        present = {number for _, number in numbered if number in ch_nums}
         if present != ch_nums:
             log.warning(
                 "Incomplete Suwayomi chapter map for series %d vol %s:"
@@ -410,28 +406,56 @@ def _chapters_for_volume(
         s_row = db.execute(
             "SELECT chapter_vol_map FROM series WHERE id=?", (series_id,)
         ).fetchone()
+        s_row = dict(s_row) if s_row is not None else None
     if s_row and s_row["chapter_vol_map"]:
         try:
             cvm = json.loads(s_row["chapter_vol_map"])
-            ch_nums = {
-                float(k) for k, v in cvm.items() if abs(float(v) - volume_num) < 0.1
-            }
-            if ch_nums:
-                return complete_matches(ch_nums)
-        except Exception:
-            pass
+        except (ValueError, TypeError):
+            log.warning(
+                "Invalid Suwayomi chapter map for series %d; refusing volume", series_id
+            )
+            return []
+        if not isinstance(cvm, dict):
+            log.warning(
+                "Invalid Suwayomi chapter map for series %d; refusing volume", series_id
+            )
+            return []
+        ch_nums: set[Decimal] = set()
+        for key, value in cvm.items():
+            number = _chapter_number(key)
+            volume = _chapter_number(value)
+            if number is None or volume is None:
+                log.warning(
+                    "Invalid Suwayomi chapter map for series %d; refusing volume",
+                    series_id,
+                )
+                return []
+            if abs(volume - Decimal(str(volume_num))) < Decimal("0.1"):
+                ch_nums.add(number)
+        if ch_nums:
+            return complete_matches(ch_nums)
 
     # 3. MangaDex chapters table fallback
     with get_db() as db:
-        rows = db.execute(
-            "SELECT chapter_num FROM mangadex_chapters WHERE series_id=? AND volume_num=?",
-            (series_id, volume_num),
-        ).fetchall()
+        rows = [
+            dict(row)
+            for row in db.execute(
+                "SELECT chapter_num FROM mangadex_chapters WHERE series_id=? AND volume_num=?",
+                (series_id, volume_num),
+            ).fetchall()
+        ]
 
     if not rows:
         return []
 
-    ch_nums = {float(r["chapter_num"]) for r in rows if r["chapter_num"] is not None}
+    ch_nums = set()
+    for row in rows:
+        if row["chapter_num"] is None:
+            continue
+        number = _chapter_number(row["chapter_num"])
+        if number is None:
+            return []
+        ch_nums.add(number)
     return complete_matches(ch_nums)
 
 
@@ -515,8 +539,19 @@ def _chapter_number(value: object) -> Decimal | None:
 def _chapter_file_identity(fname: str) -> tuple[Decimal, int, int] | None:
     """Chapter number, match strength, and title suffix length for a CBZ name."""
     stem = os.path.splitext(fname)[0]
+    prefix, separator, title = stem.partition("_")
+    # Numeric title prefixes are ambiguous regardless of their chapter label.
+    has_scanlator = bool(
+        separator
+        and re.fullmatch(r"[^\d/\\]+", prefix)
+        and not re.match(
+            r"\s*(?:Ch\.|Chapter(?=$|[^A-Za-z])|#|Vol\.)", prefix, re.IGNORECASE
+        )
+    )
+    if has_scanlator:
+        stem = title
     match = re.fullmatch(
-        r"(?:[^_/\\]+_)?(?:Vol\.\s*\d+(?:\.\d+)?\s+)?"
+        r"(?:Vol\.\s*\d+(?:\.\d+)?\s+)?"
         r"(?:Ch\.\s*|Chapter\s+|#\s*)(\d+(?:\.\d+)?)"
         r"((?:\s+.*|-.*)?)",
         stem,
@@ -526,7 +561,9 @@ def _chapter_file_identity(fname: str) -> tuple[Decimal, int, int] | None:
         return Decimal(match[1]), 0, len(match[2].strip())
     # Series-specific labels are allowed only after a scanlator prefix and
     # only when a single word and terminal number comprise the entire title.
-    match = re.fullmatch(r"[^_/\\]+_[A-Za-z]+\s+(\d+(?:\.\d+)?)", stem)
+    if not has_scanlator:
+        return None
+    match = re.fullmatch(r"[A-Za-z]+\s+(\d+(?:\.\d+)?)", stem)
     return (Decimal(match[1]), 1, 0) if match else None
 
 
