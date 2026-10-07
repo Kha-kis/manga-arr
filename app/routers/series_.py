@@ -9,7 +9,7 @@ import shutil
 import sqlite3
 from collections import defaultdict
 from datetime import datetime
-from typing import Literal, TypedDict, cast
+from typing import Any, Literal, TypedDict, cast
 
 import httpx
 from fastapi import APIRouter, Form, Request
@@ -275,7 +275,12 @@ async def _get_volume_row_ctx(series_id: int, volume_id: int) -> dict:
     }
 
 
-async def _grab_volume_task(series_id: int, s, v, query: str):
+async def _grab_volume_task(
+    series_id: int,
+    s: dict[str, Any] | sqlite3.Row,
+    v: dict[str, Any] | sqlite3.Row | None,
+    query: str,
+) -> None:
     import main as _m
 
     specific = await _m._search_all(query, purpose="interactive", series_id=series_id)
@@ -289,6 +294,28 @@ async def _grab_volume_task(series_id: int, s, v, query: str):
     all_items.sort(key=lambda x: x.get("_score", 0), reverse=True)
 
     with get_db() as db:
+        current_series_row = db.execute(
+            "SELECT monitored, monitor_mode, total_volumes FROM series WHERE id=?",
+            (series_id,),
+        ).fetchone()
+        current_volume_row = (
+            db.execute(
+                "SELECT monitored, volume_num, pack_type, vol_range_start, vol_range_end"
+                " FROM volumes WHERE id=? AND series_id=?",
+                (v["id"], series_id),
+            ).fetchone()
+            if v else None
+        )
+        current_series = dict(current_series_row) if current_series_row else None
+        current_volume = dict(current_volume_row) if current_volume_row else None
+        if (
+            not current_series
+            or not current_series["monitored"]
+            or current_series["monitor_mode"] == "none"
+            or not current_volume
+            or not current_volume["monitored"]
+        ):
+            return
         seen_urls = {
             r["torrent_url"]
             for r in db.execute("SELECT torrent_url FROM seen").fetchall()
@@ -303,28 +330,49 @@ async def _grab_volume_task(series_id: int, s, v, query: str):
     all_patterns = list(
         {s["search_pattern"], s["title"]} | {a["alias"] for a in alias_rows}
     )
-    target_vol = v["volume_num"] if v else None
+    target_vol = current_volume["volume_num"]
     for item in all_items:
         if item["url"] in seen_urls or item["url"] in blocked_urls:
             continue
         if any(_m.matches(p, item["title"]) for p in all_patterns):
             item_vol = _m.extract_volume_num(item["title"])
             item_rng = _m.extract_volume_range(item["title"])
+            pack_type = _m.detect_pack_type(
+                item["title"], item_rng, current_series["total_volumes"]
+            )
             if item_rng is not None:
                 item_vol = None
             vol_ok = (
-                target_vol is None
-                or item_vol is None
-                or abs(item_vol - target_vol) < 0.01
-                or (item_rng and item_rng[0] <= target_vol <= item_rng[1])
-                or _m.is_complete_pack(item["title"])
+                target_vol is not None
+                and pack_type != "chapter"
+                and (
+                    (item_vol is not None and abs(item_vol - target_vol) < 0.01)
+                    or (item_rng is not None and item_rng[0] <= target_vol <= item_rng[1])
+                    or (item_rng is None and pack_type == "complete")
+                )
             )
+            if target_vol is None and pack_type != "chapter":
+                target_start = current_volume["vol_range_start"]
+                target_end = current_volume["vol_range_end"]
+                if current_volume["pack_type"] == "complete":
+                    vol_ok = pack_type == "complete"
+                elif target_start is not None and target_end is not None:
+                    vol_ok = (
+                        item_rng is not None
+                        and item_rng[0] <= target_start
+                        and item_rng[1] >= target_end
+                    ) or (item_rng is None and pack_type == "complete")
             if vol_ok:
-                await _m.grab_item(item, series_id, respect_monitoring=False)
+                await _m.grab_item(item, series_id)
                 break
 
 
-async def _grab_volume_task_sync(series_id: int, s, v, query: str) -> bool:
+async def _grab_volume_task_sync(
+    series_id: int,
+    s: dict[str, Any] | sqlite3.Row,
+    v: dict[str, Any] | sqlite3.Row | None,
+    query: str,
+) -> bool:
     """Same as _grab_volume_task but returns True if something was grabbed.
     Used by grab_volume() in 'fallback' mode to decide whether to try DDL."""
     import main as _m
@@ -340,6 +388,28 @@ async def _grab_volume_task_sync(series_id: int, s, v, query: str) -> bool:
     all_items.sort(key=lambda x: x.get("_score", 0), reverse=True)
 
     with get_db() as db:
+        current_series_row = db.execute(
+            "SELECT monitored, monitor_mode, total_volumes FROM series WHERE id=?",
+            (series_id,),
+        ).fetchone()
+        current_volume_row = (
+            db.execute(
+                "SELECT monitored, volume_num, pack_type, vol_range_start, vol_range_end"
+                " FROM volumes WHERE id=? AND series_id=?",
+                (v["id"], series_id),
+            ).fetchone()
+            if v else None
+        )
+        current_series = dict(current_series_row) if current_series_row else None
+        current_volume = dict(current_volume_row) if current_volume_row else None
+        if (
+            not current_series
+            or not current_series["monitored"]
+            or current_series["monitor_mode"] == "none"
+            or not current_volume
+            or not current_volume["monitored"]
+        ):
+            return False
         seen_urls = {
             r["torrent_url"]
             for r in db.execute("SELECT torrent_url FROM seen").fetchall()
@@ -354,24 +424,40 @@ async def _grab_volume_task_sync(series_id: int, s, v, query: str) -> bool:
     all_patterns = list(
         {s["search_pattern"], s["title"]} | {a["alias"] for a in alias_rows}
     )
-    target_vol = v["volume_num"] if v else None
+    target_vol = current_volume["volume_num"]
     for item in all_items:
         if item["url"] in seen_urls or item["url"] in blocked_urls:
             continue
         if any(_m.matches(p, item["title"]) for p in all_patterns):
             item_vol = _m.extract_volume_num(item["title"])
             item_rng = _m.extract_volume_range(item["title"])
+            pack_type = _m.detect_pack_type(
+                item["title"], item_rng, current_series["total_volumes"]
+            )
             if item_rng is not None:
                 item_vol = None
             vol_ok = (
-                target_vol is None
-                or item_vol is None
-                or abs(item_vol - target_vol) < 0.01
-                or (item_rng and item_rng[0] <= target_vol <= item_rng[1])
-                or _m.is_complete_pack(item["title"])
+                target_vol is not None
+                and pack_type != "chapter"
+                and (
+                    (item_vol is not None and abs(item_vol - target_vol) < 0.01)
+                    or (item_rng is not None and item_rng[0] <= target_vol <= item_rng[1])
+                    or (item_rng is None and pack_type == "complete")
+                )
             )
+            if target_vol is None and pack_type != "chapter":
+                target_start = current_volume["vol_range_start"]
+                target_end = current_volume["vol_range_end"]
+                if current_volume["pack_type"] == "complete":
+                    vol_ok = pack_type == "complete"
+                elif target_start is not None and target_end is not None:
+                    vol_ok = (
+                        item_rng is not None
+                        and item_rng[0] <= target_start
+                        and item_rng[1] >= target_end
+                    ) or (item_rng is None and pack_type == "complete")
             if vol_ok:
-                if await _m.grab_item(item, series_id, respect_monitoring=False):
+                if await _m.grab_item(item, series_id):
                     return True
                 break
     return False
@@ -2251,11 +2337,22 @@ async def api_search_complete_pack(series_id: int):
 
 @router.post("/series/{series_id}/volumes/{volume_id}/grab")
 async def grab_volume(request: Request, series_id: int, volume_id: int):
+    def _currently_monitored() -> bool:
+        with get_db() as db:
+            return db.execute(
+                "SELECT 1 FROM series s JOIN volumes v ON v.series_id=s.id"
+                " WHERE s.id=? AND v.id=? AND s.monitored=1 AND v.monitored=1"
+                " AND COALESCE(s.monitor_mode, 'all') != 'none'",
+                (series_id, volume_id),
+            ).fetchone() is not None
+
     with get_db() as db:
-        s = db.execute("SELECT * FROM series WHERE id=?", (series_id,)).fetchone()
-        v = db.execute(
+        s_row = db.execute("SELECT * FROM series WHERE id=?", (series_id,)).fetchone()
+        v_row = db.execute(
             "SELECT * FROM volumes WHERE id=? AND series_id=?", (volume_id, series_id)
         ).fetchone()
+        s = dict(s_row) if s_row else None
+        v = dict(v_row) if v_row else None
         swy_client = None
         if s and v and v["volume_num"]:
             from routers.suwayomi_ import get_suwayomi_client, _get_series_source
@@ -2264,7 +2361,7 @@ async def grab_volume(request: Request, series_id: int, volume_id: int):
             if swy_client and not _get_series_source(series_id, dict(s)):
                 swy_client = None  # no source configured for this series
 
-    if s and v:
+    if s and v and _currently_monitored():
         ddl_mode = get_cfg("ddl_grab_mode", "fallback")
         ddl_available = swy_client and v["volume_num"] and ddl_mode != "off"
 
@@ -2301,7 +2398,7 @@ async def grab_volume(request: Request, series_id: int, volume_id: int):
             )
             grabbed = await _grab_volume_task_sync(series_id, s, v, vol_q)
             # If indexers found nothing and DDL is available, try Suwayomi as fallback
-            if not grabbed and ddl_available:
+            if not grabbed and ddl_available and _currently_monitored():
                 from routers import suwayomi_ as _swy
 
                 await _swy.suwayomi_grab(series_id, float(v["volume_num"]))

@@ -47,7 +47,8 @@ async def _grab_existing_inner(series_id: int, title: str, pattern: str) -> int:
         ).fetchone()
         if s_row and s_row["status"] == "FINISHED" and s_row["total_volumes"]:
             wanted_count = db.execute(
-                "SELECT COUNT(*) FROM volumes WHERE series_id=? AND status='wanted'",
+                "SELECT COUNT(*) FROM volumes WHERE series_id=? AND status='wanted'"
+                " AND monitored=1 AND volume_num IS NOT NULL AND COALESCE(is_special,0)=0",
                 (series_id,),
             ).fetchone()[0]
             total = s_row["total_volumes"]
@@ -236,7 +237,7 @@ async def search_complete_pack(
             float(r["volume_num"])
             for r in db.execute(
                 "SELECT volume_num FROM volumes WHERE series_id=? AND status='wanted'"
-                " AND volume_num IS NOT NULL",
+                " AND volume_num IS NOT NULL AND monitored=1 AND COALESCE(is_special,0)=0",
                 (series_id,),
             ).fetchall()
         }
@@ -249,7 +250,7 @@ async def search_complete_pack(
 
     packs_to_grab = _select_covering_packs(
         available,
-        missing_vols or set(range(1, (total_volumes or 1) + 1)),
+        missing_vols,
         total_volumes,
         all_patterns,
     )
