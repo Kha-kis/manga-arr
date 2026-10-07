@@ -37,25 +37,175 @@ def _temporary_archives(directory: Path) -> list[Path]:
     return list(directory.glob(".comicinfo-*"))
 
 
+@pytest.mark.parametrize("through_symlink", [False, True])
 def test_inject_streams_entries_without_whole_archive_allocation(
     tmp_path: Path,
+    through_symlink: bool,
 ) -> None:
     import comicinfo
 
     cbz_path = tmp_path / "large.cbz"
     page = b"x" * (24 * 1024 * 1024)
     _make_cbz(cbz_path, [("001.bin", page), ("002.bin", page)])
+    injection_path = cbz_path
+    if through_symlink:
+        injection_path = tmp_path / "large-alias.cbz"
+        injection_path.symlink_to(cbz_path.name)
     del page
     gc.collect()
 
     tracemalloc.start()
     try:
-        assert comicinfo.inject_comicinfo(str(cbz_path), _XML) is True
+        assert comicinfo.inject_comicinfo(str(injection_path), _XML) is True
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
 
     assert peak < 8 * 1024 * 1024, f"peak allocation was {peak / 2**20:.1f} MiB"
+    with zipfile.ZipFile(cbz_path) as archive:
+        assert archive.read("ComicInfo.xml") == _XML.encode("utf-8")
+
+
+def _make_symlink_alias(
+    path: Path,
+    target: Path,
+    kind: Literal["relative", "absolute", "chained"],
+) -> list[Path]:
+    if kind == "absolute":
+        path.symlink_to(target)
+        return [path]
+    if kind == "chained":
+        intermediate = path.parent / "intermediate.cbz"
+        intermediate.symlink_to(os.path.relpath(target, intermediate.parent))
+        path.symlink_to(intermediate.name)
+        return [path, intermediate]
+    path.symlink_to(os.path.relpath(target, path.parent))
+    return [path]
+
+
+@pytest.mark.parametrize("kind", ["relative", "absolute", "chained"])
+def test_inject_preserves_symlinks_and_updates_target_aliases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: Literal["relative", "absolute", "chained"],
+) -> None:
+    import comicinfo
+
+    target_directory = tmp_path / "target"
+    alias_directory = tmp_path / "aliases"
+    target_directory.mkdir()
+    alias_directory.mkdir()
+    target = target_directory / "original.cbz"
+    _make_cbz(target, [("001.png", b"page")])
+    target.chmod(0o640)
+    alias = alias_directory / "injection.cbz"
+    links = _make_symlink_alias(alias, target, kind)
+    other_alias = alias_directory / "other.cbz"
+    other_alias.symlink_to(target)
+    links.append(other_alias)
+    original_links = [(link, link.readlink(), link.lstat().st_ino) for link in links]
+    real_replace = os.replace
+    replacements: list[tuple[Path, Path]] = []
+
+    def replace_sibling(source: str, destination: str) -> None:
+        replacements.append((Path(source), Path(destination)))
+        real_replace(source, destination)
+
+    monkeypatch.setattr(comicinfo.os, "replace", replace_sibling)
+
+    assert comicinfo.inject_comicinfo(str(alias), _XML) is True
+
+    assert len(replacements) == 1
+    temporary_path, replacement_path = replacements[0]
+    assert temporary_path.parent == target_directory
+    assert replacement_path == target
+    for link, original_destination, original_inode in original_links:
+        assert link.is_symlink()
+        assert link.readlink() == original_destination
+        assert link.lstat().st_ino == original_inode
+        assert _archive_entries(link) == [
+            ("ComicInfo.xml", _XML.encode("utf-8")),
+            ("001.png", b"page"),
+        ]
+    assert _archive_entries(target) == _archive_entries(alias)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    assert _temporary_archives(target_directory) == []
+    assert _temporary_archives(alias_directory) == []
+
+
+@pytest.mark.parametrize("kind", ["relative", "absolute", "chained"])
+@pytest.mark.parametrize("failure", ["copy", "fsync", "replace"])
+def test_symlink_rewrite_failure_preserves_target_and_links(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: Literal["relative", "absolute", "chained"],
+    failure: Literal["copy", "fsync", "replace"],
+) -> None:
+    import comicinfo
+
+    target_directory = tmp_path / "target"
+    alias_directory = tmp_path / "aliases"
+    target_directory.mkdir()
+    alias_directory.mkdir()
+    target = target_directory / "original.cbz"
+    _make_cbz(target, [("001.png", b"page")])
+    original = target.read_bytes()
+    original_inode = target.stat().st_ino
+    alias = alias_directory / "injection.cbz"
+    links = _make_symlink_alias(alias, target, kind)
+    original_links = [(link, link.readlink(), link.lstat().st_ino) for link in links]
+
+    def fail_operation(*_args: object, **_kwargs: object) -> None:
+        raise OSError(f"simulated {failure} failure")
+
+    if failure == "copy":
+        monkeypatch.setattr(shutil, "copyfileobj", fail_operation)
+    else:
+        monkeypatch.setattr(comicinfo.os, failure, fail_operation)
+    monkeypatch.setattr(comicinfo, "log_event", lambda *args, **kwargs: None)
+
+    assert comicinfo.inject_comicinfo(str(alias), _XML) is False
+
+    assert target.read_bytes() == original
+    assert target.stat().st_ino == original_inode
+    for link, original_destination, link_inode in original_links:
+        assert link.is_symlink()
+        assert link.readlink() == original_destination
+        assert link.lstat().st_ino == link_inode
+        assert link.read_bytes() == original
+    assert _temporary_archives(target_directory) == []
+    assert _temporary_archives(alias_directory) == []
+
+
+@pytest.mark.parametrize("kind", ["directory", "missing", "loop"])
+def test_invalid_symlink_target_is_not_replaced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: Literal["directory", "missing", "loop"],
+) -> None:
+    import comicinfo
+
+    alias = tmp_path / "invalid.cbz"
+    target = tmp_path / "target"
+    if kind == "directory":
+        target.mkdir()
+        _make_cbz(target / "inside.cbz", [("001.png", b"page")])
+    alias.symlink_to(alias.name if kind == "loop" else target.name)
+    link_destination = alias.readlink()
+    link_inode = alias.lstat().st_ino
+    monkeypatch.setattr(comicinfo, "log_event", lambda *args, **kwargs: None)
+
+    assert comicinfo.inject_comicinfo(str(alias), _XML) is False
+
+    assert alias.is_symlink()
+    assert alias.readlink() == link_destination
+    assert alias.lstat().st_ino == link_inode
+    if kind == "directory":
+        assert _archive_entries(target / "inside.cbz") == [("001.png", b"page")]
+        assert _temporary_archives(target) == []
+    else:
+        assert not target.exists()
+    assert _temporary_archives(tmp_path) == []
 
 
 def test_rewrite_failure_leaves_original_archive_intact(
@@ -249,8 +399,10 @@ def test_foreign_owner_permission_error_retries_group_only(
     assert _temporary_archives(tmp_path) == []
 
 
+@pytest.mark.parametrize("through_symlink", [False, True])
 def test_injecting_hardlink_destination_does_not_mutate_source_alias(
     tmp_path: Path,
+    through_symlink: bool,
 ) -> None:
     import comicinfo
 
@@ -260,12 +412,18 @@ def test_injecting_hardlink_destination_does_not_mutate_source_alias(
     original = source_path.read_bytes()
     source_inode = source_path.stat().st_ino
     os.link(source_path, destination_path)
+    injection_path = destination_path
+    if through_symlink:
+        injection_path = tmp_path / "manual-import-alias.cbz"
+        injection_path.symlink_to(destination_path.name)
 
-    assert comicinfo.inject_comicinfo(str(destination_path), _XML) is True
+    assert comicinfo.inject_comicinfo(str(injection_path), _XML) is True
 
     assert source_path.read_bytes() == original
     assert source_path.stat().st_ino == source_inode
     assert destination_path.stat().st_ino != source_inode
+    if through_symlink:
+        assert injection_path.is_symlink()
     assert _archive_entries(destination_path)[0] == (
         "ComicInfo.xml",
         _XML.encode("utf-8"),

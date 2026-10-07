@@ -194,6 +194,9 @@ def inject_comicinfo(cbz_path: str, xml_content: str) -> bool:
 def _rewrite_with_comicinfo(cbz_path: str, xml_content: str) -> None:
     """Stream a complete replacement archive beside ``cbz_path``."""
     archive_path = os.path.abspath(cbz_path)
+    if os.path.islink(archive_path):
+        # Replace the archive target, not the link or its other symlink aliases.
+        archive_path = os.path.realpath(archive_path, strict=True)
     archive_stat = os.stat(archive_path)
     directory = os.path.dirname(archive_path)
     descriptor, temporary_path = tempfile.mkstemp(
