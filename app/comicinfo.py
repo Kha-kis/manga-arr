@@ -21,6 +21,9 @@ Pure move — no DB access, no state — just zip and XML I/O.
 from __future__ import annotations
 
 import os
+import shutil
+import stat
+import tempfile
 import zipfile
 
 from events import log_event
@@ -36,6 +39,9 @@ from defusedxml.common import DefusedXmlException as _DefusedXmlException
 
 from files import detect_file_type_magic
 from parsing import _parse_vol_suffix
+
+
+_COPY_CHUNK_SIZE = 1024 * 1024
 
 
 def read_comic_info(cbz_path: str) -> dict:
@@ -178,22 +184,101 @@ def inject_comicinfo(cbz_path: str, xml_content: str) -> bool:
     elif file_type != "cbz":
         return False  # CBR, EPUB, PDF — not injectable
     try:
-        # Read existing archive contents (excluding any old ComicInfo.xml)
-        with zipfile.ZipFile(cbz_path, "r") as zf:
-            entries = [
-                (name, zf.read(name))
-                for name in zf.namelist()
-                if not name.lower().endswith("comicinfo.xml")
-            ]
-        # Rewrite archive with new ComicInfo.xml at root
-        with zipfile.ZipFile(cbz_path, "w", zipfile.ZIP_STORED) as zf:
-            zf.writestr("ComicInfo.xml", xml_content.encode("utf-8"))
-            for name, data in entries:
-                zf.writestr(name, data)
+        _rewrite_with_comicinfo(cbz_path, xml_content)
         return True
     except (zipfile.BadZipFile, OSError, Exception) as e:
         log_event("error", f"[ComicInfo] Failed to inject into {cbz_path}: {e}")
         return False
+
+
+def _rewrite_with_comicinfo(cbz_path: str, xml_content: str) -> None:
+    """Stream a complete replacement archive beside ``cbz_path``."""
+    archive_path = os.path.abspath(cbz_path)
+    archive_stat = os.stat(archive_path)
+    directory = os.path.dirname(archive_path)
+    descriptor, temporary_path = tempfile.mkstemp(
+        prefix=".comicinfo-",
+        suffix=".cbz.tmp",
+        dir=directory,
+    )
+    try:
+        temporary_file = os.fdopen(descriptor, "w+b")
+        descriptor = -1
+        with temporary_file:
+            with (
+                zipfile.ZipFile(archive_path, "r") as source_archive,
+                zipfile.ZipFile(
+                    temporary_file,
+                    "w",
+                    zipfile.ZIP_STORED,
+                    allowZip64=True,
+                ) as output_archive,
+            ):
+                output_archive.writestr(
+                    "ComicInfo.xml",
+                    xml_content.encode("utf-8"),
+                )
+                for info in source_archive.infolist():
+                    if info.filename.lower().endswith("comicinfo.xml"):
+                        continue
+                    output_info = zipfile.ZipInfo(
+                        filename=info.filename,
+                        date_time=info.date_time,
+                    )
+                    output_info.compress_type = zipfile.ZIP_STORED
+                    output_info.comment = info.comment
+                    output_info.create_system = info.create_system
+                    output_info.external_attr = info.external_attr
+                    output_info.internal_attr = info.internal_attr
+                    force_zip64 = info.file_size * 1.05 > zipfile.ZIP64_LIMIT
+                    with (
+                        source_archive.open(info, "r") as source_entry,
+                        output_archive.open(
+                            output_info,
+                            "w",
+                            force_zip64=force_zip64,
+                        ) as output_entry,
+                    ):
+                        shutil.copyfileobj(
+                            source_entry,
+                            output_entry,
+                            length=_COPY_CHUNK_SIZE,
+                        )
+
+            if hasattr(os, "fchown"):
+                try:
+                    os.fchown(
+                        temporary_file.fileno(),
+                        archive_stat.st_uid,
+                        archive_stat.st_gid,
+                    )
+                except PermissionError:
+                    # Shared-group files may be writable but owned by another UID.
+                    try:
+                        os.fchown(
+                            temporary_file.fileno(),
+                            -1,
+                            archive_stat.st_gid,
+                        )
+                    except PermissionError:
+                        pass
+            os.fchmod(
+                temporary_file.fileno(),
+                stat.S_IMODE(archive_stat.st_mode),
+            )
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+
+        os.replace(temporary_path, archive_path)
+        temporary_path = ""
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temporary_path:
+            try:
+                os.unlink(temporary_path)
+            except FileNotFoundError:
+                pass
 
 
 def _try_inject_comicinfo(
