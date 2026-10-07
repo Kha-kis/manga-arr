@@ -29,8 +29,8 @@ API, schema, metadata, or downloader behavior changes.
 - Python 3.11 also passed the complete Python suite: 2,324 passed and 5 skipped.
 - The tag workflow passed release metadata, dependency audit, image identity,
   fixed High/Critical vulnerability, immutable-tag, and multi-platform publish
-  gates. A fresh scan of the published digest found zero fixed High/Critical
-  OS or Python findings.
+  gates. A fresh scan of the published amd64 digest found zero fixed
+  High/Critical OS or Python findings.
 - The amd64 runtime reports AnyIO 4.14.2, has no importable or installed `pip`,
   imports Mangarr successfully, runs as the expected non-root user, and carries
   version `1.3.1` plus the exact merge revision in its OCI labels.
@@ -41,7 +41,7 @@ API, schema, metadata, or downloader behavior changes.
   `sha256:f9b9d9785d23e8632af0430909b90867ce3759e2c0297cb15cffea9cddf0187f`
   and `sha256:2750ee8d8f6e5d08703a5bb9c145185052ef0cc13e0f2a76dbdef2e2040cf864`.
 
-### Runtime Qualification
+### Published Amd64 Runtime Qualification
 
 - A fresh isolated config completed startup, administrator creation, logout,
   login, authenticated page access, and health checks. SQLite integrity passed,
@@ -63,20 +63,20 @@ API, schema, metadata, or downloader behavior changes.
 
 Production remained on the pinned 1.2.0 image throughout qualification.
 
-## 1.3.0 Release Under Test
+## Historical 1.3.0 Release Evidence
 
-- Release under qualification: `1.3.0`
+- Release evaluated: `1.3.0`
 - Qualified release candidate: `1.3.0-rc.2`
 - Previous stable: `1.2.0`
 - Published image: `ghcr.io/kha-kis/manga-arr:1.3.0`
 - Stable digest: `sha256:f9b9d9785d23e8632af0430909b90867ce3759e2c0297cb15cffea9cddf0187f`
 - Platforms: `linux/amd64`, `linux/arm64`
 
-The 1.3.0 container is published and owns `1.3`, `1`, and `latest`. AniList
-recovery checks passed on September 15, but final qualification and the GitHub
-stable-release announcement are now blocked by fixable OS-package findings in
-a refreshed image scan. The previous qualified stable is 1.2.0; production
-remains pinned to its unchanged digest. RC1's rejection and RC2's successful
+When 1.3.0 was published, it owned `1.3`, `1`, and `latest`. AniList recovery
+checks passed on September 15, but its final qualification and GitHub
+stable-release announcement were blocked by fixable OS-package findings in a
+refreshed image scan. The qualified 1.3.1 release now owns the moving aliases;
+the exact 1.3.0 image remains immutable. RC1's rejection and RC2's successful
 qualification remain separate historical evidence below.
 
 ## 1.3.0 Publication Evidence
@@ -715,7 +715,8 @@ HTTP 200; no candidate was run against its database.
 RC1 remains rejected and immutable. RC2 completed the fresh-install, 1.2.0
 upgrade and rollback, metadata lifecycle, downloader, import, integrity, and
 operational gates above. That RC2 decision authorized separate stable
-preparation; it did not qualify the later 1.3.0 image. Current stable-image
-publication and its qualification hold are recorded at the top of this file.
+preparation; it did not qualify the later 1.3.0 image. That publication and
+its historical qualification hold are recorded above; the current 1.3.1
+qualification is recorded at the top of this file.
 
 1.3.0-rc.2 QUALIFIED

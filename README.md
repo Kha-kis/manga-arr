@@ -24,9 +24,10 @@ generic TV or book collection.
 **1.3.1** is the current qualified stable release. It includes the 1.3 metadata
 identity and title-ownership improvements, qBittorrent authentication-bypass
 compatibility, refreshed container security packages, and AnyIO security
-fixes. The published amd64/arm64 image passed fresh-install, copied-config
-upgrade, rollback, and current vulnerability checks. `1.3.1`, `1.3`, `1`, and
-`latest` resolve to the qualified image; exact older version tags remain
+fixes. The published image contains amd64 and arm64 manifests and passed its
+release security gates. Fresh-install, copied-config upgrade, rollback, and
+published-image vulnerability checks passed on amd64. `1.3.1`, `1.3`, `1`,
+and `latest` resolve to the qualified image; exact older version tags remain
 immutable.
 See the [qualification status](docs/release-qualification.md) before upgrading.
 Mangarr is self-hosted, designed for a single administrator, and distributed
