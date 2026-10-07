@@ -5,7 +5,7 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
-## 1.3.1 - 2026-09-15
+## 1.3.1 - 2026-10-07
 
 Security patch preparation for the published 1.3.0 container. Publication and
 qualification of the new image are pending; the immutable 1.3.0 image and tag
