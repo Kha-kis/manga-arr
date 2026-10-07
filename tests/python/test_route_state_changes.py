@@ -37,7 +37,7 @@ def env(tmp_path):
     """Fresh DB seeded with one series, three volumes (states: wanted,
     grabbed, downloaded), tags, history, and an import list."""
     import main, shared, security
-    db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    db = tempfile.NamedTemporaryFile(suffix=".db", dir=tmp_path, delete=False)
     db.close(); os.unlink(db.name)
     key_dir = tempfile.mkdtemp(prefix="mangarr-state-keys-")
 

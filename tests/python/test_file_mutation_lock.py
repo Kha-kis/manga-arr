@@ -1,4 +1,4 @@
-"""Local DB-inode ownership and native deletion replay exclusion."""
+"""Persistent sidecar ownership and native deletion replay exclusion."""
 
 from __future__ import annotations
 
@@ -212,7 +212,13 @@ def test_guard_lifecycle_and_same_process_nested_contention(tmp_path: Path) -> N
         next_guard.verify()
     assert db_path.stat().st_ino == identity
     assert db_path.read_bytes() == b"unchanged database inode"
-    assert list(tmp_path.iterdir()) == [db_path]
+    lock_path = tmp_path / ".local.db.file-mutation.lock"
+    assert set(tmp_path.iterdir()) == {db_path, lock_path}
+    lock_identity = lock_path.stat().st_ino
+    with file_mutation_guard(str(db_path)):
+        assert lock_path.stat().st_ino == lock_identity
+    assert lock_path.stat().st_ino == lock_identity
+    assert lock_path.read_bytes() == b""
 
 
 def test_stopped_process_keeps_lock_and_sigkill_releases_it(tmp_path: Path) -> None:
@@ -535,9 +541,10 @@ def test_replay_permission_error_leaves_owner_journal_untouched(
     real_open = os.open
 
     def denied(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
-        if os.fspath(path) == db_path:
+        lock_path = str(Path(db_path).with_name(".deletion.db.file-mutation.lock"))
+        if os.fspath(path) == lock_path:
             raise PermissionError(
-                errno.EACCES, "injected DB permission failure", db_path
+                errno.EACCES, "injected lock permission failure", lock_path
             )
         return real_open(path, flags, *args, **kwargs)
 
