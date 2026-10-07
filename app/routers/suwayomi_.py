@@ -11,10 +11,14 @@ Flow:
 """
 
 import asyncio as _aio
+from collections.abc import Mapping, Sequence
+from decimal import Decimal, InvalidOperation
 import json
 import logging
 import os
 import re
+import sqlite3
+from typing import Any
 import unicodedata
 
 import httpx
@@ -360,13 +364,14 @@ def _vol_from_name(name: str | None) -> float | None:
 
 
 def _chapters_for_volume(
-    chapters: list[dict], volume_num: float, series_id: int | None = None
-) -> list[dict]:
+    chapters: list[dict[str, Any]], volume_num: float, series_id: int | None = None
+) -> list[dict[str, Any]]:
     """
     Filter chapters belonging to a given volume.
     1. Primary:  parse 'Vol.X' from chapter name (source-agnostic).
     2. Fallback: use chapter_vol_map JSON from series table (source-agnostic).
     3. Fallback: look up mangadex_chapters table (MangaDex-specific).
+    Mapped fallbacks require every expected number; never queue a subset.
     """
     # 1. Parse from chapter name
     matched = [
@@ -381,43 +386,77 @@ def _chapters_for_volume(
     if series_id is None:
         return []
 
+    def complete_matches(ch_nums: set[Decimal]) -> list[dict[str, Any]]:
+        numbered = [(ch, _chapter_number(ch.get("chapterNumber"))) for ch in chapters]
+        matches = [ch for ch, number in numbered if number in ch_nums]
+        present = {number for _, number in numbered if number in ch_nums}
+        if present != ch_nums:
+            log.warning(
+                "Incomplete Suwayomi chapter map for series %d vol %s:"
+                " %d mapped number(s) missing from source; refusing partial volume",
+                series_id,
+                volume_num,
+                len(ch_nums - present),
+            )
+            return []
+        return matches
+
     # 2. Use chapter_vol_map JSON (works for any source)
     with get_db() as db:
         s_row = db.execute(
             "SELECT chapter_vol_map FROM series WHERE id=?", (series_id,)
         ).fetchone()
+        s_row = dict(s_row) if s_row is not None else None
     if s_row and s_row["chapter_vol_map"]:
         try:
             cvm = json.loads(s_row["chapter_vol_map"])
-            ch_nums = {
-                float(k) for k, v in cvm.items() if abs(float(v) - volume_num) < 0.1
-            }
-            if ch_nums:
-                return [
-                    ch
-                    for ch in chapters
-                    if ch.get("chapterNumber") is not None
-                    and float(ch["chapterNumber"]) in ch_nums
-                ]
-        except Exception:
-            pass
+        except (ValueError, TypeError):
+            log.warning(
+                "Invalid Suwayomi chapter map for series %d; refusing volume", series_id
+            )
+            return []
+        if not isinstance(cvm, dict):
+            log.warning(
+                "Invalid Suwayomi chapter map for series %d; refusing volume", series_id
+            )
+            return []
+        ch_nums: set[Decimal] = set()
+        for key, value in cvm.items():
+            number = _chapter_number(key)
+            volume = _chapter_number(value)
+            if number is None or volume is None:
+                log.warning(
+                    "Invalid Suwayomi chapter map for series %d; refusing volume",
+                    series_id,
+                )
+                return []
+            if abs(volume - Decimal(str(volume_num))) < Decimal("0.1"):
+                ch_nums.add(number)
+        if ch_nums:
+            return complete_matches(ch_nums)
 
     # 3. MangaDex chapters table fallback
     with get_db() as db:
-        rows = db.execute(
-            "SELECT chapter_num FROM mangadex_chapters WHERE series_id=? AND volume_num=?",
-            (series_id, volume_num),
-        ).fetchall()
+        rows = [
+            dict(row)
+            for row in db.execute(
+                "SELECT chapter_num FROM mangadex_chapters WHERE series_id=? AND volume_num=?",
+                (series_id, volume_num),
+            ).fetchall()
+        ]
 
     if not rows:
         return []
 
-    ch_nums = {float(r["chapter_num"]) for r in rows if r["chapter_num"] is not None}
-    return [
-        ch
-        for ch in chapters
-        if ch.get("chapterNumber") is not None and float(ch["chapterNumber"]) in ch_nums
-    ]
+    ch_nums = set()
+    for row in rows:
+        if row["chapter_num"] is None:
+            continue
+        number = _chapter_number(row["chapter_num"])
+        if number is None:
+            return []
+        ch_nums.add(number)
+    return complete_matches(ch_nums)
 
 
 # ── Filesystem helpers ───────────────────────────────────────────────────────
@@ -486,32 +525,122 @@ def _ch_sort_key(path: str) -> float:
     return float(m.group(1)) if m else 9999
 
 
-def _vol_chapter_cbzs(manga_dir: str, volume_num: float) -> list[str]:
-    """Return sorted list of chapter CBZ paths belonging to a volume."""
-    vol_int = int(volume_num)
-    frac = volume_num - vol_int
-    # Use exact match for non-integer volumes (e.g. Vol.1.5), word boundary for integers
-    vol_pat = rf"Vol\.{volume_num}" if frac else rf"Vol\.{vol_int}\b"
-    paths = [
-        os.path.join(manga_dir, fname)
+def _chapter_number(value: object) -> Decimal | None:
+    """Normalize a source/filename number without decimal-prefix matching."""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float, Decimal)):
+        return None
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return number if number.is_finite() and number >= 0 else None
+
+
+def _chapter_file_identity(fname: str) -> tuple[Decimal, int, int] | None:
+    """Chapter number, match strength, and title suffix length for a CBZ name."""
+    stem = os.path.splitext(fname)[0]
+    prefix, separator, title = stem.partition("_")
+    # Numeric title prefixes are ambiguous regardless of their chapter label.
+    has_scanlator = bool(
+        separator
+        and re.fullmatch(r"[^\d/\\]+", prefix)
+        and not re.match(
+            r"\s*(?:Ch\.|Chapter(?=$|[^A-Za-z])|#|Vol\.)", prefix, re.IGNORECASE
+        )
+    )
+    if has_scanlator:
+        stem = title
+    match = re.fullmatch(
+        r"(?:Vol\.\s*\d+(?:\.\d+)?\s+)?"
+        r"(?:Ch\.\s*|Chapter\s+|#\s*)(\d+(?:\.\d+)?)"
+        r"((?:\s+.*|-.*)?)",
+        stem,
+        re.IGNORECASE,
+    )
+    if match:
+        return Decimal(match[1]), 0, len(match[2].strip())
+    # Series-specific labels are allowed only after a scanlator prefix and
+    # only when a single word and terminal number comprise the entire title.
+    if not has_scanlator:
+        return None
+    match = re.fullmatch(r"[A-Za-z]+\s+(\d+(?:\.\d+)?)", stem)
+    return (Decimal(match[1]), 1, 0) if match else None
+
+
+def _chapter_files(manga_dir: str) -> list[str]:
+    """Regular local CBZ files only; never follow chapter-file symlinks."""
+    return [
+        fname
         for fname in os.listdir(manga_dir)
-        if fname.lower().endswith(".cbz") and re.search(vol_pat, fname, re.IGNORECASE)
+        if fname.lower().endswith(".cbz")
+        and not os.path.islink(os.path.join(manga_dir, fname))
+        and os.path.isfile(os.path.join(manga_dir, fname))
     ]
-    return sorted(paths, key=_ch_sort_key)
+
+
+def _select_chapter_cbz(
+    manga_dir: str, chapter_num: Decimal, names: Sequence[str]
+) -> str | None:
+    candidates: list[tuple[int, int, int, str, str]] = []
+    for fname in names:
+        identity = _chapter_file_identity(fname)
+        if identity is not None and identity[0] == chapter_num:
+            # Identity strength and an undecorated chapter title precede length.
+            candidates.append(
+                (identity[1], identity[2], len(fname), fname.casefold(), fname)
+            )
+    return os.path.join(manga_dir, min(candidates)[-1]) if candidates else None
+
+
+def _vol_chapter_cbzs(
+    manga_dir: str,
+    volume_num: float,
+    *,
+    chapter_nums: Sequence[float | Decimal] | None = None,
+) -> list[str]:
+    """Select a complete, ordered job chapter set, or legacy volume-named files.
+
+    Explicit job numbers are authoritative even when volume labels are present.
+    Missing/unknown identities fail closed; decimal parts never imply a whole.
+    """
+    names = _chapter_files(manga_dir)
+    if chapter_nums is not None:
+        numbers: set[Decimal] = set()
+        for value in chapter_nums:
+            number = _chapter_number(value)
+            if number is None:
+                return []
+            numbers.add(number)
+        paths: list[str] = []
+        for number in sorted(numbers):
+            path = _select_chapter_cbz(manga_dir, number, names)
+            if path is None:
+                return []
+            paths.append(path)
+        return paths
+
+    volume = _chapter_number(volume_num)
+    matches: dict[Decimal, list[str]] = {}
+    for fname in names:
+        label = re.search(
+            r"(?:^|_)Vol\.\s*(\d+(?:\.\d+)?)(?![\w.])", fname, re.IGNORECASE
+        )
+        identity = _chapter_file_identity(fname)
+        if label and Decimal(label[1]) == volume and identity:
+            matches.setdefault(identity[0], []).append(fname)
+    return [
+        path
+        for number in sorted(matches)
+        if (path := _select_chapter_cbz(manga_dir, number, matches[number])) is not None
+    ]
 
 
 def _chapter_cbz(manga_dir: str, chapter_num: float) -> str | None:
-    """Find the CBZ file for a specific chapter number in manga_dir."""
-    ch_int = int(chapter_num)
-    frac = chapter_num - ch_int
-    # Match exact chapter: Ch.5 for integer, Ch.5.5 for decimal
-    pattern = rf"Ch\.{ch_int}\b" if frac == 0 else rf"Ch\.{chapter_num}"
-    for fname in os.listdir(manga_dir):
-        if not fname.lower().endswith(".cbz"):
-            continue
-        if re.search(pattern, fname, re.IGNORECASE):
-            return os.path.join(manga_dir, fname)
-    return None
+    """Find one deterministic CBZ variant for the exact requested chapter."""
+    number = _chapter_number(chapter_num)
+    if number is None:
+        return None
+    return _select_chapter_cbz(manga_dir, number, _chapter_files(manga_dir))
 
 
 def _merge_cbzs(chapter_paths: list[str], output_path: str) -> int:
@@ -856,11 +985,12 @@ def _should_merge(c: dict) -> bool:
 
 
 async def _import_suwayomi_volume(
-    c: dict,
+    c: dict[str, Any],
     series_id: int,
     volume_num: float,
     *,
     swy_title: str = "",
+    chapter_nums: Sequence[float | Decimal] | None = None,
 ) -> tuple[str | None, int]:
     """Import completed volume download into the managed library.
     If merge_chapters is enabled (default): merges chapter CBZs into one volume CBZ.
@@ -885,7 +1015,7 @@ async def _import_suwayomi_volume(
         )
         return None, 0
 
-    chapter_paths = _vol_chapter_cbzs(manga_dir, volume_num)
+    chapter_paths = _vol_chapter_cbzs(manga_dir, volume_num, chapter_nums=chapter_nums)
     if not chapter_paths:
         log.warning(
             "No chapter CBZs found for series %d vol %s in %s",
@@ -1053,7 +1183,9 @@ async def _check_suwayomi_jobs_impl():
     return
 
 
-async def _process_suwayomi_job(c: dict, job) -> None:
+async def _process_suwayomi_job(
+    c: dict[str, Any], job: Mapping[str, Any] | sqlite3.Row
+) -> None:
     """Per-job body extracted from check_suwayomi_jobs so the retry loop
     can call it. Raises on failure; caller decides whether to retry or
     mark the job errored."""
@@ -1068,7 +1200,7 @@ async def _process_suwayomi_job(c: dict, job) -> None:
         query($mid: Int!) {
             manga(id: $mid) {
                 title
-                chapters { nodes { id isDownloaded } }
+                chapters { nodes { id isDownloaded chapterNumber } }
             }
         }
     """,
@@ -1076,11 +1208,11 @@ async def _process_suwayomi_job(c: dict, job) -> None:
     )
     swy_title = (data.get("manga") or {}).get("title") or ""
 
-    ch_map: dict[int, bool] = {
-        int(ch["id"]): bool(ch["isDownloaded"])
+    ch_map: dict[int, dict[str, Any]] = {
+        int(ch["id"]): ch
         for ch in (data.get("manga") or {}).get("chapters", {}).get("nodes") or []
     }
-    done = sum(1 for cid in chapter_ids if ch_map.get(cid, False))
+    done = sum(1 for cid in chapter_ids if ch_map.get(cid, {}).get("isDownloaded"))
 
     with get_db() as db:
         db.execute(
@@ -1170,11 +1302,24 @@ async def _process_suwayomi_job(c: dict, job) -> None:
             )
     else:
         # ── Volume-level job ──────────────────────────────────────
+        job_chapter_nums: list[Decimal] = []
+        for cid in chapter_ids:
+            number = _chapter_number(ch_map.get(cid, {}).get("chapterNumber"))
+            if number is None:
+                log.warning(
+                    "Unknown chapter number for Suwayomi job %s chapter ID %s",
+                    job["id"],
+                    cid,
+                )
+                job_chapter_nums = []
+                break
+            job_chapter_nums.append(number)
         import_path, file_bytes = await _import_suwayomi_volume(
             c,
             job["series_id"],
             job["volume_num"],
             swy_title=swy_title,
+            chapter_nums=job_chapter_nums,
         )
         if not import_path:
             err_msg = "Import failed — CBZ files not found in library path"
