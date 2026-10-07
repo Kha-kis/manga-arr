@@ -595,15 +595,16 @@ def test_concurrent_replay_reports_complete_after_other_replayer_finishes(
     deletion_env: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A losing route replay must honor the winner's terminal journal state."""
+    """A route contender stays pending, then honors the owner's completion."""
     import volume_file_deletion
 
     reservation = volume_file_deletion.reserve_volume_file_deletion(1, 11)
     journal_id = reservation.journal_id
     assert journal_id is not None
     first_unlink_started = threading.Event()
-    second_unlink_started = threading.Event()
-    winner_finished = threading.Event()
+    release_owner = threading.Event()
+    retry_reserved = threading.Event()
+    release_retry = threading.Event()
     unlink_lock = threading.Lock()
     unlink_calls = 0
     real_unlink = volume_file_deletion._unlink_claim
@@ -612,13 +613,9 @@ def test_concurrent_replay_reports_complete_after_other_replayer_finishes(
         nonlocal unlink_calls
         with unlink_lock:
             unlink_calls += 1
-            call_number = unlink_calls
-        if call_number == 1:
-            first_unlink_started.set()
-            assert second_unlink_started.wait(timeout=5)
-        else:
-            second_unlink_started.set()
-            assert winner_finished.wait(timeout=5)
+            assert unlink_calls == 1
+        first_unlink_started.set()
+        assert release_owner.wait(timeout=10)
         real_unlink(path)
 
     monkeypatch.setattr(
@@ -627,22 +624,65 @@ def test_concurrent_replay_reports_complete_after_other_replayer_finishes(
         coordinated_unlink,
     )
 
-    def replay_winner() -> str:
-        try:
-            return volume_file_deletion.replay_volume_file_deletion(journal_id)
-        finally:
-            winner_finished.set()
-
+    db_path = str(deletion_env["db_path"])
     with ThreadPoolExecutor(max_workers=2) as pool:
-        winner = pool.submit(replay_winner)
-        assert first_unlink_started.wait(timeout=5)
-        loser = pool.submit(volume_file_deletion.delete_volume_file, 1, 11)
-        assert winner.result(timeout=5) == "completed"
-        loser_result = loser.result(timeout=5)
+        winner = pool.submit(
+            volume_file_deletion.replay_volume_file_deletion, journal_id
+        )
+        try:
+            assert first_unlink_started.wait(timeout=5)
+            with sqlite3.connect(db_path) as db:
+                before = db.execute(
+                    "SELECT * FROM volume_file_deletions WHERE id=?", (journal_id,)
+                ).fetchone()
+            assert before is not None
+            loser = pool.submit(volume_file_deletion.delete_volume_file, 1, 11)
+            loser_result = loser.result(timeout=5)
+            assert loser_result.status == "pending"
+            assert loser_result.journal_id == journal_id
+            with unlink_lock:
+                assert unlink_calls == 1
+            with sqlite3.connect(db_path) as db:
+                assert (
+                    db.execute(
+                        "SELECT * FROM volume_file_deletions WHERE id=?", (journal_id,)
+                    ).fetchone()
+                    == before
+                )
+            claim_path = _journal_state(db_path)[1]
+            assert Path(claim_path).read_bytes() == b"journal-volume-payload"
 
-    assert loser_result.status == "complete"
-    assert _journal_state(str(deletion_env["db_path"]))[0] == "completed"
-    with sqlite3.connect(str(deletion_env["db_path"])) as db:
+            real_reserve = volume_file_deletion.reserve_volume_file_deletion
+
+            def reserve_retry(
+                series_id: int, volume_id: int
+            ) -> volume_file_deletion.DeletionReservation:
+                reservation = real_reserve(series_id, volume_id)
+                assert reservation.status == "existing"
+                assert reservation.journal_id == journal_id
+                retry_reserved.set()
+                assert release_retry.wait(timeout=10)
+                return reservation
+
+            # Keep the retry tied to this operation, not a new missing-file delete.
+            monkeypatch.setattr(
+                volume_file_deletion, "reserve_volume_file_deletion", reserve_retry
+            )
+            retry = pool.submit(volume_file_deletion.delete_volume_file, 1, 11)
+            assert retry_reserved.wait(timeout=5)
+            release_owner.set()
+            assert winner.result(timeout=5) == "completed"
+            release_retry.set()
+            retry_result = retry.result(timeout=5)
+        finally:
+            release_owner.set()
+            release_retry.set()
+
+    assert retry_result.status == "complete"
+    assert retry_result.journal_id == journal_id
+    assert unlink_calls == 1
+    assert _journal_state(db_path)[0] == "completed"
+    with sqlite3.connect(db_path) as db:
         assert db.execute(
             "SELECT COUNT(*) FROM history WHERE event_type='file_deleted'"
         ).fetchone() == (1,)
