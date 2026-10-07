@@ -337,11 +337,15 @@ async def _grab_volume_task(
         if any(_m.matches(p, item["title"]) for p in all_patterns):
             item_vol = _m.extract_volume_num(item["title"])
             item_rng = _m.extract_volume_range(item["title"])
-            pack_type = _m.detect_pack_type(
-                item["title"], item_rng, current_series["total_volumes"]
-            )
             if item_rng is not None:
                 item_vol = None
+            pack_type = (
+                _m.detect_pack_type(
+                    item["title"], item_rng, current_series["total_volumes"]
+                )
+                if item_vol is None
+                else None
+            )
             vol_ok = (
                 target_vol is not None
                 and pack_type != "chapter"
@@ -431,11 +435,15 @@ async def _grab_volume_task_sync(
         if any(_m.matches(p, item["title"]) for p in all_patterns):
             item_vol = _m.extract_volume_num(item["title"])
             item_rng = _m.extract_volume_range(item["title"])
-            pack_type = _m.detect_pack_type(
-                item["title"], item_rng, current_series["total_volumes"]
-            )
             if item_rng is not None:
                 item_vol = None
+            pack_type = (
+                _m.detect_pack_type(
+                    item["title"], item_rng, current_series["total_volumes"]
+                )
+                if item_vol is None
+                else None
+            )
             vol_ok = (
                 target_vol is not None
                 and pack_type != "chapter"

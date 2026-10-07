@@ -1,12 +1,20 @@
 """Import planning: build _ImportPlan from queue/series/files data."""
 
+import json
 import logging
 import os
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from download_identity import coerce_download_client_id, resolve_download_protocol
+from download_identity import (
+    DownloadIdentity,
+    coerce_download_client_id,
+    download_identities_match,
+    normalize_download_protocol,
+    resolve_download_protocol,
+)
 from events import log_event
 from parsing import extract_chapter_num
 from files import (
@@ -72,6 +80,110 @@ class _ImportPlan:
     series_id: int
 
 
+def _queue_identity(
+    db: sqlite3.Connection, queue: Mapping[str, Any]
+) -> DownloadIdentity:
+    protocol = normalize_download_protocol(queue.get("download_protocol"))
+    owner = coerce_download_client_id(queue.get("download_client_id"))
+    if protocol is None:
+        protocol = resolve_download_protocol(
+            db,
+            download_client_id=owner,
+            series_id=int(queue["series_id"]),
+            download_id=str(queue.get("download_id") or ""),
+            source_url=str(queue.get("torrent_url") or ""),
+            allow_client_configuration=False,
+        )
+    return DownloadIdentity(owner, protocol, str(queue.get("download_id") or ""))
+
+
+def _manual_mapping_files(queue: Mapping[str, Any]) -> set[int]:
+    values = queue.get("_manual_mapping_files", [])
+    if not isinstance(values, list):
+        return set()
+    return {v for v in values if isinstance(v, int) and not isinstance(v, bool)}
+
+
+def _claim_identity_matches(row: sqlite3.Row, identity: DownloadIdentity) -> bool:
+    protocol = normalize_download_protocol(row["protocol"])
+    if row["protocol"] and protocol is None:
+        return False
+    return download_identities_match(
+        DownloadIdentity(
+            coerce_download_client_id(row["download_client_id"]),
+            protocol,
+            str(row["download_id"] or ""),
+        ),
+        identity,
+    )
+
+
+def _automatic_grab_import(db: sqlite3.Connection, queue: Mapping[str, Any]) -> bool:
+    persisted = queue.get("_respect_grab_claims")
+    if isinstance(persisted, bool):
+        return persisted
+    identity = _queue_identity(db, queue)
+    for row in db.execute(
+        "SELECT * FROM history WHERE series_id=? AND event_type='grabbed'"
+        " AND download_client_id IS ? AND torrent_url=? ORDER BY id DESC",
+        (
+            queue["series_id"],
+            identity.download_client_id,
+            str(queue.get("torrent_url") or ""),
+        ),
+    ):
+        if not _claim_identity_matches(row, identity):
+            continue
+        try:
+            data = json.loads(row["data"] or "{}")
+        except (TypeError, ValueError):
+            data = {}
+        if isinstance(data, dict) and data.get("claim_lost") is True:
+            return True
+        return not (isinstance(data, dict) and data.get("respect_monitoring") is False)
+    # Untracked manually queued imports retain their existing override semantics.
+    return False
+
+
+def _file_has_grab_claim(
+    db: sqlite3.Connection, queue: Mapping[str, Any], fp: _FilePlan
+) -> bool:
+    if not _automatic_grab_import(db, queue) or fp.file_id in _manual_mapping_files(
+        queue
+    ):
+        return True
+    identity = _queue_identity(db, queue)
+    if fp.proposed_chap is not None and fp.file_type == "chapter":
+        table, url_column, coverage = "chapters", "torrent_url", "chapter_num=?"
+        coverage_args = [fp.proposed_chap]
+    elif fp.proposed_vol is not None:
+        table, url_column, coverage = "volumes", "source_url", "volume_num=?"
+        coverage_args = [fp.proposed_vol]
+    elif fp.has_volume_range:
+        table, url_column, coverage = (
+            "volumes",
+            "source_url",
+            "volume_num BETWEEN ? AND ?",
+        )
+        coverage_args = [fp.vol_range_start, fp.vol_range_end]
+    else:
+        # Specials and legacy unmapped records have no mainline target to replace.
+        return True
+    return any(
+        _claim_identity_matches(row, identity)
+        for row in db.execute(
+            f"SELECT * FROM {table} WHERE series_id=? AND {coverage}"
+            f" AND status='grabbed' AND download_client_id IS ? AND {url_column}=?",
+            (
+                queue["series_id"],
+                *coverage_args,
+                identity.download_client_id,
+                str(queue.get("torrent_url") or ""),
+            ),
+        )
+    )
+
+
 def _plan_import(
     db: sqlite3.Connection,
     queue_id: int,
@@ -93,6 +205,12 @@ def _plan_import(
     if not queue_row:
         return None
     queue = dict(queue_row)
+    # The publication journal persists this queue snapshot, including explicit
+    # per-file review intent, so recovery cannot turn a manual mapping automatic.
+    queue["_manual_mapping_files"] = sorted(
+        set(volume_overrides) | set(chapter_overrides)
+    )
+    queue["_respect_grab_claims"] = _automatic_grab_import(db, queue)
 
     files = db.execute(
         "SELECT * FROM import_queue_files"
@@ -136,9 +254,7 @@ def _plan_import(
             series_id=queue["series_id"],
         )
         if transitioned and not shared_download:
-            owner_id = coerce_download_client_id(
-                queue.get("download_client_id")
-            )
+            owner_id = coerce_download_client_id(queue.get("download_client_id"))
             protocol = resolve_download_protocol(
                 db,
                 download_client_id=owner_id,
@@ -257,14 +373,10 @@ def _plan_import(
             else 0
         )
         row_import_kind = (
-            f["proposed_import_kind"]
-            if "proposed_import_kind" in _keys
-            else None
+            f["proposed_import_kind"] if "proposed_import_kind" in _keys else None
         )
         special_title = (
-            f["proposed_special_title"]
-            if "proposed_special_title" in _keys
-            else None
+            f["proposed_special_title"] if "proposed_special_title" in _keys else None
         )
         import_kind = normalize_import_kind(
             row_import_kind,
@@ -322,9 +434,7 @@ def _plan_import(
             and f["id"] not in volume_overrides
         ):
             stub = None
-            owner_id = coerce_download_client_id(
-                queue.get("download_client_id")
-            )
+            owner_id = coerce_download_client_id(queue.get("download_client_id"))
             if queue["download_id"] and owner_id is not None:
                 protocol = resolve_download_protocol(
                     db,
@@ -453,6 +563,14 @@ def _plan_import(
                 plan_failure_reason=plan_failure_reason,
             )
         )
+        if plans[-1].plan_status == "ready" and not _file_has_grab_claim(
+            db, queue, plans[-1]
+        ):
+            plans[-1].plan_status = "skip"
+            plans[-1].dst_path = ""
+            db.execute(
+                "UPDATE import_queue_files SET status='skipped' WHERE id=?", (f["id"],)
+            )
 
     now_ts = None
     if plans:

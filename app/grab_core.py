@@ -205,12 +205,15 @@ async def grab_item(
         try:
             ch_map = json.loads(s_row["chapter_vol_map"])
         except Exception as e:
-            log_event("error", f"[grab_item] chapter_vol_map parse failed: {e}", series_id)
+            log_event(
+                "error", f"[grab_item] chapter_vol_map parse failed: {e}", series_id
+            )
 
     pack_type = (
         detect_pack_type(title, vol_rng, total_vols) if vol_num is None else None
     )
     complete = pack_type == "complete"
+    single_volume_observation: dict[str, Any] | None = None
     ch_range = (
         (extract_chapter_range(title) or vol_rng) if pack_type == "chapter" else None
     )
@@ -283,12 +286,13 @@ async def grab_item(
     elif vol_num is not None:
         # Single volume — skip if already grabbed or downloaded, UNLESS this is a quality upgrade
         with get_db() as db:
-            existing_vol = db.execute(
-                "SELECT status, torrent_name, quality, release_group FROM volumes "
-                "WHERE series_id=? AND volume_num=? AND status != 'wanted'",
+            existing_row = db.execute(
+                "SELECT * FROM volumes WHERE series_id=? AND volume_num=?",
                 (series_id, vol_num),
             ).fetchone()
-        if existing_vol:
+            existing_vol = dict(existing_row) if existing_row is not None else None
+            single_volume_observation = existing_vol
+        if existing_vol and existing_vol["status"] != "wanted":
             if existing_vol["status"] == "grabbed":
                 return False  # already in flight
             # 'once' strategy: never upgrade — grab once and stop
@@ -521,6 +525,7 @@ async def grab_item(
     size = item.get("size_bytes", 0)
     edition = detect_edition_type(title)
     lang = item.get("language") or detect_language(title)
+    claim_lost = False
 
     with get_db() as db:
         db.execute(
@@ -561,10 +566,46 @@ async def grab_item(
         if vol_num is not None:
             # ── Single volume ────────────────────────────────────────────────
             existing = db.execute(
-                "SELECT id FROM volumes WHERE series_id=? AND volume_num=?",
+                "SELECT * FROM volumes WHERE series_id=? AND volume_num=?",
                 (series_id, vol_num),
             ).fetchone()
-            if existing:
+            # The seen insert above reserves this short writer transaction.
+            # Monitoring changes do not revoke an accepted acquisition, but a
+            # new owner or local observation must survive the client await.
+            claim_lost = (existing is None) != (single_volume_observation is None)
+            if existing is not None and single_volume_observation is not None:
+                claim_lost = any(
+                    existing[column] != single_volume_observation[column]
+                    for column in (
+                        "id",
+                        "series_id",
+                        "volume_num",
+                        "chapter_num",
+                        "is_special",
+                        "pack_type",
+                        "vol_range_start",
+                        "vol_range_end",
+                        "status",
+                        "grabbed_at",
+                        "imported_at",
+                        "source_url",
+                        "download_id",
+                        "download_client_id",
+                        "torrent_name",
+                        "indexer",
+                        "protocol",
+                        "client",
+                        "release_group",
+                        "size_bytes",
+                        "quality",
+                        "import_path",
+                        "edition_type",
+                        "language",
+                    )
+                )
+            if claim_lost:
+                pass
+            elif existing:
                 db.execute(
                     "UPDATE volumes SET status='grabbed', grabbed_at=?, source_url=?,"
                     " download_id=?, torrent_name=?, client=?, indexer=?, protocol=?,"
@@ -585,7 +626,12 @@ async def grab_item(
                     ),
                 )
                 _cascade_chapters(
-                    db, series_id, [existing["id"]], "grabbed", **_ch_cascade_kw
+                    db,
+                    series_id,
+                    [existing["id"]],
+                    "grabbed",
+                    respect_monitoring=respect_monitoring,
+                    **_ch_cascade_kw,
                 )
             else:
                 db.execute(
@@ -616,7 +662,12 @@ async def grab_item(
                 ).fetchone()
                 if new_vol:
                     _cascade_chapters(
-                        db, series_id, [new_vol["id"]], "grabbed", **_ch_cascade_kw
+                        db,
+                        series_id,
+                        [new_vol["id"]],
+                        "grabbed",
+                        respect_monitoring=respect_monitoring,
+                        **_ch_cascade_kw,
                     )
         else:
             # ── Pack/range/complete ──────────────────────────────────────────
@@ -693,8 +744,9 @@ async def grab_item(
                 _cascade_chapters(
                     db,
                     series_id,
-                    complete_vol_ids if respect_monitoring else None,
+                    complete_vol_ids,
                     "grabbed",
+                    respect_monitoring=respect_monitoring,
                     **_ch_cascade_kw,
                 )
             elif pack_type == "chapter" and ch_range:
@@ -704,7 +756,8 @@ async def grab_item(
                 db.execute(
                     "UPDATE chapters SET status='grabbed', grabbed_at=?, torrent_name=?,"
                     " torrent_url=?, indexer=?, protocol=?, client=?, download_id=?"
-                    " WHERE series_id=? AND chapter_num >= ? AND chapter_num <= ? AND monitored=1",
+                    " WHERE series_id=? AND chapter_num >= ? AND chapter_num <= ?"
+                    " AND monitored=1 AND status='wanted'",
                     (
                         now,
                         title,
@@ -763,7 +816,7 @@ async def grab_item(
                 }
                 for vn in range(int(vol_rng[0]), int(vol_rng[1]) + 1):
                     if float(vn) not in existing_in_range:
-                        db.execute(
+                        new_stub = db.execute(
                             "INSERT INTO volumes(series_id, volume_num, status,"
                             " grabbed_at, source_url, download_id, torrent_name, client,"
                             " indexer, protocol, release_group, size_bytes, edition_type, language)"
@@ -785,18 +838,16 @@ async def grab_item(
                                 lang,
                             ),
                         )
-                if not respect_monitoring:
-                    rng_vol_ids = [
-                        r["id"]
-                        for r in db.execute(
-                            "SELECT id FROM volumes WHERE series_id=? AND volume_num IS NOT NULL"
-                            " AND volume_num >= ? AND volume_num <= ?",
-                            (series_id, vol_rng[0], vol_rng[1]),
-                        ).fetchall()
-                    ]
+                        if new_stub.lastrowid is not None:
+                            rng_vol_ids.append(new_stub.lastrowid)
                 if rng_vol_ids:
                     _cascade_chapters(
-                        db, series_id, rng_vol_ids, "grabbed", **_ch_cascade_kw
+                        db,
+                        series_id,
+                        rng_vol_ids,
+                        "grabbed",
+                        respect_monitoring=respect_monitoring,
+                        **_ch_cascade_kw,
                     )
 
             if covered_vols:
@@ -836,7 +887,12 @@ async def grab_item(
                 )
                 if covered_vol_ids:
                     _cascade_chapters(
-                        db, series_id, covered_vol_ids, "grabbed", **_ch_cascade_kw
+                        db,
+                        series_id,
+                        covered_vol_ids,
+                        "grabbed",
+                        respect_monitoring=respect_monitoring,
+                        **_ch_cascade_kw,
                     )
 
         if download_client_id is not None:
@@ -845,18 +901,18 @@ async def grab_item(
                 UPDATE volumes
                 SET download_client_id=?
                 WHERE series_id=? AND source_url=? AND download_id=?
-                  AND status='grabbed'
+                  AND status='grabbed' AND grabbed_at=?
                 """,
-                (download_client_id, series_id, item["url"], dl_id),
+                (download_client_id, series_id, item["url"], dl_id, now),
             )
             db.execute(
                 """
                 UPDATE chapters
                 SET download_client_id=?
                 WHERE series_id=? AND torrent_url=? AND download_id=?
-                  AND status='grabbed'
+                  AND status='grabbed' AND grabbed_at=?
                 """,
-                (download_client_id, series_id, item["url"], dl_id),
+                (download_client_id, series_id, item["url"], dl_id, now),
             )
 
     vol_label = build_volume_label(
@@ -870,7 +926,11 @@ async def grab_item(
 
     with get_db() as db:
         _grab_score = item.get("_score")
-        _grab_data = {"score": _grab_score} if _grab_score is not None else None
+        _grab_data: dict[str, Any] = {"respect_monitoring": respect_monitoring}
+        if claim_lost:
+            _grab_data["claim_lost"] = True
+        if _grab_score is not None:
+            _grab_data["score"] = _grab_score
         add_history(
             db,
             "grabbed",
@@ -888,6 +948,14 @@ async def grab_item(
             data=_grab_data,
             torrent_url=item.get("url", ""),
         )
+
+    if claim_lost:
+        log_event(
+            "grab_claim_lost",
+            f"Client accepted {dl_id or title[:120]}, but the volume changed during grab; no library claim acquired",
+            series_id,
+        )
+        return False
 
     asyncio.create_task(
         notify_discord(
