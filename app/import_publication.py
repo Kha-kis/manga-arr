@@ -335,6 +335,32 @@ def _rename_noreplace(source: str, destination: str) -> None:
     raise OSError(error_number, os.strerror(error_number), destination)
 
 
+def _publish_absent_stage(stage_path: str, final_path: str) -> None:
+    """Publish a verified private-stage regular file to an absent final path.
+
+    This is not a rename emulation for shared paths or destructive claims.
+    The caller must verify the journal-owned staged fingerprint first. When
+    Linux no-replace rename is unsupported, keep the staged name until the
+    existing post-commit staging cleanup; unlinking it here could remove a
+    replacement. An interrupted link leaves both names and replay blocks on
+    EEXIST, even when they reference the same inode.
+    """
+    if not stat.S_ISREG(os.lstat(stage_path).st_mode):
+        raise PublicationBlocked(f"staged artifact is not a regular file: {stage_path}")
+    try:
+        _rename_noreplace(stage_path, final_path)
+    except OSError as exc:
+        if sys.platform != "linux" or exc.errno not in (
+            errno.ENOSYS,
+            errno.EINVAL,
+            errno.EOPNOTSUPP,
+        ):
+            raise
+        # Only a successful link call claims this destination. Never infer
+        # ownership from EEXIST, inode equality, or a hardlink count.
+        os.link(stage_path, final_path, follow_symlinks=False)
+
+
 def _validate_destination_path(path: str, dst_dir: str) -> str:
     dst_abs = os.path.abspath(dst_dir)
     path_abs = os.path.abspath(path)
@@ -1145,7 +1171,7 @@ def _publish_claimed_destination(
     claim_path = file_record.final_claim_path
     if expected_absent:
         try:
-            _rename_noreplace(stage_path, final_path)
+            _publish_absent_stage(stage_path, final_path)
         except FileExistsError as exc:
             raise PublicationBlocked(
                 f"prepared-absent destination appeared before publish: {final_path}"
