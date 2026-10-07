@@ -1349,6 +1349,151 @@ async def _process_suwayomi_job(
 # ── Monitoring loop ───────────────────────────────────────────────────────────
 
 
+def _suwayomi_local_chapter_coverage(
+    series_id: int,
+    chapter_vol_map: str | None,
+    wanted_chapters: list[tuple[float, str | None]],
+) -> set[float]:
+    """Find loose chapters covered by an individually evidenced local volume.
+
+    Exact assignments cover fractions too. Only unnamed, positive integer
+    chapters can be inferred between two mainline anchors in the same volume;
+    a single high-water mark cannot prove coverage of gaps or specials.
+    """
+    import math
+    from files import MANGA_EXTENSIONS
+
+    with get_db() as db:
+        volumes = [
+            dict(row)
+            for row in db.execute(
+                "SELECT volume_num, import_path FROM volumes"
+                " WHERE series_id=? AND status='downloaded'"
+                " AND COALESCE(is_special,0)=0 AND volume_num IS NOT NULL",
+                (series_id,),
+            ).fetchall()
+        ]
+        linked = [
+            dict(row)
+            for row in db.execute(
+                "SELECT ch.chapter_num, v.volume_num, v.is_special FROM chapters ch"
+                " JOIN volumes v ON v.id=ch.volume_id"
+                " WHERE ch.series_id=? AND v.series_id=?",
+                (series_id, series_id),
+            ).fetchall()
+        ]
+
+    def has_local_content(path: str | None) -> bool:
+        if not path:
+            return False
+        try:
+            if os.path.isfile(path):
+                return (
+                    os.path.splitext(path)[1].lower() in MANGA_EXTENSIONS
+                    and os.path.getsize(path) > 0
+                )
+            if os.path.isdir(path):
+                with os.scandir(path) as entries:
+                    return any(
+                        os.path.splitext(entry.name)[1].lower() in MANGA_EXTENSIONS
+                        and entry.is_file()
+                        and entry.stat().st_size > 0
+                        for entry in entries
+                    )
+        except OSError:
+            return False
+        return False
+
+    local_volumes = {
+        float(row["volume_num"])
+        for row in volumes
+        if has_local_content(row["import_path"])
+    }
+    if not local_volumes:
+        return set()
+
+    try:
+        mapping = json.loads(chapter_vol_map) if chapter_vol_map else {}
+    except (TypeError, ValueError):
+        mapping = {}
+
+    assignments: dict[float, set[float | None]] = {}
+
+    def add_assignment(raw_chapter: object, raw_volume: object) -> None:
+        if isinstance(raw_chapter, bool) or not isinstance(
+            raw_chapter, (str, int, float)
+        ):
+            return
+        try:
+            chapter = float(raw_chapter)
+        except (ValueError, OverflowError):
+            return
+        if not math.isfinite(chapter):
+            return
+        volume = None
+        if not isinstance(raw_volume, bool) and isinstance(
+            raw_volume, (str, int, float)
+        ):
+            try:
+                parsed = float(raw_volume)
+                if math.isfinite(parsed) and parsed > 0:
+                    volume = parsed
+            except (ValueError, OverflowError):
+                pass
+        assignments.setdefault(chapter, set()).add(volume)
+
+    if isinstance(mapping, dict):
+        for chapter, volume in mapping.items():
+            add_assignment(chapter, volume)
+    for row in linked:
+        add_assignment(
+            row["chapter_num"], None if row["is_special"] else row["volume_num"]
+        )
+
+    exact: set[float] = set()
+    anchors: dict[float, list[float]] = {}
+    for chapter, assigned_volumes in assignments.items():
+        if len(assigned_volumes) != 1:
+            continue
+        volume = next(iter(assigned_volumes))
+        if volume not in local_volumes:
+            continue
+        exact.add(chapter)
+        if (
+            volume is not None
+            and volume.is_integer()
+            and chapter > 0
+            and chapter.is_integer()
+        ):
+            anchors.setdefault(volume, []).append(chapter)
+
+    ranges: list[tuple[float, float]] = []
+    for volume, nums in anchors.items():
+        if len(nums) < 2:
+            continue
+        start, end = min(nums), max(nums)
+        # A contradictory interior assignment invalidates the whole inferred
+        # interval, not just that one chapter. Exact assignments remain usable.
+        if any(
+            start <= chapter <= end and assigned_volumes != {volume}
+            for chapter, assigned_volumes in assignments.items()
+        ):
+            continue
+        ranges.append((start, end))
+    return {
+        chapter
+        for chapter, title in wanted_chapters
+        if chapter in exact
+        or (
+            chapter not in assignments
+            and not title
+            and chapter > 0
+            and chapter.is_integer()
+            and any(start <= chapter <= end for start, end in ranges)
+        )
+    }
+
+
 async def _suwayomi_sync_series(c: dict, s: dict) -> tuple[int, int]:
     """
     Sync one series against Suwayomi's live chapter feed.
@@ -1358,6 +1503,19 @@ async def _suwayomi_sync_series(c: dict, s: dict) -> tuple[int, int]:
     Returns (volumes_grabbed, chapters_grabbed).
     """
     import main as _m
+
+    def chapter_title(name: object, chapter_num: float) -> str | None:
+        if not isinstance(name, str) or not name.strip():
+            return None
+        name = name.strip()
+        # Plain numeric chapter labels are not meaningful titles. Anything
+        # else stays named, so specials cannot acquire inferred coverage.
+        label = re.fullmatch(
+            r"(?:ch(?:apter)?\.?\s*)?(\d+(?:\.\d+)?)", name, re.IGNORECASE
+        )
+        if label and float(label.group(1)) == chapter_num:
+            return None
+        return name
 
     lang = s.get("ddl_language") or get_cfg("ddl_language", "en")
 
@@ -1439,9 +1597,14 @@ async def _suwayomi_sync_series(c: dict, s: dict) -> tuple[int, int]:
 
                 cur = db.execute(
                     "INSERT OR IGNORE INTO chapters"
-                    "(series_id, volume_id, chapter_num, status, monitored)"
-                    " VALUES(?,?,?,'wanted',1)",
-                    (series_id, vol_id, ch_num),
+                    "(series_id, volume_id, chapter_num, title, status, monitored)"
+                    " VALUES(?,?,?,?,'wanted',1)",
+                    (
+                        series_id,
+                        vol_id,
+                        ch_num,
+                        chapter_title(swy_ch.get("name"), ch_num),
+                    ),
                 )
                 if cur.rowcount:
                     newly_created += 1
@@ -1453,18 +1616,40 @@ async def _suwayomi_sync_series(c: dict, s: dict) -> tuple[int, int]:
                 )
 
         # ── 2. Wanted volumes ──────────────────────────────────────────────────
-        wanted_vols = db.execute(
-            "SELECT volume_num FROM volumes WHERE series_id=? AND status='wanted'"
-            " AND monitored=1 AND volume_num IS NOT NULL",
-            (series_id,),
-        ).fetchall()
+        wanted_vols = [
+            dict(row)
+            for row in db.execute(
+                "SELECT volume_num FROM volumes WHERE series_id=? AND status='wanted'"
+                " AND monitored=1 AND volume_num IS NOT NULL",
+                (series_id,),
+            ).fetchall()
+        ]
 
         # ── 3. Wanted uncollected chapters ────────────────────────────────────
-        wanted_chs = db.execute(
-            "SELECT chapter_num FROM chapters WHERE series_id=? AND status='wanted'"
-            " AND monitored=1 AND volume_id IS NULL",
-            (series_id,),
-        ).fetchall()
+        wanted_chs = [
+            dict(row)
+            for row in db.execute(
+                "SELECT chapter_num, title FROM chapters WHERE series_id=? AND status='wanted'"
+                " AND monitored=1 AND volume_id IS NULL",
+                (series_id,),
+            ).fetchall()
+        ]
+
+    locally_covered = _suwayomi_local_chapter_coverage(
+        series_id,
+        s.get("chapter_vol_map"),
+        [
+            (
+                float(row["chapter_num"]),
+                row["title"]
+                or chapter_title(
+                    swy_by_num.get(float(row["chapter_num"]), {}).get("name"),
+                    float(row["chapter_num"]),
+                ),
+            )
+            for row in wanted_chs
+        ],
+    )
 
     # Grab wanted volumes whose chapters are available in Suwayomi
     for row in wanted_vols:
@@ -1478,7 +1663,7 @@ async def _suwayomi_sync_series(c: dict, s: dict) -> tuple[int, int]:
     # Grab wanted uncollected chapters available in Suwayomi
     for row in wanted_chs:
         ch_num = float(row["chapter_num"])
-        if ch_num in swy_by_num:
+        if ch_num in swy_by_num and ch_num not in locally_covered:
             ok = await suwayomi_chapter_grab(series_id, ch_num)
             if ok:
                 ch_grabbed += 1
