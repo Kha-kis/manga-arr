@@ -17,7 +17,13 @@ import stat
 from dataclasses import dataclass
 from typing import Literal, cast
 
+import shared
 from events import add_history, log_event
+from file_mutation_lock import (
+    FileMutationGuard,
+    FileMutationLockError,
+    file_mutation_guard,
+)
 from parsing import extract_volume_num
 from shared import build_volume_label, get_db
 from volumes import _cascade_chapters
@@ -852,7 +858,21 @@ def _validate_journal_paths(journal: _DeletionJournal) -> None:
 
 def replay_volume_file_deletion(journal_id: int) -> ReplayOutcome:
     """Settle one active deletion journal without holding a SQLite writer."""
+    try:
+        with file_mutation_guard(shared.DB_PATH) as guard:
+            return _replay_volume_file_deletion_owned(journal_id, guard)
+    except (FileMutationLockError, OSError, sqlite3.Error):
+        # A contender or invalid DB path must not rewrite another owner's row.
+        return "blocked"
+
+
+def _replay_volume_file_deletion_owned(
+    journal_id: int,
+    guard: FileMutationGuard,
+) -> ReplayOutcome:
+    guard.verify()
     journal = _load_journal(journal_id)
+    guard.verify()
     if journal is None or journal.state != "active":
         return "terminal"
 
@@ -866,7 +886,9 @@ def replay_volume_file_deletion(journal_id: int) -> ReplayOutcome:
                 raise UnsafeDeletionTarget(
                     "delete target appeared after it was recorded missing"
                 )
+            guard.verify()
             _fsync_directory_when_possible(journal.parent_path)
+            guard.verify()
             return (
                 "completed"
                 if _complete_journal(journal, deleted=False)
@@ -887,11 +909,15 @@ def replay_volume_file_deletion(journal_id: int) -> ReplayOutcome:
                 raise UnsafeDeletionTarget(
                     "delete target identity does not match its recorded fingerprint"
                 )
+            guard.verify()
             _rename_noreplace(journal.target_path, journal.claim_path)
+            guard.verify()
             _fsync_directory(journal.parent_path)
             claim_exists = True
         elif not claim_exists:
+            guard.verify()
             _fsync_directory_when_possible(journal.parent_path)
+            guard.verify()
             return (
                 "completed"
                 if _complete_journal(journal, deleted=True)
@@ -900,6 +926,7 @@ def replay_volume_file_deletion(journal_id: int) -> ReplayOutcome:
 
         actual_claim = _regular_fingerprint(journal.claim_path)
         if not _same_fingerprint(actual_claim, expected):
+            guard.verify()
             restoration = _restore_claim_without_clobber(journal)
             raise UnsafeDeletionTarget(
                 "delete tombstone identity does not match its recorded "
@@ -910,15 +937,22 @@ def replay_volume_file_deletion(journal_id: int) -> ReplayOutcome:
                 "delete target was recreated after tombstone claim; refusing "
                 "to remove the claim or clobber the replacement"
             )
+        guard.verify()
         _unlink_claim(journal.claim_path)
+        guard.verify()
         _fsync_directory(journal.parent_path)
+        guard.verify()
         return (
             "completed"
             if _complete_journal(journal, deleted=True)
             else "terminal"
         )
+    except FileMutationLockError:
+        raise
     except (OSError, RuntimeError) as exc:
+        guard.verify()
         _record_blocked(journal, str(exc))
+        guard.verify()
         current = _load_journal(journal.journal_id)
         return (
             "terminal"
