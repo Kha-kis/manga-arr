@@ -144,6 +144,22 @@ Use the same container-side paths in Mangarr and the download client whenever
 possible. Remote path mappings are a compatibility tool, not a substitute for a
 coherent shared mount.
 
+### Filesystem Ownership Coordination
+
+Volume-file deletion replay uses a persistent
+`.<database filename>.file-mutation.lock` beside the local SQLite database.
+It is an empty, application-owned `0600` file. Participating workers use it
+for non-expiring exclusion without holding SQLite's writer lock during file I/O.
+It is not temporary data: do not delete or replace it, its parent directory, or
+the database while Mangarr is running. Stop Mangarr before restoring `/config`.
+
+The coordination file and database must remain local. Trusted group-writable
+config directories, including root-owned Kubernetes fsGroup layouts, are
+supported; world-writable config is not. Mangarr does not change config-directory
+ownership or permissions. The lock does not protect against hostile config
+tampering or replace the publication and deletion journals. Other filesystem
+workflows have not yet been wired to this guard.
+
 ### NFS Publication Limits
 
 On Linux, imports to a **new destination** can use an atomic hardlink from
@@ -169,8 +185,9 @@ operate. A move import can publish its new destination and commit library state,
 but unsupported source claims retain the original download and leave cleanup
 blocked. Generated image packs default to `/config/mangarr-image-pack`, which
 may be on a different filesystem from the library. Directory cleanup remains
-unchanged. Qualification uses unsupported-error fault injection on a local
-filesystem, not live Synology or NFS testing.
+unchanged. Absent-file publication passed unsupported-error fault injection and
+isolated real NFS 4.1 copy/hardlink workflows as UID 1000 with a local database.
+That evidence does not qualify the remaining paths or a specific Synology server.
 
 ## Network Exposure
 
