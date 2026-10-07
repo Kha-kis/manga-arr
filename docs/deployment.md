@@ -144,6 +144,34 @@ Use the same container-side paths in Mangarr and the download client whenever
 possible. Remote path mappings are a compatibility tool, not a substitute for a
 coherent shared mount.
 
+### NFS Publication Limits
+
+On Linux, imports to a **new destination** can use an atomic hardlink from
+Mangarr's private journal-owned staging directory when the filesystem rejects
+`renameat2(RENAME_NOREPLACE)` with `ENOSYS`, `EINVAL`, or `EOPNOTSUPP`, or libc
+does not expose that operation. This supports copy and hardlink imports when
+the filesystem supports hardlinks and the existing directory-fsync barriers.
+Staging is on the library filesystem; cross-filesystem links and permission
+errors are not bypassed. Only regular files qualify, not directories or symlinks.
+
+The fallback never replaces an occupied destination or unlinks the staged name
+during publication. Staging is removed by journal cleanup after the database
+commit. If publication is interrupted after linking but before the journal
+records durable publication completion, both staged and final names may remain.
+Replay blocks rather than treating matching inodes as proof of ownership. Such
+failures retain the journal and artifacts for manual review; automatic recovery
+is not guaranteed. Do not discard retained journals or artifacts without review.
+
+This is not general NFS support for atomic moves. Overwrites, move-source
+claims, file deletion, rescan enrichment, and generated-pack directory cleanup
+still require native no-replace rename support on the filesystem where they
+operate. A move import can publish its new destination and commit library state,
+but unsupported source claims retain the original download and leave cleanup
+blocked. Generated image packs default to `/config/mangarr-image-pack`, which
+may be on a different filesystem from the library. Directory cleanup remains
+unchanged. Qualification uses unsupported-error fault injection on a local
+filesystem, not live Synology or NFS testing.
+
 ## Network Exposure
 
 The example publishes `6789:8000`, making Mangarr reachable from the host and
