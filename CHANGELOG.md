@@ -7,9 +7,9 @@ All notable changes to this project. Format roughly follows
 
 ## 1.3.1 - 2026-10-07
 
-Security patch preparation for the published 1.3.0 container. Publication and
-qualification of the new image are pending; the immutable 1.3.0 image and tag
-will not be replaced.
+Qualified security patch for the published 1.3.0 container. The multi-platform
+1.3.1 image was published and qualified on 2026-10-07; the immutable 1.3.0
+image and tag were not replaced.
 
 ### Security
 
@@ -37,9 +37,10 @@ based on qualified 1.3.0-rc.2. Application behavior is unchanged from RC2.
 The exact stable merge and published image passed local and hosted gates on
 September 10. AniList recovery checks passed on September 15, but that day's
 refreshed image scan found 12 fixable OS-package findings (9 High, 3 Critical).
-Final qualification and the GitHub stable-release announcement remain on hold
-for a patched release. `latest` already resolves to 1.3.0; pin `1.2.0` to remain
-on the previous qualified stable.
+Final qualification and the GitHub stable-release announcement were placed on
+hold for a patched release. At that time, `latest` resolved to 1.3.0 and users
+were directed to pin 1.2.0. Qualified 1.3.1 now owns the moving stable aliases;
+the exact 1.3.0 image remains unchanged.
 
 ### Added
 

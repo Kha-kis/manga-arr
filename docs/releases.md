@@ -37,8 +37,8 @@ The release workflow publishes `ghcr.io/kha-kis/manga-arr` with these tags:
 
 | Release | Image tags |
 | --- | --- |
-| `1.3.1` (prepared; not published) | `1.3.1`, `1.3`, `1`, `latest` |
-| `1.3.0` (image published; qualification pending) | `1.3.0`, `1.3`, `1`, `latest` |
+| `1.3.1` | `1.3.1`, `1.3`, `1`, `latest` |
+| `1.3.0` (superseded security hold) | `1.3.0`, `1.3`, `1`, `latest` |
 | `1.3.0-rc.2` | `1.3.0-rc.2` |
 | `1.3.0-rc.1` | `1.3.0-rc.1` |
 | `1.2.0` | `1.2.0`, `1.2`, `1`, `latest` |
@@ -62,14 +62,12 @@ The exact image digest recorded by GitHub Container Registry is the strongest
 deployment pin. Version tags are intended to remain immutable, but a digest
 also protects against registry-side tag changes.
 
-The 1.3.0 image was published on 2026-09-10. `1.3`, `1`, and `latest` resolve
-to its digest. AniList recovery checks passed on September 15. Final
-qualification and the GitHub stable-release announcement remain blocked by
-fixable OS-package findings in a refreshed image scan; see the qualification
-record. Address these in a new patch release, not by replacing the 1.3.0 image.
-Operators staying on the previous qualified stable should pin `1.2.0` rather
-than a moving alias. Historical rows describe tags emitted at each release,
-not ownership of moving aliases today. Exact 1.2.0 and RC tags are unchanged.
+The 1.3.1 image was published and qualified on 2026-10-07. `1.3.1`, `1.3`,
+`1`, and `latest` resolve to
+`sha256:556c657abe60518695d799f00a2c38abd43d762d57b257cc6ef649d8f3c45b7e`.
+It replaces the blocked 1.3.0 image without modifying that image or tag. Exact
+1.3.0, 1.2.0, and release-candidate tags remain unchanged. Historical rows
+describe tags emitted at each release, not ownership of moving aliases today.
 
 ## Release Checklist
 
