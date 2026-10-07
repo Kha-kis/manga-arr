@@ -178,6 +178,26 @@ def test_dockerfile_has_release_identity_labels():
     assert dockerfile.index("RUN pip install") < dockerfile.index("ARG BUILD_DATE")
 
 
+def test_dockerfile_removes_build_only_pip_after_dependency_installation() -> None:
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    run_commands = "\n".join(
+        line.strip()
+        for line in dockerfile.replace("\\\n", " ").splitlines()
+        if line.strip().startswith("RUN ")
+    )
+    dependency_install = re.search(
+        r"\bpip\s+install\s+[^;&\n]*-r\s+/tmp/requirements\.txt\b", run_commands
+    )
+    assert dependency_install is not None
+    pip_removal = re.search(r"\bpip\s+uninstall\s+[^;&\n]*\bpip\b", run_commands)
+    assert pip_removal is not None, (
+        "Remove build-only pip and its vendored dependencies from the release image"
+    )
+    assert dependency_install.end() < pip_removal.start(), (
+        "Remove build-only pip only after installing runtime dependencies"
+    )
+
+
 def test_release_version_invalidates_os_package_layer() -> None:
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     instructions = [

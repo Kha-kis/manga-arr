@@ -15,6 +15,7 @@ RUN apt-get update \
 # diffs reuse the cached install layer.
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt \
+ && python -m pip uninstall --yes pip \
  && rm /tmp/requirements.txt
 
 # HTMX + Alpine are vendored under app/static (committed to the repo with

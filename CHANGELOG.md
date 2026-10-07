@@ -18,6 +18,9 @@ will not be replaced.
   PCRE2, SQLite, and Perl packages flagged during 1.3.0 qualification.
 - Update AnyIO from 4.13.0 to 4.14.2 to address its TLS hostname-encoding and
   process-pool stderr security advisories.
+- Remove build-only `pip` from the runtime image after dependency installation,
+  eliminating its vulnerable vendored `urllib3` without changing Mangarr's
+  runtime dependencies.
 - Keep the pinned Python base unchanged. No application-source, API, schema,
   metadata, or downloader changes are included.
 
