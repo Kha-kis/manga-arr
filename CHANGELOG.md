@@ -16,8 +16,10 @@ will not be replaced.
 - Refresh Debian packages for each new release version, preventing reuse of a
   previous release's cached OS-update layer. This addresses the stale `gzip`,
   PCRE2, SQLite, and Perl packages flagged during 1.3.0 qualification.
-- Keep the pinned Python base and Python requirements unchanged. No metadata,
-  downloader, schema, or application behavior changes are included.
+- Update AnyIO from 4.13.0 to 4.14.2 to address its TLS hostname-encoding and
+  process-pool stderr security advisories.
+- Keep the pinned Python base unchanged. No metadata, downloader, schema, or
+  application behavior changes are included.
 
 ### Upgrade And Recovery
 

@@ -15,7 +15,7 @@ uvicorn[standard]==0.51.0
 
 # Async HTTP client (used by SSRF guard, indexer adapters, etc.)
 httpx==0.28.1
-anyio==4.13.0
+anyio==4.14.2
 
 # Templating
 jinja2==3.1.6

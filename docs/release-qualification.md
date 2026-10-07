@@ -8,9 +8,9 @@ can become a stable release. Passing unit tests alone is not sufficient.
 Status: **PREPARED; NOT PUBLISHED OR QUALIFIED**.
 
 The replacement patch makes the release version invalidate the OS-package
-update layer. It retains the pinned Python base and requirements, with no
-application or schema changes. The 1.3.0 image, Git tag, and evidence below
-remain immutable.
+update layer and updates AnyIO from 4.13.0 to 4.14.2 for two security fixes.
+It retains the pinned Python base, with no application or schema changes. The
+1.3.0 image, Git tag, and evidence below remain immutable.
 
 Before announcing 1.3.1, run `make release-local`, review and merge the patch,
 verify the exact merge, and publish a new multi-platform image. Scan and verify
