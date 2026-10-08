@@ -62,7 +62,7 @@ def env(tmp_path, _process_globals_restored):
     import security
     import shared
 
-    db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    db = tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=tmp_path)
     db.close(); os.unlink(db.name)
     key_dir = tempfile.mkdtemp(prefix="mangarr-destroy-keys-")
 
