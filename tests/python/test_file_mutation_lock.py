@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import json
 import multiprocessing
 import os
 import shutil
@@ -23,7 +24,7 @@ from test_volume_file_deletion_journal import deletion_env as deletion_env
 def _journal_snapshot(db_path: str) -> tuple[object, ...]:
     with sqlite3.connect(db_path) as db:
         row = db.execute(
-            "SELECT state,claim_path,diagnostic,updated_at FROM volume_file_deletions"
+            "SELECT state,claim_path,diagnostic,updated_at,claim_carrier_json FROM volume_file_deletions"
         ).fetchone()
     assert row is not None
     return row
@@ -54,15 +55,15 @@ def _replay_child(
 
     shared.DB_PATH = db_path
     if entered is not None:
-        real_unlink = volume_file_deletion._unlink_claim
+        real_unlink = volume_file_deletion.private_claim.discard_private_regular
 
-        def paused_unlink(path: str) -> None:
+        def paused_unlink(*args: Any) -> None:
             entered.set()
             if not release.wait(15):
                 raise RuntimeError("test replay was not released")
-            real_unlink(path)
+            real_unlink(*args)
 
-        volume_file_deletion._unlink_claim = paused_unlink
+        volume_file_deletion.private_claim.discard_private_regular = paused_unlink
     results.put(volume_file_deletion.replay_volume_file_deletion(journal_id))
 
 
@@ -85,13 +86,14 @@ def test_nested_native_replay_cannot_delete_recreated_claim(
     reservation = volume_file_deletion.reserve_volume_file_deletion(1, 11)
     assert reservation.journal_id is not None
     journal_id = reservation.journal_id
-    real_unlink = volume_file_deletion._unlink_claim
+    real_unlink = volume_file_deletion.private_claim.discard_private_regular
     entered = False
     nested: list[str] = []
     recreated: list[Path] = []
 
-    def overlapping_unlink(path: str) -> None:
+    def overlapping_unlink(*args: Any) -> None:
         nonlocal entered
+        path = args[1].artifact_path
         if not entered:
             entered = True
             before = _journal_snapshot(db_path)
@@ -101,9 +103,13 @@ def test_nested_native_replay_cannot_delete_recreated_claim(
                 recreated.append(Path(path))
             if nested[-1] == "blocked":
                 assert _journal_snapshot(db_path) == before
-        real_unlink(path)
+        real_unlink(*args)
 
-    monkeypatch.setattr(volume_file_deletion, "_unlink_claim", overlapping_unlink)
+    monkeypatch.setattr(
+        volume_file_deletion.private_claim,
+        "discard_private_regular",
+        overlapping_unlink,
+    )
     outcome = volume_file_deletion.replay_volume_file_deletion(journal_id)
 
     for path in recreated:
@@ -123,15 +129,17 @@ def test_two_threads_replay_without_rewriting_live_owners_journal(
     reservation = volume_file_deletion.reserve_volume_file_deletion(1, 11)
     assert reservation.journal_id is not None
     entered, release = threading.Event(), threading.Event()
-    real_unlink = volume_file_deletion._unlink_claim
+    real_unlink = volume_file_deletion.private_claim.discard_private_regular
 
-    def paused_unlink(path: str) -> None:
+    def paused_unlink(*args: Any) -> None:
         entered.set()
         if not release.wait(10):
             raise RuntimeError("test replay was not released")
-        real_unlink(path)
+        real_unlink(*args)
 
-    monkeypatch.setattr(volume_file_deletion, "_unlink_claim", paused_unlink)
+    monkeypatch.setattr(
+        volume_file_deletion.private_claim, "discard_private_regular", paused_unlink
+    )
     with ThreadPoolExecutor(max_workers=2) as pool:
         owner = pool.submit(
             volume_file_deletion.replay_volume_file_deletion, reservation.journal_id
@@ -144,7 +152,12 @@ def test_two_threads_replay_without_rewriting_live_owners_journal(
             )
             assert contender.result(timeout=5) == "blocked"
             assert _journal_snapshot(db_path) == before
-            assert Path(str(before[1])).read_bytes() == b"journal-volume-payload"
+            assert (
+                Path(
+                    json.loads(str(before[4]))["carrier_path"], "artifact"
+                ).read_bytes()
+                == b"journal-volume-payload"
+            )
         finally:
             release.set()
         assert owner.result(timeout=5) == "completed"
@@ -176,7 +189,10 @@ def test_two_processes_replay_excludes_a_live_owner(
         contender.start()
         assert contender_results.get(timeout=10) == "blocked"
         assert _journal_snapshot(db_path) == before
-        assert Path(str(before[1])).read_bytes() == b"journal-volume-payload"
+        assert (
+            Path(json.loads(str(before[4]))["carrier_path"], "artifact").read_bytes()
+            == b"journal-volume-payload"
+        )
     finally:
         release.set()
         owner.join(10)
@@ -406,8 +422,12 @@ def test_replay_db_swap_retains_pending_journal_without_diagnostics(
     shutil.copy2(db_path, replacement)
 
     def swap() -> None:
+        nonlocal expected_original
+        expected_original = _journal_snapshot(db_path)
         os.rename(db_path, original_db)
         os.replace(replacement, db_path)
+
+    expected_original = before
 
     if boundary == "load":
         real_load = volume_file_deletion._load_journal
@@ -427,13 +447,15 @@ def test_replay_db_swap_retains_pending_journal_without_diagnostics(
 
         monkeypatch.setattr(volume_file_deletion, "_rename_noreplace", claim)
     elif boundary == "unlink":
-        real_unlink = volume_file_deletion._unlink_claim
+        real_unlink = volume_file_deletion.private_claim.discard_private_regular
 
-        def unlink(path: str) -> None:
-            real_unlink(path)
+        def unlink(*args: Any) -> None:
+            real_unlink(*args)
             swap()
 
-        monkeypatch.setattr(volume_file_deletion, "_unlink_claim", unlink)
+        monkeypatch.setattr(
+            volume_file_deletion.private_claim, "discard_private_regular", unlink
+        )
     else:
 
         def fail(_path: str) -> Any:
@@ -447,7 +469,7 @@ def test_replay_db_swap_retains_pending_journal_without_diagnostics(
         == "blocked"
     )
     assert _journal_snapshot(db_path) == before
-    assert _journal_snapshot(str(original_db)) == before
+    assert _journal_snapshot(str(original_db)) == expected_original
     for path in (db_path, str(original_db)):
         with sqlite3.connect(path) as db:
             assert db.execute(

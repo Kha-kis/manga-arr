@@ -160,6 +160,25 @@ ownership or permissions. The lock does not protect against hostile config
 tampering or replace the publication and deletion journals. Other filesystem
 workflows have not yet been wired to this guard.
 
+### Private File Claims
+
+Volume-file deletion uses one registered `.mangarr-claims` directory per source
+parent. This application-owned `0700` directory and its `0600` ownership marker
+are persistent recovery infrastructure, not library content. Do not remove,
+replace, or edit them or their database registry. Unregistered lookalike
+directories are not adopted. Private operation carriers are removed only after
+their recorded file disposition; normal completion leaves the namespace intact.
+
+When native no-replace rename is unsupported, deletion captures the file into
+a journal-owned private carrier using ordinary rename to a verified empty child.
+Native and legacy flat claims are also privately recaptured before disposal.
+Full identity and content proofs are checked after capture. A changed claim is
+restored by a no-clobber hardlink with a durable receipt, not by overwriting a
+public path. Occupied destinations, changed proofs and ambiguous recovery retain
+the journal and artifacts for review. Never infer ownership from matching names
+or inodes. Permission and cross-filesystem errors are not unsupported-operation
+fallbacks; local SQLite and directory-fsync support remain required.
+
 ### NFS Publication Limits
 
 On Linux, imports to a **new destination** can use an atomic hardlink from
@@ -179,7 +198,7 @@ failures retain the journal and artifacts for manual review; automatic recovery
 is not guaranteed. Do not discard retained journals or artifacts without review.
 
 This is not general NFS support for atomic moves. Overwrites, move-source
-claims, file deletion, rescan enrichment, and generated-pack directory cleanup
+claims, rescan enrichment, and generated-pack directory cleanup
 still require native no-replace rename support on the filesystem where they
 operate. A move import can publish its new destination and commit library state,
 but unsupported source claims retain the original download and leave cleanup
