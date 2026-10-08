@@ -160,6 +160,20 @@ def _file_has_grab_claim(
         table, url_column, coverage = "volumes", "source_url", "volume_num=?"
         coverage_args = [fp.proposed_vol]
     elif fp.has_volume_range:
+        # A claim for one covered volume permits a new range artifact, not
+        # replacement of an existing artifact owned by an unrelated row.
+        for artifact in db.execute(
+            "SELECT * FROM volumes WHERE import_path=?", (fp.dst_path,)
+        ):
+            if (
+                artifact["series_id"] != queue["series_id"]
+                or artifact["status"] != "grabbed"
+                or coerce_download_client_id(artifact["download_client_id"])
+                != identity.download_client_id
+                or artifact["source_url"] != str(queue.get("torrent_url") or "")
+                or not _claim_identity_matches(artifact, identity)
+            ):
+                return False
         table, url_column, coverage = (
             "volumes",
             "source_url",

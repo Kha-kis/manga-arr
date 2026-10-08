@@ -1775,3 +1775,177 @@ def test_single_volume_grab_after_await_ignores_nonclaim_annotations(
             assert row["title"] == "Provider display annotation"
         else:
             assert row["monitored"] == 0
+
+
+@pytest.fixture
+def existing_range_archive_env(commit_pack_env):
+    def prepare(protocol, *, manual="automatic", mixed=False, same_destination=True):
+        paths = commit_pack_env
+        assert isinstance(grab_core.grab_url, AsyncMock)
+        grab_core.grab_url.return_value = GrabResult(
+            True,
+            "sabnzbd" if protocol == "nzb" else "qbittorrent",
+            "NZO-pack" if protocol == "nzb" else "pack-hash",
+            True,
+            7,
+        )
+        if manual != "untracked_queue":
+            item = release("Test Series v01-v03")
+            item["protocol"] = protocol
+            assert asyncio.run(
+                grab_core.grab_item(
+                    item, 1, respect_monitoring=manual != "grab_override"
+                )
+            )
+        source = _archive(paths["downloads"] / "Test Series v01-v03.cbz")
+        source_bytes = source.read_bytes()
+        if mixed:
+            _archive(paths["downloads"] / "Test Series v01.cbz")
+        qid = queue_pack_files(paths, protocol, manual=manual == "untracked_queue")
+        with shared.get_db() as db:
+            row = db.execute(
+                "SELECT id,filename FROM import_queue_files WHERE queue_id=?"
+                " AND proposed_volume_range_start=1 AND proposed_volume_range_end=3",
+                (qid,),
+            ).fetchone()
+            directory = _series_library_dir(db, 1)
+            assert directory is not None
+            destination = Path(directory) / row["filename"]
+            old_path = (
+                destination
+                if same_destination
+                else destination.with_name("Other acquisition v01-v03.cbz")
+            )
+            old_id = db.execute(
+                "INSERT INTO volumes(series_id,volume_num,status,pack_type,"
+                " vol_range_start,vol_range_end,import_path,source_url,download_id,"
+                " download_client_id,protocol,quality)"
+                " VALUES(1,NULL,'downloaded','volume',1,3,?,'https://other',"
+                " 'other-range',42,'torrent','cbz')",
+                (str(old_path),),
+            ).lastrowid
+            old_row = dict(
+                db.execute("SELECT * FROM volumes WHERE id=?", (old_id,)).fetchone()
+            )
+            range_file_id = row["id"]
+        old_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(old_path, "w") as archive:
+            archive.writestr("001.jpg", b"other acquisition range pages")
+        return {
+            "paths": paths,
+            "queue_id": qid,
+            "file_id": range_file_id,
+            "destination": destination,
+            "old_path": old_path,
+            "old_id": old_id,
+            "old_row": old_row,
+            "old_bytes": old_path.read_bytes(),
+            "source": source,
+            "source_bytes": source_bytes,
+        }
+
+    return prepare
+
+
+@pytest.mark.parametrize("protocol", ["nzb", "torrent"])
+@pytest.mark.parametrize("mixed", [False, True])
+@pytest.mark.parametrize("same_destination", [True, False])
+def test_automatic_range_import_preserves_existing_nonclaim_artifact(
+    existing_range_archive_env, protocol, mixed, same_destination
+):
+    case = existing_range_archive_env(
+        protocol, mixed=mixed, same_destination=same_destination
+    )
+    with shared.get_db() as db:
+        unclaimed_volumes = [
+            dict(r)
+            for r in db.execute("SELECT * FROM volumes WHERE id IN (2,3) ORDER BY id")
+        ]
+    unclaimed_chapters = [chapter_state(n) for n in (7, 8, 9.5)]
+    assert asyncio.run(import_execute._execute_import(case["queue_id"])) is True
+    assert case["old_path"].read_bytes() == case["old_bytes"]
+    assert case["source"].read_bytes() == case["source_bytes"]
+    assert [chapter_state(n) for n in (7, 8, 9.5)] == unclaimed_chapters
+    with shared.get_db() as db:
+        assert (
+            dict(
+                db.execute(
+                    "SELECT * FROM volumes WHERE id=?", (case["old_id"],)
+                ).fetchone()
+            )
+            == case["old_row"]
+        )
+        assert [
+            dict(r)
+            for r in db.execute("SELECT * FROM volumes WHERE id IN (2,3) ORDER BY id")
+        ] == unclaimed_volumes
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM import_queue WHERE id=?", (case["queue_id"],)
+            ).fetchone()[0]
+            == 0
+        )
+        histories = db.execute(
+            "SELECT event_type,data FROM history WHERE event_type IN ('imported','import_skipped') ORDER BY id"
+        ).fetchall()
+        assert len(histories) == 1
+        event, data = histories[0]
+        receipt = json.loads(data)
+        if same_destination and not mixed:
+            assert event == "import_skipped"
+            assert receipt["count"] == 0
+            assert receipt["skipped_count"] == 1
+            assert (
+                db.execute(
+                    "SELECT COUNT(*) FROM import_publications WHERE queue_id=?",
+                    (case["queue_id"],),
+                ).fetchone()[0]
+                == 0
+            )
+            assert (
+                db.execute("SELECT status FROM volumes WHERE id=1").fetchone()[0]
+                == "grabbed"
+            )
+        else:
+            assert event == "imported"
+            assert receipt["count"] == (
+                int(mixed) if same_destination else 1 + int(mixed)
+            )
+            assert (
+                db.execute("SELECT status FROM volumes WHERE id=1").fetchone()[0]
+                == "downloaded"
+            )
+            range_receipt = db.execute(
+                "SELECT plan_status,stage_ok,stage_path FROM import_publication_files WHERE file_id=?",
+                (case["file_id"],),
+            ).fetchone()
+            assert range_receipt["plan_status"] == (
+                "skip" if same_destination else "ready"
+            )
+            if same_destination:
+                assert not range_receipt["stage_ok"]
+                assert not range_receipt["stage_path"]
+            else:
+                assert case["destination"].is_file()
+                assert case["destination"].read_bytes() != case["old_bytes"]
+
+
+@pytest.mark.parametrize("protocol", ["nzb", "torrent"])
+@pytest.mark.parametrize("manual", ["grab_override", "file_mapping", "untracked_queue"])
+def test_existing_range_archive_retains_explicit_manual_override(
+    existing_range_archive_env, protocol, manual
+):
+    case = existing_range_archive_env(protocol, manual=manual)
+    assert (
+        asyncio.run(
+            import_execute._execute_import(
+                case["queue_id"],
+                volume_overrides={case["file_id"]: 1}
+                if manual == "file_mapping"
+                else None,
+            )
+        )
+        is True
+    )
+    assert case["destination"].read_bytes() != case["old_bytes"]
+    assert case["source"].read_bytes() == case["source_bytes"]
