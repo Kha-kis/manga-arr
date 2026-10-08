@@ -118,6 +118,12 @@ def claim_import_queue_row(
               WHERE deletion.series_id=import_queue.series_id
                 AND deletion.state='active'
           )
+          AND NOT EXISTS (
+              SELECT 1 FROM rescan_file_operations rescan_operation
+              WHERE rescan_operation.series_id=import_queue.series_id
+                AND rescan_operation.state IN
+                    ('prepared','published','db_committed','rollback')
+          )
         """,
         (
             lease_owner,

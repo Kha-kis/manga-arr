@@ -6736,7 +6736,9 @@ async def api_v1_root_folder_adopt_unmapped(request: Request, root_folder_id: in
             {"error": "languageProfileId must be an integer"}, status_code=400
         )
 
-    result = await asyncio.to_thread(
+    from rescan_file_recovery import adopt_folder_in_thread
+
+    result = await adopt_folder_in_thread(
         adopt_unmapped_folder,
         root_folder_id,
         path,

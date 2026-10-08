@@ -695,6 +695,10 @@ def reconcile_series_inventory(
     result["found"] = len(inventory.on_disk)
     if not db.in_transaction:
         db.execute("BEGIN IMMEDIATE")
+    from rescan_file_recovery import active_for_series, competing_for_series
+
+    if active_for_series(db, series_id) or competing_for_series(db, series_id):
+        return _Reconciliation(result)
     writer_state = _series_writer_state(db, snapshot)
     if writer_state is None:
         return _Reconciliation(result)
@@ -841,32 +845,44 @@ def reconcile_series_inventory(
 
 def _current_enrichment_context(
     target: _EnrichmentTarget,
+    db: sqlite3.Connection | None = None,
 ) -> _EnrichmentContext | None:
+    if db is not None:
+        return _enrichment_context_locked(db, target)
     with get_db() as db:
-        volume_row = db.execute(
-            _ENRICHMENT_VOLUME_SELECT,
-            (target.volume["id"],),
-        ).fetchone()
-        if not volume_row or any(
-            volume_row[column] != target.volume[column] for column in _VOLUME_GUARD
-        ):
-            return None
-        series_row = db.execute(
-            "SELECT id,title,description,status,pub_year,total_volumes,"
-            " total_chapters,language,anilist_id FROM series"
-            " WHERE id=? AND deleted_at IS NULL",
+        return _enrichment_context_locked(db, target)
+
+
+def _enrichment_context_locked(
+    db: sqlite3.Connection,
+    target: _EnrichmentTarget,
+) -> _EnrichmentContext | None:
+    volume_row = db.execute(
+        _ENRICHMENT_VOLUME_SELECT,
+        (target.volume["id"],),
+    ).fetchone()
+    if not volume_row or any(
+        volume_row[column] != target.volume[column] for column in _VOLUME_GUARD
+    ):
+        return None
+    series_row = db.execute(
+        "SELECT s.id,s.title,s.description,s.status,s.pub_year,s.total_volumes,"
+        " s.total_chapters,s.language,s.anilist_id,s.root_folder_id,s.folder_name,"
+        " rf.path AS rescan_root_path FROM series s"
+        " LEFT JOIN root_folders rf ON rf.id=s.root_folder_id"
+        " WHERE s.id=? AND s.deleted_at IS NULL",
+        (target.volume["series_id"],),
+    ).fetchone()
+    if not series_row:
+        return None
+    tags = tuple(
+        str(row["tag"])
+        for row in db.execute(
+            "SELECT tag FROM series_tags WHERE series_id=? ORDER BY tag",
             (target.volume["series_id"],),
-        ).fetchone()
-        if not series_row:
-            return None
-        tags = tuple(
-            str(row["tag"])
-            for row in db.execute(
-                "SELECT tag FROM series_tags WHERE series_id=? ORDER BY tag",
-                (target.volume["series_id"],),
-            ).fetchall()
-        )
-        return _EnrichmentContext(dict(series_row), tags)
+        ).fetchall()
+    )
+    return _EnrichmentContext(dict(series_row), tags)
 
 
 def _enrichment_context_is_current(
@@ -1050,90 +1066,18 @@ def _stage_and_enrich_target(
     target: _EnrichmentTarget,
     context: _EnrichmentContext,
 ) -> None:
-    if not _source_fingerprint_is_current(target):
-        return
-    source_dir = os.path.dirname(target.source_path) or "."
-    if not _probe_rename_noreplace(source_dir):
-        return
-    with tempfile.TemporaryDirectory(
-        prefix=".mangarr-rescan-",
-        dir=source_dir,
-    ) as stage_dir:
-        staged_source = os.path.join(stage_dir, os.path.basename(target.source_path))
-        shutil.copy2(target.source_path, staged_source)
-        file_type = detect_file_type_magic(staged_source)
-        staged_publish = staged_source
-        converted_path: str | None = None
-        if file_type == "cbr":
-            staged_converted = convert_cbr_to_cbz(staged_source)
-            if not staged_converted:
-                return
-            staged_publish = staged_converted
-            converted_path = os.path.splitext(target.source_path)[0] + ".cbz"
+    from rescan_file_recovery import enrich_target
 
-        xml_content = build_comicinfo_xml(
-            context.series,
-            volume_num=target.volume_num,
-            tags=list(context.tags),
-        )
-        if not inject_comicinfo(staged_publish, xml_content):
-            return
-        if not _enrichment_context_is_current(
-            target, context
-        ) or not _source_fingerprint_is_current(target):
-            return
-
-        if converted_path is not None and os.path.abspath(
-            converted_path
-        ) == os.path.abspath(target.source_path):
-            return
-        source_claim = _claim_exact_path(
-            target.source_path,
-            target.source_fingerprint,
-        )
-        if source_claim is None:
-            return
-        published_fingerprint: FileFingerprint | None = None
-        succeeded = False
-        try:
-            if not _enrichment_context_is_current(target, context):
-                return
-            destination = converted_path or target.source_path
-            published_fingerprint = _publish_no_replace(
-                staged_publish,
-                destination,
-            )
-            if published_fingerprint is None:
-                return
-            if converted_path is None:
-                if not _enrichment_context_is_current(target, context):
-                    return
-                succeeded = True
-                return
-            if not _cas_converted_volume(
-                target,
-                converted_path,
-                published_fingerprint.size_bytes,
-            ):
-                return
-            succeeded = True
-        finally:
-            if succeeded:
-                _discard_claim(source_claim)
-            else:
-                try:
-                    if published_fingerprint is not None:
-                        _remove_exact_artifact(
-                            converted_path or target.source_path,
-                            published_fingerprint,
-                        )
-                finally:
-                    _restore_claim(source_claim)
+    enrich_target(target, context)
 
 
 def enrich_reconciled_files(reconciliation: _Reconciliation) -> None:
     """Best-effort post-commit archive conversion and ComicInfo enrichment."""
+    from rescan_file_recovery import rescan_cancel_requested
+
     for target in reconciliation.enrichment_targets:
+        if rescan_cancel_requested():
+            break
         try:
             context = _current_enrichment_context(target)
             if context is not None:
@@ -1144,6 +1088,11 @@ def enrich_reconciled_files(reconciliation: _Reconciliation) -> None:
 
 def rescan_series_folder(series_id: int) -> RescanResult:
     """Snapshot, inventory, and reconcile one series using short DB contexts."""
+    from rescan_file_recovery import recover_series, rescan_cancel_requested
+
+    recovered_operation = recover_series(series_id)
+    if rescan_cancel_requested():
+        return _empty_result()
     with get_db() as db:
         snapshot = snapshot_series_rescan(db, series_id)
     if snapshot is None:
@@ -1152,5 +1101,6 @@ def rescan_series_folder(series_id: int) -> RescanResult:
     inventory = build_filesystem_inventory(snapshot)
     with get_db() as db:
         reconciliation = reconcile_series_inventory(db, snapshot, inventory)
-    enrich_reconciled_files(reconciliation)
+    if not recovered_operation:
+        enrich_reconciled_files(reconciliation)
     return reconciliation.result
