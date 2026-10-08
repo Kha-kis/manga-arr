@@ -29,6 +29,7 @@ from download_identity import (
     normalize_download_protocol,
 )
 from import_plan import (
+    _automatic_grab_import,
     _FilePlan,
     _ImportPlan,
     _file_has_grab_claim,
@@ -1244,8 +1245,40 @@ def _publish_claimed_destination(
     )
 
 
+def _retain_unproven_manual_publication(
+    publication: ImportPublication,
+    owner_token: str,
+) -> bool:
+    """Old absence-derived manual snapshots cannot authorize more mutation."""
+    if publication.state not in ("prepared", "publishing", "published"):
+        return False
+    if publication.plan.queue.get("_respect_grab_claims") is not False:
+        return False
+    with get_db() as db:
+        if not _automatic_grab_import(db, publication.plan.queue):
+            return False
+        db.execute(
+            "UPDATE import_publications SET diagnostic=?,updated_at=CURRENT_TIMESTAMP"
+            " WHERE id=? AND state=? AND (operation_owner IS NULL"
+            " OR operation_owner=? OR operation_expires_at<=CURRENT_TIMESTAMP)",
+            (
+                "legacy manual import permission is unproven; artifacts retained",
+                publication.publication_id,
+                publication.state,
+                owner_token,
+            ),
+        )
+    return True
+
+
 def publish_publication(publication_id: int, owner_token: str) -> bool:
     """Idempotently publish all prepared files, with no DB held during I/O."""
+    with get_db() as db:
+        publication = load_publication(db, publication_id=publication_id)
+    if publication is None or _retain_unproven_manual_publication(
+        publication, owner_token
+    ):
+        return False
     if not _claim_publication_operation(
         publication_id,
         owner_token,
@@ -1266,6 +1299,9 @@ def publish_publication(publication_id: int, owner_token: str) -> bool:
     with get_db() as db:
         publication = load_publication(db, publication_id=publication_id)
     if publication is None:
+        return False
+
+    if _retain_unproven_manual_publication(publication, owner_token):
         return False
 
     for file_record in publication.files:
@@ -3058,6 +3094,9 @@ async def complete_publication(
     with get_db() as db:
         publication = load_publication(db, publication_id=publication_id)
     if publication is None:
+        return False
+
+    if _retain_unproven_manual_publication(publication, owner):
         return False
 
     if publication.state in ("prepared", "publishing"):

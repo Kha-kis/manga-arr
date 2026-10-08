@@ -492,8 +492,8 @@ async def grab_item(
                 "INSERT OR IGNORE INTO seen"
                 "(torrent_url, torrent_name, series_id, volume_num, grabbed_at,"
                 " indexer, protocol, client, download_id, release_group, size_bytes,"
-                " release_guid, download_client_id)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " release_guid, download_client_id,respect_grab_claims)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
                 (
                     item["url"],
                     title,
@@ -528,12 +528,12 @@ async def grab_item(
     claim_lost = False
 
     with get_db() as db:
-        db.execute(
+        seen_insert = db.execute(
             "INSERT OR IGNORE INTO seen"
             "(torrent_url, torrent_name, series_id, volume_num, grabbed_at,"
             " indexer, protocol, client, download_id, release_group, size_bytes,"
-            " release_guid, download_client_id)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " release_guid, download_client_id,respect_grab_claims)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 item["url"],
                 title,
@@ -548,8 +548,28 @@ async def grab_item(
                 size,
                 _release_guid,
                 download_client_id,
+                int(respect_monitoring),
             ),
         )
+        if seen_insert.rowcount != 1:
+            add_history(
+                db,
+                "grabbed",
+                series_id,
+                (s_row["title"] or "") if s_row else "",
+                build_volume_label(vol_num, vol_rng, pack_type if vol_num is None else None),
+                source_title=title,
+                indexer=indexer,
+                protocol=protocol,
+                client=client_name,
+                download_id=dl_id or "",
+                download_client_id=download_client_id,
+                size_bytes=size,
+                release_group=rgroup,
+                data={"respect_monitoring": respect_monitoring, "claim_lost": True},
+                torrent_url=item["url"],
+            )
+            return False
 
         _ch_cascade_kw = dict(
             grabbed_at=now,
@@ -914,6 +934,11 @@ async def grab_item(
                 """,
                 (download_client_id, series_id, item["url"], dl_id, now),
             )
+
+        db.execute(
+            "UPDATE seen SET respect_grab_claims=? WHERE torrent_url=?",
+            (int(respect_monitoring or claim_lost), item["url"]),
+        )
 
     vol_label = build_volume_label(
         vol_num, vol_rng, pack_type if vol_num is None else None
