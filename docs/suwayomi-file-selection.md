@@ -1,6 +1,6 @@
 # Suwayomi Chapter File Selection
 
-Suwayomi imports recognize `Ch.N`, `Ch. N`, `Chapter N`, and `# N`, with
+Filename-only Suwayomi selection recognizes `Ch.N`, `Ch. N`, `Chapter N`, and `# N`, with
 an optional scanlator prefix and `Vol.N` label. Chapter numbers are compared
 exactly: chapter 17 is not 17.5 or 170, and 17.5 is not 17.55. A narrow
 fallback accepts `<scanlator>_<one word> <number>.cbz`, including `Mission`,
@@ -33,6 +33,40 @@ scanlator name length. Remaining ties use suffix length, filename length,
 case-insensitive filename, then the original filename. This policy does not
 claim scanlator quality or language preference. Only regular CBZ files are
 selected; directories and chapter-file symlinks are excluded.
+
+## Source-Anchored Chapter Jobs
+
+Chapter-level job polling also requests `name` and `scanlator` for the
+chapter IDs already stored in the job. When that evidence is available,
+selection uses the exact queued chapter's filename, not a search for a number
+elsewhere in the filename. Its source chapter number must agree with the
+job's chapter number. An unrelated source ID with the same number is not
+substitute evidence.
+
+The expected basename follows Suwayomi's
+[chapter download naming rule](https://github.com/Suwayomi/Suwayomi-Server/blob/v2.3.2243/server/src/main/kotlin/suwayomi/tachidesk/manga/impl/util/DirName.kt)
+and [filename sanitization](https://github.com/Suwayomi/Suwayomi-Server/blob/v2.3.2243/AndroidCompat/src/main/java/xyz/nulldev/androidcompat/util/SafePath.kt):
+join a non-null scanlator and chapter name with `_`, sanitize the result,
+then append `.cbz`. Only an exact regular-file basename is eligible.
+This permits scanlator names whose punctuation becomes multiple underscores,
+and numeric scanlator names, when the queued source identity proves the full
+filename. It does not relax filename-only parsing.
+
+If distinct returned chapter IDs produce the same sanitized basename,
+selection refuses the collision. Invalid source evidence, a chapter-number
+mismatch, or a missing source-derived file cannot be repaired by selecting an
+unrelated filename variant. Older helper calls without source filename
+evidence retain the conservative filename-only rules above. Volume jobs
+continue using their existing complete chapter-number selection policy.
+Job polling still requires the queued source chapter number to match before
+using that fallback; absent or invalid numbers do not establish identity.
+
+This changes file selection only. It does not rename Suwayomi downloads,
+rewrite provider IDs, alter chapter maps or monitoring, or reset failed jobs.
+The existing manga-directory lookup is unchanged; this is not a new policy
+for choosing between multiple source directories with similar manga titles.
+After installing a build containing the correction, the existing failed-job
+retry action can retry a preserved download without fabricating library state.
 
 ## Volume Jobs
 
