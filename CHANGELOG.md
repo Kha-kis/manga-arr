@@ -5,12 +5,15 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
-## 1.3.2 - Unreleased
+## 1.3.2 - 2026-10-08
 
-Release preparation only: no 1.3.2 image or stable qualification is claimed.
-1.3.1 remains the current published, qualified stable release. Final image,
-security, NFS workflow, upgrade, and rollback evidence is pending in
-[Release qualification](docs/release-qualification.md#132-release-preparation).
+Published and qualified as the current stable release. All local and
+published-artifact gates and final independent audit/GO passed. Published identity,
+attestations, aliases and fixed High/Critical scans are verified. Published
+amd64 upgrade/rollback, reset, large-archive, decoder and NFS checks passed;
+temporary emulated qualification from the exact published ARM image passed
+its decoder checks. 1.3.1 retains its historical qualification. See
+[Release qualification](docs/release-qualification.md#132-stable-qualification).
 
 ### Fixed
 
@@ -97,7 +100,7 @@ September 10. AniList recovery checks passed on September 15, but that day's
 refreshed image scan found 12 fixable OS-package findings (9 High, 3 Critical).
 Final qualification and the GitHub stable-release announcement were placed on
 hold for a patched release. At that time, `latest` resolved to 1.3.0 and users
-were directed to pin 1.2.0. Qualified 1.3.1 now owns the moving stable aliases;
+were directed to pin 1.2.0. Qualified 1.3.1 subsequently owned the moving aliases;
 the exact 1.3.0 image remains unchanged.
 
 ### Added

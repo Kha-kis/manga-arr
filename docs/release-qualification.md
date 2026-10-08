@@ -3,17 +3,38 @@
 This document defines the evidence required before a Mangarr release candidate
 can become a stable release. Passing unit tests alone is not sufficient.
 
-## 1.3.2 Release Preparation
+## 1.3.2 Stable Qualification
 
-Status: **PREPARING; NOT PUBLISHED OR QUALIFIED STABLE** (2026-10-08).
-1.3.1 remains the current published, qualified stable release. Its qualification
-and immutable digest below are unchanged.
+Status: **QUALIFIED; CURRENT STABLE** (2026-10-08).
+All local and published-artifact gates passed, with independent final GO and
+no required gaps. 1.3.1's historical qualification and exact immutable digest
+below remain unchanged;
+its former moving aliases now resolve to 1.3.2.
+
+### Published Artifact Identity And Security
+
+- Annotated `v1.3.2` tag object: `d2b50a969e33cb6c3776ddd7b5843081aedc7743`.
+- Exact tagged/release revision: `091b2b12ea235eb0d62306bce94b7e5d70746f4c`.
+- [Release Image run 37773879450](https://github.com/Kha-kis/manga-arr/actions/runs/37773879450)
+  succeeded on that revision at 2026-10-08T12:05:16Z.
+- Verified index: `sha256:4b8a312888ba116784b89a2479c5ca51dbf9e2fba881d658e368bfd082b4f590`.
+- amd64 manifest: `sha256:76294610de84ce5c9758b4d8b81d3d310ba1760b39faffa809534abed9700d48`.
+- arm64 manifest: `sha256:6c2a016e2e56f106e64b1d9802602db554067657657e7a0974f6741dc4da9f69`.
+- Both platforms have verified SPDX 2.3 SBOMs with 151 packages and SLSA v1
+  provenance naming the exact source, version 1.3.2, build date
+  2026-10-08T12:00:48Z and the workflow builder above.
+- Published image verification passed; fixed High/Critical scans passed on both
+  platform artifacts. These are dated artifact/security checks, not final
+  application-runtime qualification or a claim about every vulnerability severity.
+- `1.3.2`, `1.3`, `1`, and `latest` resolve to the index above. Exact 1.3.1,
+  1.3.0 and 1.2.0 images remain unchanged. Pin the exact version or index digest
+  for reproducible deployment rather than relying on moving aliases.
 
 ### Reviewed Source Evidence
 
 - Core PR #402 merged at `ce2ed1f8aac1cd10afa66ce5ff49c7482084a832`, tree
   `9f9aa3f920284bcedd0ab73cb608a77e8975360f`. The release-preparation version and
-  documentation update is separate; its exact committed revision remains pending.
+  documentation update merged as PR #403 at the exact tagged revision above.
 - Main Python 3.13 full `make test-release-safe`: 3,465 passed, 17 skipped,
   0 failed; Ruff and format checks passed, confirmation flow 13/13, separate
   route sweep 10/10, isolated browser suite 95/95.
@@ -35,22 +56,77 @@ and immutable digest below are unchanged.
   local controls passing on both runtimes; these are preparation controls, not
   actual NFS workflow or final-image results.
 
-### Pending Release Evidence
+### Completed Local Release Gates
+
+- Unmodified `make release-local` on the exact tagged revision passed:
+  3,465 Python tests, 17 existing skips, lint/format, 13 confirmation checks,
+  10 route checks and 95 isolated browsers, plus dependency/secret/config and
+  normal local-image security/identity gates. This later full gate includes the
+  previously recorded EOF whitespace corrections and release-doc/version update.
+- Actual normal local amd64 image passed the original six-set NFSv4.1 ledger,
+  30/30 nodes (2/6/3/3/4/12), on one reviewed bundle with full source/native/
+  test-support/qualification receipts before and after, UID1000/caps0 and local
+  SQLite/config. This is workflow acceptance, not HTTP-lifespan qualification.
+- Seven actual local-image phases passed: fresh setup; 1.2.0 cold/warm upgrades
+  and matching stopped rollback; derived 1.3.1 cold/warm upgrades and matching
+  stopped rollback. Protected state and credential decryption were preserved.
+  Separate administrator reset/old-session revocation also passed.
+- Actual local amd64 image large-archive checks passed 4/4 with real 1 GiB/
+  20,000-entry scale under a 256 MiB measured-child address-space cap; peak RSS
+  44.73 MiB. Decoder checks passed 13/13 on that local normal image.
+- Normal local ARM build/scan passed. Temporary ARM guest decoder checks
+  passed 13/13 with all 151 approved runtime-file proofs from the same original
+  Dockerfile prefix; this is not normal published ARM-runtime execution.
+
+These completed local-image results are not relabeled as published-artifact
+workflow passes. Earlier harness/support/fixture/observer failures were retained
+and independently reviewed corrections left application/runtime source unchanged.
+
+### Published Runtime Evidence
+
+- The original six-set NFSv4.1 workflow ledger passed 30/30 on the published
+  image, with group counts 2/6/3/3/4/12 and unchanged guards, exact pins and full
+  inventories, UID 1000/caps0 and local SQLite/config. This is workflow
+  acceptance, not HTTP-lifespan qualification.
+  Independent final audit verified all 12 before/after receipts, including the
+  full 91 source/1,873 native/33 distribution/501 support/11 qualification maps.
+- The original seven amd64 phases passed on the published artifact: fresh
+  setup; 1.2.0 cold/warm upgrades and matching stopped rollback; derived 1.3.1
+  cold/warm upgrades and matching stopped rollback. Frozen helpers and baselines
+  were unchanged.
+- Separate published-image administrator reset passed. The saved server session
+  was rejected before and after replacement setup; the encryption key was
+  unchanged, and re-login, health and page-error checks passed.
+- Published amd64 large-archive checks passed 4/4 in 29.75 seconds, including
+  real 1 GiB/20,000-entry scale, corruption/CRC/hash verification, aliases and
+  source atomicity. Peak RSS was 45,396 KiB (44.33 MiB) under the 256 MiB
+  measured-child address-space cap. This is separate from the earlier local
+  image's 44.73 MiB receipt. Published amd64 decoder checks passed 13/13.
+- ARM decoder checks passed 13/13 in a temporary emulated qualification stage
+  FROM the exact published arm64 manifest above, with an unchanged qualification
+  suffix and no-cache execution (14.9 seconds). It verified aarch64, Debian
+  arm64, UID 1000, Python 3.14.7, all 151 runtime source files and the original
+  test ASTs. This is not a native ARM hardware, ARM NFS or ARM HTTP qualification;
+  the temporary qualification stage was not itself published.
+
+### Release Evidence Status
 
 | Gate | Status |
 | --- | --- |
-| Exact committed 1.3.2 release revision and immutable tag | Pending |
-| Final amd64/arm64 image index, platform digests, labels, SBOM and provenance | Pending |
-| Final dependency, secret, configuration and image security gates | Pending |
-| Existing six-set actual NFS ledger on final committed source and normal image/runtime | Pending |
-| Fresh install, copied-config migration/upgrade and matching stopped rollback | Pending |
-| Representative acquisition/import/metadata/backup workflows and stable alias verification | Pending |
+| Exact source, annotated tag, published platform/index identity and aliases | Verified |
+| Both SPDX/SLSA attestations and published fixed High/Critical scans | Passed |
+| Existing six-set actual NFS 30 on the published image/runtime | Passed 30/30; all 12 receipts independently verified |
+| Published fresh/upgrade/matching rollback seven phases | Passed 7/7 |
+| Published administrator reset/old-session revocation | Passed |
+| Published amd64 large-archive and decoder checks | Passed 4/4 and 13/13 |
+| Temporary emulated qualification FROM the exact published ARM image | Passed 13/13 within the scope above |
+| Final independent audit/GO | Passed; no required gaps |
 
-No 1.3.2 security scan result, image digest, publication date, platform workflow
-pass, or moving-alias change is asserted. Prior compressed-RAR decoder checks,
-rescan/purge NFS component checks, and source suites do not substitute for the
-final source/image qualification. Issues #378 and #391 remain referenced release
-gates, not closed by these preparation notes.
+All local and published-artifact gates passed within their stated scopes. Final
+independent audit/GO additionally verified the evidence; it was not inferred
+from pass counts alone. Issues #378 and #391 are references, not closed by this
+documentation update.
+Production deployment is separate and has not been authorized by these records.
 
 ### NAS And Rollback Boundary
 
@@ -105,8 +181,8 @@ API, schema, metadata, or downloader behavior changes.
   version `1.3.1` plus the exact merge revision in its OCI labels.
 - The registry index contains amd64 and arm64 runtime manifests. Both platforms
   have SBOM and provenance attestations.
-- `1.3.1`, `1.3`, `1`, and `latest` resolve to the stable digest above. Exact
-  1.3.0 and 1.2.0 remain unchanged at
+- At qualification, `1.3.1`, `1.3`, `1`, and `latest` resolved to the stable
+  digest above. Exact 1.3.0 and 1.2.0 remain unchanged at
   `sha256:f9b9d9785d23e8632af0430909b90867ce3759e2c0297cb15cffea9cddf0187f`
   and `sha256:2750ee8d8f6e5d08703a5bb9c145185052ef0cc13e0f2a76dbdef2e2040cf864`.
 
@@ -144,8 +220,9 @@ Production remained on the pinned 1.2.0 image throughout qualification.
 When 1.3.0 was published, it owned `1.3`, `1`, and `latest`. AniList recovery
 checks passed on September 15, but its final qualification and GitHub
 stable-release announcement were blocked by fixable OS-package findings in a
-refreshed image scan. The qualified 1.3.1 release now owns the moving aliases;
-the exact 1.3.0 image remains immutable. RC1's rejection and RC2's successful
+refreshed image scan. The qualified 1.3.1 release subsequently owned the moving
+aliases; their current 1.3.2 publication status is recorded above. The exact
+1.3.0 image remains immutable. RC1's rejection and RC2's successful
 qualification remain separate historical evidence below.
 
 ## 1.3.0 Publication Evidence
@@ -785,7 +862,7 @@ RC1 remains rejected and immutable. RC2 completed the fresh-install, 1.2.0
 upgrade and rollback, metadata lifecycle, downloader, import, integrity, and
 operational gates above. That RC2 decision authorized separate stable
 preparation; it did not qualify the later 1.3.0 image. That publication and
-its historical qualification hold are recorded above; the current 1.3.1
-qualification is recorded at the top of this file.
+its historical qualification hold and the later 1.3.1 qualification are recorded
+above, separately from the current 1.3.2 publication status.
 
 1.3.0-rc.2 QUALIFIED

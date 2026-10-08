@@ -21,21 +21,21 @@ files into an organized library. It understands volumes, chapters, editions,
 omnibuses, specials, and multi-volume packs instead of treating manga like a
 generic TV or book collection.
 
-**1.3.1** is the current qualified stable release. It includes the 1.3 metadata
-identity and title-ownership improvements, qBittorrent authentication-bypass
-compatibility, refreshed container security packages, and AnyIO security
-fixes. The published image contains amd64 and arm64 manifests and passed its
-release security gates. Fresh-install, copied-config upgrade, rollback, and
-published-image vulnerability checks passed on amd64. `1.3.1`, `1.3`, `1`,
-and `latest` resolve to the qualified image; exact older version tags remain
-immutable.
-See the [qualification status](docs/release-qualification.md) before upgrading.
-
-**1.3.2 is in preparation, not published or qualified stable.** Its source
-includes durable NAS file/pack recovery, ownership-loss compensation, rescan
+**1.3.2 is the current published, qualified stable release.** It includes
+durable NAS file/pack recovery, ownership-loss compensation, rescan
 replay, acquisition-policy preservation, Suwayomi fixes, and compressed-RAR
-decoding. Final image, security, NFS workflow, upgrade, and rollback gates are
-pending; this does not change the current stable image or moving aliases.
+decoding. All local release gates passed. Published image identity, attestations,
+and fixed High/Critical scans passed; `1.3.2`, `1.3`, `1`, and `latest` now
+resolve to its verified index. Published amd64 upgrade/rollback, reset,
+large-archive, decoder and NFS checks passed. Temporary emulated qualification
+from the exact published ARM image passed its decoder checks; this is not
+native ARM hardware or ARM NFS/HTTP qualification. Final independent audit/GO
+passed. See the [qualification evidence](docs/release-qualification.md#132-stable-qualification)
+before upgrading.
+
+**1.3.1** retains its historical qualification and unchanged exact image;
+its former moving aliases now point to 1.3.2. Historical security, upgrade and
+rollback evidence remains in [Release qualification](docs/release-qualification.md#131-stable-qualification).
 
 Mangarr is self-hosted, designed for a single administrator, and distributed
 as a multi-platform container image.
@@ -130,7 +130,7 @@ encryption key, and a version manifest. Treat them as sensitive. A stopped
 snapshot of the entire `/config` directory remains the strongest pre-upgrade
 recovery artifact because it also includes cached covers and rollback files.
 
-### NAS Recovery Limits In 1.3.2 Preparation
+### NAS Recovery Limits In 1.3.2
 
 Keep `/config`, SQLite, the encryption key, and coordination lock on local
 storage; NFS is for the documented library/download workflows. Private recovery
@@ -145,7 +145,7 @@ and its workers before snapshot or rollback; restore the matching configuration,
 database, encryption key, and previous pinned image without mixing recovery
 records with mismatched library/download state. Never downgrade an active or
 migrated database in place. See [Deployment and recovery](docs/deployment.md)
-and the [pending qualification](docs/release-qualification.md#132-release-preparation).
+and the [release qualification](docs/release-qualification.md#132-stable-qualification).
 
 ## Upgrading
 

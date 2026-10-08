@@ -15,21 +15,31 @@ Release commits must update `app/VERSION`, `CHANGELOG.md`, and the current
 release shown in `README.md` together. Automated tests enforce SemVer syntax and
 documentation consistency.
 
-## 1.3.2 Preparation Status
+## 1.3.2 Stable Status
 
-`app/VERSION` is `1.3.2` on the release-preparation branch. This identifies the
-candidate source, not a published or qualified release. 1.3.1 remains the current
-published, qualified stable release and retains the moving aliases below.
-There is no qualified 1.3.2 tag, image digest, or alias change recorded here.
+The 1.3.2 image was published on 2026-10-08 from exact source
+`091b2b12ea235eb0d62306bce94b7e5d70746f4c` and annotated tag `v1.3.2`.
+It is the current qualified stable release: all local and published-artifact
+gates and final independent audit/GO passed. Publication alone is not qualification.
+1.3.1's historical qualification remains valid for its unchanged exact image,
+not today's moving aliases.
 
-The candidate includes the merged fixes from PRs #386, #387, #388, #389, #390,
+Verified 1.3.2 index:
+`sha256:4b8a312888ba116784b89a2479c5ca51dbf9e2fba881d658e368bfd082b4f590`.
+`1.3.2`, `1.3`, `1`, and `latest` resolve to that index. Published image
+verification, both platform fixed High/Critical scans and SPDX/SLSA checks passed.
+Published amd64 fresh/upgrade/rollback, reset, large-archive and decoder checks
+passed, as did all 30 published-image NFS cases. Temporary emulated qualification
+from the exact published ARM image passed 13 decoder checks, without claiming
+native ARM hardware or ARM NFS/HTTP coverage. Final independent audit verified
+the full NFS receipts and remaining artifact/runtime evidence without required gaps.
+
+The release includes the merged fixes from PRs #386, #387, #388, #389, #390,
 #392, #393, #394, #396, #397, #398, #399, #400, #401, and #402.
-See the [1.3.2 changelog](../CHANGELOG.md#132---unreleased) and
-[qualification status](release-qualification.md#132-release-preparation).
-Final committed release source, immutable image/platform identity, security
-scans, the existing six-set NFS ledger, fresh install, copied-config upgrade,
-and matching stopped rollback remain release gates. Do not infer these passes
-from source suites or prior component/image evidence.
+See the [1.3.2 changelog](../CHANGELOG.md#132---2026-10-08) and
+[qualification status](release-qualification.md#132-stable-qualification).
+Local and published-artifact receipts remain separate evidence. Qualification
+does not authorize a production deployment.
 
 ## Version Policy
 
@@ -53,6 +63,7 @@ The release workflow publishes `ghcr.io/kha-kis/manga-arr` with these tags:
 
 | Release | Image tags |
 | --- | --- |
+| `1.3.2` (qualified stable) | `1.3.2`, `1.3`, `1`, `latest` |
 | `1.3.1` | `1.3.1`, `1.3`, `1`, `latest` |
 | `1.3.0` (superseded security hold) | `1.3.0`, `1.3`, `1`, `latest` |
 | `1.3.0-rc.2` | `1.3.0-rc.2` |
@@ -78,10 +89,10 @@ The exact image digest recorded by GitHub Container Registry is the strongest
 deployment pin. Version tags are intended to remain immutable, but a digest
 also protects against registry-side tag changes.
 
-The 1.3.1 image was published and qualified on 2026-10-07. `1.3.1`, `1.3`,
-`1`, and `latest` resolve to
+The 1.3.1 image was published and qualified on 2026-10-07. At that time,
+`1.3.1`, `1.3`, `1`, and `latest` resolved to
 `sha256:556c657abe60518695d799f00a2c38abd43d762d57b257cc6ef649d8f3c45b7e`.
-It replaces the blocked 1.3.0 image without modifying that image or tag. Exact
+It replaced the blocked 1.3.0 image without modifying that image or tag. Exact
 1.3.0, 1.2.0, and release-candidate tags remain unchanged. Historical rows
 describe tags emitted at each release, not ownership of moving aliases today.
 
