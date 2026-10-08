@@ -140,13 +140,13 @@ def test_extract_chapter_num_still_returns_none_for_ranges():
 # ───────────────────── importer: writes range row, sweeps placeholders ───────
 
 def _seed_queue(db_path, src_path, series_id=7, vol_num=None, chap_num=1.0, chap_range_end=None):
-    """Insert a queue + queue_files row marking src_path as a chapter import."""
+    """Seed an explicit internal manual chapter import from a local archive."""
     with sqlite3.connect(db_path) as c:
         c.execute("INSERT INTO series(id, title, search_pattern)"
                   " VALUES(?, ?, ?)", (series_id, "Test Series", "Test Series"))
         cur = c.execute(
-            "INSERT INTO import_queue(series_id, torrent_name, status, created_at)"
-            " VALUES(?, ?, 'pending', datetime('now'))",
+            "INSERT INTO import_queue(series_id, torrent_name, status, created_at,"
+            " respect_grab_claims) VALUES(?, ?, 'pending', datetime('now'),0)",
             (series_id, "test-torrent")
         )
         qid = cur.lastrowid
@@ -200,8 +200,9 @@ def test_chapter_range_import_sweeps_existing_placeholder(env):
         c.execute("INSERT INTO chapters(series_id, chapter_num, status)"
                   " VALUES(7, 3.0, 'wanted')")  # not in range, must survive
         cur = c.execute(
-            "INSERT INTO import_queue(series_id, torrent_name, status, created_at)"
-            " VALUES(7, 'test-torrent', 'pending', datetime('now'))"
+            "INSERT INTO import_queue(series_id, torrent_name, status, created_at,"
+            " respect_grab_claims)"
+            " VALUES(7, 'test-torrent', 'pending', datetime('now'),0)"
         )
         qid = cur.lastrowid
         src = _make_zip(str(env["src_root"] / "c001-002.zip"))
@@ -242,8 +243,9 @@ def test_chapter_range_import_does_not_delete_other_imported_files(env):
             " VALUES(7, 2.0, 'downloaded', '/data/old/ch2.cbz', 'WEB-DL')"
         )
         cur = c.execute(
-            "INSERT INTO import_queue(series_id, torrent_name, status, created_at)"
-            " VALUES(7, 'test-torrent', 'pending', datetime('now'))"
+            "INSERT INTO import_queue(series_id, torrent_name, status, created_at,"
+            " respect_grab_claims)"
+            " VALUES(7, 'test-torrent', 'pending', datetime('now'),0)"
         )
         qid = cur.lastrowid
         src = _make_zip(str(env["src_root"] / "c001-002.zip"))

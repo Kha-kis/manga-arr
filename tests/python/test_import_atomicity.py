@@ -384,6 +384,7 @@ def _seed_series(db_path, title="Test Series"):
 def _seed_queue(db_path, series_id, file_count, src_root, import_mode=None):
     """Create a pending queue row plus `file_count` volume-file rows.
     Creates real source files in src_root so the copy will actually work.
+    This is an explicit internal manual batch, without downloader acquisition.
     Returns (queue_id, [src_paths], [filenames])."""
     src_paths = []
     filenames = []
@@ -399,7 +400,8 @@ def _seed_queue(db_path, series_id, file_count, src_root, import_mode=None):
         c.row_factory = sqlite3.Row
         c.execute(
             "INSERT INTO import_queue(series_id, download_id, torrent_name,"
-            " torrent_url, volume_num, src_dir, status) VALUES(?,?,?,?,?,?,'pending')",
+            " torrent_url, volume_num, src_dir, status,respect_grab_claims)"
+            " VALUES(?,?,?,?,?,?,'pending',0)",
             (series_id, "dl-test", "Test Series batch",
              "magnet:test", 1.0, src_root),
         )

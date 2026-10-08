@@ -869,6 +869,7 @@ def test_phase3_metadata_uses_queue_owner_across_every_import_branch(
             str(source_dir),
             download_client_id=selected_owner,
             protocol=protocol,
+            respect_grab_claims=False,
         )
         assert queue_id is not None
         if import_kind == "special":
@@ -1072,6 +1073,7 @@ def test_sab_identity_is_exact_and_legacy_commit_owner_stays_null(
             str(source),
             download_client_id=None,
             protocol="nzb",
+            respect_grab_claims=False,
         )
         assert queue_id is not None
         case_variant_id = db.execute(
