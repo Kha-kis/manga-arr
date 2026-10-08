@@ -57,7 +57,7 @@ selection refuses the collision. Invalid source evidence, a chapter-number
 mismatch, or a missing source-derived file cannot be repaired by selecting an
 unrelated filename variant. Older helper calls without source filename
 evidence retain the conservative filename-only rules above. Volume jobs
-continue using their existing complete chapter-number selection policy.
+use the source-anchored complete-set policy described below.
 Job polling still requires the queued source chapter number to match before
 using that fallback; absent or invalid numbers do not establish identity.
 
@@ -70,19 +70,37 @@ retry action can retry a preserved download without fabricating library state.
 
 ## Volume Jobs
 
-The existing job-completion query requests `chapterNumber` together with
-`id` and `isDownloaded`. Only the stored job chapter IDs supply the chapter
-numbers used for assembly. Volume filename labels and the series metadata
-chapter map do not add chapters to that set. Each logical chapter number is
-selected once, in numeric order, in both merged and individual-file modes.
+The job-completion query requests `id`, `isDownloaded`, `chapterNumber`, `name`,
+and `scanlator`. Every stored job chapter ID must resolve to a downloaded
+source record with a valid number, complete filename evidence, and its exact
+regular CBZ file under the naming rule above. Missing or malformed evidence
+never permits a filename-only substitute. Distinct returned IDs producing the
+same sanitized basename are refused, including IDs outside the job and
+collisions caused by filename truncation. Symlinks, directories, and other
+nonregular chapter files are excluded.
+
+All queued variants must pass validation before duplicate logical numbers are
+collapsed. Among valid queued variants for the same number, basename length,
+case-insensitive basename, then original basename determine the selected file.
+This deterministic tie-break does not claim scanlator quality. Each logical
+number is selected once in exact numeric order in both merged and
+individual-file modes. Supplied helper chapter numbers must agree with the
+corresponding queued IDs; volume labels and metadata maps never extend the set.
 
 All required files must be selected before any library output is created,
-copied, or merged. A missing file, unknown/invalid chapter number, or empty
+copied, merged, or reused from the destination cache. A missing file,
+unknown/invalid chapter number, invalid filename evidence, collision, or empty
 chapter set leaves the job errored rather than marking a partial volume
 downloaded. A queued chapter ID missing from the live feed remains incomplete
 under the existing polling/startup-recovery rules. Stored IDs, progress
 accounting, retry controls, provider identity, monitoring, and metadata
 ownership are not rewritten by file selection.
+
+Direct helper calls without source evidence (`source_chapters=None`) retain
+the conservative filename-only policy, including legacy volume-labelled
+selection when no explicit chapter set is supplied. Valid completed imports
+retain existing cached destination content; a cache cannot bypass incomplete
+source selection. Chapter-job selection is unchanged.
 
 ## Split Chapters
 

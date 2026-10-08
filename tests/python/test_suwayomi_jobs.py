@@ -106,7 +106,11 @@ def env(tmp_path, monkeypatch):
 
 
 def _gql_stub(
-    manga_title: str, chapter_ids: list[int], chapter_numbers: dict[int, float] | None = None
+    manga_title: str,
+    chapter_ids: list[int],
+    chapter_numbers: dict[int, float] | None = None,
+    *,
+    chapter_names: dict[int, str] | None = None,
 ):
     """Returns an _gql replacement that mimics the Suwayomi GraphQL response.
     Reports every chapter id as isDownloaded=True."""
@@ -120,6 +124,10 @@ def _gql_stub(
                             "id": cid,
                             "isDownloaded": True,
                             "chapterNumber": (chapter_numbers or {}).get(cid),
+                            **(
+                                {"name": chapter_names[cid], "scanlator": None}
+                                if chapter_names is not None else {}
+                            ),
                         }
                         for cid in chapter_ids
                     ],
@@ -243,7 +251,10 @@ def test_volume_job_completes_without_attribute_error(env):
             (json.dumps([301, 302]),),
         )
 
-    with patch.object(swy, "_gql", new=_gql_stub("Hunter x Hunter", [301, 302], {301: 150.0, 302: 151.0})), \
+    with patch.object(swy, "_gql", new=_gql_stub(
+             "Hunter x Hunter", [301, 302], {301: 150.0, 302: 151.0},
+             chapter_names={301: "Vol.17 Ch.150", 302: "Vol.17 Ch.151"},
+         )), \
          patch.object(swy, "get_suwayomi_client",
                       new=lambda _db: {"id": 1, "type": "suwayomi",
                                        "host": "http://swy.local:4567",

@@ -5,6 +5,12 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+### Fixed
+
+- Import Suwayomi volumes from the complete queued source filename set,
+  refusing unrelated variants and ambiguous collisions; see
+  [Volume file selection](docs/suwayomi-file-selection.md#volume-jobs).
+
 ## 1.3.2 - 2026-10-08
 
 Published and qualified as the current stable release. All local and

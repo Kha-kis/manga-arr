@@ -1054,8 +1054,21 @@ async def _import_suwayomi_volume(
     *,
     swy_title: str = "",
     chapter_nums: Sequence[float | Decimal] | None = None,
+    chapter_ids: Sequence[int] = (),
+    source_chapters: Mapping[int, Mapping[str, Any]] | None = None,
 ) -> tuple[str | None, int]:
-    return await _run_suwayomi_file_unit(series_id, lambda guard: _import_suwayomi_volume_files(c, series_id, volume_num, swy_title=swy_title, chapter_nums=chapter_nums))
+    return await _run_suwayomi_file_unit(
+        series_id,
+        lambda guard: _import_suwayomi_volume_files(
+            c,
+            series_id,
+            volume_num,
+            swy_title=swy_title,
+            chapter_nums=chapter_nums,
+            chapter_ids=chapter_ids,
+            source_chapters=source_chapters,
+        ),
+    )
 
 
 async def _run_suwayomi_file_unit(series_id: int, operation: Callable[[FileMutationGuard], tuple[str | None, int]]) -> tuple[str | None, int]:
@@ -1082,9 +1095,69 @@ async def _run_suwayomi_file_unit(series_id: int, operation: Callable[[FileMutat
     return result
 
 
-def _import_suwayomi_volume_files(
-    c: dict[str, Any], series_id: int, volume_num: float, *, swy_title: str = "",
+def _source_volume_cbzs(
+    manga_dir: str,
+    chapter_ids: Sequence[int],
+    chapters: Mapping[int, Mapping[str, Any]],
+    *,
     chapter_nums: Sequence[float | Decimal] | None = None,
+) -> list[str]:
+    """Validate every queued source file before deduplicating logical numbers."""
+    if not chapter_ids or (
+        chapter_nums is not None and len(chapter_nums) != len(chapter_ids)
+    ):
+        return []
+    basenames = {cid: _source_chapter_basename(ch) for cid, ch in chapters.items()}
+    counts: dict[str, int] = {}
+    for basename in basenames.values():
+        if basename is not None:
+            counts[basename] = counts.get(basename, 0) + 1
+    names = set(_chapter_files(manga_dir))
+    matches: dict[Decimal, set[str]] = {}
+    for index, cid in enumerate(chapter_ids):
+        if isinstance(cid, bool) or not isinstance(cid, int) or cid <= 0:
+            return []
+        chapter = chapters.get(cid)
+        if chapter is None or chapter.get("isDownloaded") is not True:
+            return []
+        source_id = chapter.get("id")
+        if (
+            isinstance(source_id, bool)
+            or not isinstance(source_id, int)
+            or source_id != cid
+        ):
+            return []
+        number = _chapter_number(chapter.get("chapterNumber"))
+        if number is None or (
+            chapter_nums is not None and _chapter_number(chapter_nums[index]) != number
+        ):
+            return []
+        name = chapter.get("name")
+        if not isinstance(name, str) or not name:
+            return []
+        basename = basenames.get(cid)
+        if basename is None or counts[basename] != 1 or basename not in names:
+            return []
+        matches.setdefault(number, set()).add(basename)
+    # This tie-break is deterministic, not a scanlator quality preference.
+    return [
+        os.path.join(
+            manga_dir,
+            min(matches[number], key=lambda name: (len(name), name.casefold(), name)),
+        )
+        for number in sorted(matches)
+    ]
+
+
+def _import_suwayomi_volume_files(
+    c: dict[str, Any],
+    series_id: int,
+    volume_num: float,
+    *,
+    swy_title: str = "",
+    chapter_nums: Sequence[float | Decimal] | None = None,
+    chapter_ids: Sequence[int] = (),
+    source_chapters: Mapping[int, Mapping[str, Any]] | None = None,
 ) -> tuple[str | None, int]:
     """Import completed volume download into the managed library.
     If merge_chapters is enabled (default): merges chapter CBZs into one volume CBZ.
@@ -1109,7 +1182,13 @@ def _import_suwayomi_volume_files(
         )
         return None, 0
 
-    chapter_paths = _vol_chapter_cbzs(manga_dir, volume_num, chapter_nums=chapter_nums)
+    chapter_paths = (
+        _vol_chapter_cbzs(manga_dir, volume_num, chapter_nums=chapter_nums)
+        if source_chapters is None
+        else _source_volume_cbzs(
+            manga_dir, chapter_ids, source_chapters, chapter_nums=chapter_nums
+        )
+    )
     if not chapter_paths:
         log.warning(
             "No chapter CBZs found for series %d vol %s in %s",
@@ -1449,6 +1528,8 @@ def _complete_suwayomi_job_files(
             job["volume_num"],
             swy_title=swy_title,
             chapter_nums=job_chapter_nums,
+            chapter_ids=chapter_ids,
+            source_chapters=ch_map,
         )
         if not import_path:
             err_msg = "Import failed — CBZ files not found in library path"
