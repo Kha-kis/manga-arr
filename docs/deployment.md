@@ -179,6 +179,16 @@ the journal and artifacts for review. Never infer ownership from matching names
 or inodes. Permission and cross-filesystem errors are not unsupported-operation
 fallbacks; local SQLite and directory-fsync support remain required.
 
+Rescans and existing-folder adoption omit reserved recovery/staging directories:
+`.mangarr-claims`, `.mangarr-claim-*`, `.mangarr-rescan-*`,
+`.mangarr-publication-*`, and `.mangarr-staging-*`. This applies to nested trees,
+the initial scan/adoption directory, and its lexical or resolved ancestors.
+Archives under these trees are not library or local-count evidence. The scanner
+leaves their files and ownership proofs untouched; a reserved name never
+authorizes cleanup.
+Other hidden directories and similarly named nonreserved directories remain
+discoverable.
+
 ### NFS Publication Limits
 
 On Linux, imports to a **new destination** can use an atomic hardlink from

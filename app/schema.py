@@ -1404,7 +1404,8 @@ def init_db() -> None:
         # inherit the volume's grab/import metadata. Before this migration ~3400
         # downloaded chapters had NULL quality/indexer/import_path because the
         # import code paths weren't stamping them. COALESCE ensures we only fill
-        # fields that are currently missing — never overwrite real data.
+        # fields that are currently missing. Independent chapter acquisitions
+        # must not inherit observations from an unrelated parent download.
         db.execute("""
             UPDATE chapters
             SET quality        = COALESCE(quality,        (SELECT v.quality        FROM volumes v WHERE v.id = chapters.volume_id)),
@@ -1424,6 +1425,22 @@ def init_db() -> None:
                                  END
             WHERE status IN ('downloaded','grabbed')
               AND volume_id IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM volumes v WHERE v.id = chapters.volume_id
+                    AND (chapters.download_client_id IS NULL
+                         OR chapters.download_client_id IS v.download_client_id)
+                    AND (chapters.protocol IS NULL OR v.protocol IS NULL
+                         OR chapters.protocol = v.protocol)
+                    AND (COALESCE(chapters.download_id,'') = ''
+                         OR (COALESCE(chapters.protocol,v.protocol) = 'torrent'
+                             AND lower(chapters.download_id) = lower(v.download_id))
+                         OR (COALESCE(chapters.protocol,v.protocol,'') != 'torrent'
+                             AND chapters.download_id = v.download_id))
+                    AND (COALESCE(chapters.torrent_url,'') = ''
+                         OR chapters.torrent_url = v.source_url)
+                    AND (COALESCE(chapters.import_path,'') = ''
+                         OR chapters.import_path = v.import_path)
+              )
         """)
 
         # Uncollected chapter (volume_id IS NULL) quality backfill — derive from

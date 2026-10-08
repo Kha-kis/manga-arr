@@ -4,7 +4,7 @@ import logging
 import sqlite3
 from collections.abc import Mapping
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from download_identity import (
     DownloadProtocol,
@@ -15,12 +15,21 @@ from download_identity import (
 from events import log_event, add_history
 from files import quality_from_filename, build_volume_label
 from volumes import _cascade_chapters, _check_volume_completion
-from import_download import DownloadNotificationIntent, _mark_downloaded
+from import_download import (
+    DownloadNotificationIntent,
+    _mark_downloaded,
+    _same_acquisition,
+)
 from import_lease import (
     ImportQueueStatus,
     has_import_sibling_that_may_use_download,
     refresh_import_queue_lease,
     transition_import_queue_row,
+)
+from import_plan import (
+    _automatic_grab_import,
+    _manual_mapping_files,
+    _queue_identity,
 )
 
 if TYPE_CHECKING:
@@ -35,21 +44,96 @@ def _queue_download_protocol(
     queue: Mapping[str, Any],
     series_id: int,
 ) -> DownloadProtocol | None:
-    persisted_protocol = normalize_download_protocol(
-        queue.get("download_protocol")
-    )
+    persisted_protocol = normalize_download_protocol(queue.get("download_protocol"))
     if persisted_protocol is not None:
         return persisted_protocol
     return resolve_download_protocol(
         db,
-        download_client_id=coerce_download_client_id(
-            queue.get("download_client_id")
-        ),
+        download_client_id=coerce_download_client_id(queue.get("download_client_id")),
         series_id=series_id,
         download_id=str(queue.get("download_id") or ""),
         source_url=str(queue.get("torrent_url") or ""),
         allow_client_configuration=False,
     )
+
+
+def _protected_grab_rows(
+    db: sqlite3.Connection, plan: "_ImportPlan"
+) -> dict[Literal["volumes", "chapters"], list[sqlite3.Row]] | None:
+    """Snapshot non-claims before any file writes or volume-status triggers."""
+    queue = plan.queue
+    if not _automatic_grab_import(db, queue):
+        return None
+    identity = _queue_identity(db, queue)
+    source_url = str(queue.get("torrent_url") or "")
+
+    manual_files = _manual_mapping_files(queue)
+    manual_volumes = {
+        fp.proposed_vol
+        for fp in plan.files
+        if fp.file_id in manual_files and fp.file_type != "chapter"
+    }
+    manual_chapters = {
+        fp.proposed_chap
+        for fp in plan.files
+        if fp.file_id in manual_files and fp.file_type == "chapter"
+    }
+    volume_rows = db.execute(
+        "SELECT * FROM volumes WHERE series_id=? AND volume_num IS NOT NULL",
+        (plan.series_id,),
+    ).fetchall()
+    manual_volume_ids = {
+        r["id"] for r in volume_rows if r["volume_num"] in manual_volumes
+    }
+    protected: dict[Literal["volumes", "chapters"], list[sqlite3.Row]] = {
+        "volumes": [
+            r
+            for r in volume_rows
+            if r["id"] not in manual_volume_ids
+            and not (
+                r["status"] == "grabbed"
+                and _same_acquisition(r, identity, source_url, "source_url")
+            )
+        ],
+        "chapters": [
+            r
+            for r in db.execute(
+                "SELECT * FROM chapters WHERE series_id=?", (plan.series_id,)
+            )
+            if r["volume_id"] not in manual_volume_ids
+            and r["chapter_num"] not in manual_chapters
+            and not (
+                r["status"] == "grabbed"
+                and _same_acquisition(r, identity, source_url, "torrent_url")
+            )
+        ],
+    }
+    return protected
+
+
+def _restore_protected_grab_rows(
+    db: sqlite3.Connection,
+    protected: dict[Literal["volumes", "chapters"], list[sqlite3.Row]] | None,
+) -> None:
+    if protected is None:
+        return
+    # Restore volumes first: their status trigger may touch child chapters.
+    for table in ("volumes", "chapters"):
+        for row in protected[table]:
+            current = db.execute(
+                f"SELECT * FROM {table} WHERE id=?", (row["id"],)
+            ).fetchone()
+            if current is None:
+                raise RuntimeError("automatic import deleted an unclaimed library row")
+            if tuple(current) == tuple(row):
+                continue
+            # Column names come from the database row, not external configuration.
+            columns = [c for c in row.keys() if c != "id"]
+            assignments = ",".join(f"{c}=?" for c in columns)
+            db.execute(
+                f"UPDATE {table} SET {assignments} WHERE id=?",
+                (*[row[c] for c in columns], row["id"]),
+            )
 
 
 def _queue_metadata(
@@ -173,6 +257,9 @@ def _commit_import(
         lease_seconds=lease_seconds,
     ):
         return False, 0, "lease_lost"
+
+    protected_grab_rows = _protected_grab_rows(db, plan)
+    queue["_respect_grab_claims"] = protected_grab_rows is not None
 
     outcomes_by_id = {o.file_id: o for o in outcomes}
     imported_count = 0
@@ -467,11 +554,7 @@ def _commit_import(
                 "dst_dir": dst_dir,
                 "count": imported_count,
                 "import_kinds": sorted(
-                    {
-                        fp.import_kind
-                        for fp in plan.files
-                        if fp.plan_status == "ready"
-                    }
+                    {fp.import_kind for fp in plan.files if fp.plan_status == "ready"}
                 ),
             },
         )
@@ -521,6 +604,8 @@ def _commit_import(
             torrent_url=queue["torrent_url"] or "",
         )
 
+    _restore_protected_grab_rows(db, protected_grab_rows)
+
     if publication_id is not None:
         notification = (
             (
@@ -560,7 +645,9 @@ def _process_import_file(
     """Process a single file during Phase 3 import."""
     if fp.import_kind == "special":
         _process_special_import(db, fp, dst, queue, series_id)
-    elif fp.import_kind in ("chapter", "chapter_range") and fp.proposed_chap is not None:
+    elif (
+        fp.import_kind in ("chapter", "chapter_range") and fp.proposed_chap is not None
+    ):
         _process_chapter_import(
             db,
             fp,
@@ -658,6 +745,24 @@ def _process_chapter_import(
         "UPDATE import_queue_files SET status='imported', dst_path=? WHERE id=?",
         (dst, fp.file_id),
     )
+    if queue.get("_respect_grab_claims") and fp.file_id not in _manual_mapping_files(
+        queue
+    ):
+        claim = db.execute(
+            "SELECT * FROM chapters WHERE series_id=? AND chapter_num=?",
+            (series_id, fp.proposed_chap),
+        ).fetchone()
+        if (
+            claim is None
+            or claim["status"] != "grabbed"
+            or not _same_acquisition(
+                claim,
+                _queue_identity(db, queue),
+                str(queue.get("torrent_url") or ""),
+                "torrent_url",
+            )
+        ):
+            return
 
     vol_id = None
     if fp.proposed_vol is not None:
@@ -677,9 +782,7 @@ def _process_chapter_import(
     metadata = _queue_metadata(db, queue, series_id)
     _ch_quality = quality_from_filename(dst)
     _ch_torrent_name = metadata.get("torrent_name") or queue["torrent_name"]
-    download_client_id = coerce_download_client_id(
-        queue.get("download_client_id")
-    )
+    download_client_id = coerce_download_client_id(queue.get("download_client_id"))
     imported_at = datetime.utcnow().isoformat()
 
     chap_row = db.execute(
@@ -756,6 +859,27 @@ def _process_volume_import(db, fp, dst, plan, queue, series_id, imported_vols):
         "UPDATE import_queue_files SET status='imported', dst_path=? WHERE id=?",
         (dst, fp.file_id),
     )
+
+    if (
+        queue.get("_respect_grab_claims")
+        and fp.proposed_vol is not None
+        and fp.file_id not in _manual_mapping_files(queue)
+    ):
+        claim = db.execute(
+            "SELECT * FROM volumes WHERE series_id=? AND volume_num=?",
+            (series_id, fp.proposed_vol),
+        ).fetchone()
+        if (
+            claim is None
+            or claim["status"] != "grabbed"
+            or not _same_acquisition(
+                claim,
+                _queue_identity(db, queue),
+                str(queue.get("torrent_url") or ""),
+                "source_url",
+            )
+        ):
+            return
 
     if fp.proposed_vol is not None:
         imported_vols.add(fp.proposed_vol)
@@ -860,7 +984,11 @@ def _process_volume_import(db, fp, dst, plan, queue, series_id, imported_vols):
                 [vol_row["id"]],
                 "downloaded",
                 import_path=dst,
-                download_id=queue["download_id"],
+                **(
+                    {"download_id": queue["download_id"]}
+                    if not queue.get("_respect_grab_claims")
+                    else {}
+                ),
                 quality=file_quality,
                 torrent_name=meta.get("torrent_name"),
                 indexer=meta.get("indexer"),
