@@ -5,6 +5,12 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+### Fixed
+
+- Require a unique Suwayomi manga-directory match at the strongest title tier;
+  refuse ambiguity, substring guesses, and child symlinks before import.
+  See [directory selection](docs/suwayomi-directory-selection.md).
+
 ## 1.3.2 - 2026-10-08
 
 Published and qualified as the current stable release. All local and
