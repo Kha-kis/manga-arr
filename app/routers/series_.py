@@ -200,7 +200,9 @@ async def _rescan_all_impl() -> None:
         ]
     total = {"found": 0, "recovered": 0, "missing": 0, "lost": 0, "created": 0}
     for sid in series_ids:
-        result = await asyncio.to_thread(_m.rescan_series_folder, sid)
+        from rescan_file_recovery import rescan_series_in_thread
+
+        result = await rescan_series_in_thread(sid, _m.rescan_series_folder)
         total["found"] += result["found"]
         total["recovered"] += result["recovered"]
         total["missing"] += result["missing"]
@@ -1855,9 +1857,13 @@ def _prepare_hard_delete_series(
         " ) OR EXISTS ("
         "   SELECT 1 FROM volume_file_deletions deletion"
         "   WHERE deletion.series_id=? AND deletion.state='active'"
+        " ) OR EXISTS ("
+        "   SELECT 1 FROM rescan_file_operations rescan_operation"
+        "   WHERE rescan_operation.series_id=? AND rescan_operation.state IN"
+        "     ('prepared','published','db_committed','rollback')"
         " )"
         " LIMIT 1",
-        (series_id, series_id),
+        (series_id, series_id, series_id),
     ).fetchone()
     if import_active is not None:
         return {
@@ -3517,7 +3523,9 @@ async def grab_volume_release(series_id: int, volume_id: int, request: Request):
 async def rescan_series(request: Request, series_id: int):
     import main as _m
 
-    result = await asyncio.to_thread(_m.rescan_series_folder, series_id)
+    from rescan_file_recovery import rescan_series_in_thread
+
+    result = await rescan_series_in_thread(series_id, _m.rescan_series_folder)
     parts = []
     if result["found"]:
         parts.append(f"{result['found']} file(s) on disk")

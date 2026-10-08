@@ -523,6 +523,13 @@ def create_publication(
           AND current_queue.status='importing'
           AND current_queue.lease_owner=?
           AND current_queue.lease_expires_at > CURRENT_TIMESTAMP
+          AND NOT EXISTS (
+              SELECT 1 FROM rescan_file_operations rescan_operation
+              WHERE (rescan_operation.series_id=current_queue.series_id
+                     OR rescan_operation.series_id=?)
+                AND rescan_operation.state IN
+                    ('prepared','published','db_committed','rollback')
+          )
         """,
         (
             queue_id,
@@ -556,6 +563,7 @@ def create_publication(
             queue.get("created_at"),
             queue_id,
             owner_token,
+            plan.series_id,
         ),
     )
     if cur.rowcount != 1:

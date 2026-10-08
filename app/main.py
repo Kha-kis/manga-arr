@@ -430,7 +430,7 @@ from metadata_service import (  # noqa: F401
 from tasks import (  # noqa: F401
     rss_loop, status_loop, pack_cleanup_recovery_loop,
     publication_replay_loop,
-    volume_deletion_replay_loop, refresh_ongoing_loop,
+    volume_deletion_replay_loop, rescan_replay_loop, refresh_ongoing_loop,
     _metadata_retry_loop, _backfill_metadata_loop, _stuck_state_cleanup_loop,
     backlog_search_loop, backlog_search,
     import_list_sync, rescan_loop,
@@ -448,6 +448,7 @@ from import_workers import (  # noqa: F401
     stop_import_worker_scheduling,
 )
 from import_publication import drain_active_import_publications  # noqa: F401
+from rescan_file_recovery import drain_active_rescan_file_operations
 from import_pack_cleanup import recover_pack_cleanup_state  # noqa: F401
 from volume_file_deletion import (  # noqa: F401
     drain_active_volume_file_deletions,
@@ -546,6 +547,9 @@ async def lifespan(app: FastAPI):
             f"{_pack_recovery.tombstones_removed} tombstone(s) removed, "
             f"{_pack_recovery.tombstones_retained} tombstone(s) retained",
         )
+    _rescan_replay = await drain_active_rescan_file_operations(page_size=100)
+    if _rescan_replay:
+        log_event("rescan_replay", f"startup rescan file recovery: {_rescan_replay}")
     # Deletion reservations already reset their volume rows and fence import
     # admission. Replay them before publication recovery or any producer can
     # attempt work for the same series.
@@ -653,6 +657,7 @@ async def lifespan(app: FastAPI):
         create_background_task(pack_cleanup_recovery_loop(),       name="pack_cleanup_recovery_loop")
         create_background_task(publication_replay_loop(),          name="publication_replay_loop")
         create_background_task(volume_deletion_replay_loop(),      name="volume_deletion_replay_loop")
+        create_background_task(rescan_replay_loop(),               name="rescan_replay_loop")
         create_background_task(refresh_ongoing_loop(),             name="refresh_ongoing_loop")
         create_background_task(_metadata_retry_loop(),             name="metadata_retry_loop")
         create_background_task(_backfill_metadata_loop(),          name="backfill_metadata_loop")
