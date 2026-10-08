@@ -161,9 +161,12 @@ tampering or replace the publication and deletion journals. Other filesystem
 workflows have not yet been wired to this guard.
 
 Rescans and existing-folder adoption omit reserved recovery/staging directories:
-`.mangarr-claims`, `.mangarr-claim-*`, and `.mangarr-rescan-*`. Archives under
-these trees are not library or local-count evidence. The scanner leaves their
-files and ownership proofs untouched; a reserved name never authorizes cleanup.
+`.mangarr-claims`, `.mangarr-claim-*`, `.mangarr-rescan-*`,
+`.mangarr-publication-*`, and `.mangarr-staging-*`. This applies to nested trees,
+the initial scan/adoption directory, and its lexical or resolved ancestors.
+Archives under these trees are not library or local-count evidence. The scanner
+leaves their files and ownership proofs untouched; a reserved name never
+authorizes cleanup.
 Other hidden directories and similarly named nonreserved directories remain
 discoverable.
 

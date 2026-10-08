@@ -401,6 +401,17 @@ def _fingerprint(stat_result: os.stat_result) -> FileFingerprint:
     )
 
 
+def _is_private_inventory_directory(name: str) -> bool:
+    return name == ".mangarr-claims" or name.startswith(
+        (
+            ".mangarr-claim-",
+            ".mangarr-rescan-",
+            ".mangarr-publication-",
+            ".mangarr-staging-",
+        )
+    )
+
+
 def build_filesystem_inventory(
     snapshot: SeriesRescanSnapshot,
 ) -> SeriesFilesystemInventory:
@@ -416,13 +427,16 @@ def build_filesystem_inventory(
         if volume["import_path"]
     }
     series_dir = snapshot.series_dir
+    if series_dir and any(
+        _is_private_inventory_directory(part)
+        for path in (os.path.abspath(series_dir), os.path.realpath(series_dir))
+        for part in path.split(os.sep)
+    ):
+        series_dir = None
     if series_dir and os.path.isdir(series_dir):
         for root, dirs, files in os.walk(series_dir):
             dirs[:] = [
-                name
-                for name in dirs
-                if name != ".mangarr-claims"
-                and not name.startswith((".mangarr-claim-", ".mangarr-rescan-"))
+                name for name in dirs if not _is_private_inventory_directory(name)
             ]
             dirs.sort(key=str.casefold)
             for filename in sorted(files, key=str.casefold):
