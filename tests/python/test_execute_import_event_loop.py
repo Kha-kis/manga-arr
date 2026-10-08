@@ -154,6 +154,7 @@ def _seed_chapter_queue(
     Library destination now requires a root folder (PR C removed the
     save_path fallback). Seed one pointing at library_root (defaults
     to /tmp) so the import pipeline has somewhere to place files.
+    This direct local queue models an explicit internal manual import.
     """
     # Use the settings save_path as the library root by default — that's
     # where the env fixture already pointed things. init_db's bootstrap
@@ -178,8 +179,9 @@ def _seed_chapter_queue(
             (series_id, "EvLoopTest", "EvLoopTest"),
         )
         cur = c.execute(
-            "INSERT INTO import_queue(series_id, torrent_name, status, created_at)"
-            " VALUES(?, 'evloop-torrent', 'pending', datetime('now'))",
+            "INSERT INTO import_queue(series_id, torrent_name, status, created_at,"
+            " respect_grab_claims)"
+            " VALUES(?, 'evloop-torrent', 'pending', datetime('now'),0)",
             (series_id,),
         )
         qid = cur.lastrowid

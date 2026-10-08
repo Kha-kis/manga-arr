@@ -135,9 +135,9 @@ def _seed_queue(
             )
         db.execute(
             "INSERT INTO import_queue(series_id,download_id,torrent_name,"
-            " torrent_url,volume_num,src_dir,status)"
+            " torrent_url,volume_num,src_dir,status,respect_grab_claims)"
             " VALUES(?,'journal-download','Journal batch','magnet:journal',"
-            " NULL,?,'pending')",
+            " NULL,?,'pending',0)",
             (series_id, str(source_root)),
         )
         queue_id = int(db.execute("SELECT last_insert_rowid()").fetchone()[0])
@@ -1405,8 +1405,8 @@ def test_source_equal_destination_move_retains_published_file(
         )
         db.execute(
             "INSERT INTO import_queue(series_id,download_id,torrent_name,"
-            " torrent_url,volume_num,src_dir,status)"
-            " VALUES(?,'same-path','Same Path','magnet:same',1,?,'pending')",
+            " torrent_url,volume_num,src_dir,status,respect_grab_claims)"
+            " VALUES(?,'same-path','Same Path','magnet:same',1,?,'pending',0)",
             (series_id, str(destination_dir)),
         )
         queue_id = int(db.execute("SELECT last_insert_rowid()").fetchone()[0])

@@ -118,12 +118,12 @@ def _seed_series(db_path: str, *, series_id: int = 7, title: str = "Test Series"
 def _run_queue_import(db_path: str, *, series_id: int, torrent_name: str,
                       content_path: str, download_id: str = "dlid-test",
                       volume_num: float | None = None) -> int:
-    """Invoke main._queue_import under a real get_db transaction and
-    return the resulting queue_id."""
+    """Queue an explicit internal manual local import under a real transaction."""
     import main
     with main.get_db() as db:
         qid, _ = main._queue_import(
-            db, series_id, download_id, torrent_name, None, volume_num, content_path
+            db, series_id, download_id, torrent_name, None, volume_num, content_path,
+            respect_grab_claims=False,
         )
     return qid
 
@@ -516,6 +516,7 @@ def test_next_poll_preserves_mixed_partial_queue_with_import_receipt(env):
             "magnet:mixed-review",
             None,
             str(src_dir),
+            respect_grab_claims=False,
         )
     assert qid is not None
     assert needs_review
@@ -558,6 +559,7 @@ def test_next_poll_preserves_mixed_partial_queue_with_import_receipt(env):
             "magnet:mixed-review",
             None,
             str(src_dir),
+            respect_grab_claims=False,
         )
     assert next_poll == (qid, True)
 
@@ -597,13 +599,15 @@ def test_execute_import_mixed_pack_skips_duplicate_and_imports_wanted(env):
             (str(existing),),
         )
         c.execute(
-            "INSERT INTO volumes(series_id, volume_num, status)"
-            " VALUES(7, 2.0, 'wanted')",
+            "INSERT INTO volumes(series_id, volume_num, status, download_id,source_url)"
+            " VALUES(7, 2.0, 'grabbed','dl-mixed','magnet:mixed')",
         )
         vol2_id = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+        # The acquired volume's monitored children carry the same grab anchors.
         c.executemany(
-            "INSERT INTO chapters(series_id, volume_id, chapter_num, status, monitored)"
-            " VALUES(7, ?, ?, 'wanted', 1)",
+            "INSERT INTO chapters(series_id, volume_id, chapter_num, status, monitored,"
+            " download_id,torrent_url)"
+            " VALUES(7, ?, ?, 'grabbed', 1,'dl-mixed','magnet:mixed')",
             [(vol2_id, 11.0), (vol2_id, 12.0)],
         )
         c.execute(
@@ -612,8 +616,8 @@ def test_execute_import_mixed_pack_skips_duplicate_and_imports_wanted(env):
         )
         c.execute(
             "INSERT INTO import_queue(series_id, download_id, torrent_name,"
-            " torrent_url, src_dir, status)"
-            " VALUES(7, 'dl-mixed', 'Test Series pack', 'magnet:mixed', ?, 'pending')",
+            " torrent_url, src_dir, status,respect_grab_claims)"
+            " VALUES(7, 'dl-mixed', 'Test Series pack', 'magnet:mixed', ?, 'pending',1)",
             (str(src_dir),),
         )
         qid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -1504,7 +1508,9 @@ def test_conflicting_vol_and_chap_marks_needs_review(env):
 def test_legacy_queue_row_without_new_columns_still_imports(env):
     """Simulate a queue row written before the Stage 2 migration — it
     has proposed_volume set but all new columns NULL. _execute_import
-    must still process it via the legacy fallback path."""
+    must still process it via the legacy fallback path. Legacy mapping metadata
+    is not unknown acquisition policy: this local queue is explicitly manual.
+    """
     _seed_series(env["db_path"], total_volumes=10)
     src_dir = env["src_root"] / "legacy"
     src_dir.mkdir()
@@ -1513,8 +1519,8 @@ def test_legacy_queue_row_without_new_columns_still_imports(env):
     with sqlite3.connect(env["db_path"]) as c:
         cur = c.execute(
             "INSERT INTO import_queue(series_id, torrent_name, src_dir, status, created_at,"
-            " download_id)"
-            " VALUES(7, 'legacy', ?, 'pending', datetime('now'), 'legacy-dlid')",
+            " download_id,respect_grab_claims)"
+            " VALUES(7, 'legacy', ?, 'pending', datetime('now'), 'legacy-dlid',0)",
             (str(src_dir),)
         )
         qid = cur.lastrowid
@@ -1537,6 +1543,43 @@ def test_legacy_queue_row_without_new_columns_still_imports(env):
     assert len(vols) == 1
     assert vols[0]["volume_num"] == 1.0
     assert vols[0]["status"] == "downloaded"
+
+
+def test_legacy_mapping_metadata_does_not_authorize_unknown_acquisition(env):
+    """The same NULL mapping metadata cannot turn unknown intent into manual."""
+    _seed_series(env["db_path"], total_volumes=10)
+    src_dir = env["src_root"] / "legacy-unknown"
+    src_dir.mkdir()
+    src = _make_zip(str(src_dir / "legacy-vol1.cbz"))
+    original = Path(src).read_bytes()
+    with sqlite3.connect(env["db_path"]) as c:
+        cur = c.execute(
+            "INSERT INTO import_queue(series_id,torrent_name,src_dir,status,download_id)"
+            " VALUES(7,'legacy-unknown',?,'pending','legacy-unknown-dlid')",
+            (str(src_dir),),
+        )
+        qid = cur.lastrowid
+        assert qid is not None
+        c.execute(
+            "INSERT INTO import_queue_files(queue_id,filename,src_path,proposed_volume,"
+            "file_type,status) VALUES(?,'legacy-vol1.cbz',?,1,'volume','pending')",
+            (qid, src),
+        )
+        assert c.execute(
+            "SELECT respect_grab_claims FROM import_queue WHERE id=?", (qid,)
+        ).fetchone() == (None,)
+        assert c.execute(
+            "SELECT proposed_import_kind,proposed_volume_range_start,"
+            "proposed_volume_range_end FROM import_queue_files WHERE queue_id=?", (qid,)
+        ).fetchone() == (None, None, None)
+
+    import main
+
+    asyncio.run(main._execute_import(qid))
+    with sqlite3.connect(env["db_path"]) as c:
+        assert c.execute("SELECT id FROM volumes WHERE series_id=7").fetchall() == []
+    assert list(env["lib_root"].rglob("*.cbz")) == []
+    assert Path(src).read_bytes() == original
 
 
 # ─────────────── 12. pack completion Row access ─────────────────────
