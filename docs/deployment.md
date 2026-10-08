@@ -165,7 +165,8 @@ coherent shared mount.
 
 ### Filesystem Ownership Coordination
 
-Volume-file deletion and rescan recovery use a persistent
+Import publication, generated-pack workers, volume-file deletion, and rescan
+recovery use a persistent
 `.<database filename>.file-mutation.lock` beside the local SQLite database.
 It is an empty, application-owned `0600` file. Participating workers use it
 for non-expiring exclusion without holding SQLite's writer lock during file I/O.
@@ -176,8 +177,8 @@ The coordination file and database must remain local. Trusted group-writable
 config directories, including root-owned Kubernetes fsGroup layouts, are
 supported; world-writable config is not. Mangarr does not change config-directory
 ownership or permissions. The lock does not protect against hostile config
-tampering or replace the publication, deletion, and rescan journals. The remaining
-import-publication and pack caller integration is described below.
+tampering or replace the publication, pack, deletion, and rescan journals.
+Trusted extractor children retain operation ownership until their writes settle.
 
 ### Private File Claims
 
@@ -227,32 +228,45 @@ private namespace and its parent directory are persistent recovery authority.
 
 ### NFS Publication Limits
 
-On Linux, imports to a **new destination** can use an atomic hardlink from
-Mangarr's private journal-owned staging directory when the filesystem rejects
-`renameat2(RENAME_NOREPLACE)` with `ENOSYS`, `EINVAL`, or `EOPNOTSUPP`, or libc
-does not expose that operation. This supports copy and hardlink imports when
-the filesystem supports hardlinks and the existing directory-fsync barriers.
-Staging is on the library filesystem; cross-filesystem links and permission
-errors are not bypassed. Only regular files qualify, not directories or symlinks.
+Mangarr 1.3.2 supports the qualified Linux NFSv4.1 library/download workflows
+without requiring native `renameat2(RENAME_NOREPLACE)` support: new-file
+publication, ownership-qualified overwrites, move-source cleanup, volume-file
+deletion, rescan conversion/enrichment, and generated-pack recovery and cleanup.
+Purge also preserves the permanent private recovery namespaces.
 
-The fallback never replaces an occupied destination or unlinks the staged name
-during publication. Staging is removed by journal cleanup after the database
-commit. If publication is interrupted after linking but before the journal
-records durable publication completion, both staged and final names may remain.
-Replay blocks rather than treating matching inodes as proof of ownership. Such
-failures retain the journal and artifacts for manual review; automatic recovery
-is not guaranteed. Do not discard retained journals or artifacts without review.
+File publication and restoration use no-clobber hardlinks, with private carriers
+and durable journal/ownership proofs for capture, recovery, and cleanup.
+These file operations require verified regular files, not directories or symlinks.
+Generated-pack directory operations use their journaled private recovery
+protocol rather than relying on an unproven public directory reservation.
+Overwritten originals and private stages remain until the database decision;
+changed acquisition ownership selects compensation instead of silent completion.
+Filesystem work runs under the local coordination guard, outside SQLite write
+transactions.
 
-This is not general NFS support for atomic moves. Overwrites, move-source
-claims, and generated-pack directory cleanup
-still require native no-replace rename support on the filesystem where they
-operate. A move import can publish its new destination and commit library state,
-but unsupported source claims retain the original download and leave cleanup
-blocked. Generated image packs default to `/config/mangarr-image-pack`, which
-may be on a different filesystem from the library. Directory cleanup remains
-unchanged. Absent-file publication passed unsupported-error fault injection and
-isolated real NFS 4.1 copy/hardlink workflows as UID 1000 with a local database.
-That evidence does not qualify the remaining paths or a specific Synology server.
+Configuration, SQLite, encryption key, and coordination lock must remain on
+**local storage**. Library/download filesystems must support the required
+hardlinks and directory-fsync barriers. Each claim/staging carrier must remain
+on the filesystem required by its operation; cross-filesystem link and
+permission errors are not bypassed. Generated image packs default to
+`/config/mangarr-image-pack`, independently of the library location.
+
+The controlled-provisioning requirements above still apply, including server
+ACLs: establish private recovery namespaces before sharing their parent as
+`0770`/`0775`. Unknown shared roots are refused; Mangarr does not automatically
+chmod/chown existing parents or adopt lookalikes. Recovery requires durable
+proofs; matching names or inodes alone
+are insufficient. Missing or changed proofs and occupied restoration paths
+retain journals and artifacts for review. Automatic recovery is not guaranteed
+for ambiguous state. Do not delete private recovery files or edit journal rows
+to bypass a refusal.
+
+The published 1.3.2 AMD64 image passed all 30 NFSv4.1 cases across six workflow
+groups as UID 1000 with dropped runtime capabilities and local SQLite/config.
+This qualifies the tested workflows, not every NAS/server ACL policy, a specific
+Synology server, NFS-backed configuration, or ARM NFS/HTTP execution. See
+[1.3.2 qualification evidence](release-qualification.md#132-stable-qualification)
+for the full acceptance scope.
 
 ### Import Authority After History Cleanup
 
