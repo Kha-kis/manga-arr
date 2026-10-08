@@ -1701,6 +1701,7 @@ def _migrate_schema_constraints_locked(db: sqlite3.Connection) -> None:
         # migration idempotent so those unreleased databases also receive the
         # ownership-qualified pack journal shape.
         _migrate_history_download_ownership(db)
+        _ensure_private_file_claim_schema(db)
         return
 
     if version < _SCHEMA_VERSION_FK_CONSTRAINTS:
@@ -1721,6 +1722,23 @@ def _migrate_schema_constraints_locked(db: sqlite3.Connection) -> None:
 
     if version < _SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP:
         _migrate_history_download_ownership(db)
+    _ensure_private_file_claim_schema(db)
+
+
+def _ensure_private_file_claim_schema(db: sqlite3.Connection) -> None:
+    """Add nullable versioned FILE proofs without changing legacy journal rows."""
+    for table, column in (
+        ("import_publication_files", "final_claim_carrier_json"),
+        ("import_publication_files", "source_claim_carrier_json"),
+        ("volume_file_deletions", "claim_carrier_json"),
+    ):
+        columns = {str(row[1]) for row in db.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS file_claim_namespaces ("
+        "parent_path TEXT PRIMARY KEY, ownership_json TEXT)"
+    )
 
 
 def _migrate_history_download_ownership(db: sqlite3.Connection) -> None:

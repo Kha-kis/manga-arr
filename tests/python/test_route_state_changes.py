@@ -499,12 +499,12 @@ def test_volume_file_delete_pending_warns_and_defers_history(
             (file_path,),
         )
 
-    real_unlink = volume_file_deletion._unlink_claim
+    real_unlink = volume_file_deletion.private_claim.discard_private_regular
 
-    def fail_unlink(_path):
+    def fail_unlink(*_args):
         raise OSError("simulated unlink failure")
 
-    monkeypatch.setattr(volume_file_deletion, "_unlink_claim", fail_unlink)
+    monkeypatch.setattr(volume_file_deletion.private_claim, "discard_private_regular", fail_unlink)
     csrf = _csrf_kwargs(f"delete-pending-{htmx}")
     headers = dict(csrf["headers"])
     if htmx:
@@ -534,16 +534,16 @@ def test_volume_file_delete_pending_warns_and_defers_history(
 
     with sqlite3.connect(env["db_path"]) as db:
         journal = db.execute(
-            "SELECT id, state, claim_path FROM volume_file_deletions"
+            "SELECT id, state, claim_carrier_json FROM volume_file_deletions"
         ).fetchone()
         assert journal is not None
         assert journal[1] == "active"
-        assert Path(journal[2]).exists()
+        assert Path(json.loads(journal[2])["carrier_path"], "artifact").exists()
         assert db.execute(
             "SELECT COUNT(*) FROM history WHERE event_type='file_deleted'"
         ).fetchone()[0] == 0
 
-    monkeypatch.setattr(volume_file_deletion, "_unlink_claim", real_unlink)
+    monkeypatch.setattr(volume_file_deletion.private_claim, "discard_private_regular", real_unlink)
     assert volume_file_deletion.replay_volume_file_deletion(journal[0]) == "completed"
     with sqlite3.connect(env["db_path"]) as db:
         assert db.execute(
@@ -709,14 +709,14 @@ def test_volume_file_delete_slow_cleanup_does_not_hold_writer(
 
     cleanup_started = threading.Event()
     cleanup_release = threading.Event()
-    real_unlink = volume_file_deletion._unlink_claim
+    real_unlink = volume_file_deletion.private_claim.discard_private_regular
 
-    def slow_unlink(path):
+    def slow_unlink(*args):
         cleanup_started.set()
         assert cleanup_release.wait(timeout=5)
-        real_unlink(path)
+        real_unlink(*args)
 
-    monkeypatch.setattr(volume_file_deletion, "_unlink_claim", slow_unlink)
+    monkeypatch.setattr(volume_file_deletion.private_claim, "discard_private_regular", slow_unlink)
     csrf = _csrf_kwargs("slow-volume-delete")
 
     def delete_file():
