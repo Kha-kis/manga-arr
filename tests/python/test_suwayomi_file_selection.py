@@ -232,6 +232,10 @@ class ImportEnv:
         if "chapterNumber" not in query:
             for node in nodes:
                 node.pop("chapterNumber", None)
+        for field_name in ("name", "scanlator"):
+            if field_name not in query:
+                for node in nodes:
+                    node.pop(field_name, None)
         if "fetchChapters" in query:
             assert _variables == {"mid": 999}
             return {"fetchChapters": {"chapters": nodes}}
@@ -794,6 +798,302 @@ def test_actual_chapter_job_imports_non_mangadex_name(env: ImportEnv) -> None:
     assert chapter["monitored"] == 0
     with zipfile.ZipFile(chapter["import_path"]) as archive:
         assert archive.read("001.png") == b"seventeen"
+
+
+def prepare_source_chapter(env: ImportEnv, number: float = 49) -> None:
+    from metadata_provenance import record_manual_metadata
+
+    with sqlite3.connect(env.db_path) as db:
+        db.execute(
+            "UPDATE chapters SET chapter_num=?,quality='local-quality',size_bytes=42,"
+            " torrent_name='original-release' WHERE id=1",
+            (number,),
+        )
+        db.execute("UPDATE series SET chapter_map_source='manual' WHERE id=1")
+        record_manual_metadata(
+            1, {"title": "Selection", "chapter_vol_map": {"45.1": 1, "45.2": 1}}, db=db
+        )
+
+
+@pytest.mark.parametrize(
+    "scanlator,name,filename",
+    [
+        (
+            "_Alpha Team_ Beta",
+            "Vol.10 Ch.49 - Extra Story",
+            "_Alpha Team_ Beta_Vol.10 Ch.49 - Extra Story.cbz",
+        ),
+        ("Team7_2000", "Chapter 49", "Team7_2000_Chapter 49.cbz"),
+        (None, "Chapter 49", "Chapter 49.cbz"),
+        ("", "Chapter 49", "_Chapter 49.cbz"),
+        ("[Alpha]", "Chapter 49", "[Alpha]_Chapter 49.cbz"),
+        (None, "Chapitre 49 \u00e9", "Chapitre 49 \u00e9.cbz"),
+        (
+            None,
+            ' ..Chapter 49\x00\x1f\x7f"*/:<>?\\|.. ',
+            "Chapter 49" + "_" * 12 + ".cbz",
+        ),
+        (None, "x" * 239 + "\u00e9", "x" * 239 + ".cbz"),
+    ],
+)
+def test_source_evidence_completes_exact_chapter_job(
+    env: ImportEnv, scanlator: str | None, name: str, filename: str
+) -> None:
+    prepare_source_chapter(env)
+    source = env.manga_dir / filename
+    cbz(source, b"source-chapter-49")
+    # An unrelated same-number release must not win the legacy ranking.
+    if scanlator != "_Alpha Team_ Beta":
+        cbz(env.manga_dir / "A_# 49.cbz", b"wrong-release")
+    env.queue([{**node(605, 49), "name": name, "scanlator": scanlator}], chapter=49)
+    before_series, before_volume = env.row("series"), env.row("volumes")
+    before_chapter = env.row("chapters")
+    with sqlite3.connect(env.db_path) as db:
+        before_settings = db.execute("SELECT * FROM settings").fetchall()
+        before_provenance = db.execute(
+            "SELECT * FROM series_metadata_fields"
+        ).fetchall()
+    env.process()
+    job, chapter = env.row("suwayomi_downloads"), env.row("chapters")
+    assert job["status"] == "completed", job["error"]
+    assert job["chapter_ids"] == "[605]"
+    assert job["progress"] == 1
+    assert len(env.queries) == 1
+    assert env.row("series") == before_series
+    assert env.row("volumes") == before_volume
+    for key in ("monitored", "quality", "size_bytes", "torrent_name"):
+        assert chapter[key] == before_chapter[key]
+    with sqlite3.connect(env.db_path) as db:
+        assert db.execute("SELECT * FROM settings").fetchall() == before_settings
+        assert (
+            db.execute("SELECT * FROM series_metadata_fields").fetchall()
+            == before_provenance
+        )
+    assert chapter["status"] == "downloaded"
+    with zipfile.ZipFile(chapter["import_path"]) as archive:
+        assert archive.read("001.png") == b"source-chapter-49"
+    assert "name scanlator" in env.queries[0]
+    assert source.is_file()
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("\u00e9" * 121, "\u00e9" * 120),
+        ("x" * 239 + "\u00e9", "x" * 239),
+        ("\U0001f600" * 61, "\U0001f600" * 60),
+    ],
+)
+def test_source_basename_caps_utf8_without_splitting_codepoint(
+    name: str, expected: str
+) -> None:
+    assert (
+        swy._source_chapter_basename({"name": name, "scanlator": None})
+        == expected + ".cbz"
+    )
+
+
+def test_source_utf8_truncation_collision_refuses_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chapters = {
+        cid: {**node(cid, 49), "name": "\u00e9" * 120 + suffix, "scanlator": None}
+        for cid, suffix in ((605, "A"), (606, "B"))
+    }
+    monkeypatch.setattr(swy, "_chapter_files", lambda _: ["\u00e9" * 120 + ".cbz"])
+    assert swy._source_chapter_cbz(str(tmp_path), 49, [605], chapters) is None
+
+
+@pytest.mark.parametrize(
+    "name,scanlator,filename",
+    [("(invalid)", None, "(invalid).cbz"), (". ", "Alpha", "Alpha_.cbz")],
+)
+def test_empty_other_source_name_cannot_hide_basename_collision(
+    env: ImportEnv, name: str, scanlator: str | None, filename: str
+) -> None:
+    prepare_source_chapter(env)
+    cbz(env.manga_dir / filename, b"ambiguous-source-chapter")
+    cbz(env.manga_dir / "A_# 49.cbz", b"forbidden-generic-fallback")
+    env.queue(
+        [
+            {**node(605, 49), "name": name, "scanlator": scanlator},
+            {**node(606, 50), "name": "", "scanlator": scanlator},
+        ],
+        [605],
+        chapter=49,
+    )
+    before = {table: env.row(table) for table in ("series", "volumes", "chapters")}
+    env.process()
+    assert env.row("suwayomi_downloads")["status"] == "error"
+    assert {table: env.row(table) for table in before} == before
+    assert not env.library.exists()
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [
+        "wrong-scanlator",
+        "wrong-name",
+        "unrelated-id",
+        "missing-id",
+        "number-mismatch",
+        "decimal-mismatch",
+        "missing-number",
+        "invalid-number",
+        "collision",
+        "truncation-collision",
+        "symlink",
+        "directory",
+        "malformed-name",
+        "empty-name",
+        "malformed-scanlator",
+        "partial-malformed",
+        "multiple-queued-ids",
+        "surrogate",
+    ],
+)
+def test_source_evidence_refuses_unproven_chapter_without_fallback(
+    env: ImportEnv, problem: str
+) -> None:
+    prepare_source_chapter(env)
+    filename = "Alpha_Chapter 49.cbz"
+    chapter = {**node(605, 49), "name": "Chapter 49", "scanlator": "Alpha"}
+    nodes = [chapter]
+    ids = [605]
+    if problem == "wrong-scanlator":
+        chapter["scanlator"] = "Beta"
+    elif problem == "wrong-name":
+        chapter["name"] = "Chapter 49 - Other"
+    elif problem == "unrelated-id":
+        chapter["scanlator"] = "Beta"
+        nodes.append({**node(606, 49), "name": "Chapter 49", "scanlator": "Alpha"})
+    elif problem == "missing-id":
+        chapter["id"] = 606
+    elif problem == "number-mismatch":
+        chapter["chapterNumber"] = 48
+    elif problem == "decimal-mismatch":
+        chapter["chapterNumber"] = 49.5
+    elif problem == "missing-number":
+        chapter.pop("chapterNumber")
+    elif problem == "invalid-number":
+        chapter["chapterNumber"] = True
+    elif problem == "collision":
+        chapter["name"] = "Chapter 49?"
+        nodes.append({**node(606, 50), "name": "Chapter 49*", "scanlator": "Alpha"})
+        filename = "Alpha_Chapter 49_.cbz"
+    elif problem == "truncation-collision":
+        chapter.update(name="x" * 240 + "A", scanlator=None)
+        nodes.append({**node(606, 50), "name": "x" * 240 + "B", "scanlator": None})
+        filename = "x" * 240 + ".cbz"
+    elif problem == "malformed-name":
+        chapter["name"] = None
+    elif problem == "empty-name":
+        chapter["name"] = ""
+        filename = "Alpha_.cbz"
+    elif problem == "malformed-scanlator":
+        chapter["scanlator"] = ["Alpha"]
+    elif problem == "partial-malformed":
+        chapter.pop("scanlator")
+        chapter["name"] = 49
+    elif problem == "multiple-queued-ids":
+        nodes.append({**node(606, 49), "name": "Chapter 49", "scanlator": "Alpha"})
+        ids.append(606)
+    elif problem == "surrogate":
+        chapter["name"] = "Chapter 49\ud800"
+    source = env.manga_dir / filename
+    if problem == "directory":
+        source.mkdir()
+    elif problem == "symlink":
+        outside = env.manga_dir.parent / "outside.cbz"
+        cbz(outside)
+        source.symlink_to(outside)
+    else:
+        cbz(source, b"wrong-release")
+    cbz(env.manga_dir / "A_# 49.cbz", b"generic-fallback-must-not-win")
+    env.queue(nodes, ids, chapter=49)
+    before = {table: env.row(table) for table in ("series", "volumes", "chapters")}
+    env.process()
+    assert env.row("suwayomi_downloads")["status"] == (
+        "queued" if problem == "missing-id" else "error"
+    )
+    assert {table: env.row(table) for table in before} == before
+    assert not env.library.exists()
+
+
+@pytest.mark.parametrize("evidence", [{}, {"name": "Chapter 49"}, {"scanlator": None}])
+@pytest.mark.parametrize("problem", ["mismatch", "missing", "null", "boolean"])
+def test_missing_filename_evidence_still_requires_exact_source_number(
+    env: ImportEnv, evidence: dict[str, Any], problem: str
+) -> None:
+    prepare_source_chapter(env)
+    cbz(env.manga_dir / "Alpha_Chapter 49.cbz", b"unproven-chapter")
+    chapter = {**node(605, 49), **evidence}
+    if problem == "missing":
+        chapter.pop("chapterNumber")
+    else:
+        chapter["chapterNumber"] = {"mismatch": 48, "null": None, "boolean": True}[
+            problem
+        ]
+    env.queue([chapter], chapter=49)
+    before = {table: env.row(table) for table in ("series", "volumes", "chapters")}
+    env.process()
+    assert env.row("suwayomi_downloads")["status"] == "error"
+    assert {table: env.row(table) for table in before} == before
+    assert not env.library.exists()
+
+
+@pytest.mark.parametrize("evidence", [{}, {"name": "Chapter 49"}, {"scanlator": None}])
+def test_missing_source_fields_retain_cached_legacy_chapter(
+    env: ImportEnv, evidence: dict[str, Any]
+) -> None:
+    prepare_source_chapter(env)
+    cbz(env.manga_dir / "Alpha_Chapter 49.cbz", b"legacy")
+    env.queue([{**node(605, 49), **evidence}], chapter=49)
+    env.process()
+    assert env.row("suwayomi_downloads")["status"] == "completed"
+    # The existing cached destination remains untouched on another import.
+    Path(env.row("chapters")["import_path"]).write_bytes(b"cached-library-file")
+    env.process()
+    assert (
+        Path(env.row("chapters")["import_path"]).read_bytes() == b"cached-library-file"
+    )
+
+
+def test_missing_source_evidence_does_not_relax_filename_parser(env: ImportEnv) -> None:
+    prepare_source_chapter(env)
+    filename = "_Alpha Team_ Beta_Vol.10 Ch.49 - Extra Story.cbz"
+    cbz(env.manga_dir / filename)
+    assert swy._chapter_file_identity(filename) is None
+    assert swy._chapter_cbz(str(env.manga_dir), 49) is None
+    env.queue([node(605, 49)], chapter=49)
+    env.process()
+    assert env.row("suwayomi_downloads")["status"] == "error"
+    assert not env.library.exists()
+
+
+def test_source_evidence_decimal_chapter_does_not_select_whole(env: ImportEnv) -> None:
+    prepare_source_chapter(env, 49.5)
+    cbz(env.manga_dir / "Team7_Chapter 49.cbz", b"whole")
+    cbz(env.manga_dir / "Team7_Chapter 49.5.cbz", b"decimal")
+    env.queue(
+        [{**node(605, 49.5), "name": "Chapter 49.5", "scanlator": "Team7"}],
+        chapter=49.5,
+    )
+    env.process()
+    assert env.row("suwayomi_downloads")["status"] == "completed"
+    with zipfile.ZipFile(env.row("chapters")["import_path"]) as archive:
+        assert archive.read("001.png") == b"decimal"
+
+
+@pytest.mark.parametrize("merge", [True, False])
+def test_source_evidence_does_not_change_volume_selection(
+    env: ImportEnv, merge: bool
+) -> None:
+    env.client["merge_chapters"] = merge
+    cbz(env.manga_dir / "Alpha_Chapter 49.cbz", b"legacy-volume")
+    env.queue([{**node(605, 49), "name": "Different title", "scanlator": "Team7"}])
+    env.process()
+    assert env.row("suwayomi_downloads")["status"] == "completed"
 
 
 @pytest.mark.parametrize("number", [True, -1, float("inf"), "", {}, "not-a-number"])

@@ -155,7 +155,7 @@ def test_chapter_job_completes_without_attribute_error(env):
             (json.dumps([2683]),),
         )
 
-    with patch.object(swy, "_gql", new=_gql_stub("Hunter x Hunter", [2683])), \
+    with patch.object(swy, "_gql", new=_gql_stub("Hunter x Hunter", [2683], {2683: 200.0})), \
          patch.object(swy, "get_suwayomi_client",
                       new=lambda _db: {"id": 1, "type": "suwayomi",
                                        "host": "http://swy.local:4567",
@@ -204,7 +204,7 @@ def test_chapter_job_does_not_record_attribute_error(env):
             (json.dumps([100]),),
         )
 
-    with patch.object(swy, "_gql", new=_gql_stub("Hunter x Hunter", [100])), \
+    with patch.object(swy, "_gql", new=_gql_stub("Hunter x Hunter", [100], {100: 42.0})), \
          patch.object(swy, "get_suwayomi_client",
                       new=lambda _db: {"id": 1, "type": "suwayomi",
                                        "host": "http://swy.local:4567",
@@ -295,7 +295,7 @@ def test_chapter_job_with_missing_series_does_not_crash(env):
     # Filesystem lookup needs a series to find the manga dir → import returns None.
     # That's still a successful no-import path (status='error' set with the
     # specific 'Import failed' message, NOT an AttributeError).
-    with patch.object(swy, "_gql", new=_gql_stub("Doesn't Matter", [5])), \
+    with patch.object(swy, "_gql", new=_gql_stub("Doesn't Matter", [5], {5: 7.0})), \
          patch.object(swy, "get_suwayomi_client",
                       new=lambda _db: {"id": 1, "type": "suwayomi",
                                        "host": "http://swy.local:4567",
@@ -330,7 +330,7 @@ def test_failed_import_still_marks_error_with_descriptive_message(env):
             (json.dumps([404]),),
         )
 
-    with patch.object(swy, "_gql", new=_gql_stub("Hunter x Hunter", [404])), \
+    with patch.object(swy, "_gql", new=_gql_stub("Hunter x Hunter", [404], {404: 999.0})), \
          patch.object(swy, "get_suwayomi_client",
                       new=lambda _db: {"id": 1, "type": "suwayomi",
                                        "host": "http://swy.local:4567",

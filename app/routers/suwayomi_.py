@@ -646,6 +646,66 @@ def _chapter_cbz(manga_dir: str, chapter_num: float) -> str | None:
     return _select_chapter_cbz(manga_dir, number, _chapter_files(manga_dir))
 
 
+def _source_chapter_basename(chapter: Mapping[str, Any]) -> str | None:
+    """Reproduce Suwayomi v2.3.2243 DirName/SafePath, not title parsing."""
+    name = chapter.get("name")
+    scanlator = chapter.get("scanlator")
+    if (
+        "scanlator" not in chapter
+        or not isinstance(name, str)
+        or (scanlator is not None and not isinstance(scanlator, str))
+    ):
+        return None
+    stem = name if scanlator is None else f"{scanlator}_{name}"
+    stem = re.sub(r'[\x00-\x1f\x7f"*/:<>?\\|]', "_", stem.strip(". ") or "(invalid)")
+    try:
+        # UTF-8's byte bound also enforces the upstream UTF-16 character bound.
+        stem = stem.encode("utf-8")[:240].decode("utf-8", errors="ignore")
+    except UnicodeEncodeError:
+        return None
+    return f"{stem}.cbz" if stem else None
+
+
+def _source_chapter_cbz(
+    manga_dir: str,
+    chapter_num: float,
+    chapter_ids: Sequence[int],
+    chapters: Mapping[int, Mapping[str, Any]],
+) -> str | None:
+    """Use only the queued source identity; absent fields retain legacy matching."""
+    if len(chapter_ids) != 1 or chapter_ids[0] not in chapters:
+        return None
+    chapter = chapters[chapter_ids[0]]
+    number = _chapter_number(chapter_num)
+    if number is None or _chapter_number(chapter.get("chapterNumber")) != number:
+        return None
+    # Missing fields in old helpers are not malformed evidence. Present invalid
+    # fields must never grant permission to fall back to filename-only matching.
+    if "name" in chapter and (
+        not isinstance(chapter["name"], str) or not chapter["name"]
+    ):
+        return None
+    if "scanlator" in chapter and (
+        chapter["scanlator"] is not None and not isinstance(chapter["scanlator"], str)
+    ):
+        return None
+    if "name" not in chapter or "scanlator" not in chapter:
+        return _chapter_cbz(manga_dir, chapter_num)
+    basename = _source_chapter_basename(chapter)
+    if basename is None:
+        return None
+    if any(
+        cid != chapter_ids[0] and _source_chapter_basename(other) == basename
+        for cid, other in chapters.items()
+    ):
+        return None
+    return (
+        os.path.join(manga_dir, basename)
+        if basename in _chapter_files(manga_dir)
+        else None
+    )
+
+
 def _merge_cbzs(chapter_paths: list[str], output_path: str) -> int:
     """Merge ordered chapter CBZ files into a single volume CBZ.
     Returns total byte size of the output file, or 0 on failure.
@@ -1107,6 +1167,8 @@ async def _import_suwayomi_chapter(
 
 def _import_suwayomi_chapter_files(
     c: dict, series_id: int, chapter_num: float, *, swy_title: str = "",
+    chapter_ids: Sequence[int] = (),
+    source_chapters: Mapping[int, Mapping[str, Any]] | None = None,
 ) -> tuple[str | None, int]:
     """Import a single downloaded chapter CBZ into the managed library.
     Individual chapters are always kept as individual files (merge doesn't apply).
@@ -1125,7 +1187,11 @@ def _import_suwayomi_chapter_files(
     if not manga_dir:
         return None, 0
 
-    src = _chapter_cbz(manga_dir, chapter_num)
+    src = (
+        _chapter_cbz(manga_dir, chapter_num)
+        if source_chapters is None
+        else _source_chapter_cbz(manga_dir, chapter_num, chapter_ids, source_chapters)
+    )
     if not src:
         log.warning(
             "Chapter CBZ not found for series %d ch %s in %s",
@@ -1238,7 +1304,7 @@ async def _process_suwayomi_job(
         query($mid: Int!) {
             manga(id: $mid) {
                 title
-                chapters { nodes { id isDownloaded chapterNumber } }
+                chapters { nodes { id isDownloaded chapterNumber name scanlator } }
             }
         }
     """,
@@ -1296,6 +1362,8 @@ def _complete_suwayomi_job_files(
             job["series_id"],
             float(job["chapter_num"]),
             swy_title=swy_title,
+            chapter_ids=chapter_ids,
+            source_chapters=ch_map,
         )
         if not import_path:
             err_msg = "Import failed — chapter CBZ not found in library path"
