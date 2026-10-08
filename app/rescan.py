@@ -418,6 +418,12 @@ def build_filesystem_inventory(
     series_dir = snapshot.series_dir
     if series_dir and os.path.isdir(series_dir):
         for root, dirs, files in os.walk(series_dir):
+            dirs[:] = [
+                name
+                for name in dirs
+                if name != ".mangarr-claims"
+                and not name.startswith((".mangarr-claim-", ".mangarr-rescan-"))
+            ]
             dirs.sort(key=str.casefold)
             for filename in sorted(files, key=str.casefold):
                 if os.path.splitext(filename)[1].lower() not in MANGA_EXTENSIONS:
