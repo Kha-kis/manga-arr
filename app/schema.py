@@ -148,7 +148,8 @@ def init_db() -> None:
                 indexer      TEXT,
                 protocol     TEXT,
                 client       TEXT,
-                download_client_id INTEGER
+                download_client_id INTEGER,
+                respect_grab_claims INTEGER CHECK(respect_grab_claims IN (0,1))
             );
             CREATE TABLE IF NOT EXISTS events (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -200,6 +201,7 @@ def init_db() -> None:
                                       CHECK(download_protocol IN (
                                           'torrent','nzb'
                                       ) OR download_protocol IS NULL),
+                 respect_grab_claims INTEGER CHECK(respect_grab_claims IN (0,1)),
                  torrent_name TEXT,
                  torrent_url  TEXT,
                  volume_num   REAL,
@@ -1571,6 +1573,7 @@ _IMPORT_QUEUE_CONSTRAINED_DDL = """
         download_protocol    TEXT
                                CHECK(download_protocol IN ('torrent','nzb')
                                      OR download_protocol IS NULL),
+        respect_grab_claims   INTEGER CHECK(respect_grab_claims IN (0,1)),
         torrent_name         TEXT,
         torrent_url          TEXT,
         volume_num           REAL,
@@ -1701,6 +1704,7 @@ def _migrate_schema_constraints_locked(db: sqlite3.Connection) -> None:
         # migration idempotent so those unreleased databases also receive the
         # ownership-qualified pack journal shape.
         _migrate_history_download_ownership(db)
+        _ensure_acquisition_policy_columns(db)
         _ensure_private_file_claim_schema(db)
         _ensure_rescan_file_operations_schema(db)
         return
@@ -1723,6 +1727,7 @@ def _migrate_schema_constraints_locked(db: sqlite3.Connection) -> None:
 
     if version < _SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP:
         _migrate_history_download_ownership(db)
+    _ensure_acquisition_policy_columns(db)
     _ensure_private_file_claim_schema(db)
     _ensure_rescan_file_operations_schema(db)
 
@@ -1766,6 +1771,17 @@ def _ensure_rescan_file_operations_schema(db: sqlite3.Connection) -> None:
         ON rescan_file_operations(id)
         WHERE state IN ('prepared','published','db_committed','rollback')
     """)
+
+
+def _ensure_acquisition_policy_columns(db: sqlite3.Connection) -> None:
+    """Keep disposable history separate from durable import authority."""
+    for table in ("seen", "import_queue"):
+        columns = {str(row[1]) for row in db.execute(f"PRAGMA table_info({table})")}
+        if columns and "respect_grab_claims" not in columns:
+            db.execute(
+                f"ALTER TABLE {table} ADD COLUMN respect_grab_claims INTEGER"
+                " CHECK(respect_grab_claims IN (0,1))"
+            )
 
 
 def _ensure_private_file_claim_schema(db: sqlite3.Connection) -> None:
@@ -2461,7 +2477,8 @@ def _migrate_series_fk_constraints(db) -> None:
                 download_id   TEXT,
                 release_group TEXT,
                 size_bytes    INTEGER,
-                release_guid  TEXT
+                release_guid  TEXT,
+                respect_grab_claims INTEGER CHECK(respect_grab_claims IN (0,1))
             )
         """),
         ('pending_releases', """

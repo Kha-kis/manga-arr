@@ -121,6 +121,10 @@ def _ready_import(
         db.execute("UPDATE series SET root_folder_id=1 WHERE id=1")
     queue_id = _queue(db_path, download_id=download_id)
     with sqlite3.connect(db_path) as db:
+        # Only this local-file builder is manual; general lease queues stay unknown.
+        db.execute(
+            "UPDATE import_queue SET respect_grab_claims=0 WHERE id=?", (queue_id,)
+        )
         db.execute(
             "INSERT INTO import_queue_files("
             "queue_id, src_path, filename, status, file_type,"

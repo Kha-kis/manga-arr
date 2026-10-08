@@ -14,6 +14,8 @@ from collections.abc import Callable
 from functools import wraps
 from typing import Any, ParamSpec, TypeVar
 
+from acquisition_policy import acquisition_policy
+
 from files import (
     MANGA_EXTENSIONS,
     build_filename,
@@ -398,13 +400,17 @@ def _queue_import(
     *,
     download_client_id: int | None = None,
     protocol: str | None = None,
+    respect_grab_claims: bool | None = None,
 ) -> tuple[int | None, bool]:
     """
     Scan completed download files at content_path and create an import_queue entry.
     Returns (queue_id, needs_review).
     needs_review=False means all files mapped cleanly → can auto-import.
     needs_review=True means at least one file is ambiguous → requires user review.
+    False is explicit manual intent; None resolves persisted intent or constrains unknowns.
     """
+    if respect_grab_claims is not None and type(respect_grab_claims) is not bool:
+        raise ValueError("queue acquisition intent must be a boolean or None")
     if not content_path:
         log_event(
             "error",
@@ -975,10 +981,21 @@ def _queue_import(
         db.rollback()
         return None, False
 
+    # Discovery snapshots are not authority: resolve inside the attachment writer.
+    queue_policy = (
+        int(respect_grab_claims)
+        if respect_grab_claims is not None
+        else int(acquisition_policy(
+            db,
+            series_id=series_id,
+            source_url=torrent_url,
+            identity=identity,
+        ) != 0)
+    )
     cur = db.execute(
         "INSERT INTO import_queue(series_id, download_id, download_client_id,"
         " download_protocol, torrent_name, torrent_url, volume_num, src_dir,"
-        " status) VALUES(?,?,?,?,?,?,?,?,'pending')",
+        " respect_grab_claims,status) VALUES(?,?,?,?,?,?,?,?,?,'pending')",
         (
             series_id,
             download_id,
@@ -988,6 +1005,7 @@ def _queue_import(
             torrent_url,
             volume_num,
             src_dir,
+            queue_policy,
         ),
     )
     queue_id = cur.lastrowid

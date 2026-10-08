@@ -95,11 +95,11 @@ def test_publish_boundary_failure_keeps_prepared_journal_recoverable(
         with open(src_file, "wb") as f:
             f.write(b"PK\x03\x04" + b"x" * 200)
 
-        # Create queue
+        # Explicit local/manual queue; this control exercises publication faults.
         c.execute(
             "INSERT INTO import_queue(series_id, download_id, torrent_name,"
-            " torrent_url, volume_num, src_dir, status)"
-            " VALUES(?,?,?,?,?,?,'pending')",
+            " torrent_url, volume_num, src_dir, status,respect_grab_claims)"
+            " VALUES(?,?,?,?,?,?,'pending',0)",
             (
                 sid,
                 "dl-test",
@@ -227,14 +227,14 @@ def test_minimum_free_space_guard_blocks_before_staging(test_env, monkeypatch):
         with open(src_file, "wb") as f:
             f.write(b"PK\x03\x04" + b"x" * 2048)
         c.execute(
-            "INSERT INTO volumes(series_id, volume_num, status, download_id)"
-            " VALUES(?,1.0,'grabbed','dl-space')",
+            "INSERT INTO volumes(series_id, volume_num, status, download_id,source_url)"
+            " VALUES(?,1.0,'grabbed','dl-space','magnet:space')",
             (sid,),
         )
         c.execute(
             "INSERT INTO import_queue(series_id, download_id, torrent_name,"
-            " torrent_url, volume_num, src_dir, status)"
-            " VALUES(?,?,?,?,?,?,'pending')",
+            " torrent_url, volume_num, src_dir, status,respect_grab_claims)"
+            " VALUES(?,?,?,?,?,?,'pending',1)",
             (sid, "dl-space", "Space v01", "magnet:space", 1.0, test_env["src_root"]),
         )
         qid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -309,7 +309,8 @@ def test_os_replace_failure_preserves_grabbed_domain_until_replay(
 
         # Create grabbed volume stub
         c.execute(
-            "INSERT INTO volumes(series_id, volume_num, status, download_id) VALUES(?,?,?,?)",
+            "INSERT INTO volumes(series_id, volume_num, status, download_id,source_url)"
+            " VALUES(?,?,?,?,'magnet:test')",
             (sid, 1.0, "grabbed", "dl-test"),
         )
 
@@ -321,8 +322,8 @@ def test_os_replace_failure_preserves_grabbed_domain_until_replay(
         # Create queue
         c.execute(
             "INSERT INTO import_queue(series_id, download_id, torrent_name,"
-            " torrent_url, volume_num, src_dir, status)"
-            " VALUES(?,?,?,?,?,?,'pending')",
+            " torrent_url, volume_num, src_dir, status,respect_grab_claims)"
+            " VALUES(?,?,?,?,?,?,'pending',1)",
             (
                 sid,
                 "dl-test",
@@ -413,9 +414,11 @@ def test_preexisting_error_aborts_before_journal_publish(test_env, monkeypatch):
         with open(src_file, "wb") as f:
             f.write(b"PK\x03\x04" + b"x" * 200)
 
-        # Create queue
+        # Explicit manual local batch; neither file comes from a grab claim.
         c.execute(
-            "INSERT INTO import_queue(series_id, download_id, torrent_name, torrent_url, volume_num, src_dir, status) VALUES(?,?,?,?,?,?,'pending')",
+            "INSERT INTO import_queue(series_id, download_id, torrent_name, torrent_url,"
+            " volume_num, src_dir, status,respect_grab_claims)"
+            " VALUES(?,?,?,?,?,?,'pending',0)",
             (sid, "dl-test", "Test Pack", "magnet:test", None, test_env["src_root"]),
         )
         qid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -513,8 +516,8 @@ def test_publish_failure_defers_success_side_effects_until_replay(
 
         c.execute(
             "INSERT INTO import_queue(series_id, download_id, download_client_id,"
-            " torrent_name, torrent_url, volume_num, src_dir, status)"
-            " VALUES(?,?,915001,?,?,?,?,'pending')",
+            " torrent_name, torrent_url, volume_num, src_dir, status,respect_grab_claims)"
+            " VALUES(?,?,915001,?,?,?,?,'pending',1)",
             (
                 sid,
                 "dl-test",
@@ -535,15 +538,15 @@ def test_publish_failure_defers_success_side_effects_until_replay(
         # adapter marker, which Phase 3 resolves to the exact configured ID.
         c.execute(
             "INSERT INTO seen(torrent_url,torrent_name,series_id,volume_num,"
-            " protocol,client,download_id,download_client_id)"
+            " protocol,client,download_id,download_client_id,respect_grab_claims)"
             " VALUES('magnet:test','Test v01',?,1,'torrent','qbittorrent',"
-            " 'dl-test',915001)",
+            " 'dl-test',915001,1)",
             (sid,),
         )
         c.execute(
             "INSERT INTO volumes(series_id,volume_num,status,download_id,"
-            " protocol,client,download_client_id)"
-            " VALUES(?,1,'grabbed','dl-test','torrent','qbittorrent',915001)",
+            " protocol,client,download_client_id,source_url)"
+            " VALUES(?,1,'grabbed','dl-test','torrent','qbittorrent',915001,'magnet:test')",
             (sid,),
         )
         c.commit()

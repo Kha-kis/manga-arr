@@ -1,12 +1,13 @@
 """Import planning: build _ImportPlan from queue/series/files data."""
 
-import json
 import logging
 import os
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+
+from acquisition_policy import acquisition_policy, policy_value
 
 from download_identity import (
     DownloadIdentity,
@@ -119,30 +120,17 @@ def _claim_identity_matches(row: sqlite3.Row, identity: DownloadIdentity) -> boo
 
 
 def _automatic_grab_import(db: sqlite3.Connection, queue: Mapping[str, Any]) -> bool:
-    persisted = queue.get("_respect_grab_claims")
-    if isinstance(persisted, bool):
-        return persisted
-    identity = _queue_identity(db, queue)
-    for row in db.execute(
-        "SELECT * FROM history WHERE series_id=? AND event_type='grabbed'"
-        " AND download_client_id IS ? AND torrent_url=? ORDER BY id DESC",
-        (
-            queue["series_id"],
-            identity.download_client_id,
-            str(queue.get("torrent_url") or ""),
-        ),
-    ):
-        if not _claim_identity_matches(row, identity):
-            continue
-        try:
-            data = json.loads(row["data"] or "{}")
-        except (TypeError, ValueError):
-            data = {}
-        if isinstance(data, dict) and data.get("claim_lost") is True:
-            return True
-        return not (isinstance(data, dict) and data.get("respect_monitoring") is False)
-    # Untracked manually queued imports retain their existing override semantics.
-    return False
+    persisted = policy_value(queue.get("respect_grab_claims"))
+    if persisted is not None:
+        return bool(persisted)
+    if queue.get("_respect_grab_claims") is True:
+        return True
+    return acquisition_policy(
+        db,
+        series_id=int(queue["series_id"]),
+        source_url=str(queue.get("torrent_url") or ""),
+        identity=_queue_identity(db, queue),
+    ) != 0
 
 
 def _file_has_grab_claim(
@@ -225,6 +213,7 @@ def _plan_import(
         set(volume_overrides) | set(chapter_overrides)
     )
     queue["_respect_grab_claims"] = _automatic_grab_import(db, queue)
+    queue["respect_grab_claims"] = int(queue["_respect_grab_claims"])
 
     files = db.execute(
         "SELECT * FROM import_queue_files"
@@ -603,6 +592,11 @@ def _plan_import(
     # Phase 1 may update child decisions above. This renewal is deliberately
     # its final DB mutation so an expired/stale owner rolls the transaction
     # back instead of committing any of those child changes.
+    db.execute(
+        "UPDATE import_queue SET respect_grab_claims=?"
+        " WHERE id=? AND lease_owner=? AND respect_grab_claims IS NULL",
+        (queue["respect_grab_claims"], queue_id, lease_owner),
+    )
     if not refresh_import_queue_lease(
         db,
         queue_id,

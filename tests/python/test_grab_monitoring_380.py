@@ -1104,6 +1104,7 @@ def queue_pack_files(paths, protocol: str, *, manual: bool = False) -> int:
             str(paths["downloads"]),
             download_client_id=7,
             protocol=protocol,
+            respect_grab_claims=False if manual else None,
         )
     assert qid is not None and not review
     return qid

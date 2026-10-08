@@ -235,6 +235,22 @@ unchanged. Absent-file publication passed unsupported-error fault injection and
 isolated real NFS 4.1 copy/hardlink workflows as UID 1000 with a local database.
 That evidence does not qualify the remaining paths or a specific Synology server.
 
+### Import Authority After History Cleanup
+
+Automatic acquisition intent is persisted with the accepted download and copied
+into its import queue. Clearing history does not convert that work into a manual
+import or authorize replacement of unrelated library files. Explicit manual
+release selection and manual queue creation retain their override semantics;
+individual volume/chapter mappings authorize only the selected files.
+
+Older queues without recorded intent use exact intact acquisition evidence.
+Missing, malformed or conflicting history is not manual permission. Such work
+remains claim-constrained unless the operator supplies explicit file mappings.
+An old active publication whose manual permission cannot be proven is retained
+with a diagnostic rather than resumed as an overwrite. Retry/approval alone
+does not grant that permission. Completed publication receipts are unchanged;
+do not remove retained recovery artifacts to bypass review.
+
 ## Network Exposure
 
 The example publishes `6789:8000`, making Mangarr reachable from the host and
