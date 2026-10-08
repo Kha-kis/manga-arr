@@ -264,6 +264,29 @@ async def volume_deletion_replay_loop() -> None:
             raise
 
 
+async def rescan_replay_loop() -> None:
+    """Advance through blocked rows before wrapping, with bounded idle retries."""
+    from rescan_file_recovery import replay_rescan_file_operations
+
+    cursor = 0
+    delay = 1.0
+    await asyncio.sleep(delay)
+    while True:
+        try:
+            summary = await replay_rescan_file_operations(after_id=cursor, limit=100)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log_event("error", f"[RescanReplay] journal replay failed ({type(exc).__name__})")
+            cursor = 0
+            delay = min(60.0, max(2.0, delay * 2))
+        else:
+            cursor = summary["last_id"] if summary["selected"] else 0
+            completed = sum(summary["outcomes"].get(key, 0) for key in ("completed", "rolled_back"))
+            delay = 1.0 if completed else min(60.0, max(2.0 if summary["selected"] else 5.0, delay * 2))
+        await asyncio.sleep(delay)
+
+
 _THROTTLED_REFRESH_DAYS = 7   # how many days between refreshes for 'throttled' series
 
 

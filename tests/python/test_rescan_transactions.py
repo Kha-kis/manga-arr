@@ -587,6 +587,7 @@ def test_enrichment_does_not_overwrite_replacement_after_final_validation(
     rescan_env, monkeypatch
 ):
     import rescan
+    import rescan_file_recovery as recovery
 
     source_path = rescan_env["series_dir"] / "Race Manga v01.cbz"
     with zipfile.ZipFile(source_path, "w") as archive:
@@ -595,17 +596,17 @@ def test_enrichment_does_not_overwrite_replacement_after_final_validation(
     replacement = rescan_env["series_dir"] / "winner.tmp"
     winner_bytes = b"filesystem-winner"
     replacement.write_bytes(winner_bytes)
-    real_claim = rescan._claim_exact_path
+    real_claim = recovery._capture_source
     replaced = False
 
-    def replace_then_claim(path, fingerprint):
+    def replace_then_claim(operation, guard):
         nonlocal replaced
-        if path == str(source_path) and not replaced:
+        if operation.row["source_path"] == str(source_path) and not replaced:
             replaced = True
             os.replace(replacement, source_path)
-        return real_claim(path, fingerprint)
+        return real_claim(operation, guard)
 
-    monkeypatch.setattr(rescan, "_claim_exact_path", replace_then_claim)
+    monkeypatch.setattr(recovery, "_capture_source", replace_then_claim)
 
     result = rescan.rescan_series_folder(7)
 
@@ -616,10 +617,9 @@ def test_enrichment_does_not_overwrite_replacement_after_final_validation(
 
 
 @pytest.mark.parametrize("cas_outcome", ["lost", "exception"])
-def test_cbr_cas_failure_compensates_publication(
-    rescan_env, monkeypatch, cas_outcome
-):
+def test_cbr_cas_failure_compensates_publication(rescan_env, monkeypatch, cas_outcome):
     import rescan
+    import rescan_file_recovery as recovery
 
     volume_id = _insert_volume(rescan_env["db_path"], 1.0, "wanted")
     cbr_path = rescan_env["series_dir"] / "Race Manga v01.cbr"
@@ -639,7 +639,7 @@ def test_cbr_cas_failure_compensates_publication(
 
     monkeypatch.setattr(rescan, "detect_file_type_magic", lambda path: "cbr")
     monkeypatch.setattr(rescan, "convert_cbr_to_cbz", fake_convert)
-    monkeypatch.setattr(rescan, "_cas_converted_volume", cas_result)
+    monkeypatch.setattr(recovery, "_commit", cas_result)
 
     result = rescan.rescan_series_folder(7)
 
@@ -654,7 +654,7 @@ def test_cbr_cas_failure_compensates_publication(
         ).fetchone() == ("downloaded", str(cbr_path))
 
 
-def test_systemic_noreplace_unavailability_skips_before_source_claim(
+def test_unrecognized_noreplace_error_restores_source_without_fallback(
     rescan_env, monkeypatch
 ):
     import rescan
@@ -670,7 +670,15 @@ def test_systemic_noreplace_unavailability_skips_before_source_claim(
         calls += 1
         raise OSError("renameat2 unavailable")
 
+    def fake_convert(staged_path):
+        converted = os.path.splitext(staged_path)[0] + ".cbz"
+        with zipfile.ZipFile(converted, "w") as archive:
+            archive.writestr("001.jpg", b"page")
+        return converted
+
     monkeypatch.setattr(rescan, "_rename_noreplace", unavailable)
+    monkeypatch.setattr(rescan, "detect_file_type_magic", lambda path: "cbr")
+    monkeypatch.setattr(rescan, "convert_cbr_to_cbz", fake_convert)
 
     result = rescan.rescan_series_folder(7)
 
@@ -679,9 +687,7 @@ def test_systemic_noreplace_unavailability_skips_before_source_claim(
     assert cbr_path.read_bytes() == original_bytes
     assert not cbr_path.with_suffix(".cbz").exists()
     assert not list(rescan_env["series_dir"].glob(".mangarr-claim-*"))
-    assert not list(
-        rescan_env["series_dir"].glob(".mangarr-noreplace-probe-*")
-    )
+    assert not list(rescan_env["series_dir"].glob(".mangarr-noreplace-probe-*"))
     with sqlite3.connect(rescan_env["db_path"]) as db:
         assert db.execute(
             "SELECT status,import_path FROM volumes WHERE id=?",
@@ -706,7 +712,7 @@ def test_publication_primitive_failure_restores_source(rescan_env, monkeypatch):
     real_rename_noreplace = rescan._rename_noreplace
 
     def fail_staged_publication(source, destination):
-        if ".mangarr-rescan-" in source:
+        if ".mangarr-claims/" in source:
             return False
         return real_rename_noreplace(source, destination)
 
@@ -729,6 +735,7 @@ def test_publication_primitive_failure_restores_source(rescan_env, monkeypatch):
 
 def test_artifact_cleanup_exception_still_restores_source(rescan_env, monkeypatch):
     import rescan
+    import rescan_file_recovery as recovery
 
     volume_id = _insert_volume(rescan_env["db_path"], 1.0, "wanted")
     cbr_path = rescan_env["series_dir"] / "Race Manga v01.cbr"
@@ -741,22 +748,22 @@ def test_artifact_cleanup_exception_still_restores_source(rescan_env, monkeypatc
             archive.writestr("001.jpg", b"page")
         return converted
 
-    real_restore = rescan._restore_claim
+    real_restore = recovery._restore_source
     restoration_attempted = False
 
-    def track_restore(claim):
+    def track_restore(*args):
         nonlocal restoration_attempted
         restoration_attempted = True
-        return real_restore(claim)
+        return real_restore(*args)
 
     def cleanup_failure(*args, **kwargs):
         raise RuntimeError("injected artifact cleanup failure")
 
     monkeypatch.setattr(rescan, "detect_file_type_magic", lambda path: "cbr")
     monkeypatch.setattr(rescan, "convert_cbr_to_cbz", fake_convert)
-    monkeypatch.setattr(rescan, "_cas_converted_volume", lambda *args: False)
-    monkeypatch.setattr(rescan, "_remove_exact_artifact", cleanup_failure)
-    monkeypatch.setattr(rescan, "_restore_claim", track_restore)
+    monkeypatch.setattr(recovery, "_commit", lambda *args: False)
+    monkeypatch.setattr(recovery, "_remove_publication", cleanup_failure)
+    monkeypatch.setattr(recovery, "_restore_source", track_restore)
 
     result = rescan.rescan_series_folder(7)
 

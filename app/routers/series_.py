@@ -8,10 +8,13 @@ import re
 import shutil
 import sqlite3
 from collections import defaultdict
+from contextlib import ExitStack
 from datetime import datetime
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, Literal, NotRequired, TypedDict, cast
 
 import httpx
+import private_file_claim as file_claims
+import shared as _shared
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
@@ -22,6 +25,11 @@ from download_identity import (
     normalize_download_protocol,
 )
 from events import add_history
+from file_mutation_lock import (
+    FileMutationGuard,
+    FileMutationLockError,
+    file_mutation_guard,
+)
 from metadata_provenance import record_initial_title
 from routers._templates import templates
 from shared import (
@@ -200,7 +208,9 @@ async def _rescan_all_impl() -> None:
         ]
     total = {"found": 0, "recovered": 0, "missing": 0, "lost": 0, "created": 0}
     for sid in series_ids:
-        result = await asyncio.to_thread(_m.rescan_series_folder, sid)
+        from rescan_file_recovery import rescan_series_in_thread
+
+        result = await rescan_series_in_thread(sid, _m.rescan_series_folder)
         total["found"] += result["found"]
         total["recovered"] += result["recovered"]
         total["missing"] += result["missing"]
@@ -1805,6 +1815,29 @@ class _HardDeleteSeriesResult(TypedDict):
     file_paths: list[str]
     root_path: str
     cover_path: str
+    claim_namespaces: NotRequired[list[tuple[str, str | None]]]
+
+
+def _snapshot_purge_namespaces(
+    db: sqlite3.Connection, paths: list[str]
+) -> list[tuple[str, str | None]]:
+    namespaces: dict[str, str | None] = {}
+    for path in paths:
+        if not os.path.isabs(path):
+            continue
+        path = os.path.abspath(path)
+        for row in db.execute(
+            "SELECT parent_path,ownership_json FROM file_claim_namespaces "
+            "WHERE parent_path=? OR substr(parent_path,1,length(?)+1)=?||'/' "
+            "OR ?=parent_path||'/.mangarr-claims' "
+            "OR substr(?,1,length(parent_path||'/.mangarr-claims')+1)"
+            "=parent_path||'/.mangarr-claims/'",
+            (path,) * 5,
+        ):
+            namespaces[str(row["parent_path"])] = (
+                str(row["ownership_json"]) if row["ownership_json"] is not None else None
+            )
+    return list(namespaces.items())
 
 
 def _prepare_hard_delete_series(
@@ -1855,9 +1888,13 @@ def _prepare_hard_delete_series(
         " ) OR EXISTS ("
         "   SELECT 1 FROM volume_file_deletions deletion"
         "   WHERE deletion.series_id=? AND deletion.state='active'"
+        " ) OR EXISTS ("
+        "   SELECT 1 FROM rescan_file_operations rescan_operation"
+        "   WHERE rescan_operation.series_id=? AND rescan_operation.state IN"
+        "     ('prepared','published','db_committed','rollback')"
         " )"
         " LIMIT 1",
-        (series_id, series_id),
+        (series_id, series_id, series_id),
     ).fetchone()
     if import_active is not None:
         return {
@@ -1881,6 +1918,7 @@ def _prepare_hard_delete_series(
             )
         )
 
+    claim_namespaces = _snapshot_purge_namespaces(db, file_paths)
     db.execute(
         "DELETE FROM import_queue_files"
         " WHERE queue_id IN (SELECT id FROM import_queue WHERE series_id=?)",
@@ -1903,6 +1941,7 @@ def _prepare_hard_delete_series(
         "file_paths": file_paths,
         "root_path": root_path,
         "cover_path": cover_path,
+        "claim_namespaces": claim_namespaces,
     }
 
 
@@ -1940,22 +1979,138 @@ def _safe_purge_path(path: str, root_path: str, *, symlink: bool) -> bool:
         return False
 
 
-def _remove_hard_delete_files(result: _HardDeleteSeriesResult) -> None:
+def _inside_purge_tree(path: str, tree: str) -> bool:
+    return path == tree or _path_is_strictly_below(path, tree)
+
+
+def _purge_public_tree(path: str, root_path: str, guard: FileMutationGuard) -> None:
+    """Inspect only this purge target; private boundaries retain ancestor shells."""
+    files: list[str] = []
+    directories: list[str] = []
+    shells: set[str] = set()
+
+    def retain(parent: str) -> None:
+        while _inside_purge_tree(parent, path):
+            shells.add(parent)
+            parent = os.path.dirname(parent)
+
+    def walk_error(error: OSError) -> None:
+        raise error
+
+    for parent, dirs, names in os.walk(
+        path, topdown=True, followlinks=False, onerror=walk_error
+    ):
+        guard.verify()
+        directories.append(parent)
+        descend: list[str] = []
+        for name in dirs:
+            child = os.path.join(parent, name)
+            if name == ".mangarr-claims":
+                retain(parent)
+            elif os.path.islink(child):
+                files.append(child)
+            else:
+                descend.append(name)
+        dirs[:] = descend
+        for name in names:
+            if name == ".mangarr-claims":
+                retain(parent)
+            else:
+                files.append(os.path.join(parent, name))
+    guard.verify()
+    if not shells:
+        shutil.rmtree(path)
+        guard.verify()
+        return
+    for child in files:
+        guard.verify()
+        symlink = os.path.islink(child)
+        if _safe_purge_path(child, root_path, symlink=symlink):
+            if symlink:
+                os.unlink(child)
+            else:
+                os.remove(child)
+    for directory in reversed(directories):
+        if directory not in shells:
+            guard.verify()
+            os.rmdir(directory)
+    guard.verify()
+
+
+def _remove_hard_delete_files(
+    result: _HardDeleteSeriesResult, guard: FileMutationGuard | None = None
+) -> None:
     """Best-effort disk cleanup for an already-committed purge."""
+    if result["file_paths"] and guard is None:
+        raise RuntimeError("library purge requires its owner guard")
+    targets: list[tuple[str, str]] = []
     for path in result["file_paths"]:
+        if not os.path.isabs(path):
+            continue
+        path = os.path.abspath(path)
         try:
-            if os.path.islink(path):
-                if _safe_purge_path(path, result["root_path"], symlink=True):
-                    os.unlink(path)
-            elif os.path.isfile(path):
-                if _safe_purge_path(path, result["root_path"], symlink=False):
-                    os.remove(path)
-            elif os.path.isdir(path) and _safe_purge_path(
-                path, result["root_path"], symlink=False
+            # Resolve intermediate aliases outside SQLite; final symlinks keep
+            # the existing unlink policy rather than exposing their referents.
+            resolved = os.path.join(
+                os.path.realpath(os.path.dirname(path)), os.path.basename(path)
+            )
+        except (OSError, ValueError):
+            continue
+        targets.append((path, resolved))
+    captured = dict(result.get("claim_namespaces", []))
+    if targets:
+        try:
+            with get_db() as db:
+                captured.update(
+                    _snapshot_purge_namespaces(db, [resolved for _, resolved in targets])
+                )
+        except sqlite3.Error:
+            targets = []
+            captured = {}
+    with ExitStack() as namespaces:
+        handles: list[file_claims.NamespaceHandle] = []
+        uncertain: list[str] = []
+        for parent, proof in captured.items():
+            try:
+                if proof is None or guard is None:
+                    raise file_claims.PrivateClaimError("unproven purge namespace")
+                handles.append(
+                    namespaces.enter_context(
+                        file_claims.open_namespace(guard, parent, proof)
+                    )
+                )
+            except (OSError, file_claims.PrivateClaimError):
+                uncertain.append(parent)
+        for path, resolved in targets:
+            if any(
+                ".mangarr-claims" in candidate.split(os.sep)
+                for candidate in (path, resolved)
+            ) or any(
+                _inside_purge_tree(parent, candidate)
+                or _inside_purge_tree(candidate, parent)
+                for parent in uncertain
+                for candidate in (path, resolved)
             ):
-                shutil.rmtree(path)
-        except OSError:
-            pass
+                continue
+            try:
+                assert guard is not None
+                guard.verify()
+                for handle in handles:
+                    handle.verify()
+                if os.path.islink(path):
+                    if _safe_purge_path(path, result["root_path"], symlink=True):
+                        os.unlink(path)
+                elif os.path.isfile(path):
+                    if _safe_purge_path(path, result["root_path"], symlink=False):
+                        os.remove(path)
+                elif os.path.isdir(path) and _safe_purge_path(
+                    path, result["root_path"], symlink=False
+                ):
+                    _purge_public_tree(path, result["root_path"], guard)
+                for handle in handles:
+                    handle.verify()
+            except (OSError, file_claims.PrivateClaimError):
+                pass
 
     cover_path = result["cover_path"]
     if cover_path:
@@ -1973,16 +2128,26 @@ def _run_hard_delete_series(
     remove_files: bool = False,
 ) -> _HardDeleteSeriesResult:
     """Complete the DB purge, then perform disk cleanup after DB exit."""
-    with get_db() as db:
-        result = _prepare_hard_delete_series(
-            db,
-            series_id,
-            log_history=log_history,
-            remove_files=remove_files,
-        )
-    if result["status"] == "purged":
-        _remove_hard_delete_files(result)
-    return result
+    with ExitStack() as owner:
+        guard = None
+        if remove_files:
+            try:
+                guard = owner.enter_context(file_mutation_guard(_shared.DB_PATH))
+            except (OSError, FileMutationLockError):
+                return {
+                    "status": "import_in_progress", "title": "", "file_paths": [],
+                    "root_path": "", "cover_path": "",
+                }
+        with get_db() as db:
+            result = _prepare_hard_delete_series(
+                db,
+                series_id,
+                log_history=log_history,
+                remove_files=remove_files,
+            )
+        if result["status"] == "purged":
+            _remove_hard_delete_files(result, guard)
+        return result
 
 
 @router.post("/series/{series_id}/delete")
@@ -3517,7 +3682,9 @@ async def grab_volume_release(series_id: int, volume_id: int, request: Request):
 async def rescan_series(request: Request, series_id: int):
     import main as _m
 
-    result = await asyncio.to_thread(_m.rescan_series_folder, series_id)
+    from rescan_file_recovery import rescan_series_in_thread
+
+    result = await rescan_series_in_thread(series_id, _m.rescan_series_folder)
     parts = []
     if result["found"]:
         parts.append(f"{result['found']} file(s) on disk")

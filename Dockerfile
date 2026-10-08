@@ -5,9 +5,12 @@ WORKDIR /app
 # A new release must refresh OS fixes even when the pinned base is unchanged.
 ARG MANGARR_VERSION=dev
 
-RUN apt-get update \
+RUN test "$(sed -n '/^Components:/p' /etc/apt/sources.list.d/debian.sources | sort -u)" = 'Components: main' \
+ && sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources \
+ && test "$(sed -n '/^Components:/p' /etc/apt/sources.list.d/debian.sources | sort -u)" = 'Components: main non-free' \
+ && apt-get update \
  && apt-get upgrade -y \
- && apt-get install -y --no-install-recommends 7zip \
+ && apt-get install -y --no-install-recommends 7zip 7zip-rar \
  && rm -rf /var/lib/apt/lists/*
 
 # Pinned Python deps. Copied before the app source so layer caching

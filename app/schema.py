@@ -1706,6 +1706,7 @@ def _migrate_schema_constraints_locked(db: sqlite3.Connection) -> None:
         _migrate_history_download_ownership(db)
         _ensure_acquisition_policy_columns(db)
         _ensure_private_file_claim_schema(db)
+        _ensure_rescan_file_operations_schema(db)
         return
 
     if version < _SCHEMA_VERSION_FK_CONSTRAINTS:
@@ -1728,6 +1729,48 @@ def _migrate_schema_constraints_locked(db: sqlite3.Connection) -> None:
         _migrate_history_download_ownership(db)
     _ensure_acquisition_policy_columns(db)
     _ensure_private_file_claim_schema(db)
+    _ensure_rescan_file_operations_schema(db)
+
+
+
+def _ensure_rescan_file_operations_schema(db: sqlite3.Connection) -> None:
+    """Keep unresolved file authority independent of series/volume lifetimes."""
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS rescan_file_operations (
+            id INTEGER PRIMARY KEY,
+            version INTEGER NOT NULL DEFAULT 1 CHECK(version=1),
+            operation_token TEXT NOT NULL UNIQUE,
+            series_id INTEGER NOT NULL,
+            volume_id INTEGER NOT NULL,
+            source_path TEXT NOT NULL,
+            destination_path TEXT NOT NULL,
+            expected_volume_json TEXT NOT NULL,
+            expected_context_json TEXT NOT NULL,
+            fingerprints_json TEXT NOT NULL,
+            carriers_json TEXT NOT NULL,
+            publication_receipt_json TEXT,
+            state TEXT NOT NULL CHECK(state IN
+                ('prepared','published','db_committed','rollback','rolled_back','completed')),
+            diagnostic TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    db.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS rescan_file_operations_active_volume
+        ON rescan_file_operations(volume_id)
+        WHERE state IN ('prepared','published','db_committed','rollback')
+    """)
+    db.execute("""
+        CREATE INDEX IF NOT EXISTS rescan_file_operations_active_series
+        ON rescan_file_operations(series_id,id)
+        WHERE state IN ('prepared','published','db_committed','rollback')
+    """)
+    db.execute("""
+        CREATE INDEX IF NOT EXISTS rescan_file_operations_active_keyset
+        ON rescan_file_operations(id)
+        WHERE state IN ('prepared','published','db_committed','rollback')
+    """)
 
 
 def _ensure_acquisition_policy_columns(db: sqlite3.Connection) -> None:

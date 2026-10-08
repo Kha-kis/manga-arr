@@ -343,6 +343,13 @@ def _adopt_unmapped_folder_locked(
         # Serialize the mapping check with creation so two adopters cannot claim
         # the same folder after both observed it as unmapped.
         db.execute("BEGIN IMMEDIATE")
+        from rescan_file_recovery import active_for_path
+
+        if active_for_path(db, requested_norm):
+            return AdoptUnmappedFolderResult(
+                False, 409, "file recovery in progress",
+                "Requested path has unresolved file recovery",
+            )
         current_root_row = db.execute(
             "SELECT id,path FROM root_folders WHERE id=?",
             (root_folder_id,),

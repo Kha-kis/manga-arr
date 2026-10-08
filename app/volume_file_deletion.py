@@ -547,6 +547,11 @@ def reserve_volume_file_deletion(
         if existing_row is not None:
             return DeletionReservation("existing", int(existing_row["id"]))
 
+        from rescan_file_recovery import active_for_series
+
+        if active_for_series(db, series_id):
+            return DeletionReservation("import_in_progress")
+
         current = db.execute(
             "SELECT * FROM volumes WHERE id=? AND series_id=?",
             (volume_id, series_id),

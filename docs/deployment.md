@@ -146,7 +146,7 @@ coherent shared mount.
 
 ### Filesystem Ownership Coordination
 
-Volume-file deletion replay uses a persistent
+Volume-file deletion and rescan recovery use a persistent
 `.<database filename>.file-mutation.lock` beside the local SQLite database.
 It is an empty, application-owned `0600` file. Participating workers use it
 for non-expiring exclusion without holding SQLite's writer lock during file I/O.
@@ -157,8 +157,8 @@ The coordination file and database must remain local. Trusted group-writable
 config directories, including root-owned Kubernetes fsGroup layouts, are
 supported; world-writable config is not. Mangarr does not change config-directory
 ownership or permissions. The lock does not protect against hostile config
-tampering or replace the publication and deletion journals. Other filesystem
-workflows have not yet been wired to this guard.
+tampering or replace the publication, deletion, and rescan journals. The remaining
+import-publication and pack caller integration is described below.
 
 ### Private File Claims
 
@@ -189,6 +189,23 @@ authorizes cleanup.
 Other hidden directories and similarly named nonreserved directories remain
 discoverable.
 
+### Rescan Recovery
+
+Rescan conversion and ComicInfo enrichment record their file operation before
+changing the public archive. Originals and prepared output remain available
+until the database accepts the unchanged volume and metadata context. File I/O
+runs under the local ownership guard, outside SQLite write transactions.
+
+Restart recovery rolls back an uncommitted operation or cleans up a committed
+one using its recorded file proofs. It never overwrites an occupied restoration
+path, including a matching inode. Missing receipts, changed artifacts, or
+ambiguous ownership retain the operation and files for review. Active recovery
+fences conflicting import, deletion, adoption, and hard-purge operations;
+lease expiry alone does not remove that protection.
+
+Do not delete retained carriers or edit journal rows to unblock a rescan. The
+private namespace and its parent directory are persistent recovery authority.
+
 ### NFS Publication Limits
 
 On Linux, imports to a **new destination** can use an atomic hardlink from
@@ -208,7 +225,7 @@ failures retain the journal and artifacts for manual review; automatic recovery
 is not guaranteed. Do not discard retained journals or artifacts without review.
 
 This is not general NFS support for atomic moves. Overwrites, move-source
-claims, rescan enrichment, and generated-pack directory cleanup
+claims, and generated-pack directory cleanup
 still require native no-replace rename support on the filesystem where they
 operate. A move import can publish its new destination and commit library state,
 but unsupported source claims retain the original download and leave cleanup
