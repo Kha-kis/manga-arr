@@ -15,6 +15,22 @@ Release commits must update `app/VERSION`, `CHANGELOG.md`, and the current
 release shown in `README.md` together. Automated tests enforce SemVer syntax and
 documentation consistency.
 
+## 1.3.2 Preparation Status
+
+`app/VERSION` is `1.3.2` on the release-preparation branch. This identifies the
+candidate source, not a published or qualified release. 1.3.1 remains the current
+published, qualified stable release and retains the moving aliases below.
+There is no qualified 1.3.2 tag, image digest, or alias change recorded here.
+
+The candidate includes the merged fixes from PRs #386, #387, #388, #389, #390,
+#392, #393, #394, #396, #397, #398, #399, #400, #401, and #402.
+See the [1.3.2 changelog](../CHANGELOG.md#132---unreleased) and
+[qualification status](release-qualification.md#132-release-preparation).
+Final committed release source, immutable image/platform identity, security
+scans, the existing six-set NFS ledger, fresh install, copied-config upgrade,
+and matching stopped rollback remain release gates. Do not infer these passes
+from source suites or prior component/image evidence.
+
 ## Version Policy
 
 - Stable releases use `MAJOR.MINOR.PATCH`, for example `1.2.0`.
