@@ -9,8 +9,10 @@ and group-writable layouts are supported, but world-write is refused. Neither
 the app nor other trusted writers may unlink or recreate its lock entry or
 parent during runtime. Permissions/ownership of user config are never changed.
 This is advisory exclusion, not protection from hostile config tampering or
-online config/DB restore. Raw fork ownership is unsupported; the sidecar FD is
-CLOEXEC by default. SQLite and this coordination directory must remain local.
+online config/DB restore. Raw fork ownership is unsupported. Trusted extractors
+may intentionally inherit subprocess_fd with pass_fds; its same flock open
+description excludes successors until the last inherited descriptor closes.
+The parent's FD stays CLOEXEC. SQLite and this directory must remain local.
 """
 
 from __future__ import annotations
@@ -86,6 +88,20 @@ class FileMutationGuard:
             raise FileMutationLockError("filesystem guard is not active in this worker")
         self._verify_identity()
 
+    @property
+    def subprocess_fd(self) -> int:
+        """Borrow the verified sidecar for trusted exec's explicit pass_fds.
+
+        Never close, unlock, redirect, or change flags on this borrowed FD.
+        The extractor must retain its inherited hold until all writes settle.
+        """
+        self.verify()
+        if self._descriptor < 3 or os.get_inheritable(self._descriptor):
+            raise FileMutationLockError(
+                "filesystem guard subprocess FD is not a safe CLOEXEC descriptor"
+            )
+        return self._descriptor
+
 
 def _validate_parent(parent: os.stat_result) -> None:
     if not stat.S_ISDIR(parent.st_mode) or parent.st_mode & 0o002:
@@ -133,7 +149,9 @@ def file_mutation_guard(db_path: str) -> Generator[FileMutationGuard, None, None
     filesystem action and its journal result, verifying before each mutation.
     DB identity uses lstat only. The sidecar is created once as 0600 and is never
     removed, recreated, truncated, or written by the application. Closing only
-    its descriptor releases ownership without disturbing SQLite's own locks.
+    its descriptor does not disturb SQLite's own locks or deliberately inherited
+    child holds. Exclusion ends when the last sidecar descriptor closes; never
+    explicitly unlock the shared open description.
     """
     path = os.path.abspath(db_path)
     database = os.lstat(path)
