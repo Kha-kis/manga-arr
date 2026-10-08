@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
 import sqlite3
@@ -81,11 +82,14 @@ def deletion_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, o
 def _journal_state(db_path: str) -> tuple[str, str, str]:
     with sqlite3.connect(db_path) as db:
         row = db.execute(
-            "SELECT state, claim_path, diagnostic"
+            "SELECT state, claim_path, diagnostic, claim_carrier_json"
             " FROM volume_file_deletions ORDER BY id DESC LIMIT 1"
         ).fetchone()
     assert row is not None
-    return row
+    state, path, diagnostic, carrier = row
+    if carrier is not None:
+        path = os.path.join(json.loads(carrier)["carrier_path"], "artifact")
+    return state, path, diagnostic
 
 
 def _journal_id(db_path: str) -> int:
@@ -117,27 +121,24 @@ def _kill_after_reservation() -> None:
 def _kill_before_unlink(journal_id: int) -> None:
     import volume_file_deletion
 
-    def kill_process(_path: str) -> None:
+    def kill_process(*_args: Any) -> None:
         os.kill(os.getpid(), signal.SIGKILL)
 
-    volume_file_deletion._unlink_claim = kill_process
+    volume_file_deletion.private_claim.discard_private_regular = kill_process
     volume_file_deletion.replay_volume_file_deletion(journal_id)
 
 
 def _kill_after_unlink(journal_id: int) -> None:
     import volume_file_deletion
 
-    real_fsync = volume_file_deletion._fsync_directory
-    fsync_count = 0
+    real_unlink = os.unlink
 
-    def kill_before_second_fsync(path: str) -> None:
-        nonlocal fsync_count
-        fsync_count += 1
-        if fsync_count == 2:
+    def kill_after_private_unlink(path: str, **kwargs: Any) -> None:
+        real_unlink(path, **kwargs)
+        if path == "artifact":
             os.kill(os.getpid(), signal.SIGKILL)
-        real_fsync(path)
 
-    volume_file_deletion._fsync_directory = kill_before_second_fsync
+    os.unlink = kill_after_private_unlink
     volume_file_deletion.replay_volume_file_deletion(journal_id)
 
 
@@ -348,14 +349,16 @@ def test_slow_filesystem_phases_never_hold_sqlite_writer(
             paused_rename,
         )
     else:
-        real_phase = volume_file_deletion._unlink_claim
+        real_phase = volume_file_deletion.private_claim.discard_private_regular
 
-        def paused_unlink(path: str) -> None:
+        def paused_unlink(*args: Any) -> None:
             phase_started.set()
             assert release_phase.wait(timeout=5)
-            real_phase(path)
+            real_phase(*args)
 
-        monkeypatch.setattr(volume_file_deletion, "_unlink_claim", paused_unlink)
+        monkeypatch.setattr(
+            volume_file_deletion.private_claim, "discard_private_regular", paused_unlink
+        )
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(volume_file_deletion.delete_volume_file, 1, 11)
@@ -393,7 +396,8 @@ def test_power_safe_claim_and_unlink_fsync_order(
     calls: list[str] = []
     real_rename = volume_file_deletion._rename_noreplace
     real_fsync = volume_file_deletion._fsync_directory
-    real_unlink = volume_file_deletion._unlink_claim
+    real_unlink = volume_file_deletion.private_claim.discard_private_regular
+    real_capture = volume_file_deletion.private_claim.claim_into_empty
     real_complete = volume_file_deletion._complete_journal
 
     def ordered_rename(source: str, destination: str) -> None:
@@ -404,9 +408,13 @@ def test_power_safe_claim_and_unlink_fsync_order(
         calls.append("fsync")
         real_fsync(path)
 
-    def ordered_unlink(path: str) -> None:
-        calls.append("unlink")
-        real_unlink(path)
+    def ordered_unlink(*args: Any) -> None:
+        real_unlink(*args)
+        calls.append("private_unlink_flushed")
+
+    def ordered_capture(*args: Any) -> None:
+        real_capture(*args)
+        calls.append("capture_flushed")
 
     def ordered_complete(journal, *, deleted: bool):
         calls.append("db_complete")
@@ -414,7 +422,12 @@ def test_power_safe_claim_and_unlink_fsync_order(
 
     monkeypatch.setattr(volume_file_deletion, "_rename_noreplace", ordered_rename)
     monkeypatch.setattr(volume_file_deletion, "_fsync_directory", ordered_fsync)
-    monkeypatch.setattr(volume_file_deletion, "_unlink_claim", ordered_unlink)
+    monkeypatch.setattr(
+        volume_file_deletion.private_claim, "discard_private_regular", ordered_unlink
+    )
+    monkeypatch.setattr(
+        volume_file_deletion.private_claim, "claim_into_empty", ordered_capture
+    )
     monkeypatch.setattr(volume_file_deletion, "_complete_journal", ordered_complete)
 
     outcome = volume_file_deletion.replay_volume_file_deletion(
@@ -422,7 +435,13 @@ def test_power_safe_claim_and_unlink_fsync_order(
     )
 
     assert outcome == "completed"
-    assert calls == ["rename", "fsync", "unlink", "fsync", "db_complete"]
+    assert calls == [
+        "rename",
+        "fsync",
+        "capture_flushed",
+        "private_unlink_flushed",
+        "db_complete",
+    ]
 
 
 def test_post_claim_mismatch_restores_without_clobber_and_stays_active(
@@ -607,20 +626,20 @@ def test_concurrent_replay_reports_complete_after_other_replayer_finishes(
     release_retry = threading.Event()
     unlink_lock = threading.Lock()
     unlink_calls = 0
-    real_unlink = volume_file_deletion._unlink_claim
+    real_unlink = volume_file_deletion.private_claim.discard_private_regular
 
-    def coordinated_unlink(path: str) -> None:
+    def coordinated_unlink(*args: Any) -> None:
         nonlocal unlink_calls
         with unlink_lock:
             unlink_calls += 1
             assert unlink_calls == 1
         first_unlink_started.set()
         assert release_owner.wait(timeout=10)
-        real_unlink(path)
+        real_unlink(*args)
 
     monkeypatch.setattr(
-        volume_file_deletion,
-        "_unlink_claim",
+        volume_file_deletion.private_claim,
+        "discard_private_regular",
         coordinated_unlink,
     )
 
@@ -702,14 +721,16 @@ def test_bounded_replay_settles_inflight_operation_before_cancellation(
     assert reservation.journal_id is not None
     unlink_started = threading.Event()
     release_unlink = threading.Event()
-    real_unlink = volume_file_deletion._unlink_claim
+    real_unlink = volume_file_deletion.private_claim.discard_private_regular
 
-    def paused_unlink(path: str) -> None:
+    def paused_unlink(*args: Any) -> None:
         unlink_started.set()
         assert release_unlink.wait(timeout=5)
-        real_unlink(path)
+        real_unlink(*args)
 
-    monkeypatch.setattr(volume_file_deletion, "_unlink_claim", paused_unlink)
+    monkeypatch.setattr(
+        volume_file_deletion.private_claim, "discard_private_regular", paused_unlink
+    )
 
     async def scenario() -> None:
         task = asyncio.create_task(

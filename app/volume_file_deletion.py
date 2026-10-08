@@ -14,10 +14,12 @@ import hashlib
 import os
 import sqlite3
 import stat
-from dataclasses import dataclass
+from contextlib import ExitStack
+from dataclasses import dataclass, replace
 from typing import Literal, cast
 
 import shared
+import private_file_claim as private_claim
 from events import add_history, log_event
 from file_mutation_lock import (
     FileMutationGuard,
@@ -141,6 +143,7 @@ class _DeletionJournal:
     source_title: str
     original_import_path: str
     diagnostic: str
+    claim_carrier_json: str | None
 
 
 _SNAPSHOT_COLUMNS = (
@@ -685,6 +688,7 @@ def _load_journal(journal_id: int) -> _DeletionJournal | None:
         source_title=str(values["source_title"] or ""),
         original_import_path=str(values["original_import_path"] or ""),
         diagnostic=str(values["diagnostic"] or ""),
+        claim_carrier_json=cast(str | None, values["claim_carrier_json"]),
     )
 
 
@@ -756,10 +760,6 @@ def _fsync_directory_when_possible(path: str) -> None:
         return
 
 
-def _unlink_claim(path: str) -> None:
-    os.unlink(path)
-
-
 def _path_exists(path: str) -> bool:
     if not path:
         return False
@@ -770,18 +770,215 @@ def _path_exists(path: str) -> bool:
     return True
 
 
-def _restore_claim_without_clobber(journal: _DeletionJournal) -> str:
-    """Restore a claimed target only when its published name is still absent."""
-    if not journal.claim_path or not journal.target_path:
-        return "claim restoration is unavailable"
-    if _path_exists(journal.target_path):
-        return "target path is occupied; claim was not restored"
-    try:
-        _rename_noreplace(journal.claim_path, journal.target_path)
-        _fsync_directory(journal.parent_path)
-    except OSError as exc:
-        return f"claim restoration failed: {exc}"
-    return "claim restored without replacing another path"
+def _private_binding(journal: _DeletionJournal) -> private_claim.ClaimBinding:
+    return private_claim.ClaimBinding(
+        "deletion", str(journal.journal_id), journal.volume_id, "delete"
+    )
+
+
+def _full_fingerprint(
+    fingerprint: FileFingerprint,
+) -> private_claim.FullFileFingerprint:
+    return private_claim.FullFileFingerprint(
+        fingerprint.dev,
+        fingerprint.inode,
+        fingerprint.size,
+        fingerprint.mtime_ns,
+        fingerprint.sha256,
+    )
+
+
+def _store_carrier(
+    journal: _DeletionJournal,
+    guard: FileMutationGuard,
+    record: private_claim.CarrierRecord,
+) -> _DeletionJournal:
+    """Commit the exact carrier/intent before FS; never hold the writer across IO."""
+    guard.verify()
+    encoded = record.to_json()
+    with get_db() as db:
+        db.execute("PRAGMA synchronous=FULL")
+        db.execute("BEGIN IMMEDIATE")
+        updated = db.execute(
+            "UPDATE volume_file_deletions SET claim_carrier_json=?,"
+            " updated_at=CURRENT_TIMESTAMP WHERE id=? AND state='active'"
+            " AND claim_carrier_json IS ?",
+            (encoded, journal.journal_id, journal.claim_carrier_json),
+        )
+        if updated.rowcount != 1:
+            raise RuntimeError("private deletion carrier lost journal CAS")
+    guard.verify()
+    return replace(journal, claim_carrier_json=encoded)
+
+
+def _verify_restore_receipt(
+    journal: _DeletionJournal,
+    record: private_claim.CarrierRecord,
+) -> private_claim.FullFileFingerprint:
+    receipt = record.restore_receipt
+    if receipt is None or receipt.destination_path != journal.target_path:
+        raise UnsafeDeletionTarget(
+            "private restoration has no durable matching receipt"
+        )
+    if (
+        _full_fingerprint(_regular_fingerprint(journal.target_path))
+        != receipt.fingerprint
+    ):
+        raise UnsafeDeletionTarget(
+            "restored public file changed; private claim retained"
+        )
+    return receipt.fingerprint
+
+
+def _replay_private_claim(
+    journal: _DeletionJournal,
+    guard: FileMutationGuard,
+    *,
+    origin: str | None = None,
+    fingerprint: FileFingerprint | None = None,
+) -> ReplayOutcome:
+    """Resume only recorded ownership; all missing-child windows need intent."""
+    if not journal.target_present or journal.fingerprint is None:
+        raise UnsafeDeletionTarget(
+            "private deletion carrier has no recorded present target"
+        )
+    expected_target = _full_fingerprint(journal.fingerprint)
+    binding = _private_binding(journal)
+    with private_claim.ensure_namespace(guard, journal.parent_path) as namespace:
+        with ExitStack() as stack:
+            if journal.claim_carrier_json is None:
+                selected = fingerprint or journal.fingerprint
+                if selected is None:
+                    raise UnsafeDeletionTarget(
+                        "private deletion has no full fingerprint"
+                    )
+                carrier = stack.enter_context(
+                    private_claim.allocate_carrier(
+                        namespace,
+                        binding,
+                        origin or journal.target_path,
+                        _full_fingerprint(selected),
+                    )
+                )
+                record = replace(carrier.record, phase="claiming")
+                journal = _store_carrier(journal, guard, record)
+                carrier.record = record
+            else:
+                record = private_claim.CarrierRecord.from_json(
+                    journal.claim_carrier_json
+                )
+                if (
+                    record.binding != binding
+                    or record.origin_path
+                    not in (
+                        journal.target_path,
+                        journal.claim_path,
+                    )
+                    or record.artifact_fingerprint is None
+                ):
+                    raise UnsafeDeletionTarget(
+                        "private deletion carrier binding/origin is invalid"
+                    )
+                if (
+                    record.origin_path == journal.target_path
+                    and record.artifact_fingerprint != expected_target
+                ):
+                    raise UnsafeDeletionTarget(
+                        "private deletion carrier differs from journal fingerprint"
+                    )
+                if record.phase == "discarded":
+                    if record.restore_receipt is not None:
+                        _verify_restore_receipt(journal, record)
+                    private_claim.gc_discarded_carrier(namespace, binding, record)
+                    if record.restore_receipt is not None:
+                        raise UnsafeDeletionTarget(
+                            "changed claim restored without replacing another path"
+                        )
+                    guard.verify()
+                    return (
+                        "completed"
+                        if _complete_journal(journal, deleted=True)
+                        else "terminal"
+                    )
+                carrier = stack.enter_context(
+                    private_claim.open_carrier(namespace, binding, record)
+                )
+
+            def persist(updated: private_claim.CarrierRecord) -> None:
+                nonlocal journal, record
+                journal = _store_carrier(journal, guard, updated)
+                record = updated
+                carrier.record = updated
+
+            if record.phase == "allocated":
+                persist(replace(record, phase="claiming"))
+            if record.phase == "claiming":
+                try:
+                    os.stat("artifact", dir_fd=carrier.fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    # A post-capture mismatch is intentionally retained. Resume
+                    # below using the ACTUAL private full proof for restoration.
+                    try:
+                        private_claim.claim_into_empty(
+                            guard,
+                            carrier,
+                            namespace.parent_fd,
+                            os.path.basename(record.origin_path),
+                        )
+                    except private_claim.PrivateClaimError:
+                        carrier.verify()
+                        private_claim.fingerprint_regular(carrier)
+                carrier.verify()
+                os.fsync(carrier.fd)
+                os.fsync(namespace.parent_fd)
+                persist(replace(record, phase="claimed"))
+
+            restoring = (
+                record.phase in {"restoring", "restored"}
+                or record.restore_receipt is not None
+            )
+            if record.phase == "claimed":
+                actual = private_claim.fingerprint_regular(carrier)
+                restoring = actual != expected_target
+                if restoring:
+                    persist(replace(record, phase="restoring"))
+
+            if record.phase == "restoring":
+                actual = private_claim.fingerprint_regular(carrier)
+                receipt = private_claim.link_private_regular(
+                    guard,
+                    carrier,
+                    namespace.parent_fd,
+                    os.path.basename(journal.target_path),
+                    actual,
+                )
+                persist(replace(record, phase="restored", restore_receipt=receipt))
+                restoring = True
+
+            if restoring:
+                expected = _verify_restore_receipt(journal, record)
+            else:
+                if _path_exists(journal.target_path):
+                    raise UnsafeDeletionTarget(
+                        "delete target was recreated after private claim; retained"
+                    )
+                expected = expected_target
+
+            if record.phase not in {"claimed", "restored", "discarding"}:
+                raise UnsafeDeletionTarget(
+                    "private deletion carrier has no discard authority"
+                )
+            if record.phase != "discarding":
+                persist(replace(record, phase="discarding"))
+            private_claim.discard_private_regular(guard, carrier, expected)
+            persist(replace(record, phase="discarded"))
+        private_claim.gc_discarded_carrier(namespace, binding, record)
+    if restoring:
+        raise UnsafeDeletionTarget(
+            "changed claim restored without replacing another path"
+        )
+    guard.verify()
+    return "completed" if _complete_journal(journal, deleted=True) else "terminal"
 
 
 def _record_blocked(journal: _DeletionJournal, diagnostic: str) -> None:
@@ -878,6 +1075,8 @@ def _replay_volume_file_deletion_owned(
 
     try:
         _validate_journal_paths(journal)
+        if journal.claim_carrier_json is not None:
+            return _replay_private_claim(journal, guard)
         target_exists = _path_exists(journal.target_path)
         claim_exists = _path_exists(journal.claim_path)
 
@@ -910,7 +1109,12 @@ def _replay_volume_file_deletion_owned(
                     "delete target identity does not match its recorded fingerprint"
                 )
             guard.verify()
-            _rename_noreplace(journal.target_path, journal.claim_path)
+            try:
+                _rename_noreplace(journal.target_path, journal.claim_path)
+            except OSError as exc:
+                if exc.errno not in (errno.ENOSYS, errno.EINVAL, errno.EOPNOTSUPP):
+                    raise
+                return _replay_private_claim(journal, guard)
             guard.verify()
             _fsync_directory(journal.parent_path)
             claim_exists = True
@@ -925,27 +1129,17 @@ def _replay_volume_file_deletion_owned(
             )
 
         actual_claim = _regular_fingerprint(journal.claim_path)
-        if not _same_fingerprint(actual_claim, expected):
-            guard.verify()
-            restoration = _restore_claim_without_clobber(journal)
-            raise UnsafeDeletionTarget(
-                "delete tombstone identity does not match its recorded "
-                f"fingerprint; {restoration}"
-            )
         if _path_exists(journal.target_path):
             raise UnsafeDeletionTarget(
                 "delete target was recreated after tombstone claim; refusing "
                 "to remove the claim or clobber the replacement"
             )
         guard.verify()
-        _unlink_claim(journal.claim_path)
-        guard.verify()
-        _fsync_directory(journal.parent_path)
-        guard.verify()
-        return (
-            "completed"
-            if _complete_journal(journal, deleted=True)
-            else "terminal"
+        # A shared flat name can be replaced after hashing, even with the app
+        # guard held. Recapture into a durable owned child and verify AFTER move
+        # before either deleting the original or restoring changed bytes.
+        return _replay_private_claim(
+            journal, guard, origin=journal.claim_path, fingerprint=actual_claim
         )
     except FileMutationLockError:
         raise
