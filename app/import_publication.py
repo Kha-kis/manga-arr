@@ -28,7 +28,11 @@ from download_identity import (
     DownloadProtocol,
     normalize_download_protocol,
 )
-from import_plan import _FilePlan, _ImportPlan
+from import_plan import (
+    _FilePlan,
+    _ImportPlan,
+    _file_has_grab_claim,
+)
 from import_staging import _StageOutcome
 from shared import get_cfg, get_db
 
@@ -1069,6 +1073,18 @@ def _delete_verified_claim(
     _fsync_directory(os.path.dirname(claim_path))
 
 
+def _check_publication_grab_claim(
+    publication: ImportPublication,
+    file_record: PublicationFile,
+) -> None:
+    """Read current ownership without retaining a connection during publication."""
+    with get_db() as db:
+        if not _file_has_grab_claim(db, publication.plan.queue, file_record.plan):
+            raise PublicationBlocked(
+                "automatic file no longer has its acquisition claim"
+            )
+
+
 def _publish_prepared_file(
     publication: ImportPublication,
     file_record: PublicationFile,
@@ -1119,6 +1135,7 @@ def _publish_prepared_file(
         # Replay may be observing a rename whose process died between either
         # directory barrier. Persist both sides before an overwrite claim can
         # be removed (or before an absent-destination publish is accepted).
+        _check_publication_grab_claim(publication, file_record)
         _fsync_renamed_directories(stage_path, final_path)
         if claim_path and os.path.lexists(claim_path):
             if prepared_final is None:
@@ -1138,6 +1155,20 @@ def _publish_prepared_file(
     if not _same_full_fingerprint(staged_actual, expected):
         raise PublicationBlocked(f"staged artifact fingerprint changed: {stage_path}")
 
+    _check_publication_grab_claim(publication, file_record)
+    _publish_claimed_destination(file_record, final_path, stage_path, heartbeat)
+
+
+def _publish_claimed_destination(
+    file_record: PublicationFile,
+    final_path: str,
+    stage_path: str,
+    heartbeat: Callable[[], bool],
+) -> None:
+    """Publish against the prepared overwrite/absent-destination precondition."""
+    expected_absent = file_record.final_expected_absent
+    prepared_final = file_record.prepared_final_fingerprint
+    claim_path = file_record.final_claim_path
     if expected_absent:
         try:
             _publish_absent_stage(stage_path, final_path)
@@ -2199,9 +2230,8 @@ def abort_staging_publication(
                 or row["lease_owner"] != row["owner_token"]
             ):
                 return False
-        elif (
-            row["operation_owner"] != recovery_owner
-            or bool(row["queue_lease_is_live"])
+        elif row["operation_owner"] != recovery_owner or bool(
+            row["queue_lease_is_live"]
         ):
             return False
 

@@ -187,6 +187,8 @@ def _cascade_chapters(
     series_id: int,
     volume_ids: list[int] | None,
     status: str,
+    *,
+    respect_monitoring: bool = True,
     **kwargs: Any,
 ) -> int:
     """Cascade a status change to chapters belonging to the given volume IDs.
@@ -194,7 +196,9 @@ def _cascade_chapters(
     kwargs: optional column=value pairs (grabbed_at, torrent_name,
     torrent_url, indexer, protocol, client, download_id, download_client_id,
     release_group, size_bytes). Only updates monitored=1 chapters. Returns
-    count of updated rows."""
+    count of updated rows. Automatic grabs claim wanted chapters only;
+    manual grabs may reassign in-flight chapters but preserve downloaded ones.
+    Explicit reset transitions still update downloaded chapters."""
     # NOTE: chapters table uses 'torrent_url' (volumes uses 'source_url').
     # Callers should pass torrent_url; source_url alias is intentionally NOT allowed.
     allowed_cols = {
@@ -207,10 +211,17 @@ def _cascade_chapters(
     set_parts  = ['status=?'] + [f'{c}=?' for c in extra_cols]
     set_clause = ', '.join(set_parts)
     base_vals  = [status] + extra_vals
+    status_filter = ""
+    if status == 'grabbed':
+        status_filter = (
+            " AND status='wanted'" if respect_monitoring
+            else " AND status != 'downloaded'"
+        )
 
     if volume_ids is None:
         cur = db.execute(
-            f"UPDATE chapters SET {set_clause} WHERE series_id=? AND monitored=1",
+            f"UPDATE chapters SET {set_clause} WHERE series_id=? AND monitored=1"
+            + status_filter,
             base_vals + [series_id]
         )
     else:
@@ -219,7 +230,8 @@ def _cascade_chapters(
         ph = ','.join('?' * len(volume_ids))
         cur = db.execute(
             f"UPDATE chapters SET {set_clause}"
-            f" WHERE series_id=? AND volume_id IN ({ph}) AND monitored=1",
+            f" WHERE series_id=? AND volume_id IN ({ph}) AND monitored=1"
+            + status_filter,
             base_vals + [series_id] + list(volume_ids)
         )
     return cur.rowcount

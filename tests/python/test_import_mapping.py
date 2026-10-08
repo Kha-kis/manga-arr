@@ -1566,8 +1566,8 @@ def test_mark_downloaded_volume_pack_handles_sqlite_row(env, monkeypatch):
         )
         for vol in (1.0, 2.0, 3.0):
             c.execute(
-                "INSERT INTO volumes(series_id, volume_num, status)"
-                " VALUES(7, ?, 'grabbed')",
+                "INSERT INTO volumes(series_id, volume_num, status, source_url, download_id)"
+                " VALUES(7, ?, 'grabbed', 'http://example/pack', 'dl-pack')",
                 (vol,),
             )
 
