@@ -29,7 +29,9 @@ def test_env(tmp_path, monkeypatch):
     import import_staging
 
     # Setup DB
-    db_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(mode=0o700)
+    db_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=config_dir)
     db_tmp.close()
     os.unlink(db_tmp.name)
     monkeypatch.setattr(main, "DB_PATH", db_tmp.name)
@@ -117,19 +119,24 @@ def test_publish_boundary_failure_keeps_prepared_journal_recoverable(
         )
         c.commit()
 
-    real_publish = import_publication.publish_publication
+    real_publish = import_publication._publish_publication_owned
+    fault_calls = 0
 
-    def fail_publish(publication_id, owner_token):
+    def fail_publish(publication_id, owner_token, guard):
+        nonlocal fault_calls
+        guard.verify()
+        fault_calls += 1
         del publication_id, owner_token
         raise OSError("Mock disk write failure")
 
-    monkeypatch.setattr(import_publication, "publish_publication", fail_publish)
+    monkeypatch.setattr(import_publication, "_publish_publication_owned", fail_publish)
 
     # Run import
     result = _run(import_execute._execute_import_impl(qid))
 
     # Verify failure
     assert result is False, "Import should return False when commit fails"
+    assert fault_calls == 1
 
     # Verify filesystem state: destination file should not exist
     dst_file = os.path.join(test_env["library_root"], "Test Series", "Test v01.cbz")
@@ -189,7 +196,7 @@ def test_publish_boundary_failure_keeps_prepared_journal_recoverable(
             (sid,),
         ).fetchone()[0] == 0
 
-    monkeypatch.setattr(import_publication, "publish_publication", real_publish)
+    monkeypatch.setattr(import_publication, "_publish_publication_owned", real_publish)
     replayed = _run(import_publication.replay_import_publications(max_rows=None))
     assert replayed.completed == 1
     assert os.path.isfile(dst_file)
@@ -551,13 +558,17 @@ def test_publish_failure_defers_success_side_effects_until_replay(
         )
         c.commit()
 
-    real_publish = import_publication.publish_publication
+    real_publish = import_publication._publish_publication_owned
+    fault_calls = 0
 
-    def fail_publish(publication_id, owner_token):
+    def fail_publish(publication_id, owner_token, guard):
+        nonlocal fault_calls
+        guard.verify()
+        fault_calls += 1
         del publication_id, owner_token
         raise OSError("Simulated commit failure")
 
-    monkeypatch.setattr(import_publication, "publish_publication", fail_publish)
+    monkeypatch.setattr(import_publication, "_publish_publication_owned", fail_publish)
     monkeypatch.setattr(
         import_publication,
         "_dispatch_journaled_komga_scan",
@@ -586,6 +597,7 @@ def test_publish_failure_defers_success_side_effects_until_replay(
 
     # Verify import returned False
     assert result is False
+    assert fault_calls == 1
 
     # Verify side effects were NOT called
     assert side_effects_called["komga_scan"] is False, (
@@ -615,7 +627,7 @@ def test_publish_failure_defers_success_side_effects_until_replay(
             (sid,),
         ).fetchone()) == ("grabbed", "dl-test")
 
-    monkeypatch.setattr(import_publication, "publish_publication", real_publish)
+    monkeypatch.setattr(import_publication, "_publish_publication_owned", real_publish)
     replayed = _run(import_publication.replay_import_publications(max_rows=None))
     assert replayed.completed == 1
     assert side_effects_called["success_history"] is True

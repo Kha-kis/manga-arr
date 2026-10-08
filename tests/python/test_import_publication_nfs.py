@@ -76,7 +76,7 @@ def test_private_stage_pipeline_completes_without_publication_unlink(
     )
     original = [source.read_bytes() for source in sources]
     _unsupported_libc(monkeypatch, error)
-    real_fsync = import_publication._fsync_directory
+    real_fsync = os.fsync
     real_link = os.link
     real_unlink = os.unlink
     real_phase3 = import_publication.claim_publication_phase3
@@ -87,14 +87,17 @@ def test_private_stage_pipeline_completes_without_publication_unlink(
     def link(source: str, destination: str, **kwargs: Any) -> None:
         nonlocal linked
         real_link(source, destination, **kwargs)
-        if kwargs.get("follow_symlinks") is False:
+        if journal_tests._public_target(journal_env["db_path"], destination, kwargs.get("dst_dir_fd")):
+            source = journal_tests._fd_path(source, kwargs.get("src_dir_fd"))
+            destination = journal_tests._fd_path(destination, kwargs.get("dst_dir_fd"))
             linked = True
             events.append(("link", destination))
             assert Path(source).is_file()
 
-    def fsync(path: str) -> None:
-        real_fsync(path)
-        if linked and not phase3_started:
+    def fsync(descriptor: int) -> None:
+        real_fsync(descriptor)
+        if linked and not phase3_started and os.path.isdir(f"/proc/self/fd/{descriptor}"):
+            path = os.readlink(f"/proc/self/fd/{descriptor}")
             events.append(("fsync", path))
 
     def unlink(path: str, *args: Any, **kwargs: Any) -> None:
@@ -111,7 +114,7 @@ def test_private_stage_pipeline_completes_without_publication_unlink(
         assert events[:3] == [
             ("link", str(finals[0])),
             ("fsync", str(finals[0].parent)),
-            ("fsync", str(Path(str(row[3])).parent)),
+            ("fsync", journal_tests._carrier_path(journal_env, "publication")),
         ]
         result = real_phase3(db, publication_id, owner_token)
         phase3_started = True
@@ -119,7 +122,7 @@ def test_private_stage_pipeline_completes_without_publication_unlink(
 
     monkeypatch.setattr(os, "link", link)
     monkeypatch.setattr(os, "unlink", unlink)
-    monkeypatch.setattr(import_publication, "_fsync_directory", fsync)
+    monkeypatch.setattr(os, "fsync", fsync)
     monkeypatch.setattr(import_publication, "claim_publication_phase3", phase3)
 
     assert asyncio.run(import_execute._execute_import(queue_id))
@@ -246,6 +249,7 @@ def test_native_private_publication_preserves_fsync_order(
     queue_id, _, _, finals = journal_tests._seed_queue(journal_env, file_count=1)
     real_rename = import_publication._rename_noreplace
     real_fsync = import_publication._fsync_directory
+    real_link = os.link
     events: list[tuple[str, str]] = []
     stage_dir = ""
 
@@ -261,8 +265,10 @@ def test_native_private_publication_preserves_fsync_order(
         if stage_dir:
             events.append(("fsync", path))
 
-    def forbidden_link(*args: object, **kwargs: object) -> None:
-        pytest.fail("native publication must not invoke the fallback")
+    def forbidden_link(source: str, destination: str, **kwargs: Any) -> None:
+        if journal_tests._public_target(journal_env["db_path"], destination, kwargs.get("dst_dir_fd")):
+            pytest.fail("native publication must not invoke the fallback")
+        real_link(source, destination, **kwargs)
 
     monkeypatch.setattr(import_publication, "_rename_noreplace", rename)
     monkeypatch.setattr(import_publication, "_fsync_directory", fsync)
@@ -291,7 +297,8 @@ if crash_kind == "nfs_link":
     real_link = os.link
     def link_and_die(src, dst, **kwargs):
         real_link(src, dst, **kwargs)
-        die()
+        if journal_hooks._public_target(shared.DB_PATH, dst, kwargs.get('dst_dir_fd')):
+            die(journal_hooks._fd_path(dst, kwargs.get('dst_dir_fd')))
     os.link = link_and_die
 """
     monkeypatch.setattr(
@@ -331,25 +338,33 @@ def test_private_link_directory_fsync_failure_blocks_without_cleanup(
     )
     _unsupported_libc(monkeypatch, errno.EOPNOTSUPP)
     real_link = os.link
-    real_fsync = import_publication._fsync_directory
+    real_fsync = os.fsync
     linked = False
     barriers = 0
 
     def link(source: str, destination: str, **kwargs: Any) -> None:
         nonlocal linked
         real_link(source, destination, **kwargs)
-        linked = True
+        if journal_tests._public_target(journal_env["db_path"], destination, kwargs.get("dst_dir_fd")):
+            linked = True
 
-    def fsync(path: str) -> None:
+    def fsync(descriptor: int) -> None:
         nonlocal barriers
-        if linked:
+        if linked and os.path.isdir(f"/proc/self/fd/{descriptor}"):
+            path = os.readlink(f"/proc/self/fd/{descriptor}")
+            selected = (str(finals[0].parent), journal_tests._carrier_path(journal_env, "publication"))
+            if path not in selected:
+                return real_fsync(descriptor)
             barriers += 1
+            journal_tests._assert_hit([path], 1)
+            if path != selected[barriers - 1]:
+                pytest.fail("public link durability barriers were reordered")
             if barriers == failed_barrier:
                 raise OSError(errno.EIO, "injected directory fsync failure", path)
-        real_fsync(path)
+        real_fsync(descriptor)
 
     monkeypatch.setattr(os, "link", link)
-    monkeypatch.setattr(import_publication, "_fsync_directory", fsync)
+    monkeypatch.setattr(os, "fsync", fsync)
     assert not asyncio.run(import_execute._execute_import(queue_id))
     row = _journal(journal_env)
     stage = Path(str(row[3]))
@@ -363,26 +378,44 @@ def test_private_link_directory_fsync_failure_blocks_without_cleanup(
     _assert_not_committed(journal_env, series_id)
 
 
-def test_move_publishes_but_unsupported_source_claim_remains_blocked(
+def test_move_private_source_capture_completes_after_commit_when_rename_is_unsupported(
     journal_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import import_execute
+    import import_publication
 
-    queue_id, _, sources, finals = journal_tests._seed_queue(
+    queue_id, series_id, sources, finals = journal_tests._seed_queue(
         journal_env, mode="move", file_count=1
     )
     original = sources[0].read_bytes()
+    expected = import_publication._private_full(import_publication._regular_fingerprint(str(sources[0]), include_hash=True))
+    events = journal_tests._observe_private_events(journal_env, monkeypatch)
     _unsupported_libc(monkeypatch, errno.EOPNOTSUPP)
-    assert not asyncio.run(import_execute._execute_import(queue_id))
+    assert asyncio.run(import_execute._execute_import(queue_id))
     row = _journal(journal_env)
-    assert row[1] == "cleaning"
-    assert row[6] == "blocked"
-    assert sources[0].read_bytes() == original
+    assert row[1] == "deleted"
+    assert row[6] == "deleted"
+    assert not sources[0].exists()
     assert hashlib.sha256(finals[0].read_bytes()).hexdigest() == row[5]
-    assert _replay() == 1
-    assert sources[0].read_bytes() == original
-    with sqlite3.connect(journal_env["db_path"]) as db:
-        assert db.execute("SELECT COUNT(*) FROM import_queue").fetchone() == (1,)
+    source_record = next(record for _, record, _ in journal_tests._carrier_records(journal_env["db_path"]) if record.binding.purpose == "source")
+    assert source_record.artifact_fingerprint == expected
+    assert source_record.phase == "discarded"
+    captures = [e for e in events if e[:2] == ("capture", "source")]
+    assert len(captures) == 1
+    assert captures[0][3] in ("db_committed", "cleaning")
+    assert captures[0][5] == str(sources[0])
+    journal_tests._assert_private_discard_events(events, source_record)
+    with zipfile.ZipFile(finals[0]) as archive:
+        assert archive.testzip() is None
+        assert archive.read("page.bin") == b"payload-1"
+        assert "ComicInfo.xml" in archive.namelist()
+    assert hashlib.sha256(original).hexdigest() == expected.sha256
+    journal_tests._assert_one_completed(journal_env, cast(int, row[0]), series_id)
+    unlinks = len([e for e in events if e[0] == "unlink"])
+    assert _replay() == 0
+    assert len([e for e in events if e[0] == "unlink"]) == unlinks
+    assert not sources[0].exists()
+    journal_tests._assert_one_completed(journal_env, cast(int, row[0]), series_id)
 
 
 def test_move_completes_when_only_private_publication_needs_fallback(
@@ -395,9 +428,11 @@ def test_move_completes_when_only_private_publication_needs_fallback(
         journal_env, mode="move", file_count=1
     )
     real_rename = import_publication._rename_noreplace
+    hits = []
 
     def unsupported_stage_only(source: str, destination: str) -> None:
-        if Path(source).parent.name.startswith(".mangarr-publication-"):
+        if journal_tests._public_target(journal_env["db_path"], destination) and Path(source).parent == Path(journal_tests._carrier_path(journal_env, "publication")):
+            hits.append(destination)
             raise OSError(
                 errno.EOPNOTSUPP, "unsupported stage publication", destination
             )
@@ -405,6 +440,7 @@ def test_move_completes_when_only_private_publication_needs_fallback(
 
     monkeypatch.setattr(import_publication, "_rename_noreplace", unsupported_stage_only)
     assert asyncio.run(import_execute._execute_import(queue_id))
+    journal_tests._assert_hit(hits)
     assert not sources[0].exists()
     assert finals[0].is_file()
     assert _journal(journal_env)[1] == "deleted"
@@ -415,7 +451,7 @@ def test_move_completes_when_only_private_publication_needs_fallback(
         ).fetchone() == (1,)
 
 
-def test_unsupported_overwrite_does_not_use_private_stage_fallback(
+def test_unsupported_overwrite_retains_original_until_batch_commit_then_discards(
     journal_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import import_publication
@@ -424,15 +460,37 @@ def test_unsupported_overwrite_does_not_use_private_stage_fallback(
         journal_tests._prepare_overwrite_publication(journal_env, monkeypatch)
     )
     original = final.read_bytes()
+    expected = import_publication._private_full(import_publication._regular_fingerprint(str(final), include_hash=True))
     source_bytes = source.read_bytes()
     stage_bytes = stage.read_bytes()
+    events = journal_tests._observe_private_events(journal_env, monkeypatch)
     _unsupported_libc(monkeypatch, errno.EOPNOTSUPP)
-    assert not import_publication.publish_publication(publication_id, "nfs-owner")
-    assert final.read_bytes() == original
+    assert import_publication.publish_publication(publication_id, "nfs-owner")
+    original_record = next(record for _, record, _ in journal_tests._carrier_records(journal_env["db_path"]) if record.binding.purpose == "original")
+    assert original_record.artifact_fingerprint == expected
+    assert (Path(original_record.carrier_path) / "artifact").read_bytes() == original
+    assert import_publication._private_full(import_publication._regular_fingerprint(os.path.join(original_record.carrier_path, "artifact"), include_hash=True)) == expected
+    assert final.read_bytes() == stage_bytes
     assert stage.read_bytes() == stage_bytes
     assert source.read_bytes() == source_bytes
     assert not claim.exists()
     _assert_not_committed(journal_env, series_id)
+    assert _journal(journal_env)[1] == "published"
+    assert not any(e[0] == "unlink" and e[1] == "original" for e in events)
+    assert asyncio.run(import_publication.complete_publication(publication_id, "nfs-owner"))
+    assert final.read_bytes() == stage_bytes
+    assert source.read_bytes() == source_bytes
+    assert not stage.parent.exists()
+    with zipfile.ZipFile(final) as archive:
+        assert archive.testzip() is None
+        assert archive.read("page.bin") == b"payload-1"
+        assert "ComicInfo.xml" in archive.namelist()
+    journal_tests._assert_private_discard_events(events, original_record)
+    journal_tests._assert_one_completed(journal_env, publication_id, series_id)
+    unlinks = len([e for e in events if e[0] == "unlink"])
+    assert _replay() == 0
+    assert len([e for e in events if e[0] == "unlink"]) == unlinks
+    journal_tests._assert_one_completed(journal_env, publication_id, series_id)
 
 
 @pytest.mark.parametrize("kind", ["file", "hardlink", "directory", "symlink"])

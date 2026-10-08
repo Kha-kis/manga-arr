@@ -13,7 +13,7 @@ from download_identity import (
     resolve_download_protocol,
 )
 from events import log_event, add_history
-from files import quality_from_filename, build_volume_label
+from files import quality_from_filename as quality_from_filename, build_volume_label, QUALITY_RANK
 from volumes import _cascade_chapters, _check_volume_completion
 from import_download import (
     DownloadNotificationIntent,
@@ -250,6 +250,25 @@ def _commit_import(
                 state["state"] if state is not None else "missing",
             )
             return False, 0, "journal_claim_lost"
+        from import_plan import publication_admission
+        from import_publication import PublicationBlocked
+        import json
+
+        protocol = queue.get("_file_publication")
+        if not isinstance(protocol, dict) or type(protocol.get("version")) is not int or protocol["version"] != 1:
+            raise PublicationBlocked("legacy publication admission is unproven; retained")
+        if protocol.get("decision") != "pending" or protocol.get("admission") != publication_admission(db, plan):
+            protocol["decision"] = "compensate"
+            db.execute(
+                "UPDATE import_publications SET queue_snapshot_json=? WHERE id=? AND state='published' AND operation_owner=?",
+                (json.dumps(queue, sort_keys=True, separators=(",", ":")), publication_id, lease_owner),
+            )
+            return False, 0, "admission_changed"
+        protocol["decision"] = "commit"
+        db.execute(
+            "UPDATE import_publications SET queue_snapshot_json=? WHERE id=? AND state='published' AND operation_owner=?",
+            (json.dumps(queue, sort_keys=True, separators=(",", ":")), publication_id, lease_owner),
+        )
     elif not refresh_import_queue_lease(
         db,
         queue_id,
@@ -662,13 +681,27 @@ def _process_import_file(
         _process_volume_import(db, fp, dst, plan, queue, series_id, imported_vols)
 
 
+def _publication_quality(queue, fp, fallback):
+    """New journals record actual magic-based quality before the SQL writer."""
+    protocol = queue.get("_file_publication")
+    if isinstance(protocol, dict):
+        entry = protocol.get("artifacts", {}).get(str(fp.file_id), {})
+        if "quality" in entry:
+            return entry["quality"]
+    # Non-journal compatibility callers only have filename evidence. Never
+    # stat/open their public path while a Phase3 writer is held.
+    import os
+    extension = os.path.splitext(fallback)[1].lstrip(".").lower()
+    return extension if extension in QUALITY_RANK else None
+
+
 def _process_special_import(db, fp, dst, queue, series_id):
     """Persist a standalone special without touching numbered library rows."""
     imported_at = datetime.utcnow().isoformat()
     meta = _queue_metadata(db, queue, series_id)
     owner_id = coerce_download_client_id(queue.get("download_client_id"))
     title = (fp.special_title or "Special").strip() or "Special"
-    quality = quality_from_filename(fp.filename)
+    quality = _publication_quality(queue, fp, fp.filename)
 
     existing = db.execute(
         "SELECT id FROM volumes WHERE series_id=? AND COALESCE(is_special,0)=1"
@@ -780,7 +813,7 @@ def _process_chapter_import(
             ).lastrowid
 
     metadata = _queue_metadata(db, queue, series_id)
-    _ch_quality = quality_from_filename(dst)
+    _ch_quality = _publication_quality(queue, fp, dst)
     _ch_torrent_name = metadata.get("torrent_name") or queue["torrent_name"]
     download_client_id = coerce_download_client_id(queue.get("download_client_id"))
     imported_at = datetime.utcnow().isoformat()
@@ -911,7 +944,7 @@ def _process_volume_import(db, fp, dst, plan, queue, series_id, imported_vols):
 
     if fp.has_volume_range and fp.proposed_vol is None:
         meta = _queue_metadata(db, queue, series_id)
-        file_quality = quality_from_filename(fp.filename)
+        file_quality = _publication_quality(queue, fp, fp.filename)
         _rpt = (
             fp.pack_type
             if fp.pack_type in ("volume", "volume_range", "complete")
@@ -954,7 +987,7 @@ def _process_volume_import(db, fp, dst, plan, queue, series_id, imported_vols):
             "SELECT id FROM volumes WHERE series_id=? AND volume_num=?",
             (series_id, fp.proposed_vol),
         ).fetchone()
-        file_quality = quality_from_filename(fp.filename)
+        file_quality = _publication_quality(queue, fp, fp.filename)
         if vol_row:
             db.execute(
                 "UPDATE volumes SET status='downloaded', import_path=?, torrent_name=?,"

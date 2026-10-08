@@ -43,7 +43,7 @@ def _run(coro):
 
 
 @pytest.fixture
-def fresh_db(monkeypatch):
+def fresh_db(monkeypatch, tmp_path):
     """Point main.DB_PATH at an empty tmp file and run init_db."""
     import import_execute
     import main
@@ -55,7 +55,7 @@ def fresh_db(monkeypatch):
     original_main_values = dict(main.CONFIG)
     original_shared_config = shared.CONFIG
     original_shared_values = dict(shared.CONFIG)
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=tmp_path)
     tmp.close()
     os.unlink(tmp.name)
     monkeypatch.setattr(main, "DB_PATH", tmp.name)
@@ -252,7 +252,26 @@ def test_semaphore_bounds_concurrent_imports_to_two(fresh_db, monkeypatch):
     _install_fake_execute_import(monkeypatch, probe)
 
     async def _run_all():
-        await asyncio.gather(*[main._guarded_execute_import(q) for q in qids])
+        remaining = list(qids)
+        for _ in range(20):
+            results = await asyncio.gather(
+                *[main._guarded_execute_import(q) for q in remaining]
+            )
+            retry = []
+            for queue_id, result in zip(remaining, results, strict=True):
+                state = _get_queue_state(fresh_db, queue_id)
+                if result:
+                    assert state == ("imported", None, None)
+                else:
+                    assert result is False
+                    assert state == ("pending", None, None)
+                    retry.append(queue_id)
+            if not retry:
+                return
+            remaining = retry
+            # Real threaded cleanup may temporarily own the nonblocking guard.
+            await asyncio.sleep(0.01)
+        raise AssertionError(f"pending imports exhausted retry budget: {remaining}")
 
     _run(_run_all())
 

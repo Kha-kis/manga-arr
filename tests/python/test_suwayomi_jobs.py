@@ -52,7 +52,8 @@ def _make_cbz(path: str, page_count: int = 1) -> str:
 def env(tmp_path, monkeypatch):
     """Fresh DB + temp Suwayomi library + temp Mangarr library + queued jobs."""
     import main, shared, security
-    db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    # The configured local DB belongs in a trusted config parent, not /tmp.
+    db = tempfile.NamedTemporaryFile(suffix=".db", dir=tmp_path, delete=False)
     db.close(); os.unlink(db.name)
     key_dir = tempfile.mkdtemp(prefix="mangarr-swyjobs-keys-")
 

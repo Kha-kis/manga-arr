@@ -444,6 +444,7 @@ def init_db() -> None:
                 publication_id         INTEGER,
                 pack_path              TEXT NOT NULL,
                 tombstone_path         TEXT,
+                directory_ownership_json TEXT,
                 expires_at             TEXT NOT NULL,
                 created_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -462,6 +463,7 @@ def init_db() -> None:
                 queue_id               INTEGER NOT NULL,
                 publication_id         INTEGER,
                 pack_path              TEXT NOT NULL,
+                carrier_json           TEXT,
                 created_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -1707,6 +1709,7 @@ def _migrate_schema_constraints_locked(db: sqlite3.Connection) -> None:
         _ensure_acquisition_policy_columns(db)
         _ensure_private_file_claim_schema(db)
         _ensure_rescan_file_operations_schema(db)
+        _ensure_pack_ownership_schema(db)
         return
 
     if version < _SCHEMA_VERSION_FK_CONSTRAINTS:
@@ -1730,6 +1733,7 @@ def _migrate_schema_constraints_locked(db: sqlite3.Connection) -> None:
     _ensure_acquisition_policy_columns(db)
     _ensure_private_file_claim_schema(db)
     _ensure_rescan_file_operations_schema(db)
+    _ensure_pack_ownership_schema(db)
 
 
 
@@ -1782,6 +1786,17 @@ def _ensure_acquisition_policy_columns(db: sqlite3.Connection) -> None:
                 f"ALTER TABLE {table} ADD COLUMN respect_grab_claims INTEGER"
                 " CHECK(respect_grab_claims IN (0,1))"
             )
+
+
+def _ensure_pack_ownership_schema(db: sqlite3.Connection) -> None:
+    """Extend pack journals without guessing ownership for existing artifacts."""
+    for table, column in (
+        ("import_pack_cleanup_reservations", "directory_ownership_json"),
+        ("import_pack_cleanup_tombstones", "carrier_json"),
+    ):
+        columns = {str(row[1]) for row in db.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
 
 
 def _ensure_private_file_claim_schema(db: sqlite3.Connection) -> None:

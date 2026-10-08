@@ -42,11 +42,13 @@ def reset_grabbing_urls():
 
 
 @pytest.fixture
-def fresh_db(monkeypatch):
+def fresh_db(monkeypatch, tmp_path):
     """Empty temp DB with init."""
     import main
     import shared
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(mode=0o700)
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=config_dir)
     tmp.close()
     os.unlink(tmp.name)
     monkeypatch.setattr(main, "DB_PATH", tmp.name)
@@ -249,12 +251,14 @@ def test_import_semaphore_released_on_cancel(fresh_db, monkeypatch):
     import_execute._IMPORT_SEM = asyncio.Semaphore(2)
     
     # Block _execute_import inside the semaphore
+    entered = asyncio.Event()
     blocked = asyncio.Event()
     unblock = asyncio.Event()
     call_record = {"called": False}
     
     async def _blocked_execute(queue_id, *a, **kw):
         call_record["called"] = True
+        entered.set()
         await blocked.wait()
         unblock.set()
         return True
@@ -277,13 +281,14 @@ def test_import_semaphore_released_on_cancel(fresh_db, monkeypatch):
         # Start the import worker
         task = asyncio.create_task(import_execute._guarded_execute_import(qid))
         
-        # Give the task time to enter the semaphore and block inside _execute_import
-        await asyncio.sleep(0.1)
-        blocked.set()
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
         
         # Verify the task actually entered _execute_import (i.e. semaphore was taken)
         assert call_record["called"], "_execute_import was never called"
+        assert not task.done()
+        assert not blocked.is_set() and not unblock.is_set()
+        assert import_execute._IMPORT_SEM is not None
+        assert import_execute._IMPORT_SEM._value == before - 1
         
         # Cancel the task
         task.cancel()
@@ -291,6 +296,8 @@ def test_import_semaphore_released_on_cancel(fresh_db, monkeypatch):
             await asyncio.wait_for(task, timeout=2.0)
         except asyncio.CancelledError:
             pass
+        assert task.cancelled()
+        assert not unblock.is_set()
         await asyncio.sleep(0.1)
         
         # Semaphore must be released back to its original value

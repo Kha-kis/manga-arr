@@ -585,10 +585,10 @@ def test_pack_cleanup_detaches_before_slow_delete_without_writer_lock(
     delete_release = threading.Event()
     original_rmtree = import_pack_cleanup.shutil.rmtree
 
-    def _slow_rmtree(path: str) -> None:
+    def _slow_rmtree(path: str, **kwargs) -> None:
         delete_started.set()
         assert delete_release.wait(timeout=5)
-        original_rmtree(path)
+        original_rmtree(path, **kwargs)
 
     monkeypatch.setattr(import_pack_cleanup.shutil, "rmtree", _slow_rmtree)
 

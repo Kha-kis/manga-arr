@@ -10,6 +10,7 @@ from typing import Any, cast
 import pytest
 
 from test_rescan_transactions import rescan_env as rescan_env
+from test_import_publication_journal import _seed_queue, journal_env as journal_env
 
 
 @pytest.mark.parametrize(
@@ -236,6 +237,7 @@ def test_inventory_initial_symlink_excludes_only_reserved_boundaries(
 def _stage_private_import(
     destination: Path, source: Path, producer: str
 ) -> tuple[Path, Path, bytes]:
+    """Retained unregistered flat layouts, not current journal-owned carriers."""
     from import_publication import deterministic_staging_dir
     from import_staging import _ImportStaging
 
@@ -253,7 +255,7 @@ def _stage_private_import(
         1,
         "copy",
         staging_dir=staging_dir,
-        journal_owned=producer != "staging",
+        journal_owned=False,
     )
     artifact = Path(
         staging.stage(str(source), str(destination / "Private Manga v08.cbz"))
@@ -261,6 +263,48 @@ def _stage_private_import(
     witness = Path(staging.staging_dir) / "retained.json"
     witness.write_bytes(b'{"inventory_must_not_mutate":true}')
     return artifact, witness, source.read_bytes()
+
+
+def test_current_pinned_import_stage_is_not_inventory_evidence(journal_env) -> None:
+    import rescan
+    import shared
+    from import_lease import claim_import_queue_row, IMPORT_LEASE_SECONDS
+    from import_plan import _plan_import
+    from import_publication import initialize_publication_filesystem
+    from import_staging import _ImportStaging
+
+    queue_id, _, sources, _ = _seed_queue(journal_env, file_count=1)
+    original = sources[0].read_bytes()
+    owner = "current-inventory-owner"
+    with shared.get_db() as db:
+        assert claim_import_queue_row(db, queue_id, owner)
+        plan = _plan_import(
+            db, queue_id, owner, {}, {}, set(), "copy",
+            lease_seconds=IMPORT_LEASE_SECONDS,
+        )
+    assert plan is not None
+    stage, _ = initialize_publication_filesystem(plan, owner)
+    with sqlite3.connect(journal_env["db_path"]) as db:
+        row = db.execute("SELECT id FROM import_publications").fetchone()
+    assert row is not None
+    staging = _ImportStaging(
+        plan.dst_dir, queue_id, "copy", staging_dir=stage,
+        journal_owned=True, publication_id=row[0], owner_token=owner,
+    )
+    outcome = staging.stage_one(plan, plan.files[0])
+    assert outcome.ok
+    artifact = Path(outcome.stage_path)
+    staged = artifact.read_bytes()
+    with zipfile.ZipFile(artifact) as archive:
+        assert "ComicInfo.xml" in archive.namelist()
+
+    for entry in (stage, plan.dst_dir):
+        snapshot = rescan.SeriesRescanSnapshot({}, entry, (), (), (), {})
+        inventory = rescan.build_filesystem_inventory(snapshot)
+        assert inventory.on_disk == frozenset()
+        assert not inventory.any_library_files
+    assert sources[0].read_bytes() == original
+    assert artifact.read_bytes() == staged
 
 
 @pytest.mark.parametrize("producer", ["publication", "publication_legacy", "staging"])

@@ -49,7 +49,7 @@ def env(tmp_path):
     """Fresh DB + temp src/library dirs, pointed at main.load_config()."""
     import import_execute
     import main, shared, security
-    db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    db = tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=tmp_path)
     db.close(); os.unlink(db.name)
     key_dir = tempfile.mkdtemp(prefix="mangarr-importmap-keys-")
 
@@ -894,7 +894,7 @@ def test_queue_import_expands_zip_wrapped_split_rar_payload(env, monkeypatch):
 
         return Result()
 
-    monkeypatch.setattr(import_queue.subprocess, "run", fake_unrar)
+    monkeypatch.setattr(import_queue, "_run_pack_extractor", lambda command, heartbeat, output_fd: fake_unrar(command))
 
     qid = _run_queue_import(
         env["db_path"], series_id=7,
@@ -942,7 +942,7 @@ def test_queue_import_rejects_empty_split_rar_extract(env, monkeypatch):
         stdout = "All OK"
         stderr = ""
 
-    monkeypatch.setattr(import_queue.subprocess, "run", lambda *args, **kwargs: Result())
+    monkeypatch.setattr(import_queue, "_run_pack_extractor", lambda *args, **kwargs: Result())
 
     qid = _run_queue_import(
         env["db_path"], series_id=7,

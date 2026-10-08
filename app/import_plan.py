@@ -14,11 +14,13 @@ from download_identity import (
     coerce_download_client_id,
     download_identities_match,
     normalize_download_protocol,
+    normalize_download_id,
     resolve_download_protocol,
 )
 from events import log_event
 from parsing import extract_chapter_num
 from files import (
+    QUALITY_RANK,
     build_filename,
     build_special_filename,
     derive_special_title,
@@ -133,6 +135,101 @@ def _automatic_grab_import(db: sqlite3.Connection, queue: Mapping[str, Any]) -> 
     ) != 0
 
 
+_PUBLICATION_ROW_FIELDS = (
+    "id", "series_id", "status", "grabbed_at", "imported_at", "import_path",
+    "quality", "size_bytes", "download_id", "download_client_id", "protocol",
+    "torrent_name", "indexer", "client", "release_group",
+)
+_PUBLICATION_VOLUME_FIELDS = _PUBLICATION_ROW_FIELDS + (
+    "volume_num", "chapter_num", "is_special", "pack_type", "vol_range_start",
+    "vol_range_end", "edition_type", "language", "source_url",
+)
+_PUBLICATION_CHAPTER_FIELDS = _PUBLICATION_ROW_FIELDS + (
+    "volume_id", "chapter_num", "chapter_range_end", "torrent_url",
+)
+_PUBLICATION_MAPPING_FIELDS = (
+    "id", "queue_id", "src_path", "filename", "proposed_volume", "file_type",
+    "proposed_chapter", "proposed_chapter_range_end", "proposed_volume_range_start",
+    "proposed_volume_range_end", "proposed_pack_type", "proposed_is_special",
+    "proposed_special_title", "proposed_import_kind",
+)
+
+
+def publication_admission(db: sqlite3.Connection, plan: _ImportPlan) -> dict[str, Any]:
+    """SQL-only observation of every row the admitted batch can affect.
+
+    Include owned acquisition ranges because Phase3 completion cascades across
+    them, plus explicitly mapped targets/parents/children and path collisions.
+    The absence of a matching row is an observation too. Display/monitoring
+    fields deliberately do not revoke an otherwise intact admission.
+    """
+    from import_commit import _queue_metadata
+
+    queue = plan.queue
+    identity = _queue_identity(db, queue)
+    current = db.execute("SELECT * FROM import_queue WHERE id=?", (queue["id"],)).fetchone()
+    series = db.execute("SELECT * FROM series WHERE id=?", (plan.series_id,)).fetchone()
+    volumes = db.execute("SELECT * FROM volumes WHERE series_id=? ORDER BY id", (plan.series_id,)).fetchall()
+    chapters = db.execute("SELECT * FROM chapters WHERE series_id=? ORDER BY id", (plan.series_id,)).fetchall()
+    source = str(queue.get("torrent_url") or "")
+    ready = [fp for fp in plan.files if fp.plan_status == "ready"]
+    owned_volumes = {
+        r["id"] for r in volumes
+        if r["download_client_id"] == identity.download_client_id
+        and r["source_url"] == source and _claim_identity_matches(r, identity)
+    }
+    owned_chapters = {
+        r["id"] for r in chapters
+        if r["download_client_id"] == identity.download_client_id
+        and r["torrent_url"] == source and _claim_identity_matches(r, identity)
+    }
+    entries: dict[str, Any] = {}
+    for fp in ready:
+        selected = {
+            r["id"] for r in volumes
+            if r["id"] in owned_volumes or r["import_path"] == fp.dst_path
+            or (fp.proposed_vol is not None and r["volume_num"] == fp.proposed_vol)
+            or (fp.has_volume_range and r["volume_num"] is not None
+                and fp.vol_range_start is not None and fp.vol_range_end is not None
+                and fp.vol_range_start <= r["volume_num"] <= fp.vol_range_end)
+        }
+        selected_chapters = {
+            r["id"] for r in chapters
+            if r["id"] in owned_chapters or r["volume_id"] in selected
+            or r["import_path"] == fp.dst_path
+            or (fp.proposed_chap is not None and r["chapter_num"] == fp.proposed_chap)
+        }
+        mapping = db.execute("SELECT * FROM import_queue_files WHERE id=?", (fp.file_id,)).fetchone()
+        entries[str(fp.file_id)] = {
+            "mapping": {k: mapping[k] for k in _PUBLICATION_MAPPING_FIELDS if mapping is not None and k in mapping.keys()},
+            "effective": {k: getattr(fp, k) for k in (
+                "import_kind", "file_type", "proposed_vol", "proposed_chap", "chap_range_end",
+                "vol_range_start", "vol_range_end", "pack_type", "is_special", "special_title", "dst_path",
+            )},
+            "volumes": [{k: r[k] for k in _PUBLICATION_VOLUME_FIELDS if k in r.keys()} for r in volumes if r["id"] in selected],
+            "chapters": [{k: r[k] for k in _PUBLICATION_CHAPTER_FIELDS if k in r.keys()} for r in chapters if r["id"] in selected_chapters],
+            "other_path_claims": {
+                table: [{k: row[k] for k in fields if k in row.keys()} for row in db.execute(
+                    f"SELECT * FROM {table} WHERE series_id!=? AND import_path=? ORDER BY id",
+                    (plan.series_id, fp.dst_path),
+                )]
+                for table, fields in (("volumes", _PUBLICATION_VOLUME_FIELDS), ("chapters", _PUBLICATION_CHAPTER_FIELDS))
+            },
+            "claims": _file_has_grab_claim(db, queue, fp),
+        }
+    return {
+        "acquisition_metadata": _queue_metadata(db, queue, plan.series_id),
+        "series": None if series is None else {k: series[k] for k in ("id", "root_folder_id", "deleted_at", "edition_type")},
+        "queue": None if current is None else {k: current[k] for k in (
+            "series_id", "torrent_url", "download_client_id", "download_id", "download_protocol", "respect_grab_claims",
+        )},
+        "identity": [identity.download_client_id, identity.protocol, normalize_download_id(identity.download_id, identity.protocol)],
+        "policy": int(_automatic_grab_import(db, queue)),
+        "manual_files": sorted(_manual_mapping_files(queue)),
+        "files": entries,
+    }
+
+
 def _file_has_grab_claim(
     db: sqlite3.Connection, queue: Mapping[str, Any], fp: _FilePlan
 ) -> bool:
@@ -196,6 +293,7 @@ def _plan_import(
     import_mode: str,
     *,
     lease_seconds: float,
+    source_qualities: Mapping[int, str | None] | None = None,
 ) -> _ImportPlan | None:
     """Phase 1: read queue/series/files and build _ImportPlan."""
     queue_row = db.execute(
@@ -522,7 +620,12 @@ def _plan_import(
                 " WHERE series_id=? AND volume_num=?",
                 (queue["series_id"], proposed_vol),
             ).fetchone()
-            new_quality = quality_from_filename(f["src_path"] or filename)
+            if source_qualities is not None:
+                new_quality = source_qualities.get(f["id"])
+            else:
+                # SQL-only legacy callers have no magic-byte observation.
+                extension = os.path.splitext(f["src_path"] or filename)[1].lower().lstrip(".")
+                new_quality = extension if extension in QUALITY_RANK else None
             if (
                 existing
                 and existing["status"] == "downloaded"
@@ -604,4 +707,8 @@ def _plan_import(
         lease_seconds=lease_seconds,
     ):
         raise _ImportPlanLeaseLost
+    queue["_file_publication"] = {
+        "version": 1, "decision": "pending", "admission": publication_admission(db, plan),
+        "artifacts": {},
+    }
     return plan

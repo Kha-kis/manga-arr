@@ -21,8 +21,11 @@ held write lock until busy_timeout elapsed and raise OperationalError.
 """
 
 import asyncio
+import json
 import os
 import sqlite3
+import stat
+import sys
 import tempfile
 import threading
 
@@ -49,7 +52,9 @@ def lock_env(tmp_path, monkeypatch):
     import main
     import shared
 
-    db_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(mode=0o700)
+    db_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=config_dir)
     db_tmp.close()
     os.unlink(db_tmp.name)
     monkeypatch.setattr(main, "DB_PATH", db_tmp.name)
@@ -130,10 +135,10 @@ def test_phase2_does_not_hold_db_write_lock(lock_env, monkeypatch):
     """While Phase 2 (file I/O via _stage_files) is paused, the SQLite
     write lock must be free.
 
-    Pauses Phase 2 inside _try_inject_comicinfo (which _stage_files
-    calls via asyncio.to_thread for every staged file) using a
-    threading.Event. While paused, attempts a write from a separate
-    sqlite3 connection with a 1-second busy_timeout.
+    Pauses the exact private-stage transform dispatcher after the staged
+    source has been validated and the carrier/guard FDs acquired. While
+    paused, attempts a write from a separate sqlite3 connection with a
+    1-second busy_timeout. The real transform runs after resumption.
 
     Passes a volume_overrides arg so the planner persists an UPDATE on
     import_queue_files before Phase 2 starts. Pre-fix that UPDATE fired
@@ -159,15 +164,39 @@ def test_phase2_does_not_hold_db_write_lock(lock_env, monkeypatch):
     in_phase_2 = threading.Event()
     resume_phase_2 = threading.Event()
 
-    real_inject = import_staging._try_inject_comicinfo
+    real_run = import_staging.subprocess.run
+    transform_calls = 0
 
-    def _slow_inject(*args, **kwargs):
+    def _slow_transform(*args, **kwargs):
+        nonlocal transform_calls
+        command = args[0] if args else kwargs.get("args")
+        if command != [
+            sys.executable, "-c", import_staging._PINNED_TRANSFORM_WORKER,
+        ]:
+            return real_run(*args, **kwargs)
+        payload = json.loads(kwargs["input"])
+        if payload["db_path"] != lock_env["db_path"]:
+            return real_run(*args, **kwargs)
+        directory_fd, sidecar_fd = kwargs["pass_fds"]
+        assert directory_fd == payload["fd"]
+        assert stat.S_ISDIR(os.fstat(directory_fd).st_mode)
+        assert stat.S_ISREG(
+            os.stat(payload["name"], dir_fd=directory_fd, follow_symlinks=False).st_mode
+        )
+        sidecar_path = os.path.join(
+            os.path.dirname(lock_env["db_path"]),
+            f'.{os.path.basename(lock_env["db_path"])}.file-mutation.lock',
+        )
+        held, named = os.fstat(sidecar_fd), os.lstat(sidecar_path)
+        assert (held.st_dev, held.st_ino) == (named.st_dev, named.st_ino)
+        assert sidecar_fd >= 3 and not os.get_inheritable(sidecar_fd)
+        transform_calls += 1
         in_phase_2.set()
         if not resume_phase_2.wait(timeout=10):
             raise TimeoutError("test never resumed Phase 2")
-        return real_inject(*args, **kwargs)
+        return real_run(*args, **kwargs)
 
-    monkeypatch.setattr(import_staging, "_try_inject_comicinfo", _slow_inject)
+    monkeypatch.setattr(import_staging.subprocess, "run", _slow_transform)
 
     async def _drive():
         import_task = asyncio.create_task(
@@ -197,6 +226,7 @@ def test_phase2_does_not_hold_db_write_lock(lock_env, monkeypatch):
             await import_task
 
     _run(_drive())
+    assert transform_calls == 1
 
     # Confirm the probe actually committed.
     with sqlite3.connect(lock_env["db_path"]) as c:

@@ -1,6 +1,7 @@
 """Reciprocal admission is checked by the actual short writer, not a pre-read."""
 
 import sqlite3
+import zipfile
 
 import pytest
 
@@ -117,13 +118,14 @@ def test_adoption_of_former_mapping_cannot_bypass_path_journal(rescan_env):
 
 
 @pytest.mark.parametrize("state", ACTIVE)
-def test_publication_reservation_rechecks_rescan_on_writer(journal_env, state):
+def test_publication_reservation_rechecks_rescan_on_writer(journal_env, state, monkeypatch):
     import import_publication
     import shared
     from import_lease import claim_import_queue_row, IMPORT_LEASE_SECONDS
     from import_plan import _plan_import
 
-    queue_id, series_id, _, _ = _seed_queue(journal_env, file_count=1)
+    queue_id, series_id, sources, _ = _seed_queue(journal_env, file_count=1)
+    original = sources[0].read_bytes()
     with shared.get_db() as db:
         assert claim_import_queue_row(db, queue_id, "owner")
         plan = _plan_import(
@@ -137,17 +139,104 @@ def test_publication_reservation_rechecks_rescan_on_writer(journal_env, state):
             lease_seconds=IMPORT_LEASE_SECONDS,
         )
     assert plan is not None
-    stage, fingerprints = import_publication.initialize_publication_filesystem(
-        plan, "owner"
-    )
-    _journal(journal_env["db_path"], series_id=series_id, state=state)
+    real_fingerprint = import_publication._regular_fingerprint
+    hits = []
+
+    def fingerprint(path, *, include_hash, heartbeat=None):
+        result = real_fingerprint(path, include_hash=include_hash, heartbeat=heartbeat)
+        if path == str(sources[0]) and include_hash is True:
+            with sqlite3.connect(journal_env["db_path"]) as db:
+                assert db.execute("SELECT COUNT(*) FROM import_publications").fetchone() == (0,)
+            _journal(journal_env["db_path"], series_id=series_id, state=state)
+            hits.append(state)
+        return result
+
+    monkeypatch.setattr(import_publication, "_regular_fingerprint", fingerprint)
     with pytest.raises(import_publication.PublicationOwnershipLost):
-        with shared.get_db() as db:
-            import_publication.create_publication(
-                db, plan, "owner", stage, fingerprints
-            )
+        import_publication.initialize_publication_filesystem(plan, "owner")
     with sqlite3.connect(journal_env["db_path"]) as db:
         assert db.execute("SELECT COUNT(*) FROM import_publications").fetchone() == (0,)
+        assert db.execute("SELECT COUNT(*) FROM file_claim_namespaces").fetchone() == (0,)
+    assert hits == [state]
+    assert sources[0].read_bytes() == original
+
+
+def test_real_import_binding_fences_public_and_cached_rescan(rescan_env, monkeypatch):
+    import rescan
+    import rescan_file_recovery as recovery
+    import shared
+    from import_lease import claim_import_queue_row, IMPORT_LEASE_SECONDS
+    from import_plan import _plan_import
+    from import_publication import initialize_publication_filesystem
+
+    path, _, target, context = _fixture(rescan_env)
+    original = path.read_bytes()
+    source = rescan_env["library_root"].parent / "incoming.cbz"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("001.jpg", b"incoming volume two")
+    with sqlite3.connect(rescan_env["db_path"]) as db:
+        db.execute(
+            "INSERT INTO volumes(series_id,volume_num,status,download_id)"
+            " VALUES(7,2,'grabbed','incoming')"
+        )
+        # Explicit local manual import; no synthesized rescan operation or receipt.
+        cursor = db.execute(
+            "INSERT INTO import_queue(series_id,download_id,torrent_name,torrent_url,"
+            "src_dir,status,respect_grab_claims)"
+            " VALUES(7,'incoming','incoming v02','local:manual',?,'pending',0)",
+            (str(source.parent),),
+        )
+        queue_id = cursor.lastrowid
+        db.execute(
+            "INSERT INTO import_queue_files(queue_id,filename,src_path,proposed_volume,"
+            "file_type,proposed_import_kind,status)"
+            " VALUES(?,?,?,2,'volume','volume','pending')",
+            (queue_id, "Race Manga v02.cbz", str(source)),
+        )
+    assert queue_id is not None
+    owner = "opposite-order-owner"
+    with shared.get_db() as db:
+        assert claim_import_queue_row(db, queue_id, owner)
+        plan = _plan_import(
+            db, queue_id, owner, {}, {}, set(), "copy",
+            lease_seconds=IMPORT_LEASE_SECONDS,
+        )
+    assert plan is not None
+    initialize_publication_filesystem(plan, owner)
+    assert rescan._current_enrichment_context(target) == context
+    with sqlite3.connect(rescan_env["db_path"]) as db:
+        before = db.execute("SELECT * FROM volumes WHERE series_id=7 ORDER BY id").fetchall()
+        publication_before = db.execute("SELECT * FROM import_publications").fetchall()
+
+    real_competing = recovery.competing_for_series
+    real_reserve = recovery._reserve
+    hits = []
+    reservations = []
+
+    def competing(db, series_id):
+        result = real_competing(db, series_id)
+        hits.append((series_id, db.in_transaction, result))
+        return result
+
+    def reserve(*args):
+        result = real_reserve(*args)
+        reservations.append(result)
+        return result
+
+    monkeypatch.setattr(recovery, "competing_for_series", competing)
+    monkeypatch.setattr(recovery, "_reserve", reserve)
+    result = rescan.rescan_series_folder(7)
+    assert hits == [(7, True, True)]
+    assert result["created"] == result["recovered"] == result["missing"] == 0
+    hits.clear()
+    recovery.enrich_target(target, context)
+    assert hits == [(7, True, True)]
+    assert reservations == [None]
+    assert path.read_bytes() == original
+    with sqlite3.connect(rescan_env["db_path"]) as db:
+        assert db.execute("SELECT COUNT(*) FROM rescan_file_operations").fetchone() == (0,)
+        assert db.execute("SELECT * FROM volumes WHERE series_id=7 ORDER BY id").fetchall() == before
+        assert db.execute("SELECT * FROM import_publications").fetchall() == publication_before
 
 
 @pytest.mark.parametrize(

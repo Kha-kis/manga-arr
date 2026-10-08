@@ -218,7 +218,7 @@ def test_merge_cbzs_handles_only_image_extensions(tmp_path):
 def import_env(tmp_path, monkeypatch):
     """Fresh DB + tmp Suwayomi library root + tmp Mangarr library root."""
     import main, shared, security
-    db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    db = tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=tmp_path)
     db.close(); os.unlink(db.name)
     key_dir = tempfile.mkdtemp(prefix="mangarr-swyfs-keys-")
 

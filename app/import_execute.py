@@ -8,6 +8,8 @@ import shutil
 from collections.abc import Callable
 from typing import TypeVar
 
+import shared
+from file_mutation_lock import FileMutationLockError, file_mutation_guard
 from download_identity import (
     DownloadProtocol,
     coerce_download_client_id,
@@ -40,6 +42,7 @@ from import_publication import (
     create_publication,
     ensure_durable_directory,
     initialize_publication_filesystem,
+    abort_private_staging,
     load_publication,
     prepare_staged_artifacts,
 )
@@ -245,6 +248,18 @@ def _refresh_owned_import(queue_id: int, lease_owner: str) -> bool:
         )
 
 
+def _read_source_qualities(queue_id: int) -> dict[int, str | None]:
+    from import_plan import quality_from_filename
+
+    with get_db() as db:
+        files = db.execute(
+            "SELECT id,src_path,filename FROM import_queue_files"
+            " WHERE queue_id=? AND status IN ('pending','needs_review')",
+            (queue_id,),
+        ).fetchall()
+    return {row["id"]: quality_from_filename(row["src_path"] or row["filename"]) for row in files}
+
+
 def _cleanup_pack_staging_if_safe(
     queue_id: int,
     download_id: str,
@@ -289,7 +304,7 @@ async def _guarded_execute_import(
             DownloadProtocol | None,
         ] | None = None
         try:
-            with get_db() as claim_db:
+            with file_mutation_guard(shared.DB_PATH), get_db() as claim_db:
                 if not claim_import_queue_row(
                     claim_db,
                     queue_id,
@@ -317,6 +332,8 @@ async def _guarded_execute_import(
                             identity["download_protocol"]
                         ),
                     )
+        except FileMutationLockError:
+            return False
         except Exception as exc:
             log_event(
                 "error",
@@ -518,6 +535,11 @@ async def _execute_import_impl(
         skip_ids = set()
 
     import_mode = get_cfg("import_mode", "hardlink")
+    source_qualities, quality_cancelled = await _run_blocking_uninterruptibly(
+        lambda: _read_source_qualities(queue_id)
+    )
+    if quality_cancelled:
+        raise asyncio.CancelledError
 
     # ── Phase 1 — short DB tx for planning ──────────────────────────────
     try:
@@ -539,6 +561,7 @@ async def _execute_import_impl(
                 skip_ids,
                 import_mode,
                 lease_seconds=IMPORT_LEASE_SECONDS,
+                source_qualities=source_qualities,
             )
     except _ImportPlanLeaseLost:
         ownership_lost.set()
@@ -597,15 +620,14 @@ async def _execute_import_impl(
         except Exception:
             raise
         if init_cancelled:
-            staging_dir, _ = publication_fs
             await _run_blocking_uninterruptibly(
-                lambda: shutil.rmtree(staging_dir, ignore_errors=True)
+                lambda: abort_private_staging(int(plan.queue["_publication_staging"]["binding"]["operation_key"]))
             )
             raise asyncio.CancelledError
         staging_dir, source_fingerprints = publication_fs
 
         try:
-            with get_db() as journal_db:
+            with file_mutation_guard(shared.DB_PATH), get_db() as journal_db:
                 publication_id = create_publication(
                     journal_db,
                     plan,
@@ -615,7 +637,7 @@ async def _execute_import_impl(
                 )
         except Exception:
             await _run_blocking_uninterruptibly(
-                lambda: shutil.rmtree(staging_dir, ignore_errors=True)
+                lambda: abort_private_staging(int(plan.queue["_publication_staging"]["binding"]["operation_key"]))
             )
             raise
 
@@ -625,15 +647,13 @@ async def _execute_import_impl(
             import_mode,
             staging_dir=staging_dir,
             journal_owned=True,
+            publication_id=publication_id,
+            owner_token=lease_owner,
         )
 
         async def _abort_reversible_staging() -> bool:
             _, rollback_cancelled = await _run_blocking_uninterruptibly(
                 staging.rollback
-            )
-            abort_staging_publication(
-                publication_id,
-                release_queue=False,
             )
             return rollback_cancelled
 
