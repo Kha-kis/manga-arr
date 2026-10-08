@@ -11,7 +11,7 @@ Flow:
 """
 
 import asyncio as _aio
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Sequence, Callable
 from decimal import Decimal, InvalidOperation
 import json
 import logging
@@ -26,6 +26,9 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from shared import get_cfg, get_db, timed_block
+import shared
+from file_mutation_lock import FileMutationGuard, FileMutationLockError, file_mutation_guard
+from import_publication import PublicationBlocked, assert_library_file_mutation_available
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -992,6 +995,37 @@ async def _import_suwayomi_volume(
     swy_title: str = "",
     chapter_nums: Sequence[float | Decimal] | None = None,
 ) -> tuple[str | None, int]:
+    return await _run_suwayomi_file_unit(series_id, lambda guard: _import_suwayomi_volume_files(c, series_id, volume_num, swy_title=swy_title, chapter_nums=chapter_nums))
+
+
+async def _run_suwayomi_file_unit(series_id: int, operation: Callable[[FileMutationGuard], tuple[str | None, int]]) -> tuple[str | None, int]:
+    def run() -> tuple[str | None, int]:
+        try:
+            with file_mutation_guard(shared.DB_PATH) as guard:
+                with get_db() as db:
+                    assert_library_file_mutation_available(db, series_id)
+                result = operation(guard)
+                guard.verify()
+                return result
+        except (FileMutationLockError, PublicationBlocked):
+            return None, 0
+    task = _aio.create_task(_aio.to_thread(run))
+    cancelled = False
+    while not task.done():
+        try:
+            await _aio.shield(task)
+        except _aio.CancelledError:
+            cancelled = True
+    result = task.result()
+    if cancelled:
+        raise _aio.CancelledError
+    return result
+
+
+def _import_suwayomi_volume_files(
+    c: dict[str, Any], series_id: int, volume_num: float, *, swy_title: str = "",
+    chapter_nums: Sequence[float | Decimal] | None = None,
+) -> tuple[str | None, int]:
     """Import completed volume download into the managed library.
     If merge_chapters is enabled (default): merges chapter CBZs into one volume CBZ.
     If disabled: copies individual chapter CBZs to a volume subdirectory.
@@ -1067,6 +1101,12 @@ async def _import_suwayomi_chapter(
     chapter_num: float,
     *,
     swy_title: str = "",
+) -> tuple[str | None, int]:
+    return await _run_suwayomi_file_unit(series_id, lambda guard: _import_suwayomi_chapter_files(c, series_id, chapter_num, swy_title=swy_title))
+
+
+def _import_suwayomi_chapter_files(
+    c: dict, series_id: int, chapter_num: float, *, swy_title: str = "",
 ) -> tuple[str | None, int]:
     """Import a single downloaded chapter CBZ into the managed library.
     Individual chapters are always kept as individual files (merge doesn't apply).
@@ -1189,8 +1229,6 @@ async def _process_suwayomi_job(
     """Per-job body extracted from check_suwayomi_jobs so the retry loop
     can call it. Raises on failure; caller decides whether to retry or
     mark the job errored."""
-    import main as _m
-
     chapter_ids = json.loads(job["chapter_ids"])
 
     # Fetch manga title + chapters for the manga
@@ -1232,9 +1270,28 @@ async def _process_suwayomi_job(
                 )
         return  # ordinary downloads remain queued for the next cycle
 
+    await _run_suwayomi_file_unit(
+        job["series_id"],
+        lambda guard: _complete_suwayomi_job_files(
+            c, job, chapter_ids, ch_map, swy_title, guard
+        ),
+    )
+
+
+def _complete_suwayomi_job_files(
+    c: dict[str, Any],
+    job: Mapping[str, Any] | sqlite3.Row,
+    chapter_ids: list[int],
+    ch_map: dict[int, dict[str, Any]],
+    swy_title: str,
+    guard: FileMutationGuard,
+) -> tuple[str | None, int]:
+    """Settle physical import and its domain audit under one synchronous owner."""
+    import main as _m
+
     if job["chapter_num"] is not None:
         # ── Chapter-level job ─────────────────────────────────────
-        import_path, file_bytes = await _import_suwayomi_chapter(
+        import_path, file_bytes = _import_suwayomi_chapter_files(
             c,
             job["series_id"],
             float(job["chapter_num"]),
@@ -1252,8 +1309,11 @@ async def _process_suwayomi_job(
                 job["series_id"],
                 job["chapter_num"],
             )
-            return
+            return None, 0
+        quality = _m.quality_from_filename(import_path)
+        guard.verify()
         with get_db() as db:
+            assert_library_file_mutation_available(db, job["series_id"])
             db.execute(
                 "UPDATE suwayomi_downloads SET status='completed', error=NULL WHERE id=?",
                 (job["id"],),
@@ -1269,7 +1329,7 @@ async def _process_suwayomi_job(
                 " AND status IN ('grabbed','wanted','downloaded')",
                 (
                     import_path,
-                    _m.quality_from_filename(import_path),
+                    quality,
                     file_bytes or None,
                     f"Suwayomi DDL: ch {float(job['chapter_num']):g}",
                     job["series_id"],
@@ -1285,6 +1345,7 @@ async def _process_suwayomi_job(
         ch_num = float(job["chapter_num"])
         ch_label = f"Ch {int(ch_num)}" if ch_num == int(ch_num) else f"Ch {ch_num}"
         with get_db() as db:
+            assert_library_file_mutation_available(db, job["series_id"])
             s_row = db.execute(
                 "SELECT title FROM series WHERE id=?", (job["series_id"],)
             ).fetchone()
@@ -1314,7 +1375,7 @@ async def _process_suwayomi_job(
                 job_chapter_nums = []
                 break
             job_chapter_nums.append(number)
-        import_path, file_bytes = await _import_suwayomi_volume(
+        import_path, file_bytes = _import_suwayomi_volume_files(
             c,
             job["series_id"],
             job["volume_num"],
@@ -1333,8 +1394,11 @@ async def _process_suwayomi_job(
                 job["series_id"],
                 job["volume_num"],
             )
-            return
+            return None, 0
+        quality = _m.quality_from_filename(import_path)
+        guard.verify()
         with get_db() as db:
+            assert_library_file_mutation_available(db, job["series_id"])
             db.execute(
                 "UPDATE suwayomi_downloads SET status='completed', error=NULL WHERE id=?",
                 (job["id"],),
@@ -1351,7 +1415,7 @@ async def _process_suwayomi_job(
                 " AND status IN ('grabbed','wanted','downloaded')",
                 (
                     import_path,
-                    _m.quality_from_filename(import_path),
+                    quality,
                     file_bytes or None,
                     f"Suwayomi DDL: vol {float(job['volume_num']):g}",
                     job["series_id"],
@@ -1366,6 +1430,7 @@ async def _process_suwayomi_job(
         )
         vol_label = _m.build_volume_label(job["volume_num"], None, None)
         with get_db() as db:
+            assert_library_file_mutation_available(db, job["series_id"])
             s_row = db.execute(
                 "SELECT title FROM series WHERE id=?", (job["series_id"],)
             ).fetchone()
@@ -1381,6 +1446,7 @@ async def _process_suwayomi_job(
                 protocol="ddl",
                 size_bytes=file_bytes or 0,
             )
+    return import_path, file_bytes
 
 
 # ── Monitoring loop ───────────────────────────────────────────────────────────

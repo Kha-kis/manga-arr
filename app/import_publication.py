@@ -15,12 +15,13 @@ import json
 import logging
 import os
 import secrets
-import shutil
 import sqlite3
 import stat
 import sys
 import time
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass, replace
+from collections.abc import Generator
 from typing import Any, Callable, Literal, cast
 from urllib.parse import urlsplit, urlunsplit
 
@@ -33,8 +34,12 @@ from import_plan import (
     _FilePlan,
     _ImportPlan,
     _file_has_grab_claim,
+    publication_admission,
 )
 from import_staging import _StageOutcome
+import private_file_claim as claims
+import shared
+from file_mutation_lock import FileMutationGuard, FileMutationLockError, file_mutation_guard
 from shared import get_cfg, get_db
 
 log = logging.getLogger(__name__)
@@ -157,6 +162,7 @@ class ImportPublication:
     queue_download_client_id: int | None
     queue_download_protocol: DownloadProtocol | None
     pack_cleanup_state: str
+    operation_owner: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +221,24 @@ def active_publication_exists(db: sqlite3.Connection, queue_id: int) -> bool:
         (queue_id,),
     ).fetchone()
     return row is not None
+
+
+def assert_library_file_mutation_available(db: sqlite3.Connection, series_id: int, source_path: str | None = None) -> None:
+    """SQL-only reciprocal fence for manual and DDL filesystem actors."""
+    row = db.execute(
+        "SELECT 1 FROM import_publications WHERE series_id=? AND state IN "
+        "('staging','prepared','publishing','published','db_committed','cleaning') "
+        "UNION ALL SELECT 1 FROM volume_file_deletions WHERE series_id=? AND state='active' "
+        "UNION ALL SELECT 1 FROM rescan_file_operations WHERE series_id=? AND state IN "
+        "('prepared','published','db_committed','rollback') "
+        "UNION ALL SELECT 1 FROM import_queue WHERE series_id=? AND "
+        "(status='importing' OR lease_owner IS NOT NULL) "
+        "UNION ALL SELECT 1 FROM import_publication_files f JOIN import_publications p ON p.id=f.publication_id "
+        "WHERE f.src_path=? AND p.state IN ('staging','prepared','publishing','published','db_committed','cleaning') LIMIT 1",
+        (series_id, series_id, series_id, series_id, source_path),
+    ).fetchone()
+    if row is not None:
+        raise PublicationBlocked("library file mutation is reserved by active recovery")
 
 
 def deterministic_staging_dir(
@@ -440,7 +464,14 @@ def initialize_publication_filesystem(
     plan: _ImportPlan,
     owner_token: str,
 ) -> tuple[str, dict[int, FileFingerprint]]:
-    """Validate paths, capture source identities, and create private staging."""
+    """Durably bind a batch carrier before any stage data may be written."""
+    with file_mutation_guard(shared.DB_PATH) as guard:
+        return _initialize_publication_filesystem_owned(plan, owner_token, guard)
+
+
+def _initialize_publication_filesystem_owned(
+    plan: _ImportPlan, owner_token: str, guard: FileMutationGuard,
+) -> tuple[str, dict[int, FileFingerprint]]:
     if not owner_token:
         raise ValueError("owner_token must be non-empty")
     dst_dir = os.path.abspath(plan.dst_dir)
@@ -449,15 +480,31 @@ def initialize_publication_filesystem(
     if stat.S_ISLNK(dst_stat.st_mode) or not stat.S_ISDIR(dst_stat.st_mode):
         raise PublicationBlocked(f"destination is not a real directory: {dst_dir}")
 
+    from private_pack_source import _freeze_pack_file_origin
+
+    origins = {
+        str(file_plan.file_id): _freeze_pack_file_origin(
+            guard, plan.queue, file_plan.file_id, file_plan.src_path,
+        )
+        for file_plan in plan.files
+    }
+    plan.queue["_pack_source_origins"] = {"version": 1, "files": origins}
     source_fingerprints: dict[int, FileFingerprint] = {}
     for file_plan in plan.files:
         if file_plan.plan_status != "ready":
             continue
         _validate_destination_path(file_plan.dst_path, dst_dir)
-        source_fingerprints[file_plan.file_id] = _regular_fingerprint(
-            file_plan.src_path,
-            include_hash=True,
-        )
+        origin = origins[str(file_plan.file_id)]
+        if origin["kind"] == "pack":
+            recorded = claims.FullFileFingerprint.from_value(origin["source_fingerprint"])
+            source_fingerprints[file_plan.file_id] = FileFingerprint(
+                recorded.dev, recorded.inode, recorded.size, recorded.mtime_ns, recorded.sha256,
+            )
+        else:
+            source_fingerprints[file_plan.file_id] = _regular_fingerprint(
+                file_plan.src_path,
+                include_hash=True,
+            )
 
     staging_dir = deterministic_staging_dir(
         dst_dir,
@@ -465,21 +512,59 @@ def initialize_publication_filesystem(
         owner_token,
     )
     if os.path.lexists(staging_dir):
-        staging_stat = os.lstat(staging_dir)
-        if stat.S_ISLNK(staging_stat.st_mode) or not stat.S_ISDIR(staging_stat.st_mode):
-            raise PublicationBlocked(
-                f"staging path is a symlink or non-directory: {staging_dir}"
-            )
-        shutil.rmtree(staging_dir)
-    os.mkdir(staging_dir, mode=0o700)
-    _fsync_directory(dst_dir)
-    return staging_dir, source_fingerprints
+        raise PublicationBlocked(f"unowned staging path collision retained: {staging_dir}")
+    with get_db() as db:
+        db.execute("PRAGMA synchronous=FULL")
+        db.execute("BEGIN IMMEDIATE")
+        publication_id = create_publication(db, plan, owner_token, staging_dir, source_fingerprints)
+        binding = claims.ClaimBinding("import_publication", str(publication_id), None, "staging")
+        intent = StageCarrierRecord(1, binding, staging_dir, "allocating", None)
+        plan.queue["_publication_staging"] = intent.to_value()
+        db.execute("UPDATE import_publications SET queue_snapshot_json=? WHERE id=?",
+                   (json.dumps(plan.queue, sort_keys=True, separators=(",", ":")), publication_id))
+    with claims.ensure_namespace(guard, dst_dir) as namespace:
+        with claims.allocate_carrier(namespace, binding, staging_dir) as carrier:
+            intent = replace(intent, phase="ready", carrier=carrier.record)
+            plan.queue["_publication_staging"] = intent.to_value()
+            with get_db() as db:
+                db.execute("PRAGMA synchronous=FULL")
+                db.execute("BEGIN IMMEDIATE")
+                updated = db.execute(
+                    "UPDATE import_publications SET staging_dir=?,queue_snapshot_json=?"
+                    " WHERE id=? AND state='staging' AND owner_token=? AND operation_owner IS NULL"
+                    " AND EXISTS (SELECT 1 FROM import_queue WHERE id=import_publications.queue_id"
+                    " AND lease_owner=? AND status='importing' AND lease_expires_at>CURRENT_TIMESTAMP)",
+                    (carrier.record.carrier_path, json.dumps(plan.queue, sort_keys=True, separators=(",", ":")),
+                     publication_id, owner_token, owner_token),
+                )
+                if updated.rowcount != 1:
+                    raise PublicationOwnershipLost("stage binding owner changed; carrier retained")
+                for file_plan in plan.files:
+                    if file_plan.plan_status == "ready":
+                        db.execute("UPDATE import_publication_files SET stage_path=? WHERE publication_id=? AND file_id=?",
+                                   (os.path.join(carrier.record.carrier_path, os.path.basename(file_plan.dst_path)),
+                                    publication_id, file_plan.file_id))
+            # A failed/uncertain commit never authorizes cleanup from local state.
+            persisted = _read_publication(publication_id)
+            if persisted is None or _stage_record(persisted) != intent:
+                raise PublicationBlocked("stage binding receipt is uncertain; retained")
+            guard.verify()
+            carrier.verify()
+            return carrier.record.carrier_path, source_fingerprints
 
 
 def _json_mapping(value: object, *, nullable: bool = False) -> dict[str, Any] | None:
     if value is None and nullable:
         return None
-    decoded = json.loads(cast(str, value))
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, item in items:
+            if key in result:
+                raise PublicationBlocked("duplicate publication JSON key")
+            result[key] = item
+        return result
+
+    decoded = json.loads(cast(str, value), object_pairs_hook=pairs)
     if not isinstance(decoded, dict):
         raise RuntimeError("publication snapshot is not a JSON object")
     return cast(dict[str, Any], decoded)
@@ -496,11 +581,26 @@ def create_publication(
     if not owner_token:
         raise ValueError("owner_token must be non-empty")
     queue = plan.queue
+    if "_file_publication" not in queue:
+        queue["_file_publication"] = {
+            "version": 1, "decision": "pending", "admission": publication_admission(db, plan),
+            "artifacts": {},
+        }
     queue_id = int(queue["id"])
     if queue.get("status") != "importing":
         raise RuntimeError("publication plan is not an importing queue snapshot")
     if queue.get("lease_owner") != owner_token:
         raise RuntimeError("publication owner does not match queue lease snapshot")
+
+    existing = db.execute("SELECT id,owner_token,staging_dir,queue_snapshot_json FROM import_publications"
+                          " WHERE queue_id=? AND state='staging'", (queue_id,)).fetchone()
+    if existing is not None:
+        live = db.execute("SELECT 1 FROM import_queue WHERE id=? AND status='importing'"
+                          " AND lease_owner=? AND lease_expires_at>CURRENT_TIMESTAMP", (queue_id, owner_token)).fetchone()
+        snapshot = _json_mapping(existing[3])
+        if live is None or existing[1] != owner_token or existing[2] != staging_dir or snapshot != queue:
+            raise PublicationOwnershipLost("existing stage binding differs from live owner")
+        return int(existing[0])
 
     db.execute(
         "DELETE FROM import_publications"
@@ -655,7 +755,22 @@ def prepare_staged_artifacts(
     staging_dir: str,
     outcomes: list[_StageOutcome],
 ) -> tuple[PreparedArtifact, ...]:
-    """Fsync and hash successful staged artifacts without a database context."""
+    """Fsync/hash pinned successful artifacts with no live database writer."""
+    proof = plan.queue.get("_publication_staging")
+    if proof is None:
+        raise PublicationBlocked("missing durable stage carrier; retained")
+    record = StageCarrierRecord.from_value(proof)
+    with file_mutation_guard(shared.DB_PATH) as guard:
+        publication = _read_publication(int(record.binding.operation_key))
+        if publication is None or publication.state != "staging":
+            raise PublicationOwnershipLost("staged artifact preparation owner changed")
+        with _open_stage_carrier(publication, guard) as carrier:
+            return _prepare_staged_artifacts_pinned(plan, staging_dir, outcomes, carrier.fd)
+
+
+def _prepare_staged_artifacts_pinned(
+    plan: _ImportPlan, staging_dir: str, outcomes: list[_StageOutcome], stage_fd: int,
+) -> tuple[PreparedArtifact, ...]:
     outcomes_by_id = {outcome.file_id: outcome for outcome in outcomes}
     artifacts: list[PreparedArtifact] = []
     staging_abs = os.path.abspath(staging_dir)
@@ -674,12 +789,15 @@ def prepare_staged_artifacts(
             )
         final_path = _validate_destination_path(outcome.final_dst, plan.dst_dir)
 
-        descriptor = os.open(stage_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        if os.path.dirname(stage_path) != staging_abs:
+            raise PublicationBlocked("stage artifact is not a direct owned child")
+        name = os.path.basename(stage_path)
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=stage_fd)
         try:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-        fingerprint = _regular_fingerprint(stage_path, include_hash=True)
+        fingerprint = _regular_fingerprint(f"/proc/self/fd/{stage_fd}/{name}", include_hash=True)
         prepared_final_fingerprint = (
             _regular_fingerprint(final_path, include_hash=True)
             if os.path.lexists(final_path)
@@ -694,7 +812,7 @@ def prepare_staged_artifacts(
                 prepared_final_fingerprint=prepared_final_fingerprint,
             )
         )
-    _fsync_directory(staging_abs)
+    os.fsync(stage_fd)
     return tuple(artifacts)
 
 
@@ -900,6 +1018,7 @@ def load_publication(
         state=cast(PublicationState, header["state"]),
         owner_token=str(header["owner_token"]),
         staging_dir=str(header["staging_dir"]),
+        operation_owner=header["operation_owner"],
         plan=plan,
         files=tuple(files),
         diagnostic=str(header["diagnostic"] or ""),
@@ -1064,22 +1183,6 @@ def _restore_claim_without_clobber(claim_path: str, original_path: str) -> bool:
     return True
 
 
-def _delete_verified_claim(
-    claim_path: str,
-    expected: FileFingerprint,
-    *,
-    heartbeat: Callable[[], bool] | None = None,
-) -> None:
-    """Delete a same-directory claim only after its complete fingerprint matches."""
-    actual = _regular_fingerprint(
-        claim_path,
-        include_hash=True,
-        heartbeat=heartbeat,
-    )
-    if not _same_full_fingerprint(actual, expected):
-        raise PublicationBlocked(f"claimed artifact changed: {claim_path}")
-    os.unlink(claim_path)
-    _fsync_directory(os.path.dirname(claim_path))
 
 
 def _check_publication_grab_claim(
@@ -1094,12 +1197,680 @@ def _check_publication_grab_claim(
             )
 
 
+def _file_protocol(publication: ImportPublication) -> dict[str, Any]:
+    value = publication.plan.queue.get("_file_publication")
+    if not isinstance(value, dict) or type(value.get("version")) is not int or value["version"] != 1:
+        raise PublicationBlocked("missing versioned publication admission; retained")
+    if value.get("decision") not in {"pending", "commit", "compensate", "compensated"} or not isinstance(value.get("artifacts"), dict):
+        raise PublicationBlocked("invalid publication decision metadata; retained")
+    return value
+
+
+def _file_protocol_entry(publication: ImportPublication, file_record: PublicationFile) -> dict[str, Any]:
+    entries = _file_protocol(publication)["artifacts"]
+    key = str(file_record.plan.file_id)
+    if key not in entries:
+        entries[key] = {}
+    if not isinstance(entries[key], dict):
+        raise PublicationBlocked("invalid per-file publication metadata")
+    return entries[key]
+
+
+def _store_file_protocol(
+    publication: ImportPublication, owner: str,
+    *, file_record: PublicationFile | None = None,
+    purpose: str | None = None, record: claims.CarrierRecord | None = None,
+) -> None:
+    """Persist one bounded domain record; never retain a writer during I/O."""
+    with get_db() as db:
+        db.execute("PRAGMA synchronous=FULL")
+        updated = db.execute(
+            "UPDATE import_publications SET queue_snapshot_json=?,updated_at=CURRENT_TIMESTAMP"
+            " WHERE id=? AND state=? AND operation_owner=?"
+            " AND operation_expires_at>CURRENT_TIMESTAMP",
+            (json.dumps(publication.plan.queue, sort_keys=True, separators=(",", ":")),
+             publication.publication_id, publication.state, owner),
+        )
+        if updated.rowcount != 1:
+            raise PublicationOwnershipLost("publication record owner changed")
+        if purpose in {"original", "source"}:
+            if file_record is None or record is None:
+                raise PublicationBlocked("missing private carrier record")
+            column = "final_claim_carrier_json" if purpose == "original" else "source_claim_carrier_json"
+            updated = db.execute(
+                f"UPDATE import_publication_files SET {column}=? WHERE publication_id=? AND file_id=?",
+                (record.to_json(), publication.publication_id, file_record.plan.file_id),
+            )
+            if updated.rowcount != 1:
+                raise PublicationOwnershipLost("publication file record changed")
+
+
+def _private_binding(publication: ImportPublication, file_record: PublicationFile, purpose: str) -> claims.ClaimBinding:
+    return claims.ClaimBinding("import_publication", str(publication.publication_id), file_record.plan.file_id, purpose)
+
+
+def _private_record(publication: ImportPublication, file_record: PublicationFile, purpose: str) -> claims.CarrierRecord | None:
+    entry = _file_protocol_entry(publication, file_record)
+    value = entry.get(purpose)
+    if purpose in {"original", "source"}:
+        column = "final_claim_carrier_json" if purpose == "original" else "source_claim_carrier_json"
+        with get_db() as db:
+            row = db.execute(f"SELECT {column} FROM import_publication_files WHERE publication_id=? AND file_id=?",
+                             (publication.publication_id, file_record.plan.file_id)).fetchone()
+        durable = row[0] if row is not None else None
+        if durable != value:
+            raise PublicationBlocked("private carrier column and journal metadata disagree")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise PublicationBlocked("private carrier record is not JSON text")
+    record = claims.CarrierRecord.from_json(value)
+    if record.binding != _private_binding(publication, file_record, purpose):
+        raise PublicationBlocked("private carrier belongs to another operation")
+    allowed = {os.path.abspath(file_record.outcome.final_dst)}
+    if purpose == "original" and file_record.final_claim_path:
+        allowed.add(os.path.abspath(file_record.final_claim_path))
+    if purpose == "source":
+        allowed = {os.path.abspath(file_record.plan.src_path)}
+        if file_record.source_claim_path:
+            allowed.add(os.path.abspath(file_record.source_claim_path))
+    if record.origin_path not in allowed:
+        raise PublicationBlocked("private carrier origin differs from journal")
+    return record
+
+
+def _save_private_record(publication: ImportPublication, file_record: PublicationFile, owner: str, purpose: str, record: claims.CarrierRecord) -> None:
+    _file_protocol_entry(publication, file_record)[purpose] = record.to_json()
+    _store_file_protocol(publication, owner, file_record=file_record, purpose=purpose, record=record)
+
+
+def _private_full(fingerprint: FileFingerprint | None) -> claims.FullFileFingerprint:
+    if fingerprint is None or fingerprint.sha256 is None:
+        raise PublicationBlocked("private capture lacks full recorded fingerprint")
+    return claims.FullFileFingerprint.from_value(asdict(fingerprint))
+
+
+def _allocate_private(publication: ImportPublication, file_record: PublicationFile, guard: FileMutationGuard, owner: str,
+                      purpose: str, origin: str, expected: claims.FullFileFingerprint | None) -> None:
+    protocol = _file_protocol(publication)
+    intent = f"{file_record.plan.file_id}:{purpose}"
+    if protocol.get("allocating") is not None:
+        raise PublicationBlocked("private allocation has an unrecorded crash outcome; retained")
+    protocol["allocating"] = intent
+    _store_file_protocol(publication, owner)
+    with claims.ensure_namespace(guard, os.path.dirname(origin)) as namespace:
+        with claims.allocate_carrier(namespace, _private_binding(publication, file_record, purpose), origin, expected) as carrier:
+            protocol["allocating"] = None
+            _save_private_record(publication, file_record, owner, purpose, carrier.record)
+
+
+@contextmanager
+def _open_private(publication: ImportPublication, file_record: PublicationFile, guard: FileMutationGuard, purpose: str) -> Generator[claims.CarrierHandle, None, None]:
+    record = _private_record(publication, file_record, purpose)
+    if record is None:
+        raise PublicationBlocked("private artifact lacks a durable carrier")
+    with claims.ensure_namespace(guard, os.path.dirname(record.origin_path)) as namespace:
+        with claims.open_carrier(namespace, _private_binding(publication, file_record, purpose), record) as carrier:
+            yield carrier
+
+
+def _private_phase(publication: ImportPublication, file_record: PublicationFile, owner: str, purpose: str,
+                   carrier: claims.CarrierHandle, phase: str, receipt: claims.LinkReceipt | None = None) -> None:
+    carrier.record = replace(carrier.record, phase=phase, restore_receipt=receipt or carrier.record.restore_receipt)
+    _save_private_record(publication, file_record, owner, purpose, carrier.record)
+
+
+@dataclass(frozen=True, slots=True)
+class StageCarrierRecord:
+    version: int
+    binding: claims.ClaimBinding
+    origin_path: str
+    phase: str
+    carrier: claims.CarrierRecord | None
+
+    def to_value(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_value(cls, value: object) -> StageCarrierRecord:
+        if not isinstance(value, dict) or set(value) != {"version", "binding", "origin_path", "phase", "carrier"}:
+            raise PublicationBlocked("missing strict stage carrier record; retained")
+        if type(value["version"]) is not int or value["version"] != 1 or not isinstance(value["phase"], str) or value["phase"] not in {"allocating", "ready", "discarding", "discarded"}:
+            raise PublicationBlocked("invalid stage carrier version/phase")
+        binding = claims.ClaimBinding.from_value(value["binding"])
+        origin = value["origin_path"]
+        if not isinstance(origin, str) or not os.path.isabs(origin) or os.path.normpath(origin) != origin:
+            raise PublicationBlocked("invalid stage origin")
+        carrier = claims.CarrierRecord.from_json(json.dumps(value["carrier"])) if value["carrier"] is not None else None
+        if carrier is not None and (carrier.binding != binding or carrier.origin_path != origin or carrier.artifact_fingerprint is not None):
+            raise PublicationBlocked("stage carrier immutable binding differs")
+        expected_phase = {"ready": "allocated", "discarding": "discarding", "discarded": "discarded"}.get(value["phase"])
+        if carrier is not None and (carrier.phase != expected_phase or carrier.restore_receipt is not None):
+            raise PublicationBlocked("stage carrier phase/receipt differs")
+        if value["phase"] != "allocating" and carrier is None:
+            raise PublicationBlocked("stage carrier has no durable allocation proof")
+        return cls(1, binding, origin, value["phase"], carrier)
+
+
+def _stage_record(publication: ImportPublication) -> StageCarrierRecord:
+    record = StageCarrierRecord.from_value(publication.plan.queue.get("_publication_staging"))
+    expected = claims.ClaimBinding("import_publication", str(publication.publication_id), None, "staging")
+    origin = deterministic_staging_dir(publication.plan.dst_dir, publication.queue_id, publication.owner_token)
+    if record.binding != expected or record.origin_path != origin:
+        raise PublicationBlocked("stage carrier belongs to another batch")
+    if record.carrier is not None and record.carrier.carrier_path != publication.staging_dir:
+        raise PublicationBlocked("stage carrier path differs from journal")
+    return record
+
+
+def _save_stage_record(publication: ImportPublication, record: StageCarrierRecord) -> None:
+    publication.plan.queue["_publication_staging"] = record.to_value()
+    with get_db() as db:
+        db.execute("PRAGMA synchronous=FULL")
+        updated = db.execute(
+            "UPDATE import_publications SET queue_snapshot_json=?,updated_at=CURRENT_TIMESTAMP"
+            " WHERE id=? AND state=? AND owner_token=? AND operation_owner IS ?",
+            (json.dumps(publication.plan.queue, sort_keys=True, separators=(",", ":")),
+             publication.publication_id, publication.state, publication.owner_token, publication.operation_owner),
+        )
+        if updated.rowcount != 1:
+            raise PublicationOwnershipLost("stage record owner changed; retained")
+    persisted = _read_publication(publication.publication_id)
+    if persisted is None or _stage_record(persisted) != record:
+        raise PublicationBlocked("stage receipt unresolved; retained")
+
+
+@contextmanager
+def open_publication_stage(publication_id: int, owner: str) -> Generator[tuple[FileMutationGuard, claims.CarrierHandle], None, None]:
+    """Borrow pinned stage handles only within one synchronous worker unit."""
+    with file_mutation_guard(shared.DB_PATH) as guard:
+        publication = _read_publication(publication_id)
+        if publication is None or publication.state != "staging" or publication.owner_token != owner or publication.operation_owner is not None:
+            raise PublicationOwnershipLost("stage mutation owner changed")
+        with get_db() as db:
+            live = db.execute("SELECT 1 FROM import_queue WHERE id=? AND status='importing'"
+                              " AND lease_owner=? AND lease_expires_at>CURRENT_TIMESTAMP", (publication.queue_id, owner)).fetchone()
+        if live is None:
+            raise PublicationOwnershipLost("stage mutation lease expired")
+        record = _stage_record(publication)
+        if record.phase != "ready" or record.carrier is None:
+            raise PublicationBlocked("stage is not durably ready")
+        with claims.ensure_namespace(guard, publication.plan.dst_dir) as namespace:
+            with claims.open_carrier(namespace, record.binding, record.carrier) as carrier:
+                yield guard, carrier
+                carrier.verify()
+                guard.verify()
+
+
+def _verify_stage_directory(publication: ImportPublication) -> int:
+    record = _stage_record(publication)
+    if record.carrier is None or record.phase == "discarded":
+        raise PublicationBlocked("stage carrier unavailable; retained")
+    fd = os.open(record.carrier.carrier_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        held = os.fstat(fd)
+        path = os.lstat(record.carrier.carrier_path)
+        if (held.st_dev, held.st_ino) != (record.carrier.dir_dev, record.carrier.dir_ino) or (path.st_dev, path.st_ino) != (held.st_dev, held.st_ino) or held.st_uid != os.geteuid() or stat.S_IMODE(held.st_mode) != 0o700:
+            raise PublicationBlocked("private staging directory identity changed")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _read_publication(publication_id: int) -> ImportPublication | None:
+    with get_db() as db:
+        return load_publication(db, publication_id=publication_id)
+
+
+@contextmanager
+def _open_stage_carrier(publication: ImportPublication, guard: FileMutationGuard) -> Generator[claims.CarrierHandle, None, None]:
+    record = _stage_record(publication)
+    if record.carrier is None or record.phase != "ready":
+        raise PublicationBlocked("private stage readiness is unproven")
+    with claims.ensure_namespace(guard, publication.plan.dst_dir) as namespace:
+        with claims.open_carrier(namespace, record.binding, record.carrier) as carrier:
+            yield carrier
+            carrier.verify()
+
+
+def _capture_private(publication: ImportPublication, file_record: PublicationFile, guard: FileMutationGuard, owner: str,
+                     purpose: str, origin: str, expected: claims.FullFileFingerprint) -> claims.FullFileFingerprint:
+    if _private_record(publication, file_record, purpose) is None:
+        _allocate_private(publication, file_record, guard, owner, purpose, origin, expected)
+    with _open_private(publication, file_record, guard, purpose) as carrier:
+        record = carrier.record
+        if record.artifact_fingerprint != expected:
+            raise PublicationBlocked("private capture fingerprint binding changed")
+        try:
+            actual = claims.fingerprint_regular(carrier)
+        except FileNotFoundError:
+            if record.phase not in {"allocated", "claiming"}:
+                raise PublicationBlocked("recorded private capture disappeared")
+            _private_phase(publication, file_record, owner, purpose, carrier, "claiming")
+            try:
+                claims.claim_into_empty(guard, carrier, carrier.namespace.parent_fd, os.path.basename(record.origin_path))
+            except claims.PrivateClaimError:
+                # The helper has already captured into our empty private child.
+                # Preserve the actual race winner, never discard by expected proof.
+                actual = claims.fingerprint_regular(carrier)
+                if actual == expected:
+                    raise
+            else:
+                actual = claims.fingerprint_regular(carrier)
+        entry = _file_protocol_entry(publication, file_record)
+        previous = entry.get(f"captured_{purpose}")
+        if previous is not None and claims.FullFileFingerprint.from_value(previous) != actual:
+            raise PublicationBlocked("recorded private capture changed; retained")
+        entry[f"captured_{purpose}"] = asdict(actual)
+        if carrier.record.phase != "restored":
+            _private_phase(publication, file_record, owner, purpose, carrier, "claimed")
+        else:
+            _store_file_protocol(publication, owner)
+        return actual
+
+
+def _retain_original(publication: ImportPublication, file_record: PublicationFile, guard: FileMutationGuard, owner: str) -> None:
+    if file_record.final_expected_absent:
+        return
+    expected = _private_full(file_record.prepared_final_fingerprint)
+    existing = _private_record(publication, file_record, "original")
+    if existing is not None:
+        origin = existing.origin_path
+    else:
+        final = file_record.outcome.final_dst
+        flat = file_record.final_claim_path
+        if flat is None:
+            raise PublicationBlocked("missing native overwrite recovery path")
+        if os.path.lexists(flat):
+            origin = flat
+        else:
+            try:
+                _rename_noreplace(final, flat)
+            except OSError as exc:
+                if exc.errno != errno.EOPNOTSUPP:
+                    raise
+                origin = final
+            else:
+                _fsync_renamed_directories(final, flat)
+                origin = flat
+    actual = _capture_private(publication, file_record, guard, owner, "original", origin, expected)
+    if actual != expected:
+        raise PublicationBlocked("destination changed after preparation; captured replacement retained for restoration")
+
+
+def _prepare_publication_copy(publication: ImportPublication, file_record: PublicationFile, guard: FileMutationGuard, owner: str) -> None:
+    """Keep the private stage inode through native rename and fallback link."""
+    with _open_stage_carrier(publication, guard) as stage:
+        _prepare_publication_copy_pinned(publication, file_record, guard, owner, stage.fd)
+
+
+def _prepare_publication_copy_pinned(publication: ImportPublication, file_record: PublicationFile, guard: FileMutationGuard, owner: str, pinned_fd: int) -> None:
+    stage_alias = f"/proc/self/fd/{pinned_fd}/{os.path.basename(file_record.outcome.stage_path)}"
+    entry = _file_protocol_entry(publication, file_record)
+    expected = _private_full(file_record.staged_fingerprint)
+    record = _private_record(publication, file_record, "publication")
+    if record is not None:
+        if entry.get("publication_ready") is None:
+            if record.phase not in {"allocated", "claiming"} or record.artifact_fingerprint != expected:
+                raise PublicationBlocked("publication copy readiness is unproven; retained")
+            with _open_private(publication, file_record, guard, "publication") as carrier:
+                try:
+                    actual = claims.fingerprint_regular(carrier)
+                except FileNotFoundError:
+                    stage_fd = os.dup(pinned_fd)
+                    try:
+                        if _private_full(_regular_fingerprint(stage_alias, include_hash=True)) != expected:
+                            raise PublicationBlocked("retained stage changed before private link retry")
+                        _private_phase(publication, file_record, owner, "publication", carrier, "claiming")
+                        os.link(os.path.basename(file_record.outcome.stage_path), "artifact", src_dir_fd=stage_fd, dst_dir_fd=carrier.fd, follow_symlinks=False)
+                        os.fsync(carrier.fd)
+                        os.fsync(stage_fd)
+                        actual = claims.fingerprint_regular(carrier)
+                    finally:
+                        os.close(stage_fd)
+                if actual != expected:
+                    raise PublicationBlocked("recorded private stage link changed; retained")
+                entry["publication_ready"] = asdict(expected)
+                from import_commit import quality_from_filename
+                entry["quality"] = quality_from_filename(stage_alias)
+                _private_phase(publication, file_record, owner, "publication", carrier, "claimed")
+        return
+    stage_fd = os.dup(pinned_fd)
+    try:
+        source_fd = os.open(os.path.basename(file_record.outcome.stage_path), os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=stage_fd)
+        try:
+            if _private_full(_regular_fingerprint(stage_alias, include_hash=True)) != expected:
+                raise PublicationBlocked("private stage changed before publication copy")
+            _allocate_private(publication, file_record, guard, owner, "publication", file_record.outcome.final_dst, expected)
+            with _open_private(publication, file_record, guard, "publication") as carrier:
+                _private_phase(publication, file_record, owner, "publication", carrier, "claiming")
+                os.link(os.path.basename(file_record.outcome.stage_path), "artifact", src_dir_fd=stage_fd, dst_dir_fd=carrier.fd, follow_symlinks=False)
+                os.fsync(carrier.fd)
+                os.fsync(stage_fd)
+                actual = claims.fingerprint_regular(carrier)
+                if actual != expected or _private_full(_regular_fingerprint(stage_alias, include_hash=True)) != expected:
+                    raise PublicationBlocked("publication copy or stage changed; retained")
+                entry["publication_ready"] = asdict(actual)
+                from import_commit import quality_from_filename
+                entry["quality"] = quality_from_filename(stage_alias)
+                _private_phase(publication, file_record, owner, "publication", carrier, "claimed")
+        finally:
+            os.close(source_fd)
+    finally:
+        os.close(stage_fd)
+
+
+def _publish_private(publication: ImportPublication, file_record: PublicationFile, guard: FileMutationGuard, owner: str) -> None:
+    entry = _file_protocol_entry(publication, file_record)
+    receipt = entry.get("publication_receipt")
+    final = file_record.outcome.final_dst
+    if receipt is not None:
+        proven = claims.LinkReceipt.from_value(receipt)
+        if proven.destination_path != final or _private_full(_regular_fingerprint(final, include_hash=True)) != proven.fingerprint:
+            raise PublicationBlocked("recorded public artifact changed; retained")
+        return
+    _prepare_publication_copy(publication, file_record, guard, owner)
+    _retain_original(publication, file_record, guard, owner)
+    with _open_private(publication, file_record, guard, "publication") as carrier:
+        expected = claims.FullFileFingerprint.from_value(entry["publication_ready"])
+        if carrier.record.phase == "restoring":
+            # A rename that consumed the private child has positive source-absence
+            # evidence; an unacknowledged link never adopts EEXIST (even same inode).
+            try:
+                claims.fingerprint_regular(carrier)
+            except FileNotFoundError:
+                actual = _private_full(_regular_fingerprint(final, include_hash=True))
+                if actual != expected:
+                    raise PublicationBlocked("native publication outcome changed; retained")
+                _fsync_renamed_directories(os.path.join(carrier.record.carrier_path, "artifact"), final)
+                receipt = claims.LinkReceipt(final, actual)
+                entry["publication_receipt"] = asdict(receipt)
+                _private_phase(publication, file_record, owner, "publication", carrier, "restored", receipt)
+                return
+            else:
+                if os.path.lexists(final):
+                    raise PublicationBlocked("unacknowledged private publication link; retained")
+        if claims.fingerprint_regular(carrier) != expected:
+            raise PublicationBlocked("private publication copy changed")
+        _private_phase(publication, file_record, owner, "publication", carrier, "restoring")
+        try:
+            _rename_noreplace(os.path.join(carrier.record.carrier_path, "artifact"), final)
+        except OSError as exc:
+            if exc.errno != errno.EOPNOTSUPP:
+                raise
+            receipt = claims.link_private_regular(guard, carrier, carrier.namespace.parent_fd, os.path.basename(final), expected)
+        else:
+            _fsync_renamed_directories(os.path.join(carrier.record.carrier_path, "artifact"), final)
+            if _private_full(_regular_fingerprint(final, include_hash=True)) != expected:
+                raise PublicationBlocked("native publication destination changed; retained")
+            receipt = claims.LinkReceipt(final, expected)
+        entry["publication_receipt"] = asdict(receipt)
+        _private_phase(publication, file_record, owner, "publication", carrier, "restored", receipt)
+
+
+def _discard_private(publication: ImportPublication, file_record: PublicationFile, guard: FileMutationGuard, owner: str, purpose: str) -> None:
+    record = _private_record(publication, file_record, purpose)
+    if record is None:
+        return
+    entry = _file_protocol_entry(publication, file_record)
+    if record.phase != "discarded":
+        with _open_private(publication, file_record, guard, purpose) as carrier:
+            expected_value = entry.get("publication_ready") if purpose == "publication" else entry.get(f"captured_{purpose}")
+            if expected_value is None:
+                if record.phase != "allocated":
+                    raise PublicationBlocked("private discard readiness is unproven; retained")
+                try:
+                    claims.fingerprint_regular(carrier)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise PublicationBlocked("unproven private artifact retained")
+                _private_phase(publication, file_record, owner, purpose, carrier, "discarding")
+                os.fsync(carrier.fd)
+            else:
+                expected = claims.FullFileFingerprint.from_value(expected_value)
+                _private_phase(publication, file_record, owner, purpose, carrier, "discarding")
+                claims.discard_private_regular(guard, carrier, expected)
+            _private_phase(publication, file_record, owner, purpose, carrier, "discarded")
+    record = _private_record(publication, file_record, purpose)
+    assert record is not None
+    with claims.ensure_namespace(guard, os.path.dirname(record.origin_path)) as namespace:
+        claims.gc_discarded_carrier(namespace, _private_binding(publication, file_record, purpose), record)
+
+
+def _restore_private_to(publication: ImportPublication, file_record: PublicationFile, guard: FileMutationGuard, owner: str, purpose: str, destination: str) -> None:
+    with _open_private(publication, file_record, guard, purpose) as carrier:
+        entry = _file_protocol_entry(publication, file_record)
+        expected = claims.FullFileFingerprint.from_value(entry[f"captured_{purpose}"])
+        if carrier.record.phase == "restored":
+            receipt = carrier.record.restore_receipt
+            if receipt is None or receipt.destination_path != destination or receipt.fingerprint != expected or _private_full(_regular_fingerprint(destination, include_hash=True)) != expected:
+                raise PublicationBlocked("private restoration receipt changed; retained")
+            return
+        if claims.fingerprint_regular(carrier) != expected:
+            raise PublicationBlocked("private restoration artifact changed; retained")
+        _private_phase(publication, file_record, owner, purpose, carrier, "restoring")
+        parent_fd = os.open(os.path.dirname(destination), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            receipt = claims.link_private_regular(guard, carrier, parent_fd, os.path.basename(destination), expected)
+        finally:
+            os.close(parent_fd)
+        _private_phase(publication, file_record, owner, purpose, carrier, "restored", receipt)
+
+
+def _remove_our_publication(publication: ImportPublication, file_record: PublicationFile, guard: FileMutationGuard, owner: str) -> None:
+    entry = _file_protocol_entry(publication, file_record)
+    rollback = _private_record(publication, file_record, "rollback")
+    if rollback is not None and rollback.phase in {"discarding", "discarded"}:
+        _discard_private(publication, file_record, guard, owner, "rollback")
+        return
+    value = entry.get("publication_receipt")
+    if value is None:
+        copy = _private_record(publication, file_record, "publication")
+        if copy is not None and copy.phase == "restoring":
+            with _open_private(publication, file_record, guard, "publication") as carrier:
+                try:
+                    claims.fingerprint_regular(carrier)
+                except FileNotFoundError:
+                    expected = claims.FullFileFingerprint.from_value(entry.get("publication_ready"))
+                    final = file_record.outcome.final_dst
+                    if _private_full(_regular_fingerprint(final, include_hash=True)) != expected:
+                        raise PublicationBlocked("unacknowledged native publication changed; retained")
+                    _fsync_renamed_directories(os.path.join(copy.carrier_path, "artifact"), final)
+                    receipt = claims.LinkReceipt(final, expected)
+                    value = entry["publication_receipt"] = asdict(receipt)
+                    _private_phase(publication, file_record, owner, "publication", carrier, "restored", receipt)
+                else:
+                    raise PublicationBlocked("unacknowledged publication link; retained")
+        else:
+            return
+    receipt = claims.LinkReceipt.from_value(value)
+    if receipt.destination_path != file_record.outcome.final_dst:
+        raise PublicationBlocked("publication receipt belongs to another destination")
+    if rollback is None:
+        if _private_full(_regular_fingerprint(receipt.destination_path, include_hash=True)) != receipt.fingerprint:
+            raise PublicationBlocked("public artifact was replaced; retained without capture")
+    actual = _capture_private(publication, file_record, guard, owner, "rollback", receipt.destination_path, receipt.fingerprint)
+    if actual != receipt.fingerprint:
+        _restore_private_to(publication, file_record, guard, owner, "rollback", receipt.destination_path)
+        raise PublicationBlocked("rollback captured a public replacement; restored and retained")
+    # Keep the verified private publication until every original is restored;
+    # a later restore collision must not throw away compensation evidence.
+
+
+def _remove_owned_staging(publication: ImportPublication, guard: FileMutationGuard) -> None:
+    record = _stage_record(publication)
+    if record.carrier is None:
+        raise PublicationBlocked("stage allocation receipt missing; retained")
+    with claims.ensure_namespace(guard, publication.plan.dst_dir) as namespace:
+        if record.phase != "discarded":
+            # Keep the verifier as a boundary hook; the carrier re-opener checks
+            # the full marker/path proof AFTER it, before any child removal.
+            fd = _verify_stage_directory(publication)
+            os.close(fd)
+            with claims.open_carrier(namespace, record.binding, record.carrier) as carrier:
+                record = replace(record, phase="discarding", carrier=replace(carrier.record, phase="discarding"))
+                _save_stage_record(publication, record)
+                carrier.record = cast(claims.CarrierRecord, record.carrier)
+                children = [name for name in os.listdir(carrier.fd) if name != "owner.json"]
+                for name in children:
+                    info = os.stat(name, dir_fd=carrier.fd, follow_symlinks=False)
+                    if not stat.S_ISREG(info.st_mode):
+                        raise PublicationBlocked("nonregular stage child retained")
+                for name in children:
+                    carrier.verify()
+                    guard.verify()
+                    os.unlink(name, dir_fd=carrier.fd)
+                os.fsync(carrier.fd)
+                carrier.verify()
+                record = replace(record, phase="discarded", carrier=replace(carrier.record, phase="discarded"))
+                _save_stage_record(publication, record)
+        claims.gc_discarded_carrier(namespace, record.binding, cast(claims.CarrierRecord, record.carrier))
+
+
+def _verify_publication_artifacts(publication: ImportPublication, guard: FileMutationGuard) -> None:
+    """Check physical proofs outside, immediately before, the decision writer."""
+    with _open_stage_carrier(publication, guard) as stage:
+        _verify_publication_artifacts_pinned(publication, guard, stage.fd)
+
+
+def _verify_publication_artifacts_pinned(publication: ImportPublication, guard: FileMutationGuard, stage_fd: int) -> None:
+    for file_record in publication.files:
+        if file_record.plan.plan_status != "ready":
+            continue
+        guard.verify()
+        stage_alias = f"/proc/self/fd/{stage_fd}/{os.path.basename(file_record.outcome.stage_path)}"
+        if _private_full(_regular_fingerprint(stage_alias, include_hash=True)) != _private_full(file_record.staged_fingerprint):
+            raise PublicationBlocked("retained stage changed before the database decision")
+        entry = _file_protocol_entry(publication, file_record)
+        receipt = claims.LinkReceipt.from_value(entry.get("publication_receipt"))
+        if receipt.destination_path != file_record.outcome.final_dst or _private_full(_regular_fingerprint(receipt.destination_path, include_hash=True)) != receipt.fingerprint:
+            raise PublicationBlocked("public artifact changed before the database decision")
+        original = _private_record(publication, file_record, "original")
+        if original is not None:
+            with _open_private(publication, file_record, guard, "original") as carrier:
+                if claims.fingerprint_regular(carrier) != claims.FullFileFingerprint.from_value(entry.get("captured_original")):
+                    raise PublicationBlocked("retained original changed before the database decision")
+        copy = _private_record(publication, file_record, "publication")
+        if copy is None:
+            raise PublicationBlocked("publication lacks a private copy record")
+        with _open_private(publication, file_record, guard, "publication") as carrier:
+            try:
+                actual = claims.fingerprint_regular(carrier)
+            except FileNotFoundError:
+                if copy.phase != "restored" or copy.restore_receipt is None:
+                    raise PublicationBlocked("private publication copy disappeared")
+            else:
+                if actual != receipt.fingerprint:
+                    raise PublicationBlocked("private publication copy changed")
+
+
+def _compensate_publication(publication: ImportPublication, guard: FileMutationGuard, owner: str) -> bool:
+    protocol = _file_protocol(publication)
+    if protocol["decision"] not in {"compensate", "compensated"}:
+        raise PublicationBlocked("compensation lacks a durable decision")
+    ready = [f for f in publication.files if f.plan.plan_status == "ready"] if protocol["decision"] == "compensate" else []
+    for file_record in reversed(ready):
+        _remove_our_publication(publication, file_record, guard, owner)
+        original = _private_record(publication, file_record, "original")
+        if original is None and file_record.final_claim_path and os.path.lexists(file_record.final_claim_path):
+            _capture_private(publication, file_record, guard, owner, "original", file_record.final_claim_path, _private_full(file_record.prepared_final_fingerprint))
+            original = _private_record(publication, file_record, "original")
+        if original is not None and original.phase in {"allocated", "claiming"}:
+            _capture_private(publication, file_record, guard, owner, "original", original.origin_path, _private_full(file_record.prepared_final_fingerprint))
+            original = _private_record(publication, file_record, "original")
+        if original is not None and original.phase not in {"discarding", "discarded"}:
+            _restore_private_to(publication, file_record, guard, owner, "original", file_record.outcome.final_dst)
+            captured = _file_protocol_entry(publication, file_record).get("captured_original")
+            if claims.FullFileFingerprint.from_value(captured) != _private_full(file_record.prepared_final_fingerprint):
+                raise PublicationBlocked("changed original restored; ambiguous publication retained")
+    # Restoration receipts for the whole batch are durable before cleanup.
+    for file_record in ready:
+        for purpose in ("rollback", "original", "publication"):
+            _discard_private(publication, file_record, guard, owner, purpose)
+    _remove_owned_staging(publication, guard)
+    protocol["decision"] = "compensated"
+    _store_file_protocol(publication, owner)
+    guard.verify()
+    with get_db() as db:
+        db.execute("PRAGMA synchronous=FULL")
+        updated = db.execute(
+            "UPDATE import_publications SET state='finalized',result_ok=0,result_imported_count=0,"
+            "result_queue_status='failed',finalized_at=CURRENT_TIMESTAMP,operation_owner=NULL,"
+            "operation_expires_at=NULL,diagnostic='publication admission changed; compensated'"
+            " WHERE id=? AND state=? AND operation_owner=?",
+            (publication.publication_id, publication.state, owner),
+        )
+        if updated.rowcount != 1:
+            raise PublicationOwnershipLost
+        db.execute("UPDATE import_queue SET status='failed',lease_owner=NULL,lease_expires_at=NULL,failed_at=CURRENT_TIMESTAMP WHERE id=? AND status='importing'", (publication.queue_id,))
+    return False
+
+
+def _cleanup_source_private(publication: ImportPublication, file_record: PublicationFile, guard: FileMutationGuard, owner: str) -> CleanupOutcome:
+    source = _private_full(file_record.source_fingerprint)
+    record = _private_record(publication, file_record, "source")
+    path = file_record.plan.src_path
+    if record is not None and record.phase in {"discarding", "discarded"}:
+        _discard_private(publication, file_record, guard, owner, "source")
+        return CleanupOutcome(file_record.plan.file_id, "deleted")
+    if record is None:
+        flat = file_record.source_claim_path
+        if flat and os.path.lexists(flat):
+            origin = flat
+        else:
+            if file_record.cleanup_state == "not_applicable":
+                return CleanupOutcome(file_record.plan.file_id, "not_applicable")
+            from private_pack_source import _pack_file_cleanup_delegated
+
+            snapshot = publication.plan.queue.get("_pack_source_origins")
+            if (not isinstance(snapshot, dict) or set(snapshot) != {"version", "files"}
+                    or type(snapshot["version"]) is not int or snapshot["version"] != 1
+                    or not isinstance(snapshot["files"], dict)):
+                raise PublicationBlocked("source origin snapshot missing or invalid; retained")
+            admitted = snapshot["files"].get(str(file_record.plan.file_id))
+            if not isinstance(admitted, dict):
+                raise PublicationBlocked("source origin admission missing; retained")
+            if _pack_file_cleanup_delegated(
+                guard, publication.plan.queue, file_record.plan.file_id, path,
+                admitted, source, publication_id=publication.publication_id,
+            ):
+                return CleanupOutcome(file_record.plan.file_id, "not_applicable")
+            if not os.path.lexists(path):
+                return CleanupOutcome(file_record.plan.file_id, "missing")
+            try:
+                if flat is None:
+                    raise PublicationBlocked("source lacks a durable native recovery name")
+                _rename_noreplace(path, flat)
+            except OSError as exc:
+                if exc.errno != errno.EOPNOTSUPP:
+                    raise
+                origin = path
+            else:
+                _fsync_renamed_directories(path, flat)
+                origin = flat
+    else:
+        origin = record.origin_path
+    actual = _capture_private(publication, file_record, guard, owner, "source", origin, source)
+    if actual != source:
+        _restore_private_to(publication, file_record, guard, owner, "source", path)
+        _discard_private(publication, file_record, guard, owner, "source")
+        return CleanupOutcome(file_record.plan.file_id, "replaced", "changed source restored and retained")
+    _discard_private(publication, file_record, guard, owner, "source")
+    return CleanupOutcome(file_record.plan.file_id, "deleted")
+
+
 def _publish_prepared_file(
     publication: ImportPublication,
     file_record: PublicationFile,
     owner_token: str,
+    guard: FileMutationGuard | None = None,
 ) -> None:
-    """Publish one staged file against its durable destination precondition."""
+    """Publish against durable preconditions, retaining stage and original."""
+    if guard is None:
+        raise PublicationBlocked("publication requires the live synchronous owner")
+    guard.verify()
     expected = file_record.staged_fingerprint
     expected_absent = file_record.final_expected_absent
     prepared_final = file_record.prepared_final_fingerprint
@@ -1113,144 +1884,13 @@ def _publish_prepared_file(
             raise PublicationBlocked("invalid absent final-path precondition")
     elif prepared_final is None or not prepared_final.sha256 or not claim_path:
         raise PublicationBlocked("missing durable overwrite precondition")
-
-    final_path = _validate_destination_path(
-        file_record.outcome.final_dst,
-        publication.plan.dst_dir,
-    )
+    _validate_destination_path(file_record.outcome.final_dst, publication.plan.dst_dir)
     stage_path = os.path.abspath(file_record.outcome.stage_path)
     if not _path_is_below(stage_path, os.path.abspath(publication.staging_dir)):
-        raise PublicationBlocked(f"staged path escapes staging directory: {stage_path}")
-    heartbeat = lambda: _refresh_publication_operation(
-        publication.publication_id,
-        owner_token,
-        "publishing",
-    )
-
-    if not os.path.lexists(stage_path):
-        if not os.path.lexists(final_path):
-            raise PublicationBlocked(
-                f"both staged and final artifacts are missing: {stage_path}"
-            )
-        final_actual = _regular_fingerprint(
-            final_path,
-            include_hash=True,
-            heartbeat=heartbeat,
-        )
-        if not _same_published_content(final_actual, expected):
-            raise PublicationBlocked(
-                f"final artifact does not match staged fingerprint: {final_path}"
-            )
-        # Replay may be observing a rename whose process died between either
-        # directory barrier. Persist both sides before an overwrite claim can
-        # be removed (or before an absent-destination publish is accepted).
-        _check_publication_grab_claim(publication, file_record)
-        _fsync_renamed_directories(stage_path, final_path)
-        if claim_path and os.path.lexists(claim_path):
-            if prepared_final is None:
-                raise PublicationBlocked("missing prepared overwrite fingerprint")
-            _delete_verified_claim(
-                claim_path,
-                prepared_final,
-                heartbeat=heartbeat,
-            )
-        return
-
-    staged_actual = _regular_fingerprint(
-        stage_path,
-        include_hash=True,
-        heartbeat=heartbeat,
-    )
-    if not _same_full_fingerprint(staged_actual, expected):
-        raise PublicationBlocked(f"staged artifact fingerprint changed: {stage_path}")
-
-    _check_publication_grab_claim(publication, file_record)
-    _publish_claimed_destination(file_record, final_path, stage_path, heartbeat)
-
-
-def _publish_claimed_destination(
-    file_record: PublicationFile,
-    final_path: str,
-    stage_path: str,
-    heartbeat: Callable[[], bool],
-) -> None:
-    """Publish against the prepared overwrite/absent-destination precondition."""
-    expected_absent = file_record.final_expected_absent
-    prepared_final = file_record.prepared_final_fingerprint
-    claim_path = file_record.final_claim_path
-    if expected_absent:
-        try:
-            _publish_absent_stage(stage_path, final_path)
-        except FileExistsError as exc:
-            raise PublicationBlocked(
-                f"prepared-absent destination appeared before publish: {final_path}"
-            ) from exc
-        _fsync_renamed_directories(stage_path, final_path)
-        return
-
-    if prepared_final is None or claim_path is None:
-        raise PublicationBlocked("missing prepared overwrite claim metadata")
-    if os.path.lexists(claim_path):
-        # A previous process may have died immediately after final -> claim.
-        # Establish that directory entry durably before relying on it.
-        _fsync_directory(os.path.dirname(final_path))
-        claimed_actual = _regular_fingerprint(
-            claim_path,
-            include_hash=True,
-            heartbeat=heartbeat,
-        )
-        if not _same_full_fingerprint(claimed_actual, prepared_final):
-            raise PublicationBlocked(
-                f"overwrite claim does not match prepared destination: {claim_path}"
-            )
-        if os.path.lexists(final_path):
-            raise PublicationBlocked(
-                f"destination appeared while prepared overwrite was claimed: {final_path}"
-            )
-    else:
-        if not os.path.lexists(final_path):
-            raise PublicationBlocked(
-                f"prepared overwrite destination disappeared: {final_path}"
-            )
-        try:
-            _rename_noreplace(final_path, claim_path)
-        except FileExistsError as exc:
-            raise PublicationBlocked(
-                f"overwrite claim path is already occupied: {claim_path}"
-            ) from exc
-        # The old destination must have a durable recovery name before any
-        # later operation can publish or discard it.
-        _fsync_directory(os.path.dirname(final_path))
-        claimed_actual = _regular_fingerprint(
-            claim_path,
-            include_hash=True,
-            heartbeat=heartbeat,
-        )
-        if not _same_full_fingerprint(claimed_actual, prepared_final):
-            restored = _restore_claim_without_clobber(claim_path, final_path)
-            suffix = (
-                "" if restored else "; claim retained because destination reappeared"
-            )
-            raise PublicationBlocked(
-                f"destination changed after prepared barrier: {final_path}{suffix}"
-            )
-
-    try:
-        _rename_noreplace(stage_path, final_path)
-    except FileExistsError as exc:
-        restored = _restore_claim_without_clobber(claim_path, final_path)
-        suffix = "" if restored else "; prepared destination claim retained"
-        raise PublicationBlocked(
-            f"destination appeared during prepared overwrite: {final_path}{suffix}"
-        ) from exc
-    # Persist both the new destination entry and removal of the staged entry
-    # before the old destination claim is unlinked.
-    _fsync_renamed_directories(stage_path, final_path)
-    _delete_verified_claim(
-        claim_path,
-        prepared_final,
-        heartbeat=heartbeat,
-    )
+        raise PublicationBlocked("staged path escapes staging directory")
+    if _file_protocol(publication)["decision"] != "pending":
+        raise PublicationBlocked("publication has a durable non-forward decision")
+    _publish_private(publication, file_record, guard, owner_token)
 
 
 def _retain_unproven_manual_publication(
@@ -1280,6 +1920,15 @@ def _retain_unproven_manual_publication(
 
 
 def publish_publication(publication_id: int, owner_token: str) -> bool:
+    """Acquire the non-expiring owner before any journal CAS or mutation."""
+    try:
+        with file_mutation_guard(shared.DB_PATH) as guard:
+            return _publish_publication_owned(publication_id, owner_token, guard)
+    except FileMutationLockError:
+        return False
+
+
+def _publish_publication_owned(publication_id: int, owner_token: str, guard: FileMutationGuard) -> bool:
     """Idempotently publish all prepared files, with no DB held during I/O."""
     with get_db() as db:
         publication = load_publication(db, publication_id=publication_id)
@@ -1322,7 +1971,7 @@ def publish_publication(publication_id: int, owner_token: str) -> bool:
                 "publishing",
             ):
                 raise PublicationOwnershipLost
-            _publish_prepared_file(publication, file_record, owner_token)
+            _publish_prepared_file(publication, file_record, owner_token, guard)
 
             with get_db() as db:
                 cur = db.execute(
@@ -1347,8 +1996,12 @@ def publish_publication(publication_id: int, owner_token: str) -> bool:
                     raise PublicationOwnershipLost
         except PublicationOwnershipLost:
             return False
-        except (OSError, PublicationBlocked) as exc:
+        except (OSError, PublicationBlocked, claims.PrivateClaimError) as exc:
             diagnostic = str(exc)
+            protocol = publication.plan.queue.get("_file_publication")
+            if isinstance(exc, PublicationBlocked) and isinstance(protocol, dict) and protocol.get("decision") == "pending":
+                protocol["decision"] = "compensate"
+                _store_file_protocol(publication, owner_token)
             _set_publication_diagnostic(
                 publication_id,
                 file_record.plan.file_id,
@@ -1912,93 +2565,32 @@ def _cleanup_move_source(
     file_record: PublicationFile,
     owner_token: str,
 ) -> CleanupOutcome:
-    """Atomically claim, verify, and delete one exact move source."""
-    source = file_record.source_fingerprint
-    claim_path = file_record.source_claim_path
+    """Compatibility entry; no shared-path check/unlink and no precommit cleanup."""
     file_id = file_record.plan.file_id
-    if source is None or not source.sha256 or not claim_path:
-        return CleanupOutcome(
-            file_id,
-            "blocked",
-            "missing durable source fingerprint or claim path",
-        )
-
-    source_path = os.path.abspath(file_record.plan.src_path)
-    parent = os.path.dirname(source_path)
-    heartbeat = lambda: _refresh_publication_operation(
-        publication_id,
-        owner_token,
-        "cleaning",
-    )
     try:
-        if os.path.lexists(claim_path):
-            # Recovery can begin after source -> claim reached the filesystem
-            # but before its directory entry was durable.
-            _fsync_directory(parent)
-            claimed = _regular_fingerprint(
-                claim_path,
-                include_hash=True,
-                heartbeat=heartbeat,
+        with file_mutation_guard(shared.DB_PATH) as guard:
+            with get_db() as db:
+                owned = db.execute(
+                    "SELECT 1 FROM import_publications WHERE id=? AND state='cleaning'"
+                    " AND operation_owner=? AND operation_expires_at>CURRENT_TIMESTAMP",
+                    (publication_id, owner_token),
+                ).fetchone()
+                publication = load_publication(db, publication_id=publication_id)
+            if owned is None or publication is None:
+                raise PublicationBlocked("source cleanup lacks durable committed ownership")
+            current = next(
+                (f for f in publication.files if f.row_id == file_record.row_id and f.plan.file_id == file_id),
+                None,
             )
-            if not _same_full_fingerprint(claimed, source):
-                if not os.path.lexists(source_path) and _restore_claim_without_clobber(
-                    claim_path,
-                    source_path,
-                ):
-                    return CleanupOutcome(
-                        file_id,
-                        "replaced",
-                        "unexpected source claim restored and retained",
-                    )
-                return CleanupOutcome(
-                    file_id,
-                    "blocked",
-                    "unexpected source claim retained without clobbering source",
-                )
-            _delete_verified_claim(
-                claim_path,
-                source,
-                heartbeat=heartbeat,
-            )
-            return CleanupOutcome(file_id, "deleted")
-
-        if not os.path.lexists(source_path):
-            return CleanupOutcome(file_id, "missing")
-
-        try:
-            _rename_noreplace(source_path, claim_path)
-        except FileExistsError:
-            return _cleanup_move_source(
-                publication_id,
-                file_record,
-                owner_token,
-            )
-        _fsync_directory(parent)
-        claimed = _regular_fingerprint(
-            claim_path,
-            include_hash=True,
-            heartbeat=heartbeat,
-        )
-        if not _same_full_fingerprint(claimed, source):
-            restored = _restore_claim_without_clobber(claim_path, source_path)
-            if restored:
-                return CleanupOutcome(
-                    file_id,
-                    "replaced",
-                    "source changed after staging; restored and retained",
-                )
-            return CleanupOutcome(
-                file_id,
-                "blocked",
-                "changed source claim retained because source path reappeared",
-            )
-        _delete_verified_claim(
-            claim_path,
-            source,
-            heartbeat=heartbeat,
-        )
-        return CleanupOutcome(file_id, "deleted")
-    except (OSError, PublicationBlocked) as exc:
+            if current is None:
+                raise PublicationBlocked("source cleanup child does not belong to this journal")
+            if "_file_publication" not in publication.plan.queue:
+                publication.plan.queue["_file_publication"] = {
+                    "version": 1, "decision": "commit", "admission": None, "artifacts": {},
+                }
+                _store_file_protocol(publication, owner_token)
+            return _cleanup_source_private(publication, current, guard, owner_token)
+    except (FileMutationLockError, OSError, PublicationBlocked, claims.PrivateClaimError) as exc:
         return CleanupOutcome(file_id, "blocked", str(exc))
 
 
@@ -2006,7 +2598,26 @@ def cleanup_publication_filesystem(
     publication: ImportPublication,
     owner_token: str,
 ) -> CleanupResult:
+    try:
+        with file_mutation_guard(shared.DB_PATH) as guard:
+            return _cleanup_publication_filesystem_owned(publication, owner_token, guard)
+    except FileMutationLockError as exc:
+        return CleanupResult((), False, str(exc))
+
+
+def _cleanup_publication_filesystem_owned(
+    publication: ImportPublication, owner_token: str, guard: FileMutationGuard,
+) -> CleanupResult:
     """Delete atomically claimed move sources and staging artifacts after Phase 3."""
+    if publication.state not in {"db_committed", "cleaning"}:
+        raise PublicationBlocked("cleanup precedes durable domain commit")
+    if "_file_publication" not in publication.plan.queue:
+        # Already committed legacy journals cannot be compensated or re-admitted.
+        # Add only private cleanup records, never infer new publication authority.
+        publication.plan.queue["_file_publication"] = {
+            "version": 1, "decision": "commit", "admission": None, "artifacts": {},
+        }
+        _store_file_protocol(publication, owner_token)
     outcomes: list[CleanupOutcome] = []
     if publication.plan.import_mode == "move":
         for file_record in publication.files:
@@ -2021,13 +2632,11 @@ def cleanup_publication_filesystem(
                     CleanupOutcome(file_record.plan.file_id, "not_applicable")
                 )
                 continue
-            outcomes.append(
-                _cleanup_move_source(
-                    publication.publication_id,
-                    file_record,
-                    owner_token,
-                )
-            )
+            try:
+                outcome = _cleanup_source_private(publication, file_record, guard, owner_token)
+            except (OSError, PublicationBlocked, claims.PrivateClaimError) as exc:
+                outcome = CleanupOutcome(file_record.plan.file_id, "blocked", str(exc))
+            outcomes.append(outcome)
     else:
         outcomes.extend(
             CleanupOutcome(file_record.plan.file_id, "not_applicable")
@@ -2052,24 +2661,26 @@ def cleanup_publication_filesystem(
         publication.queue_id,
     )
     try:
-        if os.path.abspath(publication.staging_dir) not in (
-            expected_staging,
-            legacy_staging,
+        if publication.plan.queue.get("_publication_staging") is None and os.path.abspath(publication.staging_dir) not in (
+            expected_staging, legacy_staging,
         ):
             raise PublicationBlocked("journal staging path is not deterministic")
-        staging_path = os.path.abspath(publication.staging_dir)
-        if os.path.lexists(staging_path):
-            staging_stat = os.lstat(staging_path)
-            if stat.S_ISLNK(staging_stat.st_mode) or not stat.S_ISDIR(
-                staging_stat.st_mode
-            ):
-                raise PublicationBlocked(
-                    "journal staging path is a symlink or non-directory"
-                )
-            shutil.rmtree(staging_path)
-            _fsync_directory(publication.plan.dst_dir)
+        if _stage_record(publication).phase != "discarded":
+            stage_fd = _verify_stage_directory(publication)
+            os.close(stage_fd)
+        for file_record in publication.files:
+            if file_record.plan.plan_status != "ready":
+                continue
+            if _private_record(publication, file_record, "original") is None and file_record.final_claim_path and os.path.lexists(file_record.final_claim_path):
+                expected = _private_full(file_record.prepared_final_fingerprint)
+                actual = _capture_private(publication, file_record, guard, owner_token, "original", file_record.final_claim_path, expected)
+                if actual != expected:
+                    raise PublicationBlocked("legacy overwrite claim changed; retained")
+            _discard_private(publication, file_record, guard, owner_token, "original")
+            _discard_private(publication, file_record, guard, owner_token, "publication")
+        _remove_owned_staging(publication, guard)
         staging_removed = True
-    except (OSError, PublicationBlocked) as exc:
+    except (OSError, PublicationBlocked, claims.PrivateClaimError) as exc:
         diagnostic = str(exc)
     return CleanupResult(tuple(outcomes), staging_removed, diagnostic)
 
@@ -2251,6 +2862,7 @@ def abort_staging_publication(
         row = db.execute(
             """
             SELECT publication.queue_id, publication.owner_token,
+                   publication.queue_snapshot_json,
                    publication.operation_owner, queue.id AS queue_exists,
                    queue.lease_owner,
                    CASE
@@ -2266,6 +2878,15 @@ def abort_staging_publication(
             (publication_id,),
         ).fetchone()
         if row is None:
+            return False
+        try:
+            snapshot = _json_mapping(row["queue_snapshot_json"])
+            if snapshot is None:
+                return False
+            proof = StageCarrierRecord.from_value(snapshot.get("_publication_staging"))
+        except (PublicationBlocked, claims.PrivateClaimError):
+            return False
+        if proof.phase != "discarded" or proof.binding != claims.ClaimBinding("import_publication", str(publication_id), None, "staging"):
             return False
         if recovery_owner is None:
             if (
@@ -2311,27 +2932,48 @@ def abort_staging_publication(
 
 
 def remove_staging_directory(publication: ImportPublication) -> bool:
-    """Remove a reversible staging directory with strict path validation."""
-    expected = deterministic_staging_dir(
-        publication.plan.dst_dir,
-        publication.queue_id,
-        publication.owner_token,
-    )
-    legacy = deterministic_staging_dir(
-        publication.plan.dst_dir,
-        publication.queue_id,
-    )
-    actual = os.path.abspath(publication.staging_dir)
-    if actual not in (expected, legacy):
+    """Discard only a recorded private carrier; v0 stage paths retain fences."""
+    try:
+        with file_mutation_guard(shared.DB_PATH) as guard:
+            current = _read_publication(publication.publication_id)
+            if current is None or current.state != "staging" or current.owner_token != publication.owner_token:
+                return False
+            _remove_owned_staging(current, guard)
+            return True
+    except (OSError, PublicationBlocked, claims.PrivateClaimError, FileMutationLockError):
         return False
-    if not os.path.lexists(actual):
-        return True
-    info = os.lstat(actual)
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+
+
+def abort_private_staging(publication_id: int, *, release_queue: bool = False) -> bool:
+    """Keep acquisition, private discard, and journal deletion in one guard."""
+    try:
+        with file_mutation_guard(shared.DB_PATH) as guard:
+            publication = _read_publication(publication_id)
+            if publication is None or publication.state != "staging":
+                return False
+            recovery_owner = None
+            if release_queue:
+                recovery_owner = secrets.token_urlsafe(32)
+                if not _claim_staging_recovery(publication_id, recovery_owner):
+                    return False
+                publication = _read_publication(publication_id)
+                if publication is None:
+                    return False
+            else:
+                with get_db() as db:
+                    owned = db.execute("SELECT 1 FROM import_queue WHERE id=? AND lease_owner=?",
+                                       (publication.queue_id, publication.owner_token)).fetchone()
+                if owned is None or publication.operation_owner is not None:
+                    return False
+            try:
+                _remove_owned_staging(publication, guard)
+                guard.verify()
+                return abort_staging_publication(publication_id, release_queue=release_queue, recovery_owner=recovery_owner)
+            finally:
+                if recovery_owner is not None:
+                    _release_staging_recovery(publication_id, recovery_owner)
+    except (OSError, PublicationBlocked, claims.PrivateClaimError, FileMutationLockError):
         return False
-    shutil.rmtree(actual)
-    _fsync_directory(publication.plan.dst_dir)
-    return True
 
 
 def pending_publication_ids(
@@ -3091,6 +3733,85 @@ async def _dispatch_success_effects(publication_id: int) -> bool:
     return all_completed
 
 
+def _complete_publication_unit(publication_id: int, owner: str) -> bool:
+    """One synchronous, non-expiring owner from CAS through the final DB audit."""
+    try:
+        with file_mutation_guard(shared.DB_PATH) as guard:
+            with get_db() as db:
+                publication = load_publication(db, publication_id=publication_id)
+            if publication is None or _retain_unproven_manual_publication(publication, owner):
+                return False
+            if publication.state in {"finalized", "deleted"}:
+                return publication.result_ok is not False
+            protocol = publication.plan.queue.get("_file_publication")
+            if publication.state in {"prepared", "publishing"} and isinstance(protocol, dict) and protocol.get("decision") == "pending":
+                _publish_publication_owned(publication_id, owner, guard)
+                with get_db() as db:
+                    publication = load_publication(db, publication_id=publication_id)
+                if publication is None:
+                    return False
+                protocol = publication.plan.queue.get("_file_publication")
+            if publication.state in {"prepared", "publishing", "published"}:
+                if not isinstance(protocol, dict):
+                    raise PublicationBlocked("legacy publication admission is unproven; retained")
+                if protocol.get("decision") in {"compensate", "compensated"}:
+                    if publication.state in {"prepared", "publishing"}:
+                        if not _claim_publication_operation(publication_id, owner):
+                            return False
+                    else:
+                        with get_db() as db:
+                            if not claim_publication_phase3(db, publication_id, owner):
+                                return False
+                    with get_db() as db:
+                        publication = load_publication(db, publication_id=publication_id)
+                    assert publication is not None
+                    return _compensate_publication(publication, guard, owner)
+            if publication.state == "published":
+                from import_commit import _commit_import
+                from import_lease import IMPORT_LEASE_SECONDS
+
+                _verify_publication_artifacts(publication, guard)
+                with get_db() as db:
+                    db.execute("PRAGMA synchronous=FULL")
+                    result = _commit_import(
+                        db, publication.plan, [f.outcome for f in publication.files],
+                        fs_committed=True, commit_failure_reason="", lease_owner=owner,
+                        lease_seconds=IMPORT_LEASE_SECONDS, publication_id=publication_id,
+                    )
+                with get_db() as db:
+                    publication = load_publication(db, publication_id=publication_id)
+                if publication is None or result[2] == "journal_claim_lost":
+                    return False
+                if result[2] == "admission_changed":
+                    return _compensate_publication(publication, guard, owner)
+            if publication.state in {"db_committed", "cleaning"}:
+                with get_db() as db:
+                    if not claim_publication_cleanup(db, publication_id, owner):
+                        return False
+                    publication = load_publication(db, publication_id=publication_id)
+                assert publication is not None
+                cleanup = _cleanup_publication_filesystem_owned(publication, owner, guard)
+                guard.verify()
+                with get_db() as db:
+                    db.execute("PRAGMA synchronous=FULL")
+                    return finalize_publication(db, publication_id, owner, cleanup)
+            return False
+    except FileMutationLockError:
+        return False
+    except PublicationOwnershipLost:
+        return False
+    except (OSError, PublicationBlocked, claims.PrivateClaimError) as exc:
+        # Keep the active fence and every durable proof. A contender never gets
+        # here because it failed acquisition before reading/writing this journal.
+        with get_db() as db:
+            db.execute(
+                "UPDATE import_publications SET diagnostic=?,operation_owner=NULL,operation_expires_at=NULL,updated_at=CURRENT_TIMESTAMP"
+                " WHERE id=? AND operation_owner=? AND state IN ('prepared','publishing','published','db_committed','cleaning')",
+                (str(exc), publication_id, owner),
+            )
+        return False
+
+
 async def complete_publication(
     publication_id: int,
     owner_token: str | None = None,
@@ -3099,70 +3820,22 @@ async def complete_publication(
 ) -> bool:
     """Roll one prepared-or-later journal forward to a terminal state."""
     owner = owner_token or secrets.token_urlsafe(32)
+    task = asyncio.create_task(asyncio.to_thread(_complete_publication_unit, publication_id, owner))
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    completed = task.result()
+    if cancelled:
+        raise asyncio.CancelledError
+    if not completed:
+        return False
     with get_db() as db:
         publication = load_publication(db, publication_id=publication_id)
     if publication is None:
         return False
-
-    if _retain_unproven_manual_publication(publication, owner):
-        return False
-
-    if publication.state in ("prepared", "publishing"):
-        published = await asyncio.to_thread(
-            publish_publication,
-            publication_id,
-            owner,
-        )
-        if not published:
-            return False
-        with get_db() as db:
-            publication = load_publication(db, publication_id=publication_id)
-        if publication is None:
-            return False
-
-    if publication.state == "published":
-        from import_commit import _commit_import
-        from import_lease import IMPORT_LEASE_SECONDS
-
-        with get_db() as db:
-            commit_result = _commit_import(
-                db,
-                publication.plan,
-                [file_record.outcome for file_record in publication.files],
-                fs_committed=True,
-                commit_failure_reason="",
-                lease_owner=owner,
-                lease_seconds=IMPORT_LEASE_SECONDS,
-                publication_id=publication_id,
-            )
-        if commit_result[2] == "journal_claim_lost":
-            return False
-        with get_db() as db:
-            publication = load_publication(db, publication_id=publication_id)
-        if publication is None:
-            return False
-
-    if publication.state in ("db_committed", "cleaning"):
-        with get_db() as db:
-            if not claim_publication_cleanup(db, publication_id, owner):
-                return False
-            publication = load_publication(db, publication_id=publication_id)
-        if publication is None:
-            return False
-        try:
-            cleanup = await asyncio.to_thread(
-                cleanup_publication_filesystem,
-                publication,
-                owner,
-            )
-        except PublicationOwnershipLost:
-            return False
-        with get_db() as db:
-            if not finalize_publication(db, publication_id, owner, cleanup):
-                return False
-            publication = load_publication(db, publication_id=publication_id)
-        if publication is None:
-            return False
 
     if publication.state in ("finalized", "deleted"):
         if not process_terminal:
@@ -3236,6 +3909,29 @@ async def complete_publication(
     return False
 
 
+def _has_proven_live_staging_owner(publication_id: int) -> bool:
+    publication = _read_publication(publication_id)
+    if publication is None or publication.state != "staging":
+        return False
+    try:
+        if _stage_record(publication).carrier is None:
+            return False
+    except (PublicationBlocked, claims.PrivateClaimError):
+        return False
+    with get_db() as db:
+        return db.execute(
+            "SELECT 1 FROM import_publications AS publication"
+            " LEFT JOIN import_queue AS queue ON queue.id=publication.queue_id"
+            " WHERE publication.id=? AND publication.state='staging'"
+            " AND publication.owner_token=? AND publication.staging_dir=?"
+            " AND ((publication.operation_owner IS NOT NULL"
+            " AND publication.operation_expires_at>CURRENT_TIMESTAMP)"
+            " OR (queue.status='importing' AND queue.lease_owner=publication.owner_token"
+            " AND queue.lease_expires_at>CURRENT_TIMESTAMP))",
+            (publication_id, publication.owner_token, publication.staging_dir),
+        ).fetchone() is not None
+
+
 async def _replay_publication_id(
     publication_id: int,
     *,
@@ -3294,30 +3990,19 @@ async def _replay_publication_id(
                 )
         return "deferred"
     if publication.state == "staging":
-        recovery_owner = secrets.token_urlsafe(32)
-        if not _claim_staging_recovery(publication_id, recovery_owner):
-            return "deferred"
-        try:
-            removed = await asyncio.to_thread(
-                remove_staging_directory,
-                publication,
-            )
-        except Exception:
-            _release_staging_recovery(publication_id, recovery_owner)
-            log.exception(
-                "Import publication %s staging recovery failed",
-                publication_id,
-            )
-            return "blocked"
-        if not removed:
-            _release_staging_recovery(publication_id, recovery_owner)
-            return "blocked"
-        if abort_staging_publication(
-            publication_id,
-            release_queue=True,
-            recovery_owner=recovery_owner,
-        ):
+        task = asyncio.create_task(asyncio.to_thread(abort_private_staging, publication_id, release_queue=True))
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        if cancelled:
+            raise asyncio.CancelledError
+        if task.result():
             return "aborted_staging"
+        if _has_proven_live_staging_owner(publication_id):
+            return "deferred"
         return "blocked"
     try:
         if await complete_publication(

@@ -127,6 +127,25 @@ content should remain group-writable. Hardlinked files retain the source
 inode's permissions, so configure the download client with a compatible umask
 as well.
 
+Group-writable library and generated-pack parents need controlled provisioning
+of Mangarr's private recovery namespace **before** other users gain entry-write
+access. For first provisioning, the parent must be application-owned and exclude
+group/other entry writers, such as an app-owned `0755` or `0750` directory under
+the documented POSIX permission model. Run a legitimate import, pack-generation,
+or rescan operation that you already intend while that exclusion holds. Once its
+durable namespace creation proof exists, the same parent can support shared
+`0770`/`0775` access through your normal storage policy. Mangarr does not change
+existing parent permissions for you; server ACLs must also enforce the boundary.
+
+`MANGARR_UMASK=0002` does not authorize first provisioning in an already shared
+parent. Unknown shared parents refuse new namespace allocation instead of
+adopting a lookalike directory. Older exact namespace proofs remain valid for
+recovery; without a controlled-birth receipt, they authorize new allocation only
+while the parent currently excludes foreign entry writers. They are not upgraded
+by inferring historical ownership from today's permissions. There is no dedicated
+public provisioning command: use the intended existing workflow, and do not edit
+registry rows or private ownership markers to bypass a refusal.
+
 ## Volume Layout
 
 Mangarr and the download client must agree on the paths reported for completed

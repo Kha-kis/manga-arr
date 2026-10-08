@@ -1,6 +1,7 @@
 """Import queueing: scan completed downloads, classify files, build queue entries."""
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -11,8 +12,9 @@ import threading
 import time
 import zipfile
 from collections.abc import Callable
+from contextlib import ExitStack
 from functools import wraps
-from typing import Any, ParamSpec, TypeVar
+from typing import Any, ParamSpec, TypeVar, cast
 
 from acquisition_policy import acquisition_policy
 
@@ -34,6 +36,26 @@ from parsing import (
     is_special_release,
 )
 from shared import get_cfg, get_db
+import shared
+from file_mutation_lock import FileMutationGuard, FileMutationBusy, file_mutation_guard
+from private_pack_claim import (
+    PackProofError,
+    DirectoryProof,
+    open_directory,
+    verify_directory,
+)
+from private_file_claim import PrivateClaimError
+from import_pack_cleanup import (
+    _prepare_pack_private_directory,
+    _read_reservation,
+    _ownership,
+)
+from import_pack_cleanup import (
+    _commit_generated_pack_queue,
+    _finish_generated_pack_queue,
+    _known_fenced_generated_queue,
+    _PackQueueDecisionUnresolved,
+)
 from comicinfo import read_comic_info
 from download_identity import (
     DownloadIdentity,
@@ -79,6 +101,8 @@ class _PackQueueHeartbeat:
         download_client_id: int | None,
         protocol: DownloadProtocol | None,
         owner_token: str,
+        guard: FileMutationGuard | None = None,
+        stack: ExitStack | None = None,
     ) -> None:
         self._db = db
         self._download_id = download_id
@@ -88,8 +112,32 @@ class _PackQueueHeartbeat:
         self._interval = max(0.01, min(30.0, PACK_RESERVATION_SECONDS / 3))
         self._next_refresh = time.monotonic() + self._interval
         self._lost = threading.Event()
+        self.guard = guard
+        self._stack = stack
+        self.output_fd: int | None = None
+        self.output_proof: DirectoryProof | None = None
+
+    def output_base(self) -> str:
+        if self.guard is None or self._stack is None:
+            raise PackProofError("generation requires an explicitly borrowed guard")
+        if self.output_fd is None:
+            fd, proof = _prepare_pack_private_directory(
+                self.guard,
+                self._download_id,
+                self._owner_token,
+                download_client_id=self._download_client_id,
+                protocol=self._protocol,
+            )
+            self._stack.callback(os.close, fd)
+            self.output_fd, self.output_proof = fd, proof
+        self.checkpoint()
+        return f"/proc/self/fd/{self.output_fd}"
 
     def checkpoint(self, *, force: bool = False) -> None:
+        if self.guard is not None:
+            self.guard.verify()
+        if self.output_fd is not None and self.output_proof is not None:
+            verify_directory(self.output_fd, self.output_proof)
         if self._lost.is_set():
             self._raise_lost()
         now = time.monotonic()
@@ -147,21 +195,7 @@ class _PackQueueHeartbeat:
         return result
 
     def _raise_lost(self) -> None:
-        remove_pack_queue_private_artifacts(
-            self._download_id,
-            self._owner_token,
-            download_client_id=self._download_client_id,
-            protocol=self._protocol,
-        )
-        release_pack_queue_creation(
-            self._db,
-            self._download_id,
-            self._owner_token,
-            download_client_id=self._download_client_id,
-            protocol=self._protocol,
-            commit=True,
-            attaching=True,
-        )
+        # Losing a DB token never authorizes cleanup of a successor's names.
         raise _PackQueueReservationLost
 
 
@@ -170,9 +204,23 @@ def _return_on_pack_reservation_loss(
 ) -> Callable[_P, tuple[int | None, bool]]:
     @wraps(func)
     def _wrapped(*args: _P.args, **kwargs: _P.kwargs) -> tuple[int | None, bool]:
+        db = cast(sqlite3.Connection | None, args[0] if args else kwargs.get("db"))
+        if db is not None and db.in_transaction:
+            raise RuntimeError("pack queue creation requires a clean caller DB")
         try:
-            return func(*args, **kwargs)
-        except _PackQueueReservationLost:
+            with file_mutation_guard(shared.DB_PATH) as guard, ExitStack() as stack:
+                return cast(Callable[..., tuple[int | None, bool]], func)(
+                    *args, **kwargs, _guard=guard, _stack=stack
+                )
+        except (
+            FileMutationBusy,
+            _PackQueueReservationLost,
+            PackProofError,
+            PrivateClaimError,
+        ) as exc:
+            logging.getLogger(__name__).warning("Pack queue remains fenced: %s", exc)
+            if db is not None:
+                db.rollback()
             return None, False
 
     return _wrapped
@@ -234,10 +282,7 @@ def _persisted_download_identity(
             download_id,
         ),
     ).fetchall()
-    owners = {
-        coerce_download_client_id(row["download_client_id"])
-        for row in rows
-    }
+    owners = {coerce_download_client_id(row["download_client_id"]) for row in rows}
     protocols: set[DownloadProtocol] = {
         normalized
         for row in rows
@@ -281,12 +326,8 @@ def _matching_queue_rows(
     matching: list[dict[str, Any]] = []
     for row in rows:
         candidate = dict(row)
-        candidate_owner = coerce_download_client_id(
-            candidate["download_client_id"]
-        )
-        candidate_protocol = normalize_download_protocol(
-            candidate["download_protocol"]
-        )
+        candidate_owner = coerce_download_client_id(candidate["download_client_id"])
+        candidate_protocol = normalize_download_protocol(candidate["download_protocol"])
         if candidate_protocol is None:
             candidate_protocol = resolve_download_protocol(
                 db,
@@ -401,6 +442,8 @@ def _queue_import(
     download_client_id: int | None = None,
     protocol: str | None = None,
     respect_grab_claims: bool | None = None,
+    _guard: FileMutationGuard | None = None,
+    _stack: ExitStack | None = None,
 ) -> tuple[int | None, bool]:
     """
     Scan completed download files at content_path and create an import_queue entry.
@@ -411,6 +454,8 @@ def _queue_import(
     """
     if respect_grab_claims is not None and type(respect_grab_claims) is not bool:
         raise ValueError("queue acquisition intent must be a boolean or None")
+    if _guard is None or _stack is None:
+        raise PackProofError("queue generation requires its borrowed owner guard")
     if not content_path:
         log_event(
             "error",
@@ -499,12 +544,13 @@ def _queue_import(
     ):
         return None, False
 
-    recover_pack_cleanup_state(max_rows=20)
+    recover_pack_cleanup_state(max_rows=20, _guard=_guard)
     pack_reservation_owner = reserve_pack_queue_creation(
         db,
         download_id,
         download_client_id=owner_id,
         protocol=normalized_protocol,
+        _guard=_guard,
     )
     if pack_reservation_owner is None:
         return None, False
@@ -514,6 +560,8 @@ def _queue_import(
         owner_id,
         normalized_protocol,
         pack_reservation_owner,
+        _guard,
+        _stack,
     )
     canonical_pack_dir, private_pack_dir = pack_queue_creation_paths(
         download_id,
@@ -539,7 +587,7 @@ def _queue_import(
         )
         if image_leafs:
             heartbeat.checkpoint(force=True)
-            pack_dir = private_pack_dir
+            pack_dir = heartbeat.output_base()
             packed_paths: list[str] = []
             used_names: set[str] = set()
             for leaf in image_leafs:
@@ -596,6 +644,7 @@ def _queue_import(
             pack_reservation_owner,
             download_client_id=owner_id,
             protocol=normalized_protocol,
+            _guard=_guard,
         )
         release_pack_queue_creation(
             db,
@@ -603,6 +652,7 @@ def _queue_import(
             pack_reservation_owner,
             download_client_id=owner_id,
             protocol=normalized_protocol,
+            _guard=_guard,
             commit=True,
         )
         log_event(
@@ -621,6 +671,7 @@ def _queue_import(
             pack_reservation_owner,
             download_client_id=owner_id,
             protocol=normalized_protocol,
+            _guard=_guard,
         )
         release_pack_queue_creation(
             db,
@@ -628,6 +679,7 @@ def _queue_import(
             pack_reservation_owner,
             download_client_id=owner_id,
             protocol=normalized_protocol,
+            _guard=_guard,
             commit=True,
         )
         log_event(
@@ -882,6 +934,7 @@ def _queue_import(
             pack_reservation_owner,
             download_client_id=owner_id,
             protocol=normalized_protocol,
+            _guard=_guard,
         )
         release_pack_queue_creation(
             db,
@@ -889,6 +942,7 @@ def _queue_import(
             pack_reservation_owner,
             download_client_id=owner_id,
             protocol=normalized_protocol,
+            _guard=_guard,
             commit=True,
         )
         _defer_scan_event(
@@ -906,12 +960,14 @@ def _queue_import(
         pack_reservation_owner,
         download_client_id=owner_id,
         protocol=normalized_protocol,
+        _guard=_guard,
     ):
         remove_pack_queue_private_artifacts(
             download_id,
             pack_reservation_owner,
             download_client_id=owner_id,
             protocol=normalized_protocol,
+            _guard=_guard,
         )
         release_pack_queue_creation(
             db,
@@ -919,6 +975,7 @@ def _queue_import(
             pack_reservation_owner,
             download_client_id=owner_id,
             protocol=normalized_protocol,
+            _guard=_guard,
             commit=True,
             attaching=True,
         )
@@ -926,30 +983,34 @@ def _queue_import(
 
     if generated_pack_artifacts:
         try:
-            durably_attach_pack_queue_directory(
+            actual_pack_dir = durably_attach_pack_queue_directory(
                 download_id,
                 pack_reservation_owner,
                 download_client_id=owner_id,
                 protocol=normalized_protocol,
                 checkpoint=heartbeat.checkpoint,
+                _guard=_guard,
             )
         except OSError as exc:
-            private_exists = os.path.lexists(private_pack_dir)
+            logging.getLogger(__name__).warning(
+                "Generated pack attach remains fenced: %s", exc
+            )
             canonical_exists = os.path.lexists(canonical_pack_dir)
-            if private_exists:
+            if not canonical_exists:
                 remove_pack_queue_private_artifacts(
                     download_id,
                     pack_reservation_owner,
                     download_client_id=owner_id,
                     protocol=normalized_protocol,
+                    _guard=_guard,
                 )
-            if private_exists or not canonical_exists:
                 release_pack_queue_creation(
                     db,
                     download_id,
                     pack_reservation_owner,
                     download_client_id=owner_id,
                     protocol=normalized_protocol,
+                    _guard=_guard,
                     commit=True,
                     attaching=True,
                 )
@@ -964,9 +1025,49 @@ def _queue_import(
             return None, False
         file_rows = _canonicalize_pack_file_rows(
             file_rows,
-            private_pack_dir,
-            canonical_pack_dir,
+            f"/proc/self/fd/{heartbeat.output_fd}",
+            actual_pack_dir,
         )
+        # Native rename keeps the inode, but its durable binding is now canonical.
+        from download_identity import download_identity_key
+
+        reservation = _read_reservation(download_identity_key(identity))
+        if reservation is None:
+            raise _PackQueueReservationLost
+        ownership = _ownership(reservation)
+        if ownership is None or ownership.canonical_directory is None:
+            raise PackProofError("queue attachment lacks ready proof")
+        if ownership.private_directory is None:
+            heartbeat.output_proof = ownership.canonical_directory
+        queue_id = _commit_generated_pack_queue(
+            _guard,
+            reservation,
+            (
+                series_id,
+                download_id,
+                owner_id,
+                normalized_protocol,
+                torrent_name,
+                torrent_url,
+                volume_num,
+                src_dir,
+            ),
+            file_rows,
+            respect_grab_claims=respect_grab_claims,
+        )
+        try:
+            _finish_generated_pack_queue(_guard, reservation, queue_id)
+        except (OSError, PrivateClaimError) as exc:
+            # Only a verified complete cleanup-fenced decision may be returned.
+            if not _known_fenced_generated_queue(reservation, queue_id):
+                raise _PackQueueDecisionUnresolved(
+                    "pack private settlement outcome is unresolved"
+                ) from exc
+            logging.getLogger(__name__).warning(
+                "Queued pack private cleanup remains fenced: %s", exc
+            )
+        _replay_scan_events()
+        return queue_id, unmapped > 0 or special > 0
 
     heartbeat.checkpoint(force=True)
     if not refresh_pack_queue_creation(
@@ -985,49 +1086,59 @@ def _queue_import(
     queue_policy = (
         int(respect_grab_claims)
         if respect_grab_claims is not None
-        else int(acquisition_policy(
-            db,
-            series_id=series_id,
-            source_url=torrent_url,
-            identity=identity,
-        ) != 0)
+        else int(
+            acquisition_policy(
+                db,
+                series_id=series_id,
+                source_url=torrent_url,
+                identity=identity,
+            )
+            != 0
+        )
     )
-    cur = db.execute(
-        "INSERT INTO import_queue(series_id, download_id, download_client_id,"
-        " download_protocol, torrent_name, torrent_url, volume_num, src_dir,"
-        " respect_grab_claims,status) VALUES(?,?,?,?,?,?,?,?,?,'pending')",
-        (
-            series_id,
-            download_id,
-            owner_id,
-            normalized_protocol,
-            torrent_name,
-            torrent_url,
-            volume_num,
-            src_dir,
-            queue_policy,
-        ),
-    )
-    queue_id = cur.lastrowid
+    try:
+        cur = db.execute(
+            "INSERT INTO import_queue(series_id, download_id, download_client_id,"
+            " download_protocol, torrent_name, torrent_url, volume_num, src_dir,"
+            " respect_grab_claims,status) VALUES(?,?,?,?,?,?,?,?,?,'pending')",
+            (
+                series_id,
+                download_id,
+                owner_id,
+                normalized_protocol,
+                torrent_name,
+                torrent_url,
+                volume_num,
+                src_dir,
+                queue_policy,
+            ),
+        )
+        queue_id = cur.lastrowid
 
-    db.executemany(
-        "INSERT INTO import_queue_files"
-        "(queue_id, filename, src_path, dst_path, proposed_volume, proposed_chapter,"
-        " proposed_volume_range_start, proposed_volume_range_end,"
-        " proposed_chapter_range_end, proposed_pack_type, proposed_is_special,"
-        " proposed_import_kind, proposed_special_title, file_type, status)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        [(queue_id, *row) for row in file_rows],
-    )
-    release_pack_queue_creation(
-        db,
-        download_id,
-        pack_reservation_owner,
-        download_client_id=owner_id,
-        protocol=normalized_protocol,
-        commit=False,
-        attaching=True,
-    )
+        db.executemany(
+            "INSERT INTO import_queue_files"
+            "(queue_id, filename, src_path, dst_path, proposed_volume, proposed_chapter,"
+            " proposed_volume_range_start, proposed_volume_range_end,"
+            " proposed_chapter_range_end, proposed_pack_type, proposed_is_special,"
+            " proposed_import_kind, proposed_special_title, file_type, status)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(queue_id, *row) for row in file_rows],
+        )
+        release_pack_queue_creation(
+            db,
+            download_id,
+            pack_reservation_owner,
+            download_client_id=owner_id,
+            protocol=normalized_protocol,
+            _guard=_guard,
+            commit=False,
+            attaching=True,
+        )
+    except BaseException:
+        # A caller may catch the error inside its DB context. Do not let its
+        # later commit publish a partial queue or release the durable fence.
+        db.rollback()
+        raise
 
     needs_review = unmapped > 0 or special > 0
     if needs_review:
@@ -1079,9 +1190,8 @@ def _pack_image_dir_to_cbz(
                 info = os.lstat(source)
             except OSError:
                 continue
-            if (
-                os.path.splitext(name)[1].lower() in _IMAGE_EXTENSIONS
-                and stat.S_ISREG(info.st_mode)
+            if os.path.splitext(name)[1].lower() in _IMAGE_EXTENSIONS and stat.S_ISREG(
+                info.st_mode
             ):
                 pages.append(name)
         if not pages:
@@ -1192,13 +1302,15 @@ def _extract_zip_wrapped_split_rars(
             continue
 
     selected = [
-        parts for parts in groups.values()
+        parts
+        for parts in groups.values()
         if any(name.lower().endswith(".rar") for _, name in parts)
         and any(re.search(r"\.r\d{2}$", name, re.IGNORECASE) for _, name in parts)
     ]
     if not selected:
         return None
 
+    pack_dir = heartbeat.output_base()
     split_root = os.path.join(pack_dir, "split-rar")
     if os.path.lexists(split_root):
         checkpoint()
@@ -1218,7 +1330,8 @@ def _extract_zip_wrapped_split_rars(
             try:
                 with zipfile.ZipFile(zip_path) as zf:
                     source_member = next(
-                        info for info in zf.infolist()
+                        info
+                        for info in zf.infolist()
                         if os.path.basename(info.filename) == member_name
                     )
                     target = os.path.join(group_dir, member_name)
@@ -1251,15 +1364,15 @@ def _extract_zip_wrapped_split_rars(
 
         try:
             checkpoint()
-            result = heartbeat.run(
-                lambda: subprocess.run(
-                    archive_cmd,
-                    check=False,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
+            os.makedirs(out_dir, mode=0o700, exist_ok=True)
+            with open_directory(out_dir) as output_fd:
+                if extractor:
+                    archive_cmd[3] = f"-o/proc/self/fd/{output_fd}"
+                else:
+                    archive_cmd[-1] = f"/proc/self/fd/{output_fd}/"
+                result = heartbeat.run(
+                    lambda: _run_pack_extractor(archive_cmd, heartbeat, output_fd)
                 )
-            )
         except _PackQueueReservationLost:
             raise
         except Exception as exc:
@@ -1306,3 +1419,26 @@ def _extract_zip_wrapped_split_rars(
             f"Unpacked {len(payloads)} ZIP-wrapped split RAR payload(s)",
         )
     return payloads
+
+
+def _run_pack_extractor(
+    command: list[str], heartbeat: _PackQueueHeartbeat, output_fd: int
+) -> subprocess.CompletedProcess[str]:
+    heartbeat.checkpoint()
+    if heartbeat.output_fd is None or heartbeat.guard is None:
+        raise PackProofError("extractor has no pinned private output")
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        close_fds=True,
+        pass_fds=(heartbeat.guard.subprocess_fd, heartbeat.output_fd, output_fd),
+    )
+    try:
+        stdout, stderr = process.communicate()
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    except BaseException:
+        process.kill()
+        process.communicate()
+        raise

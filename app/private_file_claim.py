@@ -316,6 +316,39 @@ def _verify_marker(
 
 
 @dataclass(frozen=True, slots=True)
+class _CreationBoundary:
+    kind: str
+    parent_uid: int
+    parent_mode: int
+
+    @classmethod
+    def from_value(cls, value: object) -> _CreationBoundary:
+        fields = _object(value, {"kind", "parent_uid", "parent_mode"})
+        mode = _integer(fields["parent_mode"])
+        if fields["kind"] != "exclusive_parent" or mode > 0o7777 or mode & 0o022:
+            raise PrivateClaimError("invalid private namespace creation boundary")
+        return cls("exclusive_parent", _integer(fields["parent_uid"]), mode)
+
+
+def _exclusive_parent(parent_fd: int, parent_path: str) -> _CreationBoundary:
+    """Requires known POSIX/ACL entry exclusion; unmodelled server ACLs are unsupported."""
+    held = os.fstat(parent_fd)
+    current = os.lstat(parent_path)
+    mode = stat.S_IMODE(held.st_mode)
+    if (
+        not stat.S_ISDIR(held.st_mode)
+        or not stat.S_ISDIR(current.st_mode)
+        or _identity(held) != _identity(current)
+        or held.st_uid != os.geteuid()
+        or mode & 0o022
+    ):
+        raise PrivateClaimError(
+            "namespace creation requires exclusive app-owned parent"
+        )
+    return _CreationBoundary("exclusive_parent", held.st_uid, mode)
+
+
+@dataclass(frozen=True, slots=True)
 class _NamespaceProof:
     owner_token: str
     parent_dev: int
@@ -325,10 +358,11 @@ class _NamespaceProof:
     root_ino: int
     marker_fingerprint: FullFileFingerprint
     version: int = 1
+    creation_boundary: _CreationBoundary | None = None
 
     def marker_payload(self) -> dict[str, object]:
-        return {
-            "version": 1,
+        payload: dict[str, object] = {
+            "version": self.version,
             "owner_token": self.owner_token,
             "parent_dev": self.parent_dev,
             "parent_ino": self.parent_ino,
@@ -336,11 +370,24 @@ class _NamespaceProof:
             "root_dev": self.root_dev,
             "root_ino": self.root_ino,
         }
+        if self.version == 2:
+            payload["creation_boundary"] = (
+                asdict(self.creation_boundary) if self.creation_boundary else None
+            )
+        return payload
 
     @classmethod
     def from_json(cls, encoded: str) -> _NamespaceProof:
+        value = _load(encoded)
+        if (
+            not isinstance(value, dict)
+            or type(value.get("version")) is not int
+            or value["version"] not in (1, 2)
+        ):
+            raise PrivateClaimError("unsupported private namespace version")
+        version = cast(int, value["version"])
         fields = _object(
-            _load(encoded),
+            value,
             {
                 "version",
                 "owner_token",
@@ -350,10 +397,9 @@ class _NamespaceProof:
                 "root_dev",
                 "root_ino",
                 "marker_fingerprint",
-            },
+            }
+            | ({"creation_boundary"} if version == 2 else set()),
         )
-        if type(fields["version"]) is not int or fields["version"] != 1:
-            raise PrivateClaimError("unsupported private namespace version")
         return cls(
             _token(fields["owner_token"]),
             _integer(fields["parent_dev"]),
@@ -362,6 +408,10 @@ class _NamespaceProof:
             _integer(fields["root_dev"]),
             _integer(fields["root_ino"]),
             FullFileFingerprint.from_value(fields["marker_fingerprint"]),
+            version,
+            _CreationBoundary.from_value(fields["creation_boundary"])
+            if version == 2
+            else None,
         )
 
 
@@ -453,6 +503,7 @@ def ensure_namespace(
         parent_fd = os.open(parent_path, _DIR_FLAGS)
         root_fd: int | None = None
         try:
+            boundary = _exclusive_parent(parent_fd, parent_path)
             try:
                 os.mkdir(_ROOT, 0o700, dir_fd=parent_fd)
             except FileExistsError as exc:
@@ -464,14 +515,16 @@ def ensure_namespace(
             parent = os.fstat(parent_fd)
             root = os.fstat(root_fd)
             payload: dict[str, object] = {
-                "version": 1,
+                "version": 2,
                 "owner_token": secrets.token_hex(16),
                 "parent_dev": parent.st_dev,
                 "parent_ino": parent.st_ino,
                 "root_path": os.path.join(parent_path, _ROOT),
                 "root_dev": root.st_dev,
                 "root_ino": root.st_ino,
+                "creation_boundary": asdict(boundary),
             }
+            _exclusive_parent(parent_fd, parent_path)
             marker = _write_marker(root_fd, payload)
             proof = _NamespaceProof(
                 cast(str, payload["owner_token"]),
@@ -481,12 +534,15 @@ def ensure_namespace(
                 root.st_dev,
                 root.st_ino,
                 marker,
+                2,
+                boundary,
             )
             handle = NamespaceHandle(guard, root_fd, parent_fd, parent_path, proof)
             handle.verify()
             os.fsync(root_fd)
             os.fsync(parent_fd)
             handle.verify()
+            _exclusive_parent(parent_fd, parent_path)
             ownership = _encode(asdict(proof))
         finally:
             if root_fd is not None:
@@ -573,6 +629,8 @@ def allocate_carrier(
     artifact_fingerprint: FullFileFingerprint | None = None,
 ) -> Generator[CarrierHandle, None, None]:
     namespace.verify()
+    if namespace.proof.creation_boundary is None:
+        _exclusive_parent(namespace.parent_fd, namespace.parent_path)
     origin_path = _path(origin_path)
     if os.path.dirname(origin_path) != namespace.parent_path:
         raise PrivateClaimError("private carrier must share its origin parent")
@@ -617,6 +675,8 @@ def allocate_carrier(
         os.fsync(fd)
         os.fsync(namespace.fd)
         carrier.verify()
+        if namespace.proof.creation_boundary is None:
+            _exclusive_parent(namespace.parent_fd, namespace.parent_path)
         yield carrier
     finally:
         if carrier is not None:

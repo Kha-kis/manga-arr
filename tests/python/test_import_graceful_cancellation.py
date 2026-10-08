@@ -28,7 +28,7 @@ def _run(coro):
 
 
 @pytest.fixture
-def fresh_db(monkeypatch):
+def fresh_db(monkeypatch, tmp_path):
     """Empty temp DB with init."""
     import main
     import import_execute
@@ -39,7 +39,7 @@ def fresh_db(monkeypatch):
     original_main_values = dict(main.CONFIG)
     original_shared_config = shared.CONFIG
     original_shared_values = dict(shared.CONFIG)
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=tmp_path)
     tmp.close()
     os.unlink(tmp.name)
     monkeypatch.setattr(main, "DB_PATH", tmp.name)

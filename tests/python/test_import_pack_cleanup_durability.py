@@ -151,9 +151,9 @@ def test_cleanup_fsyncs_after_detach_and_remove_before_journal_deletion(
         events.append("track")
         original_track(*args, **kwargs)
 
-    def _rmtree(path: str) -> None:
+    def _rmtree(path: str, **kwargs: Any) -> None:
         events.append("rmtree")
-        original_rmtree(path)
+        original_rmtree(path, **kwargs)
 
     monkeypatch.setattr(import_pack_cleanup, "_rename_noreplace", _rename)
     monkeypatch.setattr(import_pack_cleanup, "_fsync_pack_root", _fsync)
@@ -201,10 +201,10 @@ def test_delayed_detach_and_rmtree_do_not_hold_sqlite_writer(
         assert rename_release.wait(timeout=5)
         original_rename(source, destination)
 
-    def _slow_rmtree(path: str) -> None:
+    def _slow_rmtree(path: str, **kwargs: Any) -> None:
         rmtree_started.set()
         assert rmtree_release.wait(timeout=5)
-        original_rmtree(path)
+        original_rmtree(path, **kwargs)
 
     monkeypatch.setattr(
         import_pack_cleanup,
@@ -728,7 +728,8 @@ def test_expired_pack_owner_cannot_replace_successor_artifacts(
         protocol=None,
     )
     with main.get_db() as db:
-        assert import_pack_cleanup.release_pack_queue_creation(
+        # The successor's attached proof must not be dropped while its tree remains.
+        assert not import_pack_cleanup.release_pack_queue_creation(
             db,
             "takeover",
             successor_owner,
@@ -737,6 +738,7 @@ def test_expired_pack_owner_cannot_replace_successor_artifacts(
             commit=False,
             attaching=True,
         )
+    assert (Path(canonical) / "artifact.cbz").read_bytes() == b"successor"
 
 
 def test_power_loss_queueing_state_recovers_only_owned_canonical_pack(
@@ -982,5 +984,5 @@ def test_generated_queue_rows_reference_only_attached_canonical_paths(
         assert ".owner-" not in str(queued_source)
         assert queued_source.is_file()
         assert db.execute(
-            "SELECT COUNT(*) FROM import_pack_cleanup_reservations"
-        ).fetchone() == (0,)
+            "SELECT purpose,queue_id FROM import_pack_cleanup_reservations"
+        ).fetchone() == ("queueing", queue_id)

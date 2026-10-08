@@ -639,6 +639,10 @@ def test_private_namespace_under_setgid_media_parent_preserves_parent_mode(
 
     db_path, parent = claim_env
     module = _module()
+    # Controlled birth precedes shared access; fresh 2770 is intentionally refused.
+    with file_mutation_guard(db_path) as guard:
+        with module.ensure_namespace(guard, str(parent)):
+            pass
     parent.chmod(0o2770)
     before = parent.stat()
     with file_mutation_guard(db_path) as guard:

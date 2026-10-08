@@ -31,7 +31,9 @@ import conftest  # noqa: F401
 @pytest.fixture
 def env(tmp_path):
     import main, shared, security
-    db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(mode=0o700)
+    db = tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=config_dir)
     db.close(); os.unlink(db.name)
     key_dir = tempfile.mkdtemp(prefix="mangarr-reconui-keys-")
 

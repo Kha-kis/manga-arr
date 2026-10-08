@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import signal
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import textwrap
@@ -24,6 +26,211 @@ import conftest  # noqa: F401, E402
 def _zip(path: Path, payload: bytes) -> None:
     with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
         archive.writestr("page.bin", payload)
+
+
+def _fd_path(name: str, descriptor: int | None = None) -> str:
+    return os.path.abspath(name) if descriptor is None else os.path.join(os.readlink(f"/proc/self/fd/{descriptor}"), name)
+
+
+def _carrier_records(db_path):
+    import private_file_claim as claims
+
+    with sqlite3.connect(db_path) as db:
+        rows = db.execute("SELECT id,state,queue_snapshot_json FROM import_publications ORDER BY id").fetchall()
+    records = []
+    for pid, state, encoded in rows:
+        snapshot = json.loads(encoded)
+        stage = snapshot.get("_publication_staging", {}).get("carrier")
+        if stage is not None:
+            records.append((state, claims.CarrierRecord.from_json(json.dumps(stage)), {}))
+        for entry in snapshot.get("_file_publication", {}).get("artifacts", {}).values():
+            for purpose in ("publication", "original", "source", "rollback"):
+                value = entry.get(purpose)
+                if isinstance(value, str):
+                    record = claims.CarrierRecord.from_json(value)
+                    assert record.binding.operation_key == str(pid)
+                    assert record.binding.purpose == purpose
+                    records.append((state, record, entry))
+    return records
+
+
+def _carrier_path(env, purpose: str) -> str:
+    records = [record for _, record, _ in _carrier_records(env["db_path"]) if record.binding.purpose == purpose]
+    assert records
+    return records[0].carrier_path
+
+
+def _public_target(db_path, name: str, descriptor: int | None = None) -> bool:
+    target = _fd_path(name, descriptor)
+    with sqlite3.connect(db_path) as db:
+        return db.execute("SELECT 1 FROM import_publication_files WHERE final_path=?", (target,)).fetchone() is not None
+
+
+def _source_capture_target(db_path, source: str, destination: str) -> bool:
+    with sqlite3.connect(db_path) as db:
+        row = db.execute(
+            "SELECT p.state FROM import_publication_files AS f"
+            " JOIN import_publications AS p ON p.id=f.publication_id"
+            " WHERE f.src_path=? AND f.source_claim_path=?",
+            (source, destination),
+        ).fetchone()
+    if row is None:
+        return False
+    assert row[0] in ("db_committed", "cleaning")
+    return True
+
+
+def _settle_old_stage(publication_id: int) -> None:
+    import import_publication
+
+    assert import_publication.abort_private_staging(publication_id, release_queue=True)
+
+
+def _refuse_stale_stage_abort(publication_id: int) -> None:
+    import import_publication
+
+    assert not import_publication.abort_private_staging(publication_id)
+
+
+def _create_owned_empty_stage(queue_id: int, owner: str) -> None:
+    import import_publication
+    import main
+    from import_lease import IMPORT_LEASE_SECONDS, claim_import_queue_row
+    from import_plan import _plan_import
+
+    with main.get_db() as db:
+        assert claim_import_queue_row(db, queue_id, owner)
+        plan = _plan_import(db, queue_id, owner, {}, {}, set(), "copy",
+                            lease_seconds=IMPORT_LEASE_SECONDS)
+    assert plan is not None
+    stage, _ = import_publication.initialize_publication_filesystem(plan, owner)
+    assert {child.name for child in Path(stage).iterdir()} == {"owner.json"}
+
+
+def _fsync_checkpoint(db_path, descriptor: int) -> int | None:
+    held = os.fstat(descriptor)
+    if not stat.S_ISDIR(held.st_mode):
+        return None
+    identity = (held.st_dev, held.st_ino)
+    for _, record, entry in _carrier_records(db_path):
+        private_identity = (record.dir_dev, record.dir_ino)
+        if record.binding.purpose == "original" and record.phase == "claiming" and identity == private_identity:
+            return 2
+        if record.binding.purpose != "publication":
+            continue
+        if record.phase == "claiming" and entry.get("publication_ready") is None and identity == private_identity:
+            return 1
+        if record.phase == "restoring" and not os.path.lexists(os.path.join(record.carrier_path, "artifact")):
+            if identity == private_identity:
+                return 4
+            parent = os.stat(os.path.dirname(record.origin_path))
+            if identity == (parent.st_dev, parent.st_ino):
+                return 3
+    return None
+
+
+def _assert_hit(hits, expected=1):
+    assert len(hits) == expected, hits
+
+
+def _record_crash_hit(db_path, kind, index, when, target):
+    Path(str(db_path) + ".crash-hit").write_text(json.dumps([kind, index, when, target]))
+
+
+def _assert_crash_hit(env, kind, index, when):
+    if kind in {"fsync", "replace", "source_capture", "unlink", "nfs_link"}:
+        hit = json.loads(Path(str(env["db_path"]) + ".crash-hit").read_text())
+        assert hit[:3] == [kind, index, when]
+        assert hit[3]
+
+
+def _observe_private_events(env, monkeypatch):
+    import import_publication
+
+    events = []
+    real_rename = os.rename
+    real_native = import_publication._rename_noreplace
+    real_unlink, real_fsync, real_rmdir = os.unlink, os.fsync, os.rmdir
+
+    def rename(src, dst, **kwargs):
+        target = _fd_path(dst, kwargs.get("dst_dir_fd"))
+        source = _fd_path(src, kwargs.get("src_dir_fd"))
+        selected = [(state, record) for state, record, _ in _carrier_records(env["db_path"])
+                    if target == os.path.join(record.carrier_path, "artifact")]
+        real_rename(src, dst, **kwargs)
+        if selected:
+            state, record = selected[0]
+            assert record.phase == "claiming"
+            if record.binding.purpose == "source":
+                assert state in ("db_committed", "cleaning")
+            events.append(("capture", record.binding.purpose, target, state, record.phase, source))
+
+    def native(src, dst):
+        real_native(src, dst)
+        if _public_target(env["db_path"], dst):
+            events.append(("publish", "publication", dst, "", "", src))
+
+    def unlink(name, *args, **kwargs):
+        target = _fd_path(name, kwargs.get("dir_fd"))
+        selected = [(state, record) for state, record, _ in _carrier_records(env["db_path"])
+                    if target in (os.path.join(record.carrier_path, "artifact"), os.path.join(record.carrier_path, "owner.json"))]
+        if selected:
+            state, record = selected[0]
+            if os.path.basename(target) == "artifact":
+                assert state in ("db_committed", "cleaning")
+                assert record.phase == "discarding"
+                assert import_publication._private_full(import_publication._regular_fingerprint(target, include_hash=True)) == record.artifact_fingerprint
+            else:
+                assert record.phase == "discarded"
+        real_unlink(name, *args, **kwargs)
+        if selected:
+            events.append(("unlink", record.binding.purpose, target, state, record.phase, ""))
+
+    def fsync(descriptor):
+        real_fsync(descriptor)
+        held = os.fstat(descriptor)
+        if stat.S_ISDIR(held.st_mode):
+            events.append(("fsync", "", os.readlink(f"/proc/self/fd/{descriptor}"), "", "", ""))
+
+    def rmdir(name, *args, **kwargs):
+        target = _fd_path(name, kwargs.get("dir_fd"))
+        selected = [(state, record) for state, record, _ in _carrier_records(env["db_path"])
+                    if target == record.carrier_path]
+        if selected:
+            assert selected[0][1].phase == "discarded"
+        real_rmdir(name, *args, **kwargs)
+        if selected:
+            state, record = selected[0]
+            events.append(("rmdir", record.binding.purpose, target, state, record.phase, ""))
+
+    monkeypatch.setattr(os, "rename", rename)
+    monkeypatch.setattr(import_publication, "_rename_noreplace", native)
+    monkeypatch.setattr(os, "unlink", unlink)
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr(os, "rmdir", rmdir)
+    return events
+
+
+def _assert_private_discard_events(events, record):
+    root = record.carrier_path
+    artifact = next(i for i, e in enumerate(events) if e[:3] == ("unlink", record.binding.purpose, os.path.join(root, "artifact")))
+    carrier_barrier = next(i for i, e in enumerate(events[artifact + 1:], artifact + 1) if e[0] == "fsync" and e[2] == root)
+    marker = next(i for i, e in enumerate(events[carrier_barrier + 1:], carrier_barrier + 1) if e[:3] == ("unlink", record.binding.purpose, os.path.join(root, "owner.json")))
+    assert events[artifact][4] == "discarding"
+    assert events[marker][4] == "discarded"
+    removed = next(i for i, e in enumerate(events[marker + 1:], marker + 1) if e[:3] == ("rmdir", record.binding.purpose, root))
+    assert any(e[0] == "fsync" and e[2] == os.path.dirname(root) for e in events[removed + 1:])
+
+
+def _assert_one_completed(env, pid, sid):
+    with sqlite3.connect(env["db_path"]) as db:
+        assert db.execute("SELECT state FROM import_publications WHERE id=?", (pid,)).fetchone() == ("deleted",)
+        assert db.execute("SELECT COUNT(*) FROM history WHERE series_id=? AND event_type='imported'", (sid,)).fetchone() == (1,)
+        assert db.execute("SELECT COUNT(*) FROM volumes WHERE series_id=? AND status='downloaded'", (sid,)).fetchone() == (1,)
+        assert db.execute("SELECT COUNT(*) FROM import_queue").fetchone() == (0,)
+        assert db.execute("SELECT COUNT(*) FROM import_queue_files").fetchone() == (0,)
+    roots = list(env["library_root"].rglob(".mangarr-claims")) + list(env["source_root"].rglob(".mangarr-claims"))
+    assert roots and all({p.name for p in root.iterdir()} == {"owner.json"} for root in roots)
 
 
 @pytest.fixture
@@ -285,6 +492,7 @@ _CRASH_CHILD = textwrap.dedent(
     import import_pipeline
     import import_publication
     import shared
+    import test_import_publication_journal as journal_hooks
 
     shared.DB_PATH = os.environ["JOURNAL_DB"]
     shared.CONFIG["import_mode"] = os.environ["JOURNAL_MODE"]
@@ -296,7 +504,9 @@ _CRASH_CHILD = textwrap.dedent(
     crash_index = int(os.environ.get("JOURNAL_CRASH_INDEX", "1"))
     crash_when = os.environ.get("JOURNAL_CRASH_WHEN", "before")
 
-    def die():
+    def die(target=None):
+        if target is not None:
+            journal_hooks._record_crash_hit(shared.DB_PATH, crash_kind, crash_index, crash_when, target)
         os.kill(os.getpid(), signal.SIGKILL)
 
     if crash_kind == "replace":
@@ -304,28 +514,46 @@ _CRASH_CHILD = textwrap.dedent(
         calls = 0
         def replace(src, dst):
             global calls
-            calls += 1
-            if calls == crash_index and crash_when == "before":
-                die()
+            public = journal_hooks._public_target(shared.DB_PATH, dst)
+            if public:
+                calls += 1
+            if public and calls == crash_index and crash_when == "before":
+                die(dst)
             real_replace(src, dst)
-            if calls == crash_index and crash_when == "after":
-                die()
+            if public and calls == crash_index and crash_when == "after":
+                die(dst)
+        import_publication._rename_noreplace = replace
+    elif crash_kind == "source_capture":
+        real_replace = import_publication._rename_noreplace
+        calls = 0
+        def replace(src, dst):
+            global calls
+            selected = journal_hooks._source_capture_target(shared.DB_PATH, src, dst)
+            if selected:
+                calls += 1
+            if selected and calls == crash_index and crash_when == "before":
+                die(dst)
+            real_replace(src, dst)
+            if selected and calls == crash_index and crash_when == "after":
+                die(dst)
         import_publication._rename_noreplace = replace
     elif crash_kind == "fsync":
         real_barrier = import_execute.commit_prepared_barrier
-        real_fsync = import_publication._fsync_directory
+        real_fsync = os.fsync
         def barrier(*args, **kwargs):
             real_barrier(*args, **kwargs)
             calls = 0
-            def fsync(path):
+            def fsync(descriptor):
                 nonlocal calls
-                calls += 1
-                if calls == crash_index and crash_when == "before":
-                    die()
-                real_fsync(path)
-                if calls == crash_index and crash_when == "after":
-                    die()
-            import_publication._fsync_directory = fsync
+                target = journal_hooks._fsync_checkpoint(shared.DB_PATH, descriptor)
+                if target == crash_index:
+                    calls += 1
+                if target == crash_index and crash_when == "before":
+                    die(os.readlink('/proc/self/fd/%s' % descriptor))
+                real_fsync(descriptor)
+                if target == crash_index and crash_when == "after":
+                    die(os.readlink('/proc/self/fd/%s' % descriptor))
+            os.fsync = fsync
         import_execute.commit_prepared_barrier = barrier
     elif crash_kind == "phase3_before":
         def claim(*args, **kwargs):
@@ -344,12 +572,18 @@ _CRASH_CHILD = textwrap.dedent(
         calls = 0
         def unlink(path, *args, **kwargs):
             global calls
-            calls += 1
-            if calls == crash_index and crash_when == "before":
-                die()
+            target = journal_hooks._fd_path(path, kwargs.get('dir_fd'))
+            source = [(state, record) for state, record, _ in journal_hooks._carrier_records(shared.DB_PATH)
+                      if record.binding.purpose == 'source' and record.phase == 'discarding'
+                      and target == os.path.join(record.carrier_path, 'artifact')]
+            if source:
+                assert source[0][0] in ('db_committed', 'cleaning')
+                calls += 1
+            if source and calls == crash_index and crash_when == "before":
+                die(target)
             real_unlink(path, *args, **kwargs)
-            if calls == crash_index and crash_when == "after":
-                die()
+            if source and calls == crash_index and crash_when == "after":
+                die(target)
         import_publication.os.unlink = unlink
     elif crash_kind == "pack_cleanup_before":
         def cleanup(*args, **kwargs):
@@ -397,7 +631,7 @@ def _crash_worker(
     child_env = dict(os.environ)
     child_env.update(
         {
-            "PYTHONPATH": str(Path.cwd() / "app"),
+            "PYTHONPATH": os.pathsep.join((str(Path.cwd() / "app"), str(Path.cwd() / "tests/python"), os.environ.get("PYTHONPATH", ""))),
             "JOURNAL_DB": str(env["db_path"]),
             "JOURNAL_QUEUE_ID": str(queue_id),
             "JOURNAL_MODE": mode,
@@ -415,6 +649,7 @@ def _crash_worker(
         timeout=30,
     )
     assert result.returncode == -signal.SIGKILL
+    _assert_crash_hit(env, kind, index, when)
     # A crashed process retains no authority. Advance its persisted operation
     # lease so replay exercises the durable expired-owner takeover path.
     with sqlite3.connect(env["db_path"]) as db:
@@ -472,7 +707,7 @@ def test_nested_destination_entries_are_durable_before_move_source_cleanup(
     import import_publication
 
     real_fsync = import_publication._fsync_directory
-    real_cleanup = import_publication._cleanup_move_source
+    real_cleanup = import_publication._cleanup_source_private
     events: list[tuple[str, str]] = []
 
     def _fsync(path: str) -> None:
@@ -480,15 +715,16 @@ def test_nested_destination_entries_are_durable_before_move_source_cleanup(
         real_fsync(path)
 
     def _cleanup(
-        publication_id: int,
+        publication: import_publication.ImportPublication,
         file_record: import_publication.PublicationFile,
+        guard,
         owner_token: str,
     ) -> import_publication.CleanupOutcome:
         events.append(("source_cleanup", str(sources[0])))
-        return real_cleanup(publication_id, file_record, owner_token)
+        return real_cleanup(publication, file_record, guard, owner_token)
 
     monkeypatch.setattr(import_publication, "_fsync_directory", _fsync)
-    monkeypatch.setattr(import_publication, "_cleanup_move_source", _cleanup)
+    monkeypatch.setattr(import_publication, "_cleanup_source_private", _cleanup)
 
     assert asyncio.run(import_execute._execute_import(queue_id))
     first_cleanup = next(
@@ -542,9 +778,6 @@ def test_publication_creation_cas_rejects_stale_queue_snapshot(
             lease_seconds=IMPORT_LEASE_SECONDS,
         )
     assert plan is not None
-    staging_dir, source_fingerprints = (
-        import_publication.initialize_publication_filesystem(plan, owner)
-    )
     with sqlite3.connect(journal_env["db_path"]) as db:
         db.execute(
             f"UPDATE import_queue SET {queue_mutation} WHERE id=?",
@@ -552,6 +785,9 @@ def test_publication_creation_cas_rejects_stale_queue_snapshot(
         )
 
     with pytest.raises(import_publication.PublicationOwnershipLost):
+        staging_dir, source_fingerprints = (
+            import_publication.initialize_publication_filesystem(plan, owner)
+        )
         with main.get_db() as db:
             import_publication.create_publication(
                 db,
@@ -565,7 +801,6 @@ def test_publication_creation_cas_rejects_stale_queue_snapshot(
             "SELECT COUNT(*) FROM import_publications WHERE queue_id=?",
             (queue_id,),
         ).fetchone() == (0,)
-    shutil.rmtree(staging_dir)
 
 
 def test_stale_publication_loser_cannot_remove_successor_staging(
@@ -610,6 +845,8 @@ def test_stale_publication_loser_cannot_remove_successor_staging(
             (queue_id,),
         )
 
+    stale_publication = int(stale_plan.queue["_publication_staging"]["binding"]["operation_key"])
+    _settle_old_stage(stale_publication)
     successor_plan = _claim_plan(successor_owner)
     successor_staging, successor_sources = (
         import_publication.initialize_publication_filesystem(
@@ -638,7 +875,7 @@ def test_stale_publication_loser_cannot_remove_successor_staging(
                 stale_staging,
                 stale_sources,
             )
-    shutil.rmtree(stale_staging)
+    _refuse_stale_stage_abort(stale_publication)
 
     assert successor_sentinel.read_bytes() == b"successor"
     with sqlite3.connect(journal_env["db_path"]) as db:
@@ -722,46 +959,48 @@ def test_overwrite_publish_fsync_order_precedes_old_claim_unlink(
 ) -> None:
     import import_publication
 
-    publication_id, _, _, final, stage, claim = _prepare_overwrite_publication(
+    publication_id, series_id, source, final, stage, claim = _prepare_overwrite_publication(
         journal_env,
         monkeypatch,
     )
-    destination_dir = str(final.parent)
-    staging_dir = str(stage.parent)
-    real_rename = import_publication._rename_noreplace
-    real_fsync = import_publication._fsync_directory
-    real_unlink = import_publication.os.unlink
-    calls: list[tuple[str, str, str | None]] = []
-
-    def _rename(source: str, destination: str) -> None:
-        calls.append(("rename", source, destination))
-        real_rename(source, destination)
-
-    def _fsync(path: str) -> None:
-        calls.append(("fsync", os.path.abspath(path), None))
-        real_fsync(path)
-
-    def _unlink(path: str, *args: object, **kwargs: object) -> None:
-        calls.append(("unlink", os.path.abspath(path), None))
-        real_unlink(path, *args, **kwargs)
-
-    monkeypatch.setattr(import_publication, "_rename_noreplace", _rename)
-    monkeypatch.setattr(import_publication, "_fsync_directory", _fsync)
-    monkeypatch.setattr(import_publication.os, "unlink", _unlink)
+    old_bytes, incoming = final.read_bytes(), stage.read_bytes()
+    original_fp = import_publication._private_full(import_publication._regular_fingerprint(str(final), include_hash=True))
+    source_bytes = source.read_bytes()
+    calls = _observe_private_events(journal_env, monkeypatch)
 
     assert import_publication.publish_publication(
         publication_id,
         "fsync-order-owner",
     )
-    assert calls == [
-        ("rename", str(final), str(claim)),
-        ("fsync", destination_dir, None),
-        ("rename", str(stage), str(final)),
-        ("fsync", destination_dir, None),
-        ("fsync", staging_dir, None),
-        ("unlink", str(claim), None),
-        ("fsync", destination_dir, None),
-    ]
+    original = next(record for _, record, _ in _carrier_records(journal_env["db_path"]) if record.binding.purpose == "original")
+    publication = next(record for _, record, _ in _carrier_records(journal_env["db_path"]) if record.binding.purpose == "publication")
+    assert original.artifact_fingerprint == original_fp
+    assert (Path(original.carrier_path) / "artifact").read_bytes() == old_bytes
+    assert import_publication._private_full(import_publication._regular_fingerprint(os.path.join(original.carrier_path, "artifact"), include_hash=True)) == original_fp
+    assert stage.read_bytes() == incoming == final.read_bytes()
+    assert source.read_bytes() == source_bytes
+    assert not any(e[0] == "unlink" and e[1] == "original" for e in calls)
+    capture = next(i for i, e in enumerate(calls) if e[:2] == ("capture", "original"))
+    publish = next(i for i, e in enumerate(calls) if e[0] == "publish")
+    original_barrier = next(i for i, e in enumerate(calls[capture + 1:], capture + 1) if e[0] == "fsync" and e[2] == original.carrier_path)
+    parent_barrier = next(i for i, e in enumerate(calls[original_barrier + 1:], original_barrier + 1) if e[0] == "fsync" and e[2] == str(final.parent))
+    assert capture < original_barrier < parent_barrier < publish
+    assert [(e[0], e[2]) for e in calls[publish:publish + 3]] == [("publish", str(final)), ("fsync", str(final.parent)), ("fsync", publication.carrier_path)]
+    with sqlite3.connect(journal_env["db_path"]) as db:
+        assert db.execute("SELECT state FROM import_publications").fetchone() == ("published",)
+        assert db.execute("SELECT COUNT(*) FROM history WHERE event_type='imported'").fetchone() == (0,)
+        assert db.execute("SELECT status FROM volumes WHERE series_id=?", (series_id,)).fetchone() == ("grabbed",)
+    assert asyncio.run(import_publication.complete_publication(publication_id, "fsync-order-owner"))
+    assert final.read_bytes() == incoming
+    assert source.read_bytes() == source_bytes
+    assert not stage.parent.exists()
+    assert not any(e[0] == "unlink" and e[2] == str(claim) for e in calls)
+    _assert_private_discard_events(calls, original)
+    _assert_one_completed(journal_env, publication_id, series_id)
+    unlinks = len([e for e in calls if e[0] == "unlink"])
+    _run_replay()
+    assert len([e for e in calls if e[0] == "unlink"]) == unlinks
+    _assert_one_completed(journal_env, publication_id, series_id)
 
 
 @pytest.mark.parametrize("failed_barrier", (1, 2, 3, 4))
@@ -777,19 +1016,22 @@ def test_overwrite_fsync_failure_is_replayable_at_every_barrier(
         monkeypatch,
     )
     old_digest = hashlib.sha256(final.read_bytes()).digest()
-    real_fsync = import_publication._fsync_directory
+    real_fsync = os.fsync
     calls = 0
+    hits = []
 
-    def _fail_selected_fsync(path: str) -> None:
+    def _fail_selected_fsync(descriptor: int) -> None:
         nonlocal calls
-        calls += 1
-        if calls == failed_barrier:
-            raise OSError(import_publication.errno.EIO, "injected fsync failure", path)
-        real_fsync(path)
+        target = _fsync_checkpoint(journal_env["db_path"], descriptor)
+        if target == failed_barrier:
+            calls += 1
+            hits.append(target)
+            raise OSError(import_publication.errno.EIO, "injected fsync failure", os.readlink(f"/proc/self/fd/{descriptor}"))
+        real_fsync(descriptor)
 
     monkeypatch.setattr(
-        import_publication,
-        "_fsync_directory",
+        os,
+        "fsync",
         _fail_selected_fsync,
     )
     assert not import_publication.publish_publication(
@@ -797,7 +1039,8 @@ def test_overwrite_fsync_failure_is_replayable_at_every_barrier(
         "fsync-failure-owner",
     )
 
-    monkeypatch.setattr(import_publication, "_fsync_directory", real_fsync)
+    _assert_hit(hits)
+    monkeypatch.setattr(os, "fsync", real_fsync)
     replayed = _run_replay()
     assert replayed.completed == 1
     assert source.is_file()
@@ -1296,9 +1539,9 @@ def test_mutated_move_source_is_restored_and_retained_by_hash(
     _crash_worker(
         journal_env,
         queue_id,
-        kind="replace",
+        kind="source_capture",
         mode="move",
-        index=2,
+        index=1,
         when="before",
     )
     sources[0].write_bytes(b"mutated-in-place-after-staging")
@@ -2393,43 +2636,14 @@ def test_replay_all_snapshot_and_keyset_reach_ids_after_first_hundred(
 ) -> None:
     from import_publication import pending_publication_ids, replay_import_publications
 
-    dst_dir = journal_env["library_root"] / "bulk-replay"
+    for index in range(105):
+        queue_id, _, _, _ = _seed_queue(journal_env, file_count=1)
+        _create_owned_empty_stage(queue_id, f"bulk-owner-{index}")
     with sqlite3.connect(journal_env["db_path"]) as db:
         db.execute(
-            "INSERT INTO series(title,search_pattern,root_folder_id)"
-            " VALUES('Bulk Replay','Bulk Replay',1)"
+            "UPDATE import_queue SET lease_expires_at=datetime('now','-1 second')"
+            " WHERE status='importing'"
         )
-        series_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        for index in range(105):
-            db.execute(
-                "INSERT INTO import_queue(series_id,download_id,torrent_name,"
-                " src_dir,status) VALUES(?,?,?,?, 'importing')",
-                (
-                    series_id,
-                    f"bulk-{index}",
-                    f"Bulk {index}",
-                    str(journal_env["source_root"]),
-                ),
-            )
-            queue_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-            staging_dir = dst_dir / f".mangarr-publication-{queue_id}"
-            db.execute(
-                """
-                INSERT INTO import_publications(
-                    queue_id, state, owner_token, series_id, dst_dir,
-                    import_mode, staging_dir, queue_snapshot_json,
-                    series_snapshot_json, series_tags_json, queue_status
-                ) VALUES(?, 'staging', 'bulk-owner', ?, ?, 'copy', ?,
-                         ?, NULL, '[]', 'importing')
-                """,
-                (
-                    queue_id,
-                    series_id,
-                    str(dst_dir),
-                    str(staging_dir),
-                    f'{{"id":{queue_id}}}',
-                ),
-            )
         first_page = pending_publication_ids(db, 100)
         second_page = pending_publication_ids(
             db,

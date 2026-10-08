@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import sqlite3
+from contextlib import ExitStack
 from datetime import datetime
 from typing import NotRequired, TypedDict
 
@@ -23,6 +24,9 @@ from download_identity import (
 from routers._templates import templates
 from files import sanitize_filename
 from import_kinds import VALID_IMPORT_KINDS, infer_import_kind
+from file_mutation_lock import file_mutation_guard
+from import_publication import assert_library_file_mutation_available
+import shared
 from metadata import MetadataProviderError
 from metadata_provenance import record_initial_title
 from metadata_service import (
@@ -1229,7 +1233,12 @@ async def manual_import_auto(request: Request):
         vol_num = f["vol_num"]
         dst_fname = _m.build_filename(s_row["title"], vol_num, f["filename"])
 
+        operation_scope = ExitStack()
         try:
+            guard = operation_scope.enter_context(file_mutation_guard(shared.DB_PATH))
+            with get_db() as db:
+                assert_library_file_mutation_available(db, ms["id"], f["path"])
+            guard.verify()
             os.makedirs(dst_dir, exist_ok=True)
             dst_path = _m.safe_join_under(dst_dir, dst_fname)
             if import_mode == "hardlink":
@@ -1251,7 +1260,9 @@ async def manual_import_auto(request: Request):
             )
             imported_at = datetime.utcnow().isoformat()
             file_qual = _m.quality_from_filename(dst_path)
+            guard.verify()
             with get_db() as db:
+                assert_library_file_mutation_available(db, ms["id"], f["path"])
                 if vol_num is not None:
                     vol_row = db.execute(
                         "SELECT id FROM volumes WHERE series_id=? AND volume_num=?",
@@ -1310,6 +1321,8 @@ async def manual_import_auto(request: Request):
         except Exception as e:
             import_results.append({"path": f["path"], "ok": False, "message": str(e)})
             _m.log_event("error", f"Auto-import failed ({f['filename']}): {e}")
+        finally:
+            operation_scope.close()
 
     ok_count = sum(1 for r in import_results if r["ok"])
     if ok_count:
@@ -1375,7 +1388,12 @@ async def manual_import_process(request: Request):
         if vol_num is not None:
             fname = _m.build_filename(s["title"], float(vol_num), fname)
 
+        operation_scope = ExitStack()
         try:
+            guard = operation_scope.enter_context(file_mutation_guard(shared.DB_PATH))
+            with get_db() as db:
+                assert_library_file_mutation_available(db, series_id, src_path)
+            guard.verify()
             os.makedirs(dst_dir, exist_ok=True)
             dst_path = _m.safe_join_under(dst_dir, fname)
             if import_mode == "hardlink":
@@ -1405,7 +1423,9 @@ async def manual_import_process(request: Request):
             file_size = os.path.getsize(dst_path) if os.path.exists(dst_path) else 0
             imported_at = datetime.utcnow().isoformat()
             file_qual = _m.quality_from_filename(dst_path)
+            guard.verify()
             with get_db() as db:
+                assert_library_file_mutation_available(db, series_id, src_path)
                 vol_label = (
                     f"Vol {vol_num_to_display(vol_num)}"
                     if vol_num is not None
@@ -1455,6 +1475,8 @@ async def manual_import_process(request: Request):
         except Exception as e:
             results.append({"path": src_path, "ok": False, "message": str(e)})
             _m.log_event("error", f"Manual import failed for {fname}: {e}", series_id)
+        finally:
+            operation_scope.close()
 
     ok_count = sum(1 for r in results if r["ok"])
     if ok_count:

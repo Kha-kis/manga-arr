@@ -80,7 +80,6 @@ def claim_import_queue_row(
           AND NOT EXISTS (
               SELECT 1 FROM import_pack_cleanup_reservations reservation
               WHERE reservation.purpose='cleanup'
-                AND reservation.expires_at > CURRENT_TIMESTAMP
                 AND (
                     reservation.download_client_id IS NULL
                     OR import_queue.download_client_id IS NULL

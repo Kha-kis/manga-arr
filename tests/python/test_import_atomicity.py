@@ -309,7 +309,7 @@ def exec_env(tmp_path, monkeypatch):
     import main
     import shared
 
-    db_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    db_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=tmp_path)
     db_tmp.close()
     os.unlink(db_tmp.name)
     monkeypatch.setattr(main, "DB_PATH", db_tmp.name)

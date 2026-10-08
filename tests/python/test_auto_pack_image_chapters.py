@@ -205,7 +205,7 @@ def integ_env(tmp_path, monkeypatch):
     import sqlite3
     import main, shared, security, import_pipeline
 
-    db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    db = tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=tmp_path)
     db.close(); os.unlink(db.name)
     key_dir = tempfile.mkdtemp(prefix="mangarr-autopack-keys-")
 

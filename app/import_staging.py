@@ -1,8 +1,11 @@
 """Import staging: two-phase commit with hidden staging directory."""
 import asyncio
+import json
 import os
 import shutil
 import stat
+import subprocess
+import sys
 import tempfile as _tempfile
 from dataclasses import dataclass
 
@@ -79,10 +82,15 @@ class _ImportStaging:
         *,
         staging_dir: str | None = None,
         journal_owned: bool = False,
+        publication_id: int | None = None,
+        owner_token: str | None = None,
     ) -> None:
         self.dst_dir = dst_dir
         self.import_mode = import_mode
         self.journal_owned = journal_owned
+        self.publication_id = publication_id
+        self.owner_token = owner_token
+        self._pinned_fd: int | None = None
         if staging_dir is None:
             self.staging_dir = _tempfile.mkdtemp(
                 prefix=f".mangarr-staging-{queue_id}-",
@@ -90,7 +98,8 @@ class _ImportStaging:
             )
         else:
             self.staging_dir = staging_dir
-            os.makedirs(self.staging_dir, mode=0o700, exist_ok=True)
+            if not journal_owned:
+                os.makedirs(self.staging_dir, mode=0o700, exist_ok=True)
         self._staged: list[_StagedFile] = []
 
     @property
@@ -104,7 +113,29 @@ class _ImportStaging:
         """
         fname = os.path.basename(final_path)
         stage_path = os.path.join(self.staging_dir, fname)
-        if self.import_mode == 'hardlink':
+        if self.journal_owned:
+            if self._pinned_fd is None:
+                raise RuntimeError("journal staging requires its pinned synchronous worker")
+            if self.import_mode == "hardlink":
+                os.link(src, fname, dst_dir_fd=self._pinned_fd, follow_symlinks=False)
+            else:
+                source_fd = os.open(src, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+                try:
+                    source_stat = os.fstat(source_fd)
+                    if not stat.S_ISREG(source_stat.st_mode):
+                        raise OSError("stage source is not regular")
+                    target_fd = os.open(fname, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=self._pinned_fd)
+                    try:
+                        # copy2 follows the already-open target descriptor, not
+                        # the carrier's replaceable public absolute path.
+                        shutil.copy2(f"/proc/self/fd/{source_fd}", f"/proc/self/fd/{target_fd}")
+                        os.fsync(target_fd)
+                    finally:
+                        os.close(target_fd)
+                finally:
+                    os.close(source_fd)
+            os.fsync(self._pinned_fd)
+        elif self.import_mode == 'hardlink':
             os.link(src, stage_path)
         else:
             shutil.copy2(src, stage_path)
@@ -147,7 +178,14 @@ class _ImportStaging:
             raise ValueError(f"mutation on unknown stage path: {stage_path!r}")
 
         open_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        stage_fd = os.open(stage_path, open_flags)
+        work_path = stage_path
+        work_dir = self.staging_dir
+        if self.journal_owned:
+            if self._pinned_fd is None:
+                raise RuntimeError("COW requires a pinned stage worker")
+            work_dir = f"/proc/self/fd/{self._pinned_fd}"
+            work_path = os.path.join(work_dir, os.path.basename(stage_path))
+        stage_fd = os.open(work_path, open_flags)
         temp_fd = -1
         temp_path = ""
         try:
@@ -159,7 +197,7 @@ class _ImportStaging:
 
             temp_fd, temp_path = _tempfile.mkstemp(
                 prefix=".mangarr-cow-",
-                dir=self.staging_dir,
+                dir=work_dir,
             )
             while chunk := os.read(stage_fd, 1024 * 1024):
                 remaining = memoryview(chunk)
@@ -177,7 +215,7 @@ class _ImportStaging:
             os.close(temp_fd)
             temp_fd = -1
 
-            current_stat = os.stat(stage_path, follow_symlinks=False)
+            current_stat = os.stat(work_path, follow_symlinks=False)
             if (
                 current_stat.st_dev != staged_stat.st_dev
                 or current_stat.st_ino != staged_stat.st_ino
@@ -185,7 +223,7 @@ class _ImportStaging:
                 raise RuntimeError(
                     f"staged path changed during copy-on-write: {stage_path!r}"
                 )
-            os.replace(temp_path, stage_path)
+            os.replace(temp_path, work_path)
             temp_path = ""
             return stage_path
         finally:
@@ -200,6 +238,8 @@ class _ImportStaging:
 
     def commit_all(self) -> None:
         """Move every staged file to its final destination."""
+        if self.journal_owned:
+            raise RuntimeError("journal publication requires its durable batch decision")
         for rec in self._staged:
             os.replace(rec.stage_path, rec.final_path)
         if self.import_mode == 'move' and not self.journal_owned:
@@ -217,9 +257,16 @@ class _ImportStaging:
 
     def rollback(self) -> None:
         """Remove every staged file; sources are untouched."""
+        if self.journal_owned:
+            from import_publication import abort_private_staging
+            if self.publication_id is None or not abort_private_staging(self.publication_id):
+                raise RuntimeError("private staging abort retained its journal/fence")
+            return
         self._cleanup()
 
     def _cleanup(self) -> None:
+        if self.journal_owned:
+            raise RuntimeError("journal stage cleanup requires durable private discard")
         try:
             shutil.rmtree(self.staging_dir)
         except FileNotFoundError:
@@ -229,6 +276,97 @@ class _ImportStaging:
                 "error",
                 f"[Import] failed to clean staging dir {self.staging_dir}: {e}",
             )
+
+    def stage_one(self, plan, fp) -> _StageOutcome:
+        """One synchronous mutation unit, including a pinned trusted exec."""
+        from import_publication import (
+            PublicationBlocked, _read_publication, _regular_fingerprint,
+            open_publication_stage,
+        )
+        from private_pack_source import _open_pack_file_source
+        import shared
+        if self.publication_id is None or self.owner_token is None:
+            raise RuntimeError("missing journal staging identity")
+        with open_publication_stage(self.publication_id, self.owner_token) as (guard, carrier):
+            self._pinned_fd = carrier.fd
+            try:
+                publication = _read_publication(self.publication_id)
+                if publication is None:
+                    raise PublicationBlocked("stage source admission journal missing")
+                snapshot = publication.plan.queue.get("_pack_source_origins")
+                if (not isinstance(snapshot, dict) or set(snapshot) != {"version", "files"}
+                        or type(snapshot["version"]) is not int or snapshot["version"] != 1
+                        or not isinstance(snapshot["files"], dict)):
+                    raise PublicationBlocked("stage source origin snapshot missing or invalid")
+                origin = snapshot["files"].get(str(fp.file_id))
+                if not isinstance(origin, dict):
+                    raise PublicationBlocked("stage source origin admission missing")
+                with _open_pack_file_source(
+                    guard, publication.plan.queue, fp.file_id, fp.src_path, origin,
+                ) as source:
+                    if source is None:
+                        stage_path = self.stage(fp.src_path, fp.dst_path)
+                    else:
+                        source_fd, source_alias, expected = source
+                        name = os.path.basename(fp.dst_path)
+                        stage_path = os.path.join(self.staging_dir, name)
+                        if self.import_mode == "hardlink":
+                            os.link(source_alias, name, dst_dir_fd=carrier.fd, follow_symlinks=False)
+                        else:
+                            target = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                                             | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=carrier.fd)
+                            try:
+                                shutil.copy2(f"/proc/self/fd/{source_fd}", f"/proc/self/fd/{target}")
+                                os.fsync(target)
+                            finally:
+                                os.close(target)
+                        os.fsync(carrier.fd)
+                        staged = _regular_fingerprint(
+                            f"/proc/self/fd/{carrier.fd}/{name}", include_hash=True,
+                        )
+                        if (staged.size, staged.sha256) != (expected.size, expected.sha256):
+                            raise PublicationBlocked("staged pack bytes differ from admitted source")
+                        self._staged.append(_StagedFile(stage_path, fp.dst_path, fp.src_path))
+                mutation = bool(plan.series) and os.path.splitext(stage_path)[1].lower() not in (".epub", ".pdf", ".mobi", ".azw3")
+                if mutation:
+                    self.prepare_for_mutation(stage_path)
+                payload = {"fd": carrier.fd, "name": os.path.basename(stage_path), "db_path": shared.DB_PATH,
+                           "series": dict(plan.series) if plan.series else None,
+                           "tags": plan.series_tags, "chapter": fp.file_type == "chapter",
+                           "number": fp.proposed_chap if fp.file_type == "chapter" else fp.proposed_vol}
+                result = subprocess.run(
+                    [sys.executable, "-c", _PINNED_TRANSFORM_WORKER],
+                    input=json.dumps(payload), text=True, capture_output=True, check=True,
+                    pass_fds=(carrier.fd, guard.subprocess_fd),
+                    env={**os.environ, "PYTHONPATH": os.path.dirname(__file__) + os.pathsep + os.environ.get("PYTHONPATH", "")},
+                )
+                name = json.loads(result.stdout)["name"]
+                if not isinstance(name, str) or os.path.basename(name) != name or name in ("", ".", "..", "owner.json"):
+                    raise RuntimeError("transform result escaped private stage")
+                transformed = os.path.join(self.staging_dir, name)
+                final = self.rename(stage_path, transformed) if transformed != stage_path else fp.dst_path
+                os.fsync(carrier.fd)
+                carrier.verify()
+                return _StageOutcome(fp.file_id, True, final, "", transformed)
+            finally:
+                self._pinned_fd = None
+
+
+_PINNED_TRANSFORM_WORKER = """
+import json, os, sys
+import shared
+from files import _maybe_convert_to_cbz
+from comicinfo import _try_inject_comicinfo
+p = json.loads(sys.stdin.read())
+shared.DB_PATH = p['db_path']
+# The decoder sees the worker PID, not its own /proc/self/fd namespace.
+path = '/proc/%s/fd/%s/%s' % (os.getpid(), p['fd'], p['name'])
+result = _maybe_convert_to_cbz(path)
+if p['series']:
+    kwargs = {'chapter_num' if p['chapter'] else 'volume_num': p['number']}
+    _try_inject_comicinfo(result, p['series'], tags=p['tags'], **kwargs)
+print(json.dumps({'name': os.path.basename(result)}))
+"""
 
 
 async def _stage_files(
@@ -244,6 +382,9 @@ async def _stage_files(
             ))
             continue
         try:
+            if staging.journal_owned:
+                outcomes.append(await asyncio.to_thread(staging.stage_one, plan, fp))
+                continue
             stage_path = await asyncio.to_thread(staging.stage, fp.src_path, fp.dst_path)
             comicinfo_mutation_requested = (
                 bool(plan.series)
