@@ -5,6 +5,64 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.3.2 - Unreleased
+
+Release preparation only: no 1.3.2 image or stable qualification is claimed.
+1.3.1 remains the current published, qualified stable release. Final image,
+security, NFS workflow, upgrade, and rollback evidence is pending in
+[Release qualification](docs/release-qualification.md#132-release-preparation).
+
+### Fixed
+
+- Stream large CBZ ComicInfo rewrites instead of loading every archive member
+  into memory, preserving the original if verification fails (#386).
+- Preserve monitoring, acquisition ownership, and already downloaded or
+  unclaimed files during automatic volume/chapter and pack imports (#387).
+- Persist automatic/manual acquisition intent before disposable history, so
+  history cleanup cannot grant an automatic download manual override (#398).
+- Recover Suwayomi startup failures through durable jobs; use proven local
+  volume coverage and exact chapter identity when assembling volumes
+  (#389, #390, #392).
+- Exclude private staging and recovery archives from library inventory and
+  local counts (#394).
+- Use durable private file claims when native no-replace rename is unsupported;
+  privately verify native/legacy claims before cleanup and retain ambiguous
+  originals rather than delete unrelated files (#388, #396).
+- Coordinate participating filesystem workers with a persistent local sidecar
+  lock, without holding SQLite's writer during file I/O. Trusted extractor
+  children retain the lock until their writes settle (#393, #397).
+- Journal rescan conversion/enrichment, recover interrupted operations on
+  restart, and fence conflicting filesystem actors (#399).
+- Preserve permanent recovery namespaces during directory purge and re-add
+  (#400).
+- Package the compressed-RAR decoder and update rarfile to 4.5 with bounded
+  parser regression coverage and packaged license notices (#401).
+- Preserve generated-pack source ownership and inventory through admission,
+  pinned reads, and terminal cleanup. Retain overwritten originals and private
+  stages until the complete database decision; compensate ownership loss
+  without clobbering occupied paths (#402; references issues #378 and #391).
+
+### Upgrade And NAS Limits
+
+- Keep `/config`, SQLite, the encryption key, and coordination lock on local
+  storage. NFS support concerns library/download workflows, not an NFS database.
+- New private recovery namespaces require controlled birth in an app-owned
+  parent that excludes foreign entry writers. Recorded proof can then support
+  shared `0770`/`0775` parents. Unknown shared roots are refused; Mangarr does
+  not automatically chmod/chown existing parents or adopt lookalike namespaces.
+- Hardlink and directory-fsync support remain required for the documented NFS
+  fallback. Permission/cross-filesystem errors are not bypassed. Changed proofs,
+  occupied restoration paths, and uncertain decisions retain recovery artifacts;
+  never delete them merely to clear a blocked operation.
+- Stop Mangarr and its workers before taking an upgrade/rollback snapshot.
+  Rollback needs the matching stopped configuration/database, encryption key,
+  and previous pinned image. Never run an older image against a migrated DB or
+  mix retained recovery records with mismatched library/download state.
+
+See [Deployment and recovery](docs/deployment.md) for the supported permission
+boundary and recovery procedure. Source tests alone do not qualify every NAS,
+ACL policy, architecture, or final image.
+
 ## 1.3.1 - 2026-10-07
 
 Qualified security patch for the published 1.3.0 container. The multi-platform

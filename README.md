@@ -30,6 +30,13 @@ published-image vulnerability checks passed on amd64. `1.3.1`, `1.3`, `1`,
 and `latest` resolve to the qualified image; exact older version tags remain
 immutable.
 See the [qualification status](docs/release-qualification.md) before upgrading.
+
+**1.3.2 is in preparation, not published or qualified stable.** Its source
+includes durable NAS file/pack recovery, ownership-loss compensation, rescan
+replay, acquisition-policy preservation, Suwayomi fixes, and compressed-RAR
+decoding. Final image, security, NFS workflow, upgrade, and rollback gates are
+pending; this does not change the current stable image or moving aliases.
+
 Mangarr is self-hosted, designed for a single administrator, and distributed
 as a multi-platform container image.
 
@@ -122,6 +129,23 @@ Application-created backups contain a consistent SQLite snapshot, the matching
 encryption key, and a version manifest. Treat them as sensitive. A stopped
 snapshot of the entire `/config` directory remains the strongest pre-upgrade
 recovery artifact because it also includes cached covers and rollback files.
+
+### NAS Recovery Limits In 1.3.2 Preparation
+
+Keep `/config`, SQLite, the encryption key, and coordination lock on local
+storage; NFS is for the documented library/download workflows. Private recovery
+namespaces must first be created under an app-owned parent that excludes foreign
+entry writers. After durable controlled-birth proof, normal storage policy may
+share that parent as `0770`/`0775`. Unknown shared roots are refused; Mangarr does
+not chmod/chown existing parents or adopt lookalike namespaces. Server ACLs must
+enforce the same boundary, and hardlink/directory-fsync support is required.
+
+Retained recovery artifacts are not disposable temporary files. Stop Mangarr
+and its workers before snapshot or rollback; restore the matching configuration,
+database, encryption key, and previous pinned image without mixing recovery
+records with mismatched library/download state. Never downgrade an active or
+migrated database in place. See [Deployment and recovery](docs/deployment.md)
+and the [pending qualification](docs/release-qualification.md#132-release-preparation).
 
 ## Upgrading
 

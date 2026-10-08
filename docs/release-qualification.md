@@ -3,6 +3,75 @@
 This document defines the evidence required before a Mangarr release candidate
 can become a stable release. Passing unit tests alone is not sufficient.
 
+## 1.3.2 Release Preparation
+
+Status: **PREPARING; NOT PUBLISHED OR QUALIFIED STABLE** (2026-10-08).
+1.3.1 remains the current published, qualified stable release. Its qualification
+and immutable digest below are unchanged.
+
+### Reviewed Source Evidence
+
+- Core PR #402 merged at `ce2ed1f8aac1cd10afa66ce5ff49c7482084a832`, tree
+  `9f9aa3f920284bcedd0ab73cb608a77e8975360f`. The release-preparation version and
+  documentation update is separate; its exact committed revision remains pending.
+- Main Python 3.13 full `make test-release-safe`: 3,465 passed, 17 skipped,
+  0 failed; Ruff and format checks passed, confirmation flow 13/13, separate
+  route sweep 10/10, isolated browser suite 95/95.
+- Native Python 3.11 full `make test`: 3,465 passed, 17 skipped, 0 failed;
+  confirmation flow 13/13 and separate route sweep 10/10. This did not repeat
+  the browser suite. The first native run had three child-pytest dependency
+  discovery failures and 3,462 passes. The unchanged cases and full rerun passed
+  in the independently reviewed standard test venv, without source changes,
+  shims, added skips, or package upgrades.
+- Both full suites precede two EOF empty-line removals in
+  `tests/python/test_publication_actor_cooperation_391.py` and
+  `tests/python/test_publication_private_recovery_391.py`. Post-whitespace
+  focused verification passed 29 tests; all 93 application files were unchanged.
+  Committed-head fast verification passed 86 tests, 13 confirmation checks, and
+  Compose validation. These focused receipts do not relabel the final test-file
+  bytes or the release-doc update as the literal full-tested snapshot.
+- Original ownership-race and unsupported-errno acceptance assertions remain
+  preserved. Independently reviewed external NFS driver registration has 58
+  local controls passing on both runtimes; these are preparation controls, not
+  actual NFS workflow or final-image results.
+
+### Pending Release Evidence
+
+| Gate | Status |
+| --- | --- |
+| Exact committed 1.3.2 release revision and immutable tag | Pending |
+| Final amd64/arm64 image index, platform digests, labels, SBOM and provenance | Pending |
+| Final dependency, secret, configuration and image security gates | Pending |
+| Existing six-set actual NFS ledger on final committed source and normal image/runtime | Pending |
+| Fresh install, copied-config migration/upgrade and matching stopped rollback | Pending |
+| Representative acquisition/import/metadata/backup workflows and stable alias verification | Pending |
+
+No 1.3.2 security scan result, image digest, publication date, platform workflow
+pass, or moving-alias change is asserted. Prior compressed-RAR decoder checks,
+rescan/purge NFS component checks, and source suites do not substitute for the
+final source/image qualification. Issues #378 and #391 remain referenced release
+gates, not closed by these preparation notes.
+
+### NAS And Rollback Boundary
+
+Configuration, SQLite, encryption key, and coordination lock must remain local.
+Library/download recovery requires the documented hardlink and directory-fsync
+support, participating actors, and private/trusted permission boundary, not
+hostile private-directory tampering or online database/config replacement.
+
+New recovery namespaces require controlled birth under an app-owned parent
+excluding foreign entry writers, including through server ACLs. Durable proof
+permits later shared `0770`/`0775` parents. Unknown shared roots are refused;
+Mangarr does not chmod/chown existing parents or adopt unproven namespaces.
+Existing exact legacy recovery proofs remain distinct from new allocation.
+
+Stop Mangarr and its workers before snapshot or rollback. Retain the matching
+stopped configuration/database, encryption key, and previous pinned image;
+never run that older image against the migrated database or mix recovery records
+with mismatched library/download state. Ambiguous proofs and occupied restore
+paths retain artifacts and fences; do not delete them to unblock work.
+See [Deployment and recovery](deployment.md) for the full procedure.
+
 ## 1.3.1 Stable Qualification
 
 Status: **QUALIFIED** (2026-10-07).
