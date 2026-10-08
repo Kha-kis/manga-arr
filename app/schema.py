@@ -1734,7 +1734,7 @@ def _ensure_acquisition_policy_columns(db: sqlite3.Connection) -> None:
     """Keep disposable history separate from durable import authority."""
     for table in ("seen", "import_queue"):
         columns = {str(row[1]) for row in db.execute(f"PRAGMA table_info({table})")}
-        if "respect_grab_claims" not in columns:
+        if columns and "respect_grab_claims" not in columns:
             db.execute(
                 f"ALTER TABLE {table} ADD COLUMN respect_grab_claims INTEGER"
                 " CHECK(respect_grab_claims IN (0,1))"

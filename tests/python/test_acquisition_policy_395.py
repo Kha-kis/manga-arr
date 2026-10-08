@@ -26,6 +26,14 @@ from test_grab_monitoring_380 import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _restore_prior_secret_cipher(monkeypatch: pytest.MonkeyPatch) -> None:
+    import security
+
+    # Imported ownership fixtures assign this cache directly; pytest restores it.
+    monkeypatch.setattr(security, "_SECRET_CIPHER", security._SECRET_CIPHER)
+
+
 def _grab(protocol: str, *, manual: bool = False) -> None:
     import grab_core
     from clients import GrabResult

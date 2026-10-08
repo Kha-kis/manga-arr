@@ -94,22 +94,22 @@ def _seed_import(
         )
         db.execute(
             "INSERT INTO seen(torrent_url,torrent_name,series_id,volume_num,"
-            " protocol,client,download_id,download_client_id)"
+            " protocol,client,download_id,download_client_id,respect_grab_claims)"
             " VALUES('magnet:outbox','Outbox v01',?,1,?,?,"
-            " 'outbox-download',?)",
+            " 'outbox-download',?,1)",
             (series_id, protocol, client_type, client_id),
         )
         db.execute(
             "INSERT INTO volumes(series_id,volume_num,status,download_id,"
-            " protocol,client,download_client_id)"
-            " VALUES(?,1,'grabbed','outbox-download',?,?,?)",
+            " protocol,client,download_client_id,source_url)"
+            " VALUES(?,1,'grabbed','outbox-download',?,?,?,'magnet:outbox')",
             (series_id, protocol, client_type, client_id),
         )
         db.execute(
             "INSERT INTO import_queue(series_id,download_id,download_client_id,torrent_name,"
-            " torrent_url,volume_num,src_dir,status)"
+            " torrent_url,volume_num,src_dir,status,respect_grab_claims)"
             " VALUES(?,'outbox-download',?,'Outbox v01','magnet:outbox',1,?,"
-            " 'pending')",
+            " 'pending',1)",
             (series_id, client_id, str(env["source_root"])),
         )
         queue_id = int(db.execute("SELECT last_insert_rowid()").fetchone()[0])
