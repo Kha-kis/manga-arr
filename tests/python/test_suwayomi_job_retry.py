@@ -69,7 +69,7 @@ def test_transient_failure_then_success_does_not_error(env):
 
     attempts = {'n': 0}
 
-    async def _flaky(c, job):
+    async def _flaky(c, job, observe_queue_errors=None):
         attempts['n'] += 1
         if attempts['n'] < 3:
             raise RuntimeError(f"transient #{attempts['n']}")
@@ -102,7 +102,7 @@ def test_exhausted_retries_mark_error(env):
 
     attempts = {'n': 0}
 
-    async def _always_fail(c, job):
+    async def _always_fail(c, job, observe_queue_errors=None):
         attempts['n'] += 1
         raise RuntimeError(f"boom #{attempts['n']}")
 
