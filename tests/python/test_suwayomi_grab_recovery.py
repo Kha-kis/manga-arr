@@ -74,7 +74,13 @@ class Suwayomi:
                 raise self.poll_error
             for chapter in chapters:
                 chapter["isDownloaded"] = bool(chapter.get("isDownloaded"))
-            return {"manga": {"title": "Recovery", "chapters": {"nodes": chapters}}}
+            return {
+                "manga": {
+                    "title": "Recovery",
+                    "source": {"displayName": "MangaDex"},
+                    "chapters": {"nodes": chapters},
+                }
+            }
         raise AssertionError(f"Unexpected GraphQL operation: {query}")
 
 

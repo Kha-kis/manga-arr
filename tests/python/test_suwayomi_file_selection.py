@@ -244,7 +244,13 @@ class ImportEnv:
             self.enqueued.append(list(_variables["ids"]))
             return {"enqueueChapterDownloads": {"clientMutationId": None}}
         assert "manga(id:" in query, f"Unexpected GraphQL operation: {query}"
-        return {"manga": {"title": "Selection", "chapters": {"nodes": nodes}}}
+        return {
+            "manga": {
+                "title": "Selection",
+                "source": {"displayName": "Source"},
+                "chapters": {"nodes": nodes},
+            }
+        }
 
     def row(self, table: str) -> dict[str, Any]:
         assert table in {"suwayomi_downloads", "volumes", "series", "chapters"}

@@ -488,13 +488,23 @@ def _swy_directory_basename(title: str) -> str | None:
         return None
 
 
-def _find_suwayomi_manga_dir(c: dict[str, Any], *titles: str) -> str | None:
+def _find_suwayomi_manga_dir(
+    c: dict[str, Any], *titles: str, source_display_name: str | None = None
+) -> str | None:
     """Choose one real direct-child directory at the strongest matching tier.
 
     The first title is the live source title when available. Its SafePath
     basename outranks legacy/metadata aliases and normalized equality.
     Ambiguity at any populated tier refuses selection, without downgrading.
+    None retains legacy unique-global lookup; jobs always supply source evidence.
     """
+    source_folder = None
+    if source_display_name is not None:
+        if not isinstance(source_display_name, str) or not source_display_name.strip():
+            return None
+        source_folder = _swy_directory_basename(source_display_name)
+        if source_folder is None:
+            return None
     base = _swy_library_base(c)
     if not base:
         return None
@@ -507,6 +517,8 @@ def _find_suwayomi_manga_dir(c: dict[str, Any], *titles: str) -> str | None:
         root_path = os.path.realpath(mangas_root)
         with os.scandir(mangas_root) as sources:
             for source in sources:
+                if source_folder is not None and source.name != source_folder:
+                    continue
                 if not source.is_dir(follow_symlinks=False):
                     continue
                 source_path = os.path.realpath(source.path)
@@ -1082,8 +1094,15 @@ async def _import_suwayomi_volume(
     *,
     swy_title: str = "",
     chapter_nums: Sequence[float | Decimal] | None = None,
+    source_display_name: str | None = None,
 ) -> tuple[str | None, int]:
-    return await _run_suwayomi_file_unit(series_id, lambda guard: _import_suwayomi_volume_files(c, series_id, volume_num, swy_title=swy_title, chapter_nums=chapter_nums))
+    return await _run_suwayomi_file_unit(
+        series_id,
+        lambda guard: _import_suwayomi_volume_files(
+            c, series_id, volume_num, swy_title=swy_title,
+            chapter_nums=chapter_nums, source_display_name=source_display_name,
+        ),
+    )
 
 
 async def _run_suwayomi_file_unit(series_id: int, operation: Callable[[FileMutationGuard], tuple[str | None, int]]) -> tuple[str | None, int]:
@@ -1113,6 +1132,7 @@ async def _run_suwayomi_file_unit(series_id: int, operation: Callable[[FileMutat
 def _import_suwayomi_volume_files(
     c: dict[str, Any], series_id: int, volume_num: float, *, swy_title: str = "",
     chapter_nums: Sequence[float | Decimal] | None = None,
+    source_display_name: str | None = None,
 ) -> tuple[str | None, int]:
     """Import completed volume download into the managed library.
     If merge_chapters is enabled (default): merges chapter CBZs into one volume CBZ.
@@ -1128,7 +1148,9 @@ def _import_suwayomi_volume_files(
     if not s_row:
         return None, 0
 
-    manga_dir = _find_suwayomi_manga_dir(c, swy_title, s_row["title"])
+    manga_dir = _find_suwayomi_manga_dir(
+        c, swy_title, s_row["title"], source_display_name=source_display_name
+    )
     if not manga_dir:
         log.warning(
             "Suwayomi library base not configured — skipping import series %d vol %s",
@@ -1184,19 +1206,27 @@ def _import_suwayomi_volume_files(
 
 
 async def _import_suwayomi_chapter(
-    c: dict,
+    c: dict[str, Any],
     series_id: int,
     chapter_num: float,
     *,
     swy_title: str = "",
+    source_display_name: str | None = None,
 ) -> tuple[str | None, int]:
-    return await _run_suwayomi_file_unit(series_id, lambda guard: _import_suwayomi_chapter_files(c, series_id, chapter_num, swy_title=swy_title))
+    return await _run_suwayomi_file_unit(
+        series_id,
+        lambda guard: _import_suwayomi_chapter_files(
+            c, series_id, chapter_num, swy_title=swy_title,
+            source_display_name=source_display_name,
+        ),
+    )
 
 
 def _import_suwayomi_chapter_files(
-    c: dict, series_id: int, chapter_num: float, *, swy_title: str = "",
+    c: dict[str, Any], series_id: int, chapter_num: float, *, swy_title: str = "",
     chapter_ids: Sequence[int] = (),
     source_chapters: Mapping[int, Mapping[str, Any]] | None = None,
+    source_display_name: str | None = None,
 ) -> tuple[str | None, int]:
     """Import a single downloaded chapter CBZ into the managed library.
     Individual chapters are always kept as individual files (merge doesn't apply).
@@ -1211,7 +1241,9 @@ def _import_suwayomi_chapter_files(
     if not s_row:
         return None, 0
 
-    manga_dir = _find_suwayomi_manga_dir(c, swy_title, s_row["title"])
+    manga_dir = _find_suwayomi_manga_dir(
+        c, swy_title, s_row["title"], source_display_name=source_display_name
+    )
     if not manga_dir:
         return None, 0
 
@@ -1325,13 +1357,14 @@ async def _process_suwayomi_job(
     mark the job errored."""
     chapter_ids = json.loads(job["chapter_ids"])
 
-    # Fetch manga title + chapters for the manga
+    # Resolve import identity from the queued manga, never the current linkage.
     data = await _gql(
         c,
         """
         query($mid: Int!) {
             manga(id: $mid) {
                 title
+                source { displayName }
                 chapters { nodes { id isDownloaded chapterNumber name scanlator } }
             }
         }
@@ -1339,6 +1372,10 @@ async def _process_suwayomi_job(
         {"mid": job["suwayomi_manga_id"]},
     )
     swy_title = (data.get("manga") or {}).get("title") or ""
+    source = (data.get("manga") or {}).get("source")
+    display_name = source.get("displayName") if isinstance(source, dict) else None
+    # An empty string refuses lookup; None is reserved for legacy helper calls.
+    source_display_name = display_name if isinstance(display_name, str) else ""
 
     ch_map: dict[int, dict[str, Any]] = {
         int(ch["id"]): ch
@@ -1367,7 +1404,8 @@ async def _process_suwayomi_job(
     await _run_suwayomi_file_unit(
         job["series_id"],
         lambda guard: _complete_suwayomi_job_files(
-            c, job, chapter_ids, ch_map, swy_title, guard
+            c, job, chapter_ids, ch_map, swy_title, guard,
+            source_display_name=source_display_name,
         ),
     )
 
@@ -1379,6 +1417,8 @@ def _complete_suwayomi_job_files(
     ch_map: dict[int, dict[str, Any]],
     swy_title: str,
     guard: FileMutationGuard,
+    *,
+    source_display_name: str = "",
 ) -> tuple[str | None, int]:
     """Settle physical import and its domain audit under one synchronous owner."""
     import main as _m
@@ -1392,6 +1432,7 @@ def _complete_suwayomi_job_files(
             swy_title=swy_title,
             chapter_ids=chapter_ids,
             source_chapters=ch_map,
+            source_display_name=source_display_name,
         )
         if not import_path:
             err_msg = "Import failed — chapter CBZ not found in library path"
@@ -1477,6 +1518,7 @@ def _complete_suwayomi_job_files(
             job["volume_num"],
             swy_title=swy_title,
             chapter_nums=job_chapter_nums,
+            source_display_name=source_display_name,
         )
         if not import_path:
             err_msg = "Import failed — CBZ files not found in library path"

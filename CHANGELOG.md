@@ -7,6 +7,9 @@ All notable changes to this project. Format roughly follows
 
 ### Fixed
 
+- Resolve completed Suwayomi imports inside the source folder of the queued
+  manga ID, so stale folders after relinking cannot shadow its downloads.
+  Missing source evidence or folders refuse cross-source fallback (#406).
 - Require a unique Suwayomi manga-directory match at the strongest title tier;
   refuse ambiguity, substring guesses, and child symlinks before import.
   See [directory selection](docs/suwayomi-directory-selection.md).
