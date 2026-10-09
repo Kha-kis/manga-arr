@@ -11,6 +11,9 @@ All notable changes to this project. Format roughly follows
   filename order, so an older legacy-named archive does not hide a fresh backup.
   Keep the existing seven-day warning threshold; this age check does not
   validate archive contents or recoverability.
+- Require a unique Suwayomi manga-directory match at the strongest title tier;
+  refuse ambiguity, substring guesses, and child symlinks before import.
+  See [directory selection](docs/suwayomi-directory-selection.md).
 
 ## 1.3.2 - 2026-10-08
 
