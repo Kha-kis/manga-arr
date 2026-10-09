@@ -6,7 +6,9 @@ import asyncio
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from decimal import Decimal
 import json
+import os
 from pathlib import Path
 import sqlite3
 from typing import Any
@@ -244,7 +246,13 @@ class ImportEnv:
             self.enqueued.append(list(_variables["ids"]))
             return {"enqueueChapterDownloads": {"clientMutationId": None}}
         assert "manga(id:" in query, f"Unexpected GraphQL operation: {query}"
-        return {"manga": {"title": "Selection", "chapters": {"nodes": nodes}}}
+        return {
+            "manga": {
+                "title": "Selection",
+                "source": {"displayName": "Source"},
+                "chapters": {"nodes": nodes},
+            }
+        }
 
     def row(self, table: str) -> dict[str, Any]:
         assert table in {"suwayomi_downloads", "volumes", "series", "chapters"}
@@ -332,7 +340,13 @@ def test_job_assembles_only_queued_chapters_once_in_numeric_order(
     ]:
         cbz(env.manga_dir / name, page)
     env.queue(
-        [node(10, 10), node(2, 2), node(22, 2), node(25, 2.5), node(99, 99)],
+        [
+            {**node(10, 10), "name": "Chapter 10", "scanlator": "Delta"},
+            {**node(2, 2), "name": "# 2", "scanlator": "Alpha"},
+            {**node(22, 2), "name": "Chapter 2", "scanlator": "Delta"},
+            {**node(25, 2.5), "name": "quest 2.5", "scanlator": "Official"},
+            {**node(99, 99), "name": "Vol.1 Ch.99", "scanlator": None},
+        ],
         [10, 2, 22, 25],
     )
     before_series = env.row("series")
@@ -409,7 +423,7 @@ def test_missing_queued_id_stays_pending_without_import(env: ImportEnv) -> None:
 def test_whole_source_job_does_not_use_metadata_split_map(env: ImportEnv) -> None:
     """Assembly only: this manually queued job does not prove grab eligibility."""
     cbz(env.manga_dir / "Official_Chapter 45.cbz", b"whole-45")
-    env.queue([node(45, 45)])
+    env.queue([{**node(45, 45), "name": "Chapter 45", "scanlator": "Official"}])
     env.process()
     assert env.row("suwayomi_downloads")["status"] == "completed"
     with zipfile.ZipFile(env.row("volumes")["import_path"]) as archive:
@@ -430,9 +444,14 @@ def test_whole_source_job_does_not_use_metadata_split_map(env: ImportEnv) -> Non
 def test_real_grab_then_process_whole_source_with_split_metadata(
     env: ImportEnv, source_name: str, chapter_map: str, can_queue: bool
 ) -> None:
-    cbz(env.manga_dir / "Official_Chapter 45.cbz", b"whole-45")
+    cbz(env.manga_dir / f"Official_{source_name}.cbz", b"whole-45")
     env.nodes = [
-        {**node(4500, 45), "name": source_name, "sourceOrder": 1},
+        {
+            **node(4500, 45),
+            "name": source_name,
+            "scanlator": "Official",
+            "sourceOrder": 1,
+        },
     ]
     env.configure_grab(
         chapter_map, map_source="manual" if chapter_map == '{"45":1}' else "mangadex"
@@ -488,7 +507,14 @@ def test_edit_post_replaces_split_map_for_real_whole_source_grab(
 
     env.client["merge_chapters"] = merge
     env.configure_grab('{"45.1":1,"45.2":1}')
-    env.nodes = [{**node(4500, 45), "name": "Chapter 45", "sourceOrder": 1}]
+    env.nodes = [
+        {
+            **node(4500, 45),
+            "name": "Chapter 45",
+            "scanlator": "Official",
+            "sourceOrder": 1,
+        }
+    ]
     cbz(env.manga_dir / "Official_Chapter 45.cbz", b"whole-45")
     before_series = env.row("series")
     before_chapter = env.row("chapters")
@@ -755,10 +781,20 @@ def test_real_split_grab_preserves_ids_and_requires_exact_files(
                 [("md-45.1", 45.1), ("md-45.2", 45.2)],
             )
     env.nodes = [
-        {**node(451, 45.1), "name": "Chapter 45.1", "sourceOrder": 2},
-        {**node(452, 45.2), "name": "Chapter 45.2", "sourceOrder": 1},
+        {
+            **node(451, 45.1),
+            "name": "Chapter 45.1",
+            "scanlator": None,
+            "sourceOrder": 2,
+        },
+        {
+            **node(452, 45.2),
+            "name": "Chapter 45.2",
+            "scanlator": "Official",
+            "sourceOrder": 1,
+        },
     ]
-    cbz(env.manga_dir / "Vol.1 Ch.45.1.cbz", b"part-one")
+    cbz(env.manga_dir / "Chapter 45.1.cbz", b"part-one")
     cbz(env.manga_dir / "Vol.1 Ch.45.cbz", b"not-an-exact-part")
     if not missing_file:
         cbz(env.manga_dir / "Official_Chapter 45.2.cbz", b"part-two")
@@ -785,7 +821,7 @@ def test_real_split_grab_preserves_ids_and_requires_exact_files(
         else:
             assert sorted(
                 path.name for path in Path(volume["import_path"]).iterdir()
-            ) == ["Official_Chapter 45.2.cbz", "Vol.1 Ch.45.1.cbz"]
+            ) == ["Chapter 45.1.cbz", "Official_Chapter 45.2.cbz"]
 
 
 def test_actual_chapter_job_imports_non_mangadex_name(env: ImportEnv) -> None:
@@ -1086,14 +1122,457 @@ def test_source_evidence_decimal_chapter_does_not_select_whole(env: ImportEnv) -
 
 
 @pytest.mark.parametrize("merge", [True, False])
-def test_source_evidence_does_not_change_volume_selection(
+def test_source_volume_evidence_cannot_substitute_unrelated_filename(
     env: ImportEnv, merge: bool
 ) -> None:
     env.client["merge_chapters"] = merge
     cbz(env.manga_dir / "Alpha_Chapter 49.cbz", b"legacy-volume")
     env.queue([{**node(605, 49), "name": "Different title", "scanlator": "Team7"}])
+    before = env.row("volumes")
     env.process()
-    assert env.row("suwayomi_downloads")["status"] == "completed"
+    assert env.row("suwayomi_downloads")["status"] == "error"
+    assert env.row("volumes") == before
+    assert not env.library.exists()
+
+
+def poll_volume(env: ImportEnv, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(swy, "get_suwayomi_client", lambda db: env.client)
+    asyncio.run(swy.check_suwayomi_jobs())
+
+
+def volume_observations(env: ImportEnv) -> dict[str, Any]:
+    with sqlite3.connect(env.db_path) as db:
+        return {
+            "series": env.row("series"),
+            "chapters": env.row("chapters"),
+            "settings": db.execute("SELECT * FROM settings").fetchall(),
+            "provenance": db.execute("SELECT * FROM series_metadata_fields").fetchall(),
+        }
+
+
+@pytest.mark.parametrize("merge", [True, False])
+@pytest.mark.parametrize(
+    "scanlator,name,filename",
+    [
+        (
+            "_Alpha Team_ Beta",
+            "Vol.10 Ch.49 - Extra Story",
+            "_Alpha Team_ Beta_Vol.10 Ch.49 - Extra Story.cbz",
+        ),
+        ("Team7_2000", "Chapter 49", "Team7_2000_Chapter 49.cbz"),
+        (None, "Chapter 49", "Chapter 49.cbz"),
+        ("", "Chapter 49", "_Chapter 49.cbz"),
+        (None, "Chapitre 49 \u00e9", "Chapitre 49 \u00e9.cbz"),
+        (
+            None,
+            ' ..Chapter 49\x00\x1f\x7f"*/:<>?\\|.. ',
+            "Chapter 49" + "_" * 12 + ".cbz",
+        ),
+        (None, "x" * 239 + "\u00e9", "x" * 239 + ".cbz"),
+        (None, "x" * 236 + "\u00e9" * 3, "x" * 236 + "\u00e9" * 2 + ".cbz"),
+    ],
+)
+def test_source_volume_poll_imports_only_exact_queued_file(
+    env: ImportEnv,
+    monkeypatch: pytest.MonkeyPatch,
+    merge: bool,
+    scanlator: str | None,
+    name: str,
+    filename: str,
+) -> None:
+    env.client["merge_chapters"] = merge
+    prepare_source_chapter(env)
+    source = env.manga_dir / filename
+    cbz(source, b"queued-source")
+    cbz(env.manga_dir / "A_# 49.cbz", b"unrelated-source")
+    env.queue(
+        [
+            {**node(605, 49), "name": name, "scanlator": scanlator},
+            {**node(606, 49), "name": "# 49", "scanlator": "A"},
+        ],
+        [605],
+    )
+    before = volume_observations(env)
+    before_volume = env.row("volumes")
+    original = source.read_bytes()
+    poll_volume(env, monkeypatch)
+    job, volume = env.row("suwayomi_downloads"), env.row("volumes")
+    assert (job["status"], job["progress"], job["chapter_ids"]) == (
+        "completed",
+        1,
+        "[605]",
+    )
+    assert volume["status"] == "downloaded"
+    assert volume_observations(env) == before
+    for key in ("quality", "size_bytes", "monitored", "torrent_name"):
+        assert volume[key] == before_volume[key]
+    output = Path(volume["import_path"])
+    if not merge:
+        assert [path.name for path in output.iterdir()] == [filename]
+        output /= filename
+    with zipfile.ZipFile(output) as archive:
+        assert [archive.read(page) for page in archive.namelist()] == [b"queued-source"]
+    assert source.read_bytes() == original
+    assert len(env.queries) == 1
+    assert "name scanlator" in env.queries[0]
+
+
+@pytest.mark.parametrize("merge", [True, False])
+@pytest.mark.parametrize(
+    "problem",
+    [
+        "missing-file",
+        "wrong-scanlator",
+        "wrong-name",
+        "missing-name",
+        "missing-scanlator",
+        "null-name",
+        "empty-name",
+        "invalid-name",
+        "invalid-scanlator",
+        "partial-malformed",
+        "surrogate",
+        "collision",
+        "queued-collision",
+        "truncation-collision",
+        "utf8-collision",
+        "empty-other-collision",
+        "duplicate-missing-file",
+        "duplicate-invalid-name",
+        "missing-number",
+        "invalid-number",
+        "boolean-number",
+        "negative-number",
+        "decimal-file-missing",
+        "directory",
+        "symlink",
+        "dangling-symlink",
+        "fifo",
+        "boolean-queued-id",
+        "boolean-source-id",
+        "zero-id",
+        "truthy-downloaded",
+    ],
+)
+def test_source_volume_poll_refuses_unproven_set_before_writes(
+    env: ImportEnv,
+    monkeypatch: pytest.MonkeyPatch,
+    merge: bool,
+    problem: str,
+) -> None:
+    env.client["merge_chapters"] = merge
+    prepare_source_chapter(env)
+    chapter = {**node(605, 49), "name": "Chapter 49", "scanlator": "Alpha"}
+    nodes = [chapter]
+    ids: list[int] = [605]
+    filename = "Alpha_Chapter 49.cbz"
+    if problem == "wrong-scanlator":
+        chapter["scanlator"] = "Beta"
+    elif problem == "wrong-name":
+        chapter["name"] = "Chapter 49 - Other"
+    elif problem in {"missing-name", "missing-scanlator", "missing-number"}:
+        chapter.pop(
+            {
+                "missing-name": "name",
+                "missing-scanlator": "scanlator",
+                "missing-number": "chapterNumber",
+            }[problem]
+        )
+    elif problem in {"null-name", "empty-name", "invalid-name"}:
+        chapter["name"] = {"null-name": None, "empty-name": "", "invalid-name": 49}[
+            problem
+        ]
+    elif problem == "invalid-scanlator":
+        chapter["scanlator"] = ["Alpha"]
+    elif problem == "partial-malformed":
+        chapter.pop("scanlator")
+        chapter["name"] = 49
+    elif problem == "surrogate":
+        chapter["name"] = "Chapter 49\ud800"
+    elif problem in {"collision", "queued-collision"}:
+        chapter["name"] = "Chapter 49 - X?"
+        nodes.append(
+            {
+                **node(606, 50),
+                "name": "Chapter 49 - X*",
+                "scanlator": "Alpha",
+                "isDownloaded": problem == "queued-collision",
+            }
+        )
+        filename = "Alpha_Chapter 49 - X_.cbz"
+        if problem == "queued-collision":
+            ids.append(606)
+    elif problem in {"truncation-collision", "utf8-collision"}:
+        prefix = "x" * 240 if problem == "truncation-collision" else "\u00e9" * 120
+        chapter.update(name=prefix + "A", scanlator=None)
+        nodes.append({**node(606, 50), "name": prefix + "B", "scanlator": None})
+        filename = prefix + ".cbz"
+    elif problem == "empty-other-collision":
+        chapter.update(name="(invalid)", scanlator=None)
+        nodes.append({**node(606, 50), "name": "", "scanlator": None})
+        filename = "(invalid).cbz"
+    elif problem in {"duplicate-missing-file", "duplicate-invalid-name"}:
+        nodes.append(
+            {
+                **node(606, 49),
+                "name": "Chapter 49" if problem == "duplicate-missing-file" else None,
+                "scanlator": "Beta",
+            }
+        )
+        ids.append(606)
+    elif problem in {"invalid-number", "boolean-number", "negative-number"}:
+        chapter["chapterNumber"] = {
+            "invalid-number": "NaN",
+            "boolean-number": True,
+            "negative-number": -1,
+        }[problem]
+    elif problem == "decimal-file-missing":
+        chapter.update(chapterNumber=49.5, name="Chapter 49.5")
+        cbz(env.manga_dir / "A_# 49.5.cbz", b"forbidden-decimal-substitute")
+    elif problem == "boolean-queued-id":
+        chapter["id"] = 1
+        ids = [True]
+    elif problem == "boolean-source-id":
+        chapter["id"] = True
+        ids = [1]
+    elif problem == "zero-id":
+        chapter["id"] = 0
+        ids = [0]
+    elif problem == "truthy-downloaded":
+        chapter["isDownloaded"] = "yes"
+    source = env.manga_dir / filename
+    if problem == "directory":
+        source.mkdir()
+    elif problem in {"symlink", "dangling-symlink"}:
+        outside = env.manga_dir.parent / "outside.cbz"
+        if problem == "symlink":
+            cbz(outside, b"outside-source")
+        source.symlink_to(outside)
+    elif problem == "fifo":
+        os.mkfifo(source)
+    elif problem == "utf8-collision":
+        # ZFS formD can refuse this basename after normalization. Exercise the
+        # collision with an inventory containing the exact 240-byte basename.
+        monkeypatch.setattr(
+            swy, "_chapter_files", lambda path: [filename, "A_# 49.cbz"]
+        )
+    elif problem != "missing-file":
+        cbz(source, b"unproven-source")
+    cbz(env.manga_dir / "A_# 49.cbz", b"forbidden-substitute")
+    env.queue(nodes, ids)
+    before = volume_observations(env)
+    before_volume = env.row("volumes")
+    poll_volume(env, monkeypatch)
+    job = env.row("suwayomi_downloads")
+    assert job["status"] == "error"
+    assert job["progress"] == len(ids)
+    assert json.loads(job["chapter_ids"]) == ids
+    assert volume_observations(env) == before
+    assert env.row("volumes") == before_volume
+    assert not env.library.exists()
+
+
+@pytest.mark.parametrize("merge", [True, False])
+@pytest.mark.parametrize("reverse", [True, False])
+def test_source_volume_poll_deduplicates_only_complete_queued_variants(
+    env: ImportEnv,
+    monkeypatch: pytest.MonkeyPatch,
+    merge: bool,
+    reverse: bool,
+) -> None:
+    env.client["merge_chapters"] = merge
+    chapters = [
+        {**node(10, 10), "name": "Ten", "scanlator": "Team7"},
+        {**node(2, 2), "name": "Chapter 2", "scanlator": "Long Group"},
+        {**node(22, "2.00"), "name": "Two", "scanlator": "Team7"},
+        {**node(25, "2.5"), "name": "Two and half", "scanlator": None},
+    ]
+    for filename, page in [
+        ("Team7_Ten.cbz", b"ten"),
+        ("Long Group_Chapter 2.cbz", b"other-queued-two"),
+        ("Team7_Two.cbz", b"two"),
+        ("Two and half.cbz", b"two-and-half"),
+        ("A_# 2.cbz", b"unrelated-two"),
+        ("Vol.1 Ch.99.cbz", b"not-in-job"),
+    ]:
+        cbz(env.manga_dir / filename, page)
+    ids = [10, 2, 22, 25]
+    if reverse:
+        chapters.reverse()
+        ids.reverse()
+    env.queue(chapters, ids)
+    original_listdir = os.listdir
+    monkeypatch.setattr(
+        os,
+        "listdir",
+        lambda path: (
+            list(reversed(original_listdir(path)))
+            if reverse
+            else original_listdir(path)
+        ),
+    )
+    assert [
+        Path(path).name
+        for path in swy._source_volume_cbzs(
+            str(env.manga_dir), ids, {chapter["id"]: chapter for chapter in chapters}
+        )
+    ] == ["Team7_Two.cbz", "Two and half.cbz", "Team7_Ten.cbz"]
+    poll_volume(env, monkeypatch)
+    job, volume = env.row("suwayomi_downloads"), env.row("volumes")
+    assert job["status"] == "completed"
+    assert job["progress"] == 4
+    assert json.loads(job["chapter_ids"]) == ids
+    output = Path(volume["import_path"])
+    if merge:
+        with zipfile.ZipFile(output) as archive:
+            assert [archive.read(page) for page in archive.namelist()] == [
+                b"two",
+                b"two-and-half",
+                b"ten",
+            ]
+    else:
+        assert sorted(path.name for path in output.iterdir()) == [
+            "Team7_Ten.cbz",
+            "Team7_Two.cbz",
+            "Two and half.cbz",
+        ]
+        for filename, page in [
+            ("Team7_Ten.cbz", b"ten"),
+            ("Team7_Two.cbz", b"two"),
+            ("Two and half.cbz", b"two-and-half"),
+        ]:
+            with zipfile.ZipFile(output / filename) as archive:
+                assert archive.read("001.png") == page
+
+
+@pytest.mark.parametrize("merge", [True, False])
+@pytest.mark.parametrize("problem", ["missing-id", "not-downloaded"])
+def test_source_volume_poll_keeps_incomplete_job_pending(
+    env: ImportEnv,
+    monkeypatch: pytest.MonkeyPatch,
+    merge: bool,
+    problem: str,
+) -> None:
+    env.client["merge_chapters"] = merge
+    nodes = [{**node(605, 49), "name": "Chapter 49", "scanlator": "Alpha"}]
+    if problem == "not-downloaded":
+        nodes.append(
+            {
+                **node(606, 50),
+                "name": "Chapter 50",
+                "scanlator": "Alpha",
+                "isDownloaded": False,
+            }
+        )
+    cbz(env.manga_dir / "Alpha_Chapter 49.cbz")
+    env.queue(nodes, [605, 606])
+    before = env.row("volumes")
+    poll_volume(env, monkeypatch)
+    job = env.row("suwayomi_downloads")
+    assert (job["status"], job["progress"]) == ("queued", 1)
+    assert env.row("volumes") == before
+    assert not env.library.exists()
+
+
+@pytest.mark.parametrize("merge", [True, False])
+@pytest.mark.parametrize("problem", ["none", "missing-file", "invalid-name"])
+def test_source_volume_poll_preserves_cache_without_bypassing_coverage(
+    env: ImportEnv,
+    monkeypatch: pytest.MonkeyPatch,
+    merge: bool,
+    problem: str,
+) -> None:
+    env.client["merge_chapters"] = merge
+    chapters = [
+        {**node(2, 2), "name": "Chapter 2", "scanlator": "Alpha"},
+        {**node(10, 10), "name": "Ten", "scanlator": "Team7"},
+    ]
+    cbz(env.manga_dir / "Alpha_Chapter 2.cbz", b"new-two")
+    if problem != "missing-file":
+        cbz(env.manga_dir / "Team7_Ten.cbz", b"new-ten")
+    if problem == "invalid-name":
+        chapters[1]["name"] = None
+    destination = env.library / "Selection v01.cbz" if merge else env.library / "v01"
+    files = (
+        [destination]
+        if merge
+        else [destination / "Alpha_Chapter 2.cbz", destination / "Team7_Ten.cbz"]
+    )
+    for path in files:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"cached-library-content")
+    original = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in files}
+    with sqlite3.connect(env.db_path) as db:
+        db.execute(
+            "UPDATE volumes SET status='downloaded',import_path=?,imported_at='2026-01-01' WHERE id=1",
+            (str(destination),),
+        )
+    env.queue(chapters)
+    before = env.row("volumes")
+    poll_volume(env, monkeypatch)
+    assert env.row("suwayomi_downloads")["status"] == (
+        "completed" if problem == "none" else "error"
+    )
+    assert {
+        path: (path.read_bytes(), path.stat().st_mtime_ns) for path in files
+    } == original
+    assert set(env.library.rglob("*.cbz")) == set(files)
+    if problem != "none":
+        assert env.row("volumes") == before
+
+
+@pytest.mark.parametrize("merge", [True, False])
+@pytest.mark.parametrize(
+    "numbers,valid",
+    [
+        ([Decimal("2.00"), Decimal("10.0")], True),
+        ([10, 2], False),
+        ([2], False),
+        ([], False),
+        ([2, float("nan")], False),
+    ],
+)
+def test_source_volume_import_checks_supplied_numbers_before_cache(
+    env: ImportEnv,
+    merge: bool,
+    numbers: list[float | Decimal],
+    valid: bool,
+) -> None:
+    env.client["merge_chapters"] = merge
+    chapters = {
+        2: {**node(2, 2), "name": "Chapter 2", "scanlator": "Alpha"},
+        10: {**node(10, 10), "name": "Chapter 10", "scanlator": "Alpha"},
+    }
+    cbz(env.manga_dir / "Alpha_Chapter 2.cbz", b"two")
+    cbz(env.manga_dir / "Alpha_Chapter 10.cbz", b"ten")
+    destination = env.library / "Selection v01.cbz" if merge else env.library / "v01"
+    cached = (
+        [destination]
+        if merge
+        else [destination / "Alpha_Chapter 2.cbz", destination / "Alpha_Chapter 10.cbz"]
+    )
+    for path in cached:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"cached-content")
+    before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in cached}
+    result = asyncio.run(
+        swy._import_suwayomi_volume(
+            env.client,
+            1,
+            1,
+            chapter_ids=[2, 10],
+            chapter_nums=numbers,
+            source_chapters=chapters,
+        )
+    )
+    assert result == (
+        (str(destination), sum(path.stat().st_size for path in cached))
+        if valid
+        else (None, 0)
+    )
+    assert {
+        path: (path.read_bytes(), path.stat().st_mtime_ns) for path in cached
+    } == before
 
 
 @pytest.mark.parametrize("number", [True, -1, float("inf"), "", {}, "not-a-number"])
