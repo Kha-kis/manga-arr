@@ -754,6 +754,9 @@ class _KitsuResponse:
     def json(self):
         return self._payload
 
+    def raise_for_status(self):
+        return self
+
 
 class _KitsuClient:
     def __init__(self, *args, **kwargs):
@@ -942,6 +945,7 @@ def test_map_failure_preserves_last_known_good_map(
     db_path, existing_source, expected_source
 ):
     import metadata_enrichment as enrichment
+    from metadata import _ChapterMapResult
 
     old_map = '{"1": 1, "2": 1, "6": 2}'
     _seed_series(
@@ -954,9 +958,14 @@ def test_map_failure_preserves_last_known_good_map(
     )
     with (
         patch.object(
-            enrichment, "fetch_chapter_volume_map", AsyncMock(return_value={})
+            enrichment,
+            "_fetch_chapter_volume_map_result",
+            AsyncMock(return_value=_ChapterMapResult(failure_reason="timeout"))
         ),
-        patch.object(enrichment, "fetch_kitsu_chapter_map", AsyncMock(return_value={})),
+        patch.object(
+            enrichment, "_fetch_kitsu_chapter_map_result",
+            AsyncMock(return_value=_ChapterMapResult()),
+        ),
         patch.object(enrichment, "_extract_map_from_cbzs", return_value={}),
     ):
         result = _run(enrichment.refresh_mangadex_map(7))

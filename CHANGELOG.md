@@ -5,6 +5,12 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+### Fixed
+
+- Distinguish unavailable chapter-map coverage from provider failures. Preserve
+  cached and manual maps, retain failure evidence across empty fallbacks, and
+  reject malformed or incomplete provider responses without storing partial maps.
+
 ## 1.3.2 - 2026-10-08
 
 Published and qualified as the current stable release. All local and

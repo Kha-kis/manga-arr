@@ -174,6 +174,7 @@ def _install_provider_doubles(
     import cover_images
     import metadata_enrichment
     import metadata_service
+    from metadata import _ChapterMapResult
     from routers import mangadex_ as mangadex_router
 
     search = AsyncMock(return_value=search_results)
@@ -189,7 +190,7 @@ def _install_provider_doubles(
         return (f"mdx-{anilist_id}", {}) if anilist_id else (None, {})
 
     mangadex_id = AsyncMock(side_effect=resolve_mangadex_id)
-    map_fetch = AsyncMock(return_value=chapter_map or {})
+    map_fetch = AsyncMock(return_value=_ChapterMapResult(chapter_map or {}))
     cover_download = AsyncMock(
         return_value={"ok": True, "status": "downloaded", "bytes": 128}
     )
@@ -202,7 +203,7 @@ def _install_provider_doubles(
     monkeypatch.setattr(metadata_enrichment, "fetch_mangadex_id", mangadex_id)
     monkeypatch.setattr(
         metadata_enrichment,
-        "fetch_chapter_volume_map",
+        "_fetch_chapter_volume_map_result",
         map_fetch,
     )
     # Replace only the router's module reference. Patching AsyncClient on the

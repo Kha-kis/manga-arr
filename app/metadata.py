@@ -33,6 +33,8 @@ import asyncio
 import html
 import json
 import re
+from dataclasses import dataclass, field
+from typing import Literal
 
 import httpx
 
@@ -453,47 +455,110 @@ async def fetch_mangadex_id(
     return None, {}
 
 
-async def fetch_chapter_volume_map(mangadex_id: str) -> dict:
+@dataclass(frozen=True)
+class _ChapterMapResult:
+    """Internal fetch evidence; an empty mapping alone says nothing about I/O."""
+
+    mapping: dict[str, int] = field(default_factory=dict)
+    failure_reason: Literal[
+        "http_error",
+        "timeout",
+        "transport_error",
+        "invalid_json",
+        "malformed_payload",
+        "unexpected_error",
+    ] | None = None
+    http_status: int | None = None
+
+
+class _MapPayloadError(ValueError):
+    pass
+
+
+def _map_fetch_failure(
+    provider: str, exc: Exception, *, provider_id: str | None = None
+) -> _ChapterMapResult:
+    if isinstance(exc, httpx.HTTPStatusError):
+        result = _ChapterMapResult(
+            failure_reason="http_error", http_status=exc.response.status_code
+        )
+    elif isinstance(exc, (httpx.TimeoutException, TimeoutError)):
+        result = _ChapterMapResult(failure_reason="timeout")
+    elif isinstance(exc, httpx.RequestError):
+        result = _ChapterMapResult(failure_reason="transport_error")
+    elif isinstance(exc, json.JSONDecodeError):
+        result = _ChapterMapResult(failure_reason="invalid_json")
+    elif isinstance(exc, (ValueError, TypeError, OverflowError)):
+        result = _ChapterMapResult(failure_reason="malformed_payload")
+    else:
+        result = _ChapterMapResult(failure_reason="unexpected_error")
+    # Do not persist exception text, request URLs, or upstream response bodies.
+    context = f" for {provider_id}" if provider_id else ""
+    log_event(
+        "metadata_fetch_failed",
+        f"{provider} failed{context}: {result.failure_reason}",
+    )
+    return result
+
+
+async def fetch_chapter_volume_map(mangadex_id: str) -> dict[str, int]:
     """Fetch chapter→volume mapping from MangaDex aggregate endpoint.
 
     Returns {chapter_str: vol_int, ...} e.g. {"1": 1, "2": 1, "5": 2, ...}.
     No language filter — we only need the volume assignment metadata, not the text."""
+    return (await _fetch_chapter_volume_map_result(mangadex_id)).mapping
+
+
+async def _fetch_chapter_volume_map_result(mangadex_id: str) -> _ChapterMapResult:
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.get(
                 f"https://api.mangadex.org/manga/{mangadex_id}/aggregate"
             )
+        r.raise_for_status()
         data = r.json()
+        if (
+            not isinstance(data, dict)
+            or "volumes" not in data
+            or data.get("result") == "error"
+        ):
+            raise _MapPayloadError()
         mapping: dict[str, int] = {}
-        volumes = data.get("volumes", {})
-        # Guard against malformed response (list instead of dict)
+        volumes = data["volumes"]
         if not isinstance(volumes, dict):
-            return mapping
+            raise _MapPayloadError()
         for vol_key, vol_data in volumes.items():
+            if not isinstance(vol_data, dict) or not isinstance(
+                vol_data.get("chapters"), dict
+            ):
+                raise _MapPayloadError()
+            if vol_key == "none":
+                continue  # Valid uncollected chapters are not a provider failure.
             try:
                 vol_num = int(float(vol_key))
             except (ValueError, TypeError):
-                continue  # skip "none" / uncollected chapters
-            chapters = vol_data.get("chapters") if isinstance(vol_data, dict) else {}
-            if isinstance(chapters, dict):
-                for ch_key in chapters.keys():
-                    mapping[ch_key] = vol_num
-        return mapping
+                raise _MapPayloadError() from None
+            for ch_key in vol_data["chapters"]:
+                mapping[ch_key] = vol_num
+        return _ChapterMapResult(mapping)
     except Exception as e:
-        log_event(
-            "metadata_fetch_failed",
-            f"mangadex aggregate failed for {mangadex_id}: "
-            f"{type(e).__name__}: {str(e)[:120]}",
-        )
-    return {}
+        return _map_fetch_failure("mangadex aggregate", e, provider_id=mangadex_id)
 
 
 async def fetch_kitsu_chapter_map(
     title: str, anilist_id: int | None, total_chapters: int | None
-) -> dict:
+) -> dict[str, int]:
     """Fetch chapter→volume mapping from Kitsu's chapters API.
     Returns {chapter_str: vol_int, ...} or {} on failure.
     Kitsu is a reliable fallback for DMCA'd MangaDex titles."""
+    return (
+        await _fetch_kitsu_chapter_map_result(title, anilist_id, total_chapters)
+    ).mapping
+
+
+async def _fetch_kitsu_chapter_map_result(
+    title: str, anilist_id: int | None, total_chapters: int | None
+) -> _ChapterMapResult:
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             # Find Kitsu manga ID by title search
@@ -502,7 +567,10 @@ async def fetch_kitsu_chapter_map(
                 params={"filter[text]": title, "page[limit]": 10},
                 headers={"Accept": "application/vnd.api+json"},
             )
+        r.raise_for_status()
         data = r.json()
+        if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+            raise _MapPayloadError()
         reference_titles = [title]
         if re.search(
             r"\((?:official\s+colou?r|colou?red|omnibus|deluxe|collector|remaster)\)",
@@ -527,8 +595,21 @@ async def fetch_kitsu_chapter_map(
             return best
 
         candidates: list[tuple[float, int, str]] = []
-        for item in data.get("data", []):
-            attrs = item.get("attributes", {})
+        for item in data["data"]:
+            if (
+                not isinstance(item, dict)
+                or not item.get("id")
+                or not isinstance(item.get("attributes"), dict)
+            ):
+                raise _MapPayloadError()
+            attrs = item["attributes"]
+            if (
+                attrs.get("titles") is not None and not isinstance(attrs["titles"], dict)
+            ) or (
+                attrs.get("abbreviatedTitles") is not None
+                and not isinstance(attrs["abbreviatedTitles"], list)
+            ):
+                raise _MapPayloadError()
             titles = [
                 attrs.get("canonicalTitle") or "",
                 *((attrs.get("titles") or {}).values()),
@@ -548,7 +629,7 @@ async def fetch_kitsu_chapter_map(
         kitsu_id = max(candidates)[2] if candidates else None
 
         if not kitsu_id:
-            return {}
+            return _ChapterMapResult()
 
         # Paginate through all chapters
         mapping: dict[str, int] = {}
@@ -570,12 +651,28 @@ async def fetch_kitsu_chapter_map(
                 except asyncio.CancelledError:
                     log_event("metadata", f"[Kitsu] chapter map fetch cancelled for kitsu_id={kitsu_id}")
                     raise
+                r.raise_for_status()
                 page = r.json()
-                rows = page.get("data", [])
+                if (
+                    not isinstance(page, dict)
+                    or not isinstance(page.get("data"), list)
+                    or (
+                        page.get("links") is not None
+                        and not isinstance(page["links"], dict)
+                    )
+                ):
+                    raise _MapPayloadError()
+                rows = page["data"]
                 if not rows:
                     break
                 for ch in rows:
-                    attrs = ch.get("attributes", {})
+                    if not isinstance(ch, dict) or not isinstance(
+                        ch.get("attributes"), dict
+                    ):
+                        raise _MapPayloadError()
+                    attrs = ch["attributes"]
+                    if "number" not in attrs or "volumeNumber" not in attrs:
+                        raise _MapPayloadError()
                     ch_num = attrs.get("number")
                     vol_num = attrs.get("volumeNumber")
                     if ch_num is not None and vol_num is not None:
@@ -593,22 +690,18 @@ async def fetch_kitsu_chapter_map(
                             ch_key = str(int(ch_f)) if ch_f == int(ch_f) else str(ch_f)
                             mapping[ch_key] = int(float(vol_num))
                         except (ValueError, TypeError):
-                            pass
+                            raise _MapPayloadError() from None
                 # Check if there are more pages
                 next_link = (page.get("links") or {}).get("next")
                 if not next_link:
                     break
                 offset += limit
                 if offset > 2000:  # safety cap
-                    break
+                    raise _MapPayloadError()  # A truncated fetch is not a complete observation.
 
-        return mapping
+        return _ChapterMapResult(mapping)
     except Exception as e:
-        log_event(
-            "metadata_fetch_failed",
-            f"kitsu chapter-map failed: {type(e).__name__}: {str(e)[:120]}",
-        )
-    return {}
+        return _map_fetch_failure("kitsu chapter-map", e)
 
 
 # ── Chapter-volume map validation / cleanup ──────────────────────────────────

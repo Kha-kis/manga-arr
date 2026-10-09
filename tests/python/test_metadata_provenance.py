@@ -1594,8 +1594,8 @@ def test_mangadex_records_but_does_not_apply_locked_map_or_id(provenance_db):
         ),
         patch.object(
             metadata_enrichment,
-            "fetch_chapter_volume_map",
-            AsyncMock(return_value=provider_map),
+            "_fetch_chapter_volume_map_result",
+            AsyncMock(return_value=metadata_enrichment._ChapterMapResult(provider_map)),
         ),
         patch.object(
             metadata_enrichment,

@@ -52,8 +52,9 @@ from metadata import (
     _WIKI_WORD_NUMS,
     _trim_cvm_to_vol_range,
     _validate_chapter_map,
-    fetch_chapter_volume_map,
-    fetch_kitsu_chapter_map,
+    _ChapterMapResult,
+    _fetch_chapter_volume_map_result,
+    _fetch_kitsu_chapter_map_result,
     fetch_mangadex_id,
     mu_search,
     mu_slug_to_id,
@@ -294,9 +295,10 @@ def _extract_map_from_cbzs(series_dir: str) -> dict:
 async def refresh_mangadex_map(series_id: int, *, apply_changes: bool = True) -> bool:
     """Refresh the chapter map without destroying the last known-good map.
 
-    Network errors, sparse responses, and temporary source removals are
-    recorded as degraded provider state.  They never replace a usable cached
-    map with NULL.
+    Successful empty/sparse observations degrade coverage, not provider health.
+    Any failed provider with no usable fallback records a failure, even when
+    another provider successfully returns no map. A usable fallback wins.
+    No unusable observation replaces a cached map with NULL.
     """
     from rescan import _series_library_dir  # noqa: WPS433 (lazy to avoid cycle)
 
@@ -362,19 +364,44 @@ async def refresh_mangadex_map(series_id: int, *, apply_changes: bool = True) ->
     total_ch = meta["total_chapters"] if meta else None
     total_vol = meta["total_volumes"] if meta else None
 
-    mapping = await fetch_chapter_volume_map(mdx_id)
-    mapping = _trim_cvm_to_vol_range(mapping, total_vol, "MangaDex")
+    provider_results: dict[str, _ChapterMapResult] = {}
+    provider_details: dict[str, dict[str, object]] = {}
+
+    def usable_map(
+        result: _ChapterMapResult, provider: str, label: str
+    ) -> dict[str, int]:
+        provider_results[provider] = result
+        candidate = _trim_cvm_to_vol_range(result.mapping, total_vol, label)
+        usable = not result.failure_reason and _validate_chapter_map(
+            candidate, total_ch, label, total_vol
+        )
+        provider_details[provider] = {
+            "outcome": "failure" if result.failure_reason else "success",
+            "reason": result.failure_reason
+            or (
+                "usable" if usable
+                else "insufficient_coverage" if result.mapping
+                else "empty"
+            ),
+            "entries": len(result.mapping),
+            "usable_entries": len(candidate) if usable else 0,
+        }
+        if result.http_status is not None:
+            provider_details[provider]["http_status"] = result.http_status
+        return candidate if usable else {}
+
+    mapping = usable_map(
+        await _fetch_chapter_volume_map_result(mdx_id), "mangadex", "MangaDex"
+    )
     map_source = "mangadex"
-    if not _validate_chapter_map(mapping, total_ch, "MangaDex", total_vol):
-        mapping = {}
 
     # Fallback when MangaDex has no usable chapter data (DMCA'd / sparse): try Kitsu
     if not mapping and meta:
-        kitsu_map = await fetch_kitsu_chapter_map(
+        kitsu_result = await _fetch_kitsu_chapter_map_result(
             meta["title"], s["anilist_id"], meta["total_chapters"]
         )
-        kitsu_map = _trim_cvm_to_vol_range(kitsu_map, total_vol, "Kitsu")
-        if _validate_chapter_map(kitsu_map, total_ch, "Kitsu", total_vol):
+        kitsu_map = usable_map(kitsu_result, "kitsu", "Kitsu")
+        if kitsu_map:
             mapping = kitsu_map
             map_source = "kitsu"
 
@@ -515,20 +542,44 @@ async def refresh_mangadex_map(series_id: int, *, apply_changes: bool = True) ->
         mark_source_success(
             series_id,
             SOURCE_CHAPTER_MAP,
-            details={"source": map_source, "entries": len(mapping)},
+            details={
+                "source": map_source,
+                "entries": len(mapping),
+                "providers": provider_details,
+            },
         )
         return True
 
-    mark_source_failure(
-        series_id,
-        SOURCE_CHAPTER_MAP,
-        "no usable chapter map returned; cached map preserved",
-        details={
-            "preserved_entries": len(old_mapping),
-            "preserved_source": preserved_source,
-        },
-        has_usable_cache=bool(old_mapping),
-    )
+    failed_providers = {
+        provider: result.failure_reason
+        for provider, result in provider_results.items()
+        if result.failure_reason
+    }
+    details = {
+        "outcome": "provider_failure" if failed_providers else "insufficient_coverage",
+        "providers": provider_details,
+        "preserved_entries": len(old_mapping),
+        "preserved_source": preserved_source,
+    }
+    if failed_providers:
+        reasons = "; ".join(
+            f"{provider}: {reason}" for provider, reason in failed_providers.items()
+        )
+        mark_source_failure(
+            series_id,
+            SOURCE_CHAPTER_MAP,
+            f"chapter map provider failure ({reasons}); cached map preserved",
+            details=details,
+            has_usable_cache=bool(old_mapping),
+        )
+    else:
+        mark_source_success(
+            series_id,
+            SOURCE_CHAPTER_MAP,
+            degraded=True,
+            error="insufficient chapter map coverage; cached map preserved",
+            details=details,
+        )
     return False
 
 
