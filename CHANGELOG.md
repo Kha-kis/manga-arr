@@ -25,6 +25,11 @@ All notable changes to this project. Format roughly follows
   paused jobs, completed imports, and cached chapters during source failures.
   Share one queue observation per polling pass; unavailable or malformed queue
   observations never turn otherwise pending downloads into terminal failures.
+- Honor metadata update strategies and chapter-map retry deadlines during
+  automatic retries and startup core backfill. Preserve degraded aggregate
+  reporting when a failed map source is deferred. Persist recoverable source
+  failures when map refresh raises, without replacing cached or manually
+  selected metadata or suppressing independent manifest observations.
 
 ## 1.3.2 - 2026-10-08
 
