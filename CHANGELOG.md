@@ -5,6 +5,13 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+### Fixed
+
+- Measure backup health from the newest ZIP modification time rather than
+  filename order, so an older legacy-named archive does not hide a fresh backup.
+  Keep the existing seven-day warning threshold; this age check does not
+  validate archive contents or recoverability.
+
 ## 1.3.2 - 2026-10-08
 
 Published and qualified as the current stable release. All local and
