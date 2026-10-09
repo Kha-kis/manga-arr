@@ -277,16 +277,17 @@ async def build_health_payload() -> dict:
             return False, "; ".join(issues)
         return True, f"{len(folders)} root folder(s) OK"
 
-    async def _backup_age():
+    async def _backup_age() -> tuple[bool, str]:
         backup_folder = get_cfg('backup_folder', '/config/backups/')
         if not os.path.exists(backup_folder):
             return True, "No backups yet"
-        backups = sorted(
-            [f for f in os.listdir(backup_folder) if f.endswith('.zip')], reverse=True
-        )
+        backups = [f for f in os.listdir(backup_folder) if f.endswith('.zip')]
         if not backups:
             return True, "No backups created yet — consider enabling automatic backups"
-        latest = os.path.getmtime(os.path.join(backup_folder, backups[0]))
+        latest = max(
+            os.path.getmtime(os.path.join(backup_folder, filename))
+            for filename in backups
+        )
         age_days = (time.time() - latest) / 86400
         if age_days > 7:
             return False, f"Last backup was {age_days:.0f} days ago"

@@ -7,6 +7,16 @@ All notable changes to this project. Format roughly follows
 
 ### Fixed
 
+- Measure backup health from the newest ZIP modification time rather than
+  filename order, so an older legacy-named archive does not hide a fresh backup.
+  Keep the existing seven-day warning threshold; this age check does not
+  validate archive contents or recoverability.
+- Require a unique Suwayomi manga-directory match at the strongest title tier;
+  refuse ambiguity, substring guesses, and child symlinks before import.
+  See [directory selection](docs/suwayomi-directory-selection.md).
+- Import Suwayomi volumes from the complete queued source filename set,
+  refusing unrelated variants and ambiguous collisions; see
+  [Volume file selection](docs/suwayomi-file-selection.md#volume-jobs).
 - Surface tracked Suwayomi download-queue errors through existing manual retry
   controls instead of leaving failed downloads queued indefinitely. Preserve
   paused jobs, completed imports, and cached chapters during source failures.
