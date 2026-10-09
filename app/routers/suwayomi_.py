@@ -11,7 +11,7 @@ Flow:
 """
 
 import asyncio as _aio
-from collections.abc import Mapping, Sequence, Callable
+from collections.abc import Awaitable, Mapping, Sequence, Callable
 from decimal import Decimal, InvalidOperation
 import json
 import logging
@@ -1252,6 +1252,15 @@ async def _check_suwayomi_jobs_impl():
     if not c:
         return
 
+    queue_error_ids: set[int] | None = None
+
+    async def observe_queue_errors() -> set[int]:
+        """Cache even inconclusive evidence, only for this client polling pass."""
+        nonlocal queue_error_ids
+        if queue_error_ids is None:
+            queue_error_ids = await _suwayomi_queue_error_ids(c)
+        return queue_error_ids
+
     for job in jobs:
         # Retry transient failures up to 3 times before marking 'error'.
         # A brief Suwayomi GraphQL timeout used to leave user-initiated
@@ -1261,7 +1270,7 @@ async def _check_suwayomi_jobs_impl():
             if _attempt > 0:
                 await _aio.sleep(2**_attempt)  # 2s, 4s
             try:
-                await _process_suwayomi_job(c, job)
+                await _process_suwayomi_job(c, job, observe_queue_errors)
                 _last_exc = None
                 break
             except Exception as e:
@@ -1289,10 +1298,8 @@ async def _check_suwayomi_jobs_impl():
     return
 
 
-async def _suwayomi_queue_error_count(
-    c: dict[str, Any], pending_ids: set[int]
-) -> int:
-    """Count explicit queue errors for tracked, confirmed undownloaded chapters."""
+async def _suwayomi_queue_error_ids(c: dict[str, Any]) -> set[int]:
+    """Observe global queue errors; failed or malformed observations prove nothing."""
     try:
         data = await _gql(
             c,
@@ -1303,32 +1310,33 @@ async def _suwayomi_queue_error_count(
             """,
         )
     except Exception as exc:
-        # Preserve the poller's bounded retries without storing provider secrets.
-        raise RuntimeError(
-            f"Suwayomi download queue unavailable ({type(exc).__name__})"
-        ) from None
+        # This transport observation is not an individual download failure.
+        log.warning("Suwayomi download queue unavailable (%s)", type(exc).__name__)
+        return set()
 
-    status = data.get("downloadStatus")
-    if not isinstance(status, Mapping):
-        return 0
-    queue = status.get("queue")
+    status = data.get("downloadStatus") if isinstance(data, Mapping) else None
+    queue = status.get("queue") if isinstance(status, Mapping) else None
     if not isinstance(queue, list):
-        return 0
+        log.warning("Suwayomi download queue unavailable (malformed response)")
+        return set()
     failed_ids: set[int] = set()
     for item in queue:
-        if not isinstance(item, Mapping) or item.get("state") != "ERROR":
-            continue
-        chapter = item.get("chapter")
-        if not isinstance(chapter, Mapping):
-            continue
-        cid = chapter.get("id")
-        if isinstance(cid, int) and not isinstance(cid, bool) and cid in pending_ids:
+        state = item.get("state") if isinstance(item, Mapping) else None
+        chapter = item.get("chapter") if isinstance(item, Mapping) else None
+        cid = chapter.get("id") if isinstance(chapter, Mapping) else None
+        if not isinstance(state, str) or not isinstance(cid, int) or isinstance(cid, bool):
+            # A partial/malformed global result cannot authorize terminal jobs.
+            log.warning("Suwayomi download queue unavailable (malformed response)")
+            return set()
+        if state == "ERROR":
             failed_ids.add(cid)
-    return len(failed_ids)
+    return failed_ids
 
 
 async def _process_suwayomi_job(
-    c: dict[str, Any], job: Mapping[str, Any] | sqlite3.Row
+    c: dict[str, Any],
+    job: Mapping[str, Any] | sqlite3.Row,
+    observe_queue_errors: Callable[[], Awaitable[set[int]]] | None = None,
 ) -> None:
     """Per-job body extracted from check_suwayomi_jobs so the retry loop
     can call it. Raises on failure; caller decides whether to retry or
@@ -1379,7 +1387,14 @@ async def _process_suwayomi_job(
             if ch_map.get(cid, {}).get("isDownloaded") is False
         }
         # Missing feed rows and intentional pauses do not prove a failed download.
-        failed = await _suwayomi_queue_error_count(c, pending_ids) if pending_ids else 0
+        failed = 0
+        if pending_ids:
+            queue_error_ids = (
+                await observe_queue_errors()
+                if observe_queue_errors is not None
+                else await _suwayomi_queue_error_ids(c)
+            )
+            failed = len(pending_ids & queue_error_ids)
         if failed:
             error = f"Suwayomi upstream download ERROR for {failed} tracked chapter(s)"
             with get_db() as db:

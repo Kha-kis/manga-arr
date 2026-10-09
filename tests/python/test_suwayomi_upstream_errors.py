@@ -20,11 +20,14 @@ class UpstreamJobs:
     library: Path
     manga_dir: Path
     nodes: list[dict[str, Any]] = field(default_factory=list)
-    queue_data: dict[str, Any] = field(
+    queue_data: Any = field(
         default_factory=lambda: {"downloadStatus": {"state": "STOPPED", "queue": []}}
     )
     queries: list[str] = field(default_factory=list)
     queue_failures: int = 0
+    queue_exception: BaseException | None = None
+    manga_failures: dict[int, int] = field(default_factory=dict)
+    manga_nodes: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
     refreshes: list[int] = field(default_factory=list)
 
     def rows(self, sql: str) -> list[dict[str, Any]]:
@@ -35,13 +38,17 @@ class UpstreamJobs:
     def job(self) -> dict[str, Any]:
         return self.rows("SELECT * FROM suwayomi_downloads WHERE id=1")[0]
 
-    def seed(self, ids: list[int], kind: str = "chapter") -> None:
+    def seed(
+        self, ids: list[int], kind: str = "chapter", *, job_id: int = 1, mid: int = 101
+    ) -> None:
         with sqlite3.connect(self.db_path) as db:
             db.execute(
                 "INSERT INTO suwayomi_downloads(id,series_id,suwayomi_manga_id,"
                 " chapter_ids,chapter_num,volume_num,status,total)"
-                " VALUES(1,1,101,?,?,?,'queued',?)",
+                " VALUES(?,1,?,?,?,?,'queued',?)",
                 (
+                    job_id,
+                    mid,
                     json.dumps(ids),
                     1 if kind == "chapter" else None,
                     1 if kind == "volume" else None,
@@ -83,12 +90,24 @@ class UpstreamJobs:
             return {"fetchChapters": {"chapters": []}}
         assert query.lstrip().startswith("query"), "Polling must never mutate upstream"
         if "downloadStatus" in query:
+            if self.queue_exception is not None:
+                raise self.queue_exception
             if self.queue_failures:
                 self.queue_failures -= 1
                 raise httpx.ReadTimeout("private-provider-credential")
             return self.queue_data
         assert "manga(id:" in query
-        return {"manga": {"title": "Upstream", "chapters": {"nodes": self.nodes}}}
+        assert variables is not None
+        mid = variables["mid"]
+        if self.manga_failures.get(mid, 0):
+            self.manga_failures[mid] -= 1
+            raise httpx.ReadTimeout("manga query temporarily unavailable")
+        return {
+            "manga": {
+                "title": "Upstream",
+                "chapters": {"nodes": self.manga_nodes.get(mid, self.nodes)},
+            }
+        }
 
 
 def node(cid: int, downloaded: bool = False) -> dict[str, Any]:
@@ -315,18 +334,23 @@ def test_all_downloaded_imports_without_queue_query(
 
 
 @pytest.mark.parametrize("failures", [1, 2, 3])
-def test_queue_query_failure_uses_bounded_retry_without_import_or_secrets(
+def test_queue_query_failure_is_inconclusive_without_retry_import_or_secrets(
     env: UpstreamJobs,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     failures: int,
 ) -> None:
+    """Observation failure is not download ERROR proof, even after repeated outages.
+
+    Replaces PR410's former per-job retry/terminal transport-error expectations.
+    """
     from routers import suwayomi_ as swy
 
     env.seed([1])
     env.nodes = [node(1)]
     env.queue_failures = failures
     before = env.preserved()
+    jobs_before = env.rows("SELECT * FROM suwayomi_downloads")
     sleeps: list[float] = []
 
     async def sleep(delay: float) -> None:
@@ -335,17 +359,267 @@ def test_queue_query_failure_uses_bounded_retry_without_import_or_secrets(
     monkeypatch.setattr(swy._aio, "sleep", sleep)
     poll()
     job = env.job()
-    assert len(env.queries) == 2 * min(failures + 1, 3)
-    assert sleeps == ([2] if failures == 1 else [2, 4])
-    assert job["status"] == ("error" if failures == 3 else "queued")
-    if failures == 3:
-        assert "download queue unavailable (ReadTimeout)" in job["error"]
-        assert "upstream download ERROR" not in job["error"]
-    else:
-        assert job["error"] is None
+    assert len(env.queries) == 2 and sleeps == []
+    assert env.queue_failures == failures - 1
+    assert job["status"] == "queued" and job["error"] is None
+    assert env.rows("SELECT * FROM suwayomi_downloads") == jobs_before
+    assert caplog.text.count("download queue unavailable") == 1
     assert "private-provider-credential" not in caplog.text
     assert "private-provider-credential" not in (job["error"] or "")
     assert env.preserved() == before
+
+
+@pytest.mark.parametrize("count", [1, 5, 40])
+@pytest.mark.parametrize("state", ["ERROR", "QUEUED"])
+def test_bulk_jobs_share_one_global_observation(
+    env: UpstreamJobs, count: int, state: str
+) -> None:
+    env.nodes = [node(cid) for cid in range(1, count + 1)]
+    env.queue_data["downloadStatus"]["queue"] = [
+        entry(cid, state) for cid in range(1, count + 1)
+    ]
+    for cid in range(1, count + 1):
+        env.seed([cid], job_id=cid)
+    before = env.preserved()
+    poll()
+    jobs = env.rows("SELECT * FROM suwayomi_downloads ORDER BY id")
+    assert [j["status"] for j in jobs] == [
+        "error" if state == "ERROR" else "queued"
+    ] * count
+    assert [json.loads(j["chapter_ids"]) for j in jobs] == [
+        [cid] for cid in range(1, count + 1)
+    ]
+    assert all(j["progress"] == 0 and j["total"] == 1 for j in jobs)
+    assert sum("downloadStatus" in q for q in env.queries) == 1
+    assert len(env.queries) == count + 1
+    assert env.preserved() == before
+
+
+def test_mixed_jobs_use_only_confirmed_pending_ids_from_shared_queue(
+    env: UpstreamJobs,
+) -> None:
+    env.nodes = [node(1, True), node(2), node(3), {"id": 4}]
+    for jid, ids in enumerate(([1], [1, 2], [3], [4], [5]), 1):
+        env.seed(ids, "volume" if jid == 2 else "chapter", job_id=jid)
+    env.queue_data["downloadStatus"]["queue"] = [
+        entry(1),
+        entry(2),
+        entry(3, "QUEUED"),
+        entry(4),
+        entry(5),
+        entry(99),
+    ]
+    before = env.preserved()
+    poll()
+    jobs = env.rows("SELECT * FROM suwayomi_downloads ORDER BY id")
+    assert [j["status"] for j in jobs] == [
+        "completed",
+        "error",
+        "queued",
+        "queued",
+        "queued",
+    ]
+    assert [j["progress"] for j in jobs] == [1, 1, 0, 0, 0]
+    assert [json.loads(j["chapter_ids"]) for j in jobs] == [[1], [1, 2], [3], [4], [5]]
+    assert "1 tracked chapter" in jobs[1]["error"]
+    assert sum("downloadStatus" in q for q in env.queries) == 1
+    assert len(env.queries) == 6
+    after = env.preserved()
+    for table in (
+        "series",
+        "mangadex_chapters",
+        "series_metadata_fields",
+        "settings",
+        "suwayomi_sources",
+        "source",
+    ):
+        assert after[table] == before[table]
+    assert after["library"]["retained.cbz"] == before["library"]["retained.cbz"]
+
+
+@pytest.mark.parametrize("initial_outage", [False, True])
+def test_observation_is_fresh_on_next_pass(
+    env: UpstreamJobs, initial_outage: bool
+) -> None:
+    env.seed([1])
+    env.nodes = [node(1)]
+    env.queue_failures = int(initial_outage)
+    before = env.preserved()
+    poll()
+    assert env.job()["status"] == "queued" and env.job()["error"] is None
+    env.queue_data["downloadStatus"]["queue"] = [entry(1)]
+    poll()
+    assert env.job()["status"] == "error"
+    assert sum("downloadStatus" in q for q in env.queries) == 2
+    assert len(env.queries) == 4
+    assert env.preserved() == before
+
+
+@pytest.mark.parametrize("count", [1, 12])
+@pytest.mark.parametrize("failure", ["transport", "unrelated-resolver"])
+def test_global_queue_outage_preserves_bulk_jobs_without_retry(
+    env: UpstreamJobs,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    count: int,
+    failure: str,
+) -> None:
+    from routers import suwayomi_ as swy
+
+    env.nodes = [node(cid) for cid in range(1, count + 1)]
+    for cid in range(1, count + 1):
+        env.seed([cid], job_id=cid)
+    env.queue_exception = (
+        httpx.ReadTimeout("private-provider-credential")
+        if failure == "transport"
+        else RuntimeError(
+            "GraphQL: unrelated dangling chapter resolver private-provider-credential"
+        )
+    )
+    before, jobs_before = env.preserved(), env.rows("SELECT * FROM suwayomi_downloads")
+    sleeps: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(swy._aio, "sleep", sleep)
+    poll()
+    assert env.rows("SELECT * FROM suwayomi_downloads") == jobs_before
+    assert env.preserved() == before
+    assert sum("downloadStatus" in q for q in env.queries) == 1
+    assert len(env.queries) == count + 1 and sleeps == []
+    assert caplog.text.count("download queue unavailable") == 1
+    assert "private-provider-credential" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        [],
+        {"downloadStatus": []},
+        {"downloadStatus": {"queue": [entry(1), {}]}},
+    ],
+)
+def test_malformed_global_observation_cannot_supply_terminal_proof(
+    env: UpstreamJobs, caplog: pytest.LogCaptureFixture, payload: Any
+) -> None:
+    env.seed([1])
+    env.seed([2], job_id=2)
+    env.nodes = [node(1), node(2)]
+    env.queue_data = payload
+    before, jobs_before = env.preserved(), env.rows("SELECT * FROM suwayomi_downloads")
+    poll()
+    assert env.rows("SELECT * FROM suwayomi_downloads") == jobs_before
+    assert env.preserved() == before
+    assert sum("downloadStatus" in q for q in env.queries) == 1
+    assert len(env.queries) == 3
+    assert caplog.text.count("download queue unavailable") == 1
+
+
+def test_queue_observation_cancellation_propagates_without_job_error(
+    env: UpstreamJobs,
+) -> None:
+    env.seed([1])
+    env.nodes = [node(1)]
+    env.queue_exception = asyncio.CancelledError()
+    before, jobs_before = env.preserved(), env.rows("SELECT * FROM suwayomi_downloads")
+    with pytest.raises(asyncio.CancelledError):
+        poll()
+    assert env.rows("SELECT * FROM suwayomi_downloads") == jobs_before
+    assert env.preserved() == before and len(env.queries) == 2
+
+
+@pytest.mark.parametrize("failures", [2, 3])
+def test_manga_retries_remain_bounded_and_reuse_prior_queue_observation(
+    env: UpstreamJobs, monkeypatch: pytest.MonkeyPatch, failures: int
+) -> None:
+    from routers import suwayomi_ as swy
+
+    env.seed([1])
+    env.seed([2], job_id=2, mid=102)
+    env.nodes = [node(1), node(2)]
+    env.manga_failures[102] = failures
+    before = env.preserved()
+    sleeps: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(swy._aio, "sleep", sleep)
+    poll()
+    jobs = env.rows("SELECT * FROM suwayomi_downloads ORDER BY id")
+    assert jobs[0]["status"] == "queued" and jobs[0]["error"] is None
+    assert jobs[1]["status"] == ("queued" if failures == 2 else "error")
+    if failures == 3:
+        assert "manga query temporarily unavailable" in jobs[1]["error"]
+    assert sleeps == [2, 4]
+    assert sum("downloadStatus" in q for q in env.queries) == 1
+    assert len(env.queries) == 5 and env.preserved() == before
+
+
+def test_import_retries_remain_bounded_without_reobserving_queue(
+    env: UpstreamJobs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from routers import suwayomi_ as swy
+
+    env.seed([1])
+    env.seed([1], job_id=2, mid=102)
+    env.manga_nodes = {101: [node(1)], 102: [node(1, True)]}
+    original = swy._run_suwayomi_file_unit
+    attempts = 0
+    sleeps: list[float] = []
+
+    async def unit(*args: Any, **kwargs: Any) -> tuple[str | None, int]:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise RuntimeError("import temporarily unavailable")
+        return await original(*args, **kwargs)
+
+    async def sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(swy, "_run_suwayomi_file_unit", unit)
+    monkeypatch.setattr(swy._aio, "sleep", sleep)
+    poll()
+    jobs = env.rows("SELECT * FROM suwayomi_downloads ORDER BY id")
+    assert [j["status"] for j in jobs] == ["queued", "completed"]
+    assert attempts == 3 and sleeps == [2, 4]
+    assert sum("downloadStatus" in q for q in env.queries) == 1
+    assert len(env.queries) == 5
+    assert (env.library / "retained.cbz").read_bytes() == b"retained local content"
+
+
+def test_no_jobs_do_not_observe_queue(env: UpstreamJobs) -> None:
+    before = env.preserved()
+    poll()
+    assert env.queries == [] and env.preserved() == before
+
+
+def test_all_complete_bulk_jobs_do_not_observe_queue(env: UpstreamJobs) -> None:
+    for jid in range(1, 6):
+        env.seed([1], job_id=jid)
+    env.nodes = [node(1, True)]
+    env.queue_failures = 100
+    poll()
+    assert [j["status"] for j in env.rows("SELECT * FROM suwayomi_downloads")] == [
+        "completed"
+    ] * 5
+    assert len(env.queries) == 5
+    assert not any("downloadStatus" in q for q in env.queries)
+
+
+def test_no_explicit_false_bulk_jobs_do_not_observe_queue(env: UpstreamJobs) -> None:
+    for jid in range(1, 4):
+        env.seed([jid], job_id=jid)
+    env.nodes = [{"id": 1}, {"id": 2, "isDownloaded": None}]
+    env.queue_failures = 100
+    before, jobs_before = env.preserved(), env.rows("SELECT * FROM suwayomi_downloads")
+    poll()
+    assert env.rows("SELECT * FROM suwayomi_downloads") == jobs_before
+    assert env.preserved() == before and len(env.queries) == 3
+    assert not any("downloadStatus" in q for q in env.queries)
 
 
 def test_refresh_exception_preserves_cache_jobs_and_local_data(
