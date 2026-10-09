@@ -1289,6 +1289,44 @@ async def _check_suwayomi_jobs_impl():
     return
 
 
+async def _suwayomi_queue_error_count(
+    c: dict[str, Any], pending_ids: set[int]
+) -> int:
+    """Count explicit queue errors for tracked, confirmed undownloaded chapters."""
+    try:
+        data = await _gql(
+            c,
+            """
+            query {
+                downloadStatus { queue { state chapter { id } } }
+            }
+            """,
+        )
+    except Exception as exc:
+        # Preserve the poller's bounded retries without storing provider secrets.
+        raise RuntimeError(
+            f"Suwayomi download queue unavailable ({type(exc).__name__})"
+        ) from None
+
+    status = data.get("downloadStatus")
+    if not isinstance(status, Mapping):
+        return 0
+    queue = status.get("queue")
+    if not isinstance(queue, list):
+        return 0
+    failed_ids: set[int] = set()
+    for item in queue:
+        if not isinstance(item, Mapping) or item.get("state") != "ERROR":
+            continue
+        chapter = item.get("chapter")
+        if not isinstance(chapter, Mapping):
+            continue
+        cid = chapter.get("id")
+        if isinstance(cid, int) and not isinstance(cid, bool) and cid in pending_ids:
+            failed_ids.add(cid)
+    return len(failed_ids)
+
+
 async def _process_suwayomi_job(
     c: dict[str, Any], job: Mapping[str, Any] | sqlite3.Row
 ) -> None:
@@ -1334,6 +1372,23 @@ async def _process_suwayomi_job(
                     " WHERE id=? AND status='queued'",
                     (job["id"],),
                 )
+            return
+        pending_ids = {
+            cid
+            for cid in chapter_ids
+            if ch_map.get(cid, {}).get("isDownloaded") is False
+        }
+        # Missing feed rows and intentional pauses do not prove a failed download.
+        failed = await _suwayomi_queue_error_count(c, pending_ids) if pending_ids else 0
+        if failed:
+            error = f"Suwayomi upstream download ERROR for {failed} tracked chapter(s)"
+            with get_db() as db:
+                db.execute(
+                    "UPDATE suwayomi_downloads SET status='error', error=?"
+                    " WHERE id=? AND status='queued'",
+                    (error, job["id"]),
+                )
+            log.warning("Suwayomi job %d: %s", job["id"], error)
         return  # ordinary downloads remain queued for the next cycle
 
     await _run_suwayomi_file_unit(
