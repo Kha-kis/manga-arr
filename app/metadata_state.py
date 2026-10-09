@@ -274,7 +274,14 @@ def build_catalog_metadata_health(series_id: int) -> dict[str, Any]:
 
     sources = get_source_states(series_id)
     failed_sources = [
-        src["source"] for src in sources if src["status"] in {"failed", "degraded"}
+        src["source"] for src in sources
+        if src["status"] in {"failed", "degraded"}
+        and not (
+            src["source"] == SOURCE_CHAPTER_MAP
+            and src["failure_count"] == 0
+            and isinstance(src["details"], dict)
+            and src["details"].get("outcome") == "insufficient_coverage"
+        )
     ]
     if failed_sources:
         issues.append("provider_failures")

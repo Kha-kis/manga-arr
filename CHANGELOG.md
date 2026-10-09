@@ -30,6 +30,9 @@ All notable changes to this project. Format roughly follows
   reporting when a failed map source is deferred. Persist recoverable source
   failures when map refresh raises, without replacing cached or manually
   selected metadata or suppressing independent manifest observations.
+- Distinguish unavailable chapter-map coverage from provider failures. Preserve
+  cached and manual maps, retain failure evidence across empty fallbacks, and
+  reject malformed or incomplete provider responses without storing partial maps.
 
 ## 1.3.2 - 2026-10-08
 

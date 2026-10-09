@@ -65,10 +65,14 @@ def offline_providers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncM
     monkeypatch.setattr(
         service, "refresh_series_cover", AsyncMock(return_value=(True, None))
     )
-    provider_map = AsyncMock(return_value={"1": 1, "2": 1, "3": 2, "4": 2})
-    monkeypatch.setattr(enrichment, "fetch_chapter_volume_map", provider_map)
+    provider_map = AsyncMock(
+        return_value=enrichment._ChapterMapResult({"1": 1, "2": 1, "3": 2, "4": 2})
+    )
+    monkeypatch.setattr(enrichment, "_fetch_chapter_volume_map_result", provider_map)
     monkeypatch.setattr(
-        enrichment, "fetch_kitsu_chapter_map", AsyncMock(return_value={})
+        enrichment,
+        "_fetch_kitsu_chapter_map_result",
+        AsyncMock(return_value=enrichment._ChapterMapResult()),
     )
     monkeypatch.setattr(rescan, "_series_library_dir", lambda *_: str(tmp_path))
     return provider_map
@@ -284,7 +288,7 @@ def test_escaped_map_exception_records_terminal_retry_preserving_ownership(
                 (old_success,),
             )
     snapshot = _map_snapshot()
-    offline_providers.return_value = {}
+    offline_providers.return_value = enrichment._ChapterMapResult()
 
     def unavailable_directory(_directory: str) -> dict[str, int]:
         raise PermissionError("local map fallback unavailable")
