@@ -129,7 +129,7 @@ def test_suwayomi_job_audit_keeps_owner_and_quality_outside_writer(suwayomi_env,
 
     env = suwayomi_env
     cbz(env.manga_dir / "Official_Chapter 17.cbz")
-    env.queue([node(17, 17)], chapter=17 if chapter else None)
+    env.queue([{**node(17, 17), "name": "Chapter 17", "scanlator": "Official"}], chapter=17 if chapter else None)
     observations = []
     quality = main.quality_from_filename
     history = main.add_history

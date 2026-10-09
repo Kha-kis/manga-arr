@@ -14,6 +14,9 @@ All notable changes to this project. Format roughly follows
 - Require a unique Suwayomi manga-directory match at the strongest title tier;
   refuse ambiguity, substring guesses, and child symlinks before import.
   See [directory selection](docs/suwayomi-directory-selection.md).
+- Import Suwayomi volumes from the complete queued source filename set,
+  refusing unrelated variants and ambiguous collisions; see
+  [Volume file selection](docs/suwayomi-file-selection.md#volume-jobs).
 
 ## 1.3.2 - 2026-10-08
 
