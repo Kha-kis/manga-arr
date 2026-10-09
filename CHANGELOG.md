@@ -5,6 +5,12 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+### Fixed
+
+- Honor metadata update strategies and chapter-map retry deadlines during
+  automatic retries. Persist recoverable source failures when map refresh
+  raises, without replacing cached or manually selected metadata.
+
 ## 1.3.2 - 2026-10-08
 
 Published and qualified as the current stable release. All local and

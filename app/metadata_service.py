@@ -32,6 +32,7 @@ from metadata_provenance import (
 from metadata_state import (
     SOURCE_ALIASES,
     SOURCE_ANILIST,
+    SOURCE_CHAPTER_MAP,
     SOURCE_COVER,
     SOURCE_MANGADEX_MANIFEST,
     SOURCE_MANGAUPDATES,
@@ -685,17 +686,31 @@ async def refresh_series_metadata(
                 warnings.append(error)
                 sources[SOURCE_MANGAUPDATES] = "failed"
 
-        try:
-            map_ok = await refresh_mangadex_map(series_id, apply_changes=apply_changes)
-            sources["chapter_map"] = "healthy" if map_ok else "degraded"
-            if not map_ok:
-                warnings.append("chapter map refresh returned no usable map")
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            error = f"chapter map: {type(exc).__name__}: {str(exc)[:180]}"
-            warnings.append(error)
-            sources["chapter_map"] = "failed"
+        if force or source_retry_due(series_id, SOURCE_CHAPTER_MAP):
+            try:
+                map_ok = await refresh_mangadex_map(
+                    series_id, apply_changes=apply_changes
+                )
+                sources[SOURCE_CHAPTER_MAP] = "healthy" if map_ok else "degraded"
+                if not map_ok:
+                    warnings.append("chapter map refresh returned no usable map")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                error = f"chapter map: {type(exc).__name__}: {str(exc)[:180]}"
+                current = _series_snapshot(series_id) or series
+                try:
+                    cached_map = json.loads(current.get("chapter_vol_map") or "{}")
+                except (TypeError, ValueError):
+                    cached_map = {}
+                mark_source_failure(
+                    series_id,
+                    SOURCE_CHAPTER_MAP,
+                    error,
+                    has_usable_cache=isinstance(cached_map, dict) and bool(cached_map),
+                )
+                warnings.append(error)
+                sources[SOURCE_CHAPTER_MAP] = "failed"
 
         current = _series_snapshot(series_id) or series
         edition = current.get("edition_type") or "standard"
