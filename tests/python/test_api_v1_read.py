@@ -1,4 +1,5 @@
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -1334,7 +1335,85 @@ def test_api_v1_remaining_config_read_contracts(env):
     ]
 
 
-def test_api_v1_config_detail_read_contracts(env):
+def test_api_v1_root_folder_capacity_is_fresh(
+    env: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import routers.api_v1 as api_v1
+
+    native_disk_usage = shutil.disk_usage
+    observations = iter([(1000000000, 900000000), (999868928, 899868928)])
+
+    def changing_disk_usage(path: str) -> shutil._ntuple_diskusage:
+        usage = native_disk_usage(path)
+        total, free = next(observations)
+        return usage._replace(total=total, used=total - free, free=free)
+
+    monkeypatch.setattr(api_v1.shutil, "disk_usage", changing_disk_usage)
+    client = _client()
+    headers = {"X-Api-Key": _api_key(env)}
+    listed = client.get("/api/v1/rootfolder", headers=headers)
+    detail = client.get("/api/v1/rootfolder/1", headers=headers)
+    assert listed.status_code == 200, listed.text
+    assert detail.status_code == 200, detail.text
+    library, archive = listed.json()
+    assert library == {
+        "id": 1,
+        "path": library["path"],
+        "name": "Library",
+        "label": "Library",
+        "isDefault": True,
+        "unmappedFolders": [],
+        "totalSpace": 1000000000,
+        "freeSpace": 900000000,
+        "isAvailable": True,
+    }
+    assert detail.json() == {
+        **library,
+        "totalSpace": 999868928,
+        "freeSpace": 899868928,
+    }
+    assert archive["isAvailable"] is False
+    assert archive["totalSpace"] is None
+    assert archive["freeSpace"] is None
+
+
+@pytest.mark.parametrize("root_id, available", [(1, True), (2, False)])
+def test_api_v1_root_folder_native_availability(
+    env: str, root_id: int, available: bool
+) -> None:
+    client = _client()
+    headers = {"X-Api-Key": _api_key(env)}
+    listed = client.get("/api/v1/rootfolder", headers=headers)
+    detail = client.get(f"/api/v1/rootfolder/{root_id}", headers=headers)
+    assert listed.status_code == 200, listed.text
+    assert detail.status_code == 200, detail.text
+    library = next(row for row in listed.json() if row["id"] == root_id)
+    for body in (library, detail.json()):
+        assert os.path.isdir(body["path"]) is available
+        assert body["isAvailable"] is available
+        if available:
+            assert isinstance(body["totalSpace"], int)
+            assert isinstance(body["freeSpace"], int)
+            assert body["totalSpace"] >= body["freeSpace"] >= 0
+        else:
+            assert body["totalSpace"] is None
+            assert body["freeSpace"] is None
+
+
+def test_api_v1_config_detail_read_contracts(
+    env: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import routers.api_v1 as api_v1
+
+    native_disk_usage = shutil.disk_usage
+
+    def fixed_disk_usage(path: str) -> shutil._ntuple_diskusage:
+        # Freeze capacity, but preserve real filesystem availability errors.
+        return native_disk_usage(path)._replace(
+            total=1000000000, used=100000000, free=900000000
+        )
+
+    monkeypatch.setattr(api_v1.shutil, "disk_usage", fixed_disk_usage)
     client = _client()
     headers = {"X-Api-Key": _api_key(env)}
 

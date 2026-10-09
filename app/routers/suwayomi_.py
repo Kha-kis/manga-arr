@@ -11,7 +11,7 @@ Flow:
 """
 
 import asyncio as _aio
-from collections.abc import Mapping, Sequence, Callable
+from collections.abc import Awaitable, Mapping, Sequence, Callable
 from decimal import Decimal, InvalidOperation
 import json
 import logging
@@ -475,50 +475,90 @@ def _swy_library_base(c: dict) -> str | None:
 
 
 def _normalise_dir_name(name: str) -> str:
-    """Collapse all non-alphanumeric chars to spaces for fuzzy matching."""
+    """Collapse all non-alphanumeric chars to spaces for equality matching."""
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]", " ", name.lower())).strip()
 
 
-def _find_suwayomi_manga_dir(c: dict, *titles: str) -> str | None:
-    """Find the host-visible download directory for a manga title.
-    Structure: {library_base}/mangas/{source_name}/{manga_title}/
-    Accepts multiple candidate titles (e.g. Suwayomi title + Mangarr title)
-    and tries exact match first, then normalised fuzzy match.
+def _swy_directory_basename(title: str) -> str | None:
+    """Reproduce Suwayomi v2.3.2243 SafePath for a directory label."""
+    name = re.sub(r'[\x00-\x1f\x7f"*/:<>?\\|]', "_", title.strip(". ") or "(invalid)")
+    try:
+        return name.encode("utf-8")[:240].decode("utf-8", errors="ignore") or None
+    except UnicodeEncodeError:
+        return None
+
+
+def _find_suwayomi_manga_dir(
+    c: dict[str, Any], *titles: str, source_display_name: str | None = None
+) -> str | None:
+    """Choose one real direct-child directory at the strongest matching tier.
+
+    The first title is the live source title when available. Its SafePath
+    basename outranks legacy/metadata aliases and normalized equality.
+    Ambiguity at any populated tier refuses selection, without downgrading.
+    None retains legacy unique-global lookup; jobs always supply source evidence.
     """
+    source_folder = None
+    if source_display_name is not None:
+        if not isinstance(source_display_name, str) or not source_display_name.strip():
+            return None
+        source_folder = _swy_directory_basename(source_display_name)
+        if source_folder is None:
+            return None
     base = _swy_library_base(c)
     if not base:
         return None
     mangas_root = os.path.join(base, "mangas")
-    if not os.path.isdir(mangas_root):
+    if os.path.islink(mangas_root) or not os.path.isdir(mangas_root):
         return None
 
-    # Collect all candidate directories
-    source_dirs = [
-        os.path.join(mangas_root, sd)
-        for sd in os.listdir(mangas_root)
-        if os.path.isdir(os.path.join(mangas_root, sd))
-    ]
+    candidates: list[tuple[str, str]] = []
+    try:
+        root_path = os.path.realpath(mangas_root)
+        with os.scandir(mangas_root) as sources:
+            for source in sources:
+                if source_folder is not None and source.name != source_folder:
+                    continue
+                if not source.is_dir(follow_symlinks=False):
+                    continue
+                source_path = os.path.realpath(source.path)
+                if os.path.dirname(source_path) != root_path:
+                    continue
+                with os.scandir(source.path) as mangas:
+                    for entry in mangas:
+                        if (
+                            entry.is_dir(follow_symlinks=False)
+                            and os.path.dirname(os.path.realpath(entry.path)) == source_path
+                        ):
+                            candidates.append((entry.name, entry.path))
+    except OSError:
+        return None
 
-    # Pass 1: exact match on any title
-    for t in titles:
-        if not t:
-            continue
-        for sd in source_dirs:
-            manga_dir = os.path.join(sd, t)
-            if os.path.isdir(manga_dir):
-                return manga_dir
+    basenames = [_swy_directory_basename(title) if title else None for title in titles]
+    source_basename = basenames[0] if basenames else None
+    matches = {path for name, path in candidates if name == source_basename}
+    if matches:
+        return next(iter(matches)) if len(matches) == 1 else None
 
-    # Pass 2: normalised match (handles : → _, etc.)
-    norm_titles = [_normalise_dir_name(t) for t in titles if t]
-    for sd in source_dirs:
-        for entry in os.listdir(sd):
-            entry_path = os.path.join(sd, entry)
-            if not os.path.isdir(entry_path):
-                continue
-            norm_entry = _normalise_dir_name(entry)
-            for nt in norm_titles:
-                if nt == norm_entry or nt in norm_entry or norm_entry in nt:
-                    return entry_path
+    aliases = {name for name in basenames if name is not None}
+    # Raw aliases are labels matched against inventory, never joined as paths.
+    aliases.update(
+        title
+        for title, basename in zip(titles, basenames)
+        if basename is not None
+        and title not in (".", "..")
+        and not re.search(r"[\x00-\x1f\x7f/\\]", title)
+    )
+    matches = {path for name, path in candidates if name in aliases}
+    if matches:
+        return next(iter(matches)) if len(matches) == 1 else None
+
+    normalized = {value for name in aliases if (value := _normalise_dir_name(name))}
+    matches = {
+        path for name, path in candidates if _normalise_dir_name(name) in normalized
+    }
+    if matches:
+        return next(iter(matches)) if len(matches) == 1 else None
 
     return None
 
@@ -1054,8 +1094,23 @@ async def _import_suwayomi_volume(
     *,
     swy_title: str = "",
     chapter_nums: Sequence[float | Decimal] | None = None,
+    chapter_ids: Sequence[int] = (),
+    source_chapters: Mapping[int, Mapping[str, Any]] | None = None,
+    source_display_name: str | None = None,
 ) -> tuple[str | None, int]:
-    return await _run_suwayomi_file_unit(series_id, lambda guard: _import_suwayomi_volume_files(c, series_id, volume_num, swy_title=swy_title, chapter_nums=chapter_nums))
+    return await _run_suwayomi_file_unit(
+        series_id,
+        lambda guard: _import_suwayomi_volume_files(
+            c,
+            series_id,
+            volume_num,
+            swy_title=swy_title,
+            chapter_nums=chapter_nums,
+            chapter_ids=chapter_ids,
+            source_chapters=source_chapters,
+            source_display_name=source_display_name,
+        ),
+    )
 
 
 async def _run_suwayomi_file_unit(series_id: int, operation: Callable[[FileMutationGuard], tuple[str | None, int]]) -> tuple[str | None, int]:
@@ -1082,9 +1137,70 @@ async def _run_suwayomi_file_unit(series_id: int, operation: Callable[[FileMutat
     return result
 
 
-def _import_suwayomi_volume_files(
-    c: dict[str, Any], series_id: int, volume_num: float, *, swy_title: str = "",
+def _source_volume_cbzs(
+    manga_dir: str,
+    chapter_ids: Sequence[int],
+    chapters: Mapping[int, Mapping[str, Any]],
+    *,
     chapter_nums: Sequence[float | Decimal] | None = None,
+) -> list[str]:
+    """Validate every queued source file before deduplicating logical numbers."""
+    if not chapter_ids or (
+        chapter_nums is not None and len(chapter_nums) != len(chapter_ids)
+    ):
+        return []
+    basenames = {cid: _source_chapter_basename(ch) for cid, ch in chapters.items()}
+    counts: dict[str, int] = {}
+    for basename in basenames.values():
+        if basename is not None:
+            counts[basename] = counts.get(basename, 0) + 1
+    names = set(_chapter_files(manga_dir))
+    matches: dict[Decimal, set[str]] = {}
+    for index, cid in enumerate(chapter_ids):
+        if isinstance(cid, bool) or not isinstance(cid, int) or cid <= 0:
+            return []
+        chapter = chapters.get(cid)
+        if chapter is None or chapter.get("isDownloaded") is not True:
+            return []
+        source_id = chapter.get("id")
+        if (
+            isinstance(source_id, bool)
+            or not isinstance(source_id, int)
+            or source_id != cid
+        ):
+            return []
+        number = _chapter_number(chapter.get("chapterNumber"))
+        if number is None or (
+            chapter_nums is not None and _chapter_number(chapter_nums[index]) != number
+        ):
+            return []
+        name = chapter.get("name")
+        if not isinstance(name, str) or not name:
+            return []
+        basename = basenames.get(cid)
+        if basename is None or counts[basename] != 1 or basename not in names:
+            return []
+        matches.setdefault(number, set()).add(basename)
+    # This tie-break is deterministic, not a scanlator quality preference.
+    return [
+        os.path.join(
+            manga_dir,
+            min(matches[number], key=lambda name: (len(name), name.casefold(), name)),
+        )
+        for number in sorted(matches)
+    ]
+
+
+def _import_suwayomi_volume_files(
+    c: dict[str, Any],
+    series_id: int,
+    volume_num: float,
+    *,
+    swy_title: str = "",
+    chapter_nums: Sequence[float | Decimal] | None = None,
+    chapter_ids: Sequence[int] = (),
+    source_chapters: Mapping[int, Mapping[str, Any]] | None = None,
+    source_display_name: str | None = None,
 ) -> tuple[str | None, int]:
     """Import completed volume download into the managed library.
     If merge_chapters is enabled (default): merges chapter CBZs into one volume CBZ.
@@ -1100,7 +1216,9 @@ def _import_suwayomi_volume_files(
     if not s_row:
         return None, 0
 
-    manga_dir = _find_suwayomi_manga_dir(c, swy_title, s_row["title"])
+    manga_dir = _find_suwayomi_manga_dir(
+        c, swy_title, s_row["title"], source_display_name=source_display_name
+    )
     if not manga_dir:
         log.warning(
             "Suwayomi library base not configured — skipping import series %d vol %s",
@@ -1109,7 +1227,13 @@ def _import_suwayomi_volume_files(
         )
         return None, 0
 
-    chapter_paths = _vol_chapter_cbzs(manga_dir, volume_num, chapter_nums=chapter_nums)
+    chapter_paths = (
+        _vol_chapter_cbzs(manga_dir, volume_num, chapter_nums=chapter_nums)
+        if source_chapters is None
+        else _source_volume_cbzs(
+            manga_dir, chapter_ids, source_chapters, chapter_nums=chapter_nums
+        )
+    )
     if not chapter_paths:
         log.warning(
             "No chapter CBZs found for series %d vol %s in %s",
@@ -1156,19 +1280,27 @@ def _import_suwayomi_volume_files(
 
 
 async def _import_suwayomi_chapter(
-    c: dict,
+    c: dict[str, Any],
     series_id: int,
     chapter_num: float,
     *,
     swy_title: str = "",
+    source_display_name: str | None = None,
 ) -> tuple[str | None, int]:
-    return await _run_suwayomi_file_unit(series_id, lambda guard: _import_suwayomi_chapter_files(c, series_id, chapter_num, swy_title=swy_title))
+    return await _run_suwayomi_file_unit(
+        series_id,
+        lambda guard: _import_suwayomi_chapter_files(
+            c, series_id, chapter_num, swy_title=swy_title,
+            source_display_name=source_display_name,
+        ),
+    )
 
 
 def _import_suwayomi_chapter_files(
-    c: dict, series_id: int, chapter_num: float, *, swy_title: str = "",
+    c: dict[str, Any], series_id: int, chapter_num: float, *, swy_title: str = "",
     chapter_ids: Sequence[int] = (),
     source_chapters: Mapping[int, Mapping[str, Any]] | None = None,
+    source_display_name: str | None = None,
 ) -> tuple[str | None, int]:
     """Import a single downloaded chapter CBZ into the managed library.
     Individual chapters are always kept as individual files (merge doesn't apply).
@@ -1183,7 +1315,9 @@ def _import_suwayomi_chapter_files(
     if not s_row:
         return None, 0
 
-    manga_dir = _find_suwayomi_manga_dir(c, swy_title, s_row["title"])
+    manga_dir = _find_suwayomi_manga_dir(
+        c, swy_title, s_row["title"], source_display_name=source_display_name
+    )
     if not manga_dir:
         return None, 0
 
@@ -1252,6 +1386,15 @@ async def _check_suwayomi_jobs_impl():
     if not c:
         return
 
+    queue_error_ids: set[int] | None = None
+
+    async def observe_queue_errors() -> set[int]:
+        """Cache even inconclusive evidence, only for this client polling pass."""
+        nonlocal queue_error_ids
+        if queue_error_ids is None:
+            queue_error_ids = await _suwayomi_queue_error_ids(c)
+        return queue_error_ids
+
     for job in jobs:
         # Retry transient failures up to 3 times before marking 'error'.
         # A brief Suwayomi GraphQL timeout used to leave user-initiated
@@ -1261,7 +1404,7 @@ async def _check_suwayomi_jobs_impl():
             if _attempt > 0:
                 await _aio.sleep(2**_attempt)  # 2s, 4s
             try:
-                await _process_suwayomi_job(c, job)
+                await _process_suwayomi_job(c, job, observe_queue_errors)
                 _last_exc = None
                 break
             except Exception as e:
@@ -1289,21 +1432,59 @@ async def _check_suwayomi_jobs_impl():
     return
 
 
+async def _suwayomi_queue_error_ids(c: dict[str, Any]) -> set[int]:
+    """Observe global queue errors; failed or malformed observations prove nothing."""
+    try:
+        data = await _gql(
+            c,
+            """
+            query {
+                downloadStatus { queue { state chapter { id } } }
+            }
+            """,
+        )
+    except Exception as exc:
+        # This transport observation is not an individual download failure.
+        log.warning("Suwayomi download queue unavailable (%s)", type(exc).__name__)
+        return set()
+
+    status = data.get("downloadStatus") if isinstance(data, Mapping) else None
+    queue = status.get("queue") if isinstance(status, Mapping) else None
+    if not isinstance(queue, list):
+        log.warning("Suwayomi download queue unavailable (malformed response)")
+        return set()
+    failed_ids: set[int] = set()
+    for item in queue:
+        state = item.get("state") if isinstance(item, Mapping) else None
+        chapter = item.get("chapter") if isinstance(item, Mapping) else None
+        cid = chapter.get("id") if isinstance(chapter, Mapping) else None
+        if not isinstance(state, str) or not isinstance(cid, int) or isinstance(cid, bool):
+            # A partial/malformed global result cannot authorize terminal jobs.
+            log.warning("Suwayomi download queue unavailable (malformed response)")
+            return set()
+        if state == "ERROR":
+            failed_ids.add(cid)
+    return failed_ids
+
+
 async def _process_suwayomi_job(
-    c: dict[str, Any], job: Mapping[str, Any] | sqlite3.Row
+    c: dict[str, Any],
+    job: Mapping[str, Any] | sqlite3.Row,
+    observe_queue_errors: Callable[[], Awaitable[set[int]]] | None = None,
 ) -> None:
     """Per-job body extracted from check_suwayomi_jobs so the retry loop
     can call it. Raises on failure; caller decides whether to retry or
     mark the job errored."""
     chapter_ids = json.loads(job["chapter_ids"])
 
-    # Fetch manga title + chapters for the manga
+    # Resolve import identity from the queued manga, never the current linkage.
     data = await _gql(
         c,
         """
         query($mid: Int!) {
             manga(id: $mid) {
                 title
+                source { displayName }
                 chapters { nodes { id isDownloaded chapterNumber name scanlator } }
             }
         }
@@ -1311,6 +1492,10 @@ async def _process_suwayomi_job(
         {"mid": job["suwayomi_manga_id"]},
     )
     swy_title = (data.get("manga") or {}).get("title") or ""
+    source = (data.get("manga") or {}).get("source")
+    display_name = source.get("displayName") if isinstance(source, dict) else None
+    # An empty string refuses lookup; None is reserved for legacy helper calls.
+    source_display_name = display_name if isinstance(display_name, str) else ""
 
     ch_map: dict[int, dict[str, Any]] = {
         int(ch["id"]): ch
@@ -1334,12 +1519,37 @@ async def _process_suwayomi_job(
                     " WHERE id=? AND status='queued'",
                     (job["id"],),
                 )
+            return
+        pending_ids = {
+            cid
+            for cid in chapter_ids
+            if ch_map.get(cid, {}).get("isDownloaded") is False
+        }
+        # Missing feed rows and intentional pauses do not prove a failed download.
+        failed = 0
+        if pending_ids:
+            queue_error_ids = (
+                await observe_queue_errors()
+                if observe_queue_errors is not None
+                else await _suwayomi_queue_error_ids(c)
+            )
+            failed = len(pending_ids & queue_error_ids)
+        if failed:
+            error = f"Suwayomi upstream download ERROR for {failed} tracked chapter(s)"
+            with get_db() as db:
+                db.execute(
+                    "UPDATE suwayomi_downloads SET status='error', error=?"
+                    " WHERE id=? AND status='queued'",
+                    (error, job["id"]),
+                )
+            log.warning("Suwayomi job %d: %s", job["id"], error)
         return  # ordinary downloads remain queued for the next cycle
 
     await _run_suwayomi_file_unit(
         job["series_id"],
         lambda guard: _complete_suwayomi_job_files(
-            c, job, chapter_ids, ch_map, swy_title, guard
+            c, job, chapter_ids, ch_map, swy_title, guard,
+            source_display_name=source_display_name,
         ),
     )
 
@@ -1351,6 +1561,8 @@ def _complete_suwayomi_job_files(
     ch_map: dict[int, dict[str, Any]],
     swy_title: str,
     guard: FileMutationGuard,
+    *,
+    source_display_name: str = "",
 ) -> tuple[str | None, int]:
     """Settle physical import and its domain audit under one synchronous owner."""
     import main as _m
@@ -1364,6 +1576,7 @@ def _complete_suwayomi_job_files(
             swy_title=swy_title,
             chapter_ids=chapter_ids,
             source_chapters=ch_map,
+            source_display_name=source_display_name,
         )
         if not import_path:
             err_msg = "Import failed — chapter CBZ not found in library path"
@@ -1449,6 +1662,9 @@ def _complete_suwayomi_job_files(
             job["volume_num"],
             swy_title=swy_title,
             chapter_nums=job_chapter_nums,
+            chapter_ids=chapter_ids,
+            source_chapters=ch_map,
+            source_display_name=source_display_name,
         )
         if not import_path:
             err_msg = "Import failed — CBZ files not found in library path"

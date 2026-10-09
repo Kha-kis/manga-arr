@@ -7,6 +7,29 @@ All notable changes to this project. Format roughly follows
 
 ### Fixed
 
+- Measure backup health from the newest ZIP modification time rather than
+  filename order, so an older legacy-named archive does not hide a fresh backup.
+  Keep the existing seven-day warning threshold; this age check does not
+  validate archive contents or recoverability.
+- Resolve completed Suwayomi imports inside the source folder of the queued
+  manga ID, so stale folders after relinking cannot shadow its downloads.
+  Missing source evidence or folders refuse cross-source fallback (#406).
+- Require a unique Suwayomi manga-directory match at the strongest title tier;
+  refuse ambiguity, substring guesses, and child symlinks before import.
+  See [directory selection](docs/suwayomi-directory-selection.md).
+- Import Suwayomi volumes from the complete queued source filename set,
+  refusing unrelated variants and ambiguous collisions; see
+  [Volume file selection](docs/suwayomi-file-selection.md#volume-jobs).
+- Surface tracked Suwayomi download-queue errors through existing manual retry
+  controls instead of leaving failed downloads queued indefinitely. Preserve
+  paused jobs, completed imports, and cached chapters during source failures.
+  Share one queue observation per polling pass; unavailable or malformed queue
+  observations never turn otherwise pending downloads into terminal failures.
+- Honor metadata update strategies and chapter-map retry deadlines during
+  automatic retries and startup core backfill. Preserve degraded aggregate
+  reporting when a failed map source is deferred. Persist recoverable source
+  failures when map refresh raises, without replacing cached or manually
+  selected metadata or suppressing independent manifest observations.
 - Distinguish unavailable chapter-map coverage from provider failures. Preserve
   cached and manual maps, retain failure evidence across empty fallbacks, and
   reject malformed or incomplete provider responses without storing partial maps.
