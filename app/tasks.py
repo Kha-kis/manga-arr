@@ -80,7 +80,7 @@ from import_lease import (
     recover_expired_import_leases,
 )
 from metadata_service import refresh_series_metadata
-from metadata_state import metadata_retry_candidates
+from metadata_state import _AUTOMATIC_METADATA_STRATEGY_SQL, metadata_retry_candidates
 from shared import get_cfg, get_db
 
 
@@ -427,11 +427,12 @@ async def _backfill_metadata_loop():
     await asyncio.sleep(10)  # let startup settle first
     with get_db() as db:
         missing = db.execute(
-            "SELECT id FROM series WHERE deleted_at IS NULL AND ("
-            " mangadex_id IS NULL OR chapter_vol_map IS NULL OR ("
-            " mu_id IS NULL AND NOT EXISTS ("
+            "SELECT s.id FROM series s WHERE s.deleted_at IS NULL"
+            " AND (" + _AUTOMATIC_METADATA_STRATEGY_SQL + ") AND ("
+            " s.mangadex_id IS NULL OR s.chapter_vol_map IS NULL OR ("
+            " s.mu_id IS NULL AND NOT EXISTS ("
             "   SELECT 1 FROM series_metadata_sources ms"
-            "   WHERE ms.series_id=series.id AND ms.source='mangaupdates'"
+            "   WHERE ms.series_id=s.id AND ms.source='mangaupdates'"
             "   AND ms.status='healthy'"
             "   AND datetime(ms.last_success_at) > datetime('now','-30 days')"
             " )))"

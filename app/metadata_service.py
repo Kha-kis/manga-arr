@@ -711,6 +711,21 @@ async def refresh_series_metadata(
                 )
                 warnings.append(error)
                 sources[SOURCE_CHAPTER_MAP] = "failed"
+        else:
+            with get_db() as db:
+                deferred_row = db.execute(
+                    "SELECT status,error FROM series_metadata_sources"
+                    " WHERE series_id=? AND source=?",
+                    (series_id, SOURCE_CHAPTER_MAP),
+                ).fetchone()
+                deferred_map = dict(deferred_row) if deferred_row else None
+            if deferred_map:
+                sources[SOURCE_CHAPTER_MAP] = deferred_map["status"]
+                if deferred_map["status"] in {"failed", "degraded"}:
+                    warning = "chapter map refresh deferred by retry backoff"
+                    if deferred_map["error"]:
+                        warning += f": {deferred_map['error']}"
+                    warnings.append(warning)
 
         current = _series_snapshot(series_id) or series
         edition = current.get("edition_type") or "standard"

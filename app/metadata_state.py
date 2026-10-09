@@ -172,6 +172,15 @@ def source_retry_due(series_id: int, source: str) -> bool:
         return True
 
 
+# Core selection queries use the series alias s; observation policies stay separate.
+_AUTOMATIC_METADATA_STRATEGY_SQL = (
+    "COALESCE(s.update_strategy,'always')!='once'"
+    " AND (COALESCE(s.update_strategy,'always')!='throttled'"
+    "      OR datetime(s.last_metadata_refresh) IS NULL"
+    "      OR datetime(s.last_metadata_refresh)<=datetime('now','-7 days'))"
+)
+
+
 def metadata_retry_candidates(limit: int = 20) -> list[int]:
     """Return automatic retry work respecting manual-only and weekly policy."""
     safe_limit = max(1, min(int(limit), 100))
@@ -179,11 +188,7 @@ def metadata_retry_candidates(limit: int = 20) -> list[int]:
         rows = db.execute(
             "SELECT s.id FROM series s WHERE s.monitored=1"
             " AND s.deleted_at IS NULL"
-            " AND COALESCE(s.update_strategy,'always')!='once'"
-            " AND (COALESCE(s.update_strategy,'always')!='throttled'"
-            "      OR datetime(s.last_metadata_refresh) IS NULL"
-            "      OR datetime(s.last_metadata_refresh)<=datetime('now','-7 days'))"
-            " AND ("
+            " AND (" + _AUTOMATIC_METADATA_STRATEGY_SQL + ") AND ("
             " COALESCE(s.metadata_status,'pending')='pending' OR EXISTS("
             "   SELECT 1 FROM series_metadata_sources ms"
             "   WHERE ms.series_id=s.id AND ("

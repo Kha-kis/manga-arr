@@ -8,8 +8,10 @@ All notable changes to this project. Format roughly follows
 ### Fixed
 
 - Honor metadata update strategies and chapter-map retry deadlines during
-  automatic retries. Persist recoverable source failures when map refresh
-  raises, without replacing cached or manually selected metadata.
+  automatic retries and startup core backfill. Preserve degraded aggregate
+  reporting when a failed map source is deferred. Persist recoverable source
+  failures when map refresh raises, without replacing cached or manually
+  selected metadata or suppressing independent manifest observations.
 
 ## 1.3.2 - 2026-10-08
 
