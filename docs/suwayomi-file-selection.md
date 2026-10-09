@@ -187,3 +187,6 @@ The legacy direct volume-import helper can still select volume-named files
 when no explicit job chapter set is supplied. Production volume job processing
 always supplies the exact set and never uses that legacy path to bypass a
 missing or unknown chapter.
+
+For directory identity and ambiguity refusal before file selection, see
+[Suwayomi directory selection](suwayomi-directory-selection.md).

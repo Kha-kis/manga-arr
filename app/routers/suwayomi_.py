@@ -475,50 +475,78 @@ def _swy_library_base(c: dict) -> str | None:
 
 
 def _normalise_dir_name(name: str) -> str:
-    """Collapse all non-alphanumeric chars to spaces for fuzzy matching."""
+    """Collapse all non-alphanumeric chars to spaces for equality matching."""
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]", " ", name.lower())).strip()
 
 
-def _find_suwayomi_manga_dir(c: dict, *titles: str) -> str | None:
-    """Find the host-visible download directory for a manga title.
-    Structure: {library_base}/mangas/{source_name}/{manga_title}/
-    Accepts multiple candidate titles (e.g. Suwayomi title + Mangarr title)
-    and tries exact match first, then normalised fuzzy match.
+def _swy_directory_basename(title: str) -> str | None:
+    """Reproduce Suwayomi v2.3.2243 SafePath for a directory label."""
+    name = re.sub(r'[\x00-\x1f\x7f"*/:<>?\\|]', "_", title.strip(". ") or "(invalid)")
+    try:
+        return name.encode("utf-8")[:240].decode("utf-8", errors="ignore") or None
+    except UnicodeEncodeError:
+        return None
+
+
+def _find_suwayomi_manga_dir(c: dict[str, Any], *titles: str) -> str | None:
+    """Choose one real direct-child directory at the strongest matching tier.
+
+    The first title is the live source title when available. Its SafePath
+    basename outranks legacy/metadata aliases and normalized equality.
+    Ambiguity at any populated tier refuses selection, without downgrading.
     """
     base = _swy_library_base(c)
     if not base:
         return None
     mangas_root = os.path.join(base, "mangas")
-    if not os.path.isdir(mangas_root):
+    if os.path.islink(mangas_root) or not os.path.isdir(mangas_root):
         return None
 
-    # Collect all candidate directories
-    source_dirs = [
-        os.path.join(mangas_root, sd)
-        for sd in os.listdir(mangas_root)
-        if os.path.isdir(os.path.join(mangas_root, sd))
-    ]
+    candidates: list[tuple[str, str]] = []
+    try:
+        root_path = os.path.realpath(mangas_root)
+        with os.scandir(mangas_root) as sources:
+            for source in sources:
+                if not source.is_dir(follow_symlinks=False):
+                    continue
+                source_path = os.path.realpath(source.path)
+                if os.path.dirname(source_path) != root_path:
+                    continue
+                with os.scandir(source.path) as mangas:
+                    for entry in mangas:
+                        if (
+                            entry.is_dir(follow_symlinks=False)
+                            and os.path.dirname(os.path.realpath(entry.path)) == source_path
+                        ):
+                            candidates.append((entry.name, entry.path))
+    except OSError:
+        return None
 
-    # Pass 1: exact match on any title
-    for t in titles:
-        if not t:
-            continue
-        for sd in source_dirs:
-            manga_dir = os.path.join(sd, t)
-            if os.path.isdir(manga_dir):
-                return manga_dir
+    basenames = [_swy_directory_basename(title) if title else None for title in titles]
+    source_basename = basenames[0] if basenames else None
+    matches = {path for name, path in candidates if name == source_basename}
+    if matches:
+        return next(iter(matches)) if len(matches) == 1 else None
 
-    # Pass 2: normalised match (handles : → _, etc.)
-    norm_titles = [_normalise_dir_name(t) for t in titles if t]
-    for sd in source_dirs:
-        for entry in os.listdir(sd):
-            entry_path = os.path.join(sd, entry)
-            if not os.path.isdir(entry_path):
-                continue
-            norm_entry = _normalise_dir_name(entry)
-            for nt in norm_titles:
-                if nt == norm_entry or nt in norm_entry or norm_entry in nt:
-                    return entry_path
+    aliases = {name for name in basenames if name is not None}
+    # Raw aliases are labels matched against inventory, never joined as paths.
+    aliases.update(
+        title
+        for title, basename in zip(titles, basenames)
+        if basename is not None
+        and title not in (".", "..")
+        and not re.search(r"[\x00-\x1f\x7f/\\]", title)
+    )
+    matches = {path for name, path in candidates if name in aliases}
+    if matches:
+        return next(iter(matches)) if len(matches) == 1 else None
+
+    normalized = {value for name in aliases if (value := _normalise_dir_name(name))}
+    matches = {
+        path for name, path in candidates if _normalise_dir_name(name) in normalized
+    }
+    if matches:
+        return next(iter(matches)) if len(matches) == 1 else None
 
     return None
 
