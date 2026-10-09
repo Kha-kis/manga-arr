@@ -105,6 +105,7 @@ class UpstreamJobs:
         return {
             "manga": {
                 "title": "Upstream",
+                "source": {"displayName": "Source"},
                 "chapters": {"nodes": self.manga_nodes.get(mid, self.nodes)},
             }
         }

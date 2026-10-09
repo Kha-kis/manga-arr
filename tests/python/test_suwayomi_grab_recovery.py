@@ -75,7 +75,13 @@ class Suwayomi:
             for chapter in chapters:
                 chapter["scanlator"] = None
                 chapter["isDownloaded"] = bool(chapter.get("isDownloaded"))
-            return {"manga": {"title": "Recovery", "chapters": {"nodes": chapters}}}
+            return {
+                "manga": {
+                    "title": "Recovery",
+                    "source": {"displayName": "MangaDex"},
+                    "chapters": {"nodes": chapters},
+                }
+            }
         if "downloadStatus" in query:
             assert query.lstrip().startswith("query")
             return {"downloadStatus": {"queue": []}}

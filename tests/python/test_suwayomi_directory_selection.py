@@ -317,7 +317,7 @@ def import_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ImportEnv:
 @pytest.mark.parametrize("cached", [False, True], ids=["new-output", "cached-output"])
 @pytest.mark.parametrize(
     "problem",
-    ["exact-duplicate", "normalized-duplicate", "source-symlink", "manga-symlink"],
+    ["safe-alias-duplicate", "normalized-duplicate", "source-symlink", "manga-symlink"],
 )
 def test_real_job_refuses_directory_before_output_or_completion(
     import_env: ImportEnv,
@@ -331,12 +331,14 @@ def test_real_job_refuses_directory_before_output_or_completion(
     filename = "Alpha_Chapter 1.cbz"
     if problem.endswith("duplicate"):
         titles = (
-            ("Orbit", "Orbit") if problem == "exact-duplicate" else ("ORBIT", "orbit")
+            ("Orbit_Parts", "Orbit:Parts")
+            if problem == "safe-alias-duplicate"
+            else ("ORBIT", "orbit")
         )
-        sources = [
-            manga_dir(env.base, source, title)
-            for source, title in zip(("SourceA", "SourceB"), titles)
-        ]
+        sources = [manga_dir(env.base, "Source", title) for title in titles]
+        if problem == "safe-alias-duplicate":
+            with sqlite3.connect(env.db_path) as db:
+                db.execute("UPDATE series SET title='Orbit:Parts' WHERE id=1")
     else:
         outside = env.base.parent / "outside"
         outside.mkdir()
@@ -353,7 +355,12 @@ def test_real_job_refuses_directory_before_output_or_completion(
     for source in sources:
         cbz(source / filename)
     source_bytes = {str(source): (source / filename).read_bytes() for source in sources}
-    output = env.library / ("Orbit Ch001.cbz" if kind == "chapter" else "Orbit v01.cbz")
+    import main
+
+    safe_title = main.sanitize_filename(env.row("series")["title"])
+    output = env.library / (
+        f"{safe_title} Ch001.cbz" if kind == "chapter" else f"{safe_title} v01.cbz"
+    )
     if kind == "volume-copy":
         output = env.library / "v01" / filename
     if cached:
@@ -379,7 +386,8 @@ def test_real_job_refuses_directory_before_output_or_completion(
         assert variables == {"mid": 999}
         return {
             "manga": {
-                "title": "Orbit",
+                "title": "Missing" if problem == "safe-alias-duplicate" else "Orbit",
+                "source": {"displayName": "Source"},
                 "chapters": {
                     "nodes": [
                         {

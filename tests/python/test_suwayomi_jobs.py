@@ -118,6 +118,7 @@ def _gql_stub(
         return {
             "manga": {
                 "title": manga_title,
+                "source": {"displayName": "MangaDex"},
                 "chapters": {
                     "nodes": [
                         {
