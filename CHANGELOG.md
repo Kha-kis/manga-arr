@@ -17,6 +17,11 @@ All notable changes to this project. Format roughly follows
 - Import Suwayomi volumes from the complete queued source filename set,
   refusing unrelated variants and ambiguous collisions; see
   [Volume file selection](docs/suwayomi-file-selection.md#volume-jobs).
+- Surface tracked Suwayomi download-queue errors through existing manual retry
+  controls instead of leaving failed downloads queued indefinitely. Preserve
+  paused jobs, completed imports, and cached chapters during source failures.
+  Share one queue observation per polling pass; unavailable or malformed queue
+  observations never turn otherwise pending downloads into terminal failures.
 
 ## 1.3.2 - 2026-10-08
 

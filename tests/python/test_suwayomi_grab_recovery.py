@@ -76,6 +76,9 @@ class Suwayomi:
                 chapter["scanlator"] = None
                 chapter["isDownloaded"] = bool(chapter.get("isDownloaded"))
             return {"manga": {"title": "Recovery", "chapters": {"nodes": chapters}}}
+        if "downloadStatus" in query:
+            assert query.lstrip().startswith("query")
+            return {"downloadStatus": {"queue": []}}
         raise AssertionError(f"Unexpected GraphQL operation: {query}")
 
 

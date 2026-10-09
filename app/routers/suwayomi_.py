@@ -11,7 +11,7 @@ Flow:
 """
 
 import asyncio as _aio
-from collections.abc import Mapping, Sequence, Callable
+from collections.abc import Awaitable, Mapping, Sequence, Callable
 from decimal import Decimal, InvalidOperation
 import json
 import logging
@@ -1359,6 +1359,15 @@ async def _check_suwayomi_jobs_impl():
     if not c:
         return
 
+    queue_error_ids: set[int] | None = None
+
+    async def observe_queue_errors() -> set[int]:
+        """Cache even inconclusive evidence, only for this client polling pass."""
+        nonlocal queue_error_ids
+        if queue_error_ids is None:
+            queue_error_ids = await _suwayomi_queue_error_ids(c)
+        return queue_error_ids
+
     for job in jobs:
         # Retry transient failures up to 3 times before marking 'error'.
         # A brief Suwayomi GraphQL timeout used to leave user-initiated
@@ -1368,7 +1377,7 @@ async def _check_suwayomi_jobs_impl():
             if _attempt > 0:
                 await _aio.sleep(2**_attempt)  # 2s, 4s
             try:
-                await _process_suwayomi_job(c, job)
+                await _process_suwayomi_job(c, job, observe_queue_errors)
                 _last_exc = None
                 break
             except Exception as e:
@@ -1396,8 +1405,45 @@ async def _check_suwayomi_jobs_impl():
     return
 
 
+async def _suwayomi_queue_error_ids(c: dict[str, Any]) -> set[int]:
+    """Observe global queue errors; failed or malformed observations prove nothing."""
+    try:
+        data = await _gql(
+            c,
+            """
+            query {
+                downloadStatus { queue { state chapter { id } } }
+            }
+            """,
+        )
+    except Exception as exc:
+        # This transport observation is not an individual download failure.
+        log.warning("Suwayomi download queue unavailable (%s)", type(exc).__name__)
+        return set()
+
+    status = data.get("downloadStatus") if isinstance(data, Mapping) else None
+    queue = status.get("queue") if isinstance(status, Mapping) else None
+    if not isinstance(queue, list):
+        log.warning("Suwayomi download queue unavailable (malformed response)")
+        return set()
+    failed_ids: set[int] = set()
+    for item in queue:
+        state = item.get("state") if isinstance(item, Mapping) else None
+        chapter = item.get("chapter") if isinstance(item, Mapping) else None
+        cid = chapter.get("id") if isinstance(chapter, Mapping) else None
+        if not isinstance(state, str) or not isinstance(cid, int) or isinstance(cid, bool):
+            # A partial/malformed global result cannot authorize terminal jobs.
+            log.warning("Suwayomi download queue unavailable (malformed response)")
+            return set()
+        if state == "ERROR":
+            failed_ids.add(cid)
+    return failed_ids
+
+
 async def _process_suwayomi_job(
-    c: dict[str, Any], job: Mapping[str, Any] | sqlite3.Row
+    c: dict[str, Any],
+    job: Mapping[str, Any] | sqlite3.Row,
+    observe_queue_errors: Callable[[], Awaitable[set[int]]] | None = None,
 ) -> None:
     """Per-job body extracted from check_suwayomi_jobs so the retry loop
     can call it. Raises on failure; caller decides whether to retry or
@@ -1441,6 +1487,30 @@ async def _process_suwayomi_job(
                     " WHERE id=? AND status='queued'",
                     (job["id"],),
                 )
+            return
+        pending_ids = {
+            cid
+            for cid in chapter_ids
+            if ch_map.get(cid, {}).get("isDownloaded") is False
+        }
+        # Missing feed rows and intentional pauses do not prove a failed download.
+        failed = 0
+        if pending_ids:
+            queue_error_ids = (
+                await observe_queue_errors()
+                if observe_queue_errors is not None
+                else await _suwayomi_queue_error_ids(c)
+            )
+            failed = len(pending_ids & queue_error_ids)
+        if failed:
+            error = f"Suwayomi upstream download ERROR for {failed} tracked chapter(s)"
+            with get_db() as db:
+                db.execute(
+                    "UPDATE suwayomi_downloads SET status='error', error=?"
+                    " WHERE id=? AND status='queued'",
+                    (error, job["id"]),
+                )
+            log.warning("Suwayomi job %d: %s", job["id"], error)
         return  # ordinary downloads remain queued for the next cycle
 
     await _run_suwayomi_file_unit(
