@@ -150,7 +150,7 @@ workers and take a private snapshot of the entire `/config` directory,
 including the database and matching encryption key. Verify the snapshot before
 pulling the current stable image and recreating the container. Persistent
 settings and library state remain in the mounted paths. See the
-[stopped-backup procedure](docs/deployment.md#upgrading-and-rollback) for the
+[stopped-backup procedure](docs/deployment.md#backups) for the
 complete sequence.
 
 If the installation uses Mangarr's public 1.0.x Compose file, replace its

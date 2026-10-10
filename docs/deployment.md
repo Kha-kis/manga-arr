@@ -394,14 +394,27 @@ every archive as sensitive because it can decrypt saved integration
 credentials. Legacy database-only archives remain valid but require the
 matching key from their original `/config` directory.
 
-For a complete pre-upgrade snapshot, stop Mangarr and archive the host config
-directory:
+For a complete pre-upgrade snapshot, first record the running container's image
+and repository digests, then stop Mangarr and archive the host config directory.
+Run this before pulling a newer image, especially when using a moving tag:
 
 ```bash
+container_id=$(docker compose ps -q mangarr)
+test -n "$container_id"
+image_id=$(docker inspect --format '{{.Image}}' "$container_id")
+docker inspect --format 'configured={{.Config.Image}} image={{.Image}}' \
+  "$container_id" > mangarr-image-before-upgrade.txt
+docker image inspect --format 'digests={{json .RepoDigests}}' \
+  "$image_id" >> mangarr-image-before-upgrade.txt
 docker compose stop mangarr
 tar -C . -czf mangarr-config-backup.tgz config
 docker compose start mangarr
 ```
+
+Keep `mangarr-image-before-upgrade.txt` with the matching config snapshot. For
+rollback, use its `ghcr.io/kha-kis/manga-arr@sha256:...` repository digest rather
+than the moving tag. A locally built image may have no repository digest; retain
+that exact local image for recovery instead of assuming it can be pulled again.
 
 The Backup page creates and validates self-contained backup ZIP files. A full
 host snapshot remains the strongest pre-upgrade recovery artifact because it
@@ -463,23 +476,21 @@ use it.
 
 ### Standard upgrade
 
+Before upgrading:
+
+1. Read the target release in `CHANGELOG.md`.
+2. Record the deployed image and repository digests using the [backup sequence](#backups)
+   above, before pulling the target image.
+3. Create the matching stopped `/config` snapshot.
+4. Confirm the new image supports your architecture and review migration notes.
+
+Then upgrade:
+
 ```bash
 docker compose pull
 docker compose up -d
 docker compose ps mangarr
 ```
-
-Before upgrading:
-
-1. Read the target release in `CHANGELOG.md`.
-2. Create a stopped `/config` snapshot.
-3. Record the currently configured image:
-
-```bash
-docker compose images mangarr
-```
-
-4. Confirm the new image supports your architecture and review migration notes.
 
 After upgrading, verify `/healthz`, **System > Status**, administrator login,
 stored credentials, and a representative search/import workflow.

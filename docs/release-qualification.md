@@ -11,8 +11,10 @@ Status: **IN PREPARATION; NOT PUBLISHED OR RUNTIME-QUALIFIED** (2026-10-10).
 ### Source Baseline
 
 The eight reviewed fixes merged through
-`b2fdf13d6d67d6ad5c5d3a58cc4d423ca4388090` (PRs #408, #409, #410, #411,
-#412, #414, #415 and #416). On that exact pre-release-preparation master,
+`b2fdf13d6d67d6ad5c5d3a58cc4d423ca4388090` (PRs #407, #408, #409, #410,
+#411, #412, #414 and #416). PR #415 separately made the root-folder capacity
+tests deterministic; it does not change application behavior.
+On that exact pre-release-preparation master,
 `make test-release-safe` passed: 3,948 Python tests, 17 existing skips,
 Ruff/format checks, 13 confirmation checks, 10 route checks and 95 isolated
 browser cases. Independent review verified the 23 changed Python files against
