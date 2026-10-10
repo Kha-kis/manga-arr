@@ -5,6 +5,13 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.3.3-rc.1 - 2026-10-10
+
+Release candidate in preparation. Not yet published or runtime-qualified;
+1.3.2 remains the current stable release. See
+[candidate qualification](docs/release-qualification.md#133-rc1-qualification)
+for evidence and outstanding gates.
+
 ### Fixed
 
 - Measure backup health from the newest ZIP modification time rather than

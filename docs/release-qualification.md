@@ -3,6 +3,44 @@
 This document defines the evidence required before a Mangarr release candidate
 can become a stable release. Passing unit tests alone is not sufficient.
 
+## 1.3.3-rc.1 Qualification
+
+Status: **IN PREPARATION; NOT PUBLISHED OR RUNTIME-QUALIFIED** (2026-10-10).
+1.3.2 remains the current qualified stable release and production image.
+
+### Source Baseline
+
+The eight reviewed fixes merged through
+`b2fdf13d6d67d6ad5c5d3a58cc4d423ca4388090` (PRs #408, #409, #410, #411,
+#412, #414, #415 and #416). On that exact pre-release-preparation master,
+`make test-release-safe` passed: 3,948 Python tests, 17 existing skips,
+Ruff/format checks, 13 confirmation checks, 10 route checks and 95 isolated
+browser cases. Independent review verified the 23 changed Python files against
+the reviewed composition with no new scoped type diagnostics (seven unchanged
+baseline diagnostics). These are source-test results, not candidate-image
+runtime evidence or a claim of globally clean typing.
+
+### Outstanding Candidate Gates
+
+- Verify the release-preparation version/docs change, full local release gates,
+  and exact reviewed merge revision before tagging or publishing.
+- Record the immutable published index and platform digests, source revision,
+  runtime version, attestations and fixed High/Critical security scans.
+- Qualify fresh setup and a stopped 1.3.2 configuration-copy upgrade, including
+  metadata ownership/cache preservation and matching stopped rollback.
+- Exercise a fresh download-to-import workflow, including Suwayomi queued
+  source-folder identity and complete volume filenames. Record actual upstream
+  failures separately from application defects; mocks do not satisfy this gate.
+- Smoke-test UI/API, metadata refresh and downloader/import behavior against
+  the candidate. Keep existing downloader configurations and mappings unchanged.
+- Complete independent evidence review before deployment or stable promotion.
+
+No candidate image digest or published-runtime result is available at this
+preparation stage. Record observed evidence here after publication; never
+substitute 1.3.2's historical runtime results for this candidate's results.
+Production upgrade requires a matching verified stopped backup and a qualified
+artifact. An older image must not run against the candidate-migrated database.
+
 ## 1.3.2 Stable Qualification
 
 Status: **QUALIFIED; CURRENT STABLE** (2026-10-08).
