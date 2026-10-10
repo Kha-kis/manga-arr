@@ -7,10 +7,10 @@ All notable changes to this project. Format roughly follows
 
 ## 1.3.3-rc.1 - 2026-10-10
 
-Release candidate in preparation. Not yet published or runtime-qualified;
-1.3.2 remains the current stable release. See
+Published release candidate with representative amd64 runtime checks passing;
+1.3.2 remains the current stable release and owns the stable image aliases. See
 [candidate qualification](docs/release-qualification.md#133-rc1-qualification)
-for evidence and outstanding gates.
+for exact artifact identity, evidence and coverage limits.
 
 ### Fixed
 
