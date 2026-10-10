@@ -27,9 +27,10 @@ compressed-RAR decoding. See the
 [qualification evidence and platform limits](docs/release-qualification.md#132-stable-qualification)
 before upgrading.
 
-**1.3.3-rc.1 is in preparation, not a qualified stable release.** It contains
+**1.3.3-rc.1 is published as a release candidate, not a stable release.** It contains
 further Suwayomi import/retry fixes, metadata retry and coverage corrections,
-and a backup-age health fix. Candidate publication and runtime evidence are
+merged-volume ComicInfo enrichment, and a backup-age health fix. Published-image
+fresh setup, upgrade/rollback and a new download/import passed. Evidence and limits are
 tracked in [Release qualification](docs/release-qualification.md#133-rc1-qualification).
 The stable image aliases remain on 1.3.2.
 

@@ -15,20 +15,29 @@ Release commits must update `app/VERSION`, `CHANGELOG.md`, and the current
 release shown in `README.md` together. Automated tests enforce SemVer syntax and
 documentation consistency.
 
-## 1.3.3-rc.1 Preparation
+## 1.3.3-rc.1 Candidate Status
 
-The next patch candidate contains the reviewed Suwayomi directory/source,
+This patch candidate contains the reviewed Suwayomi directory/source,
 volume-file and queue-error fixes, metadata retry/coverage corrections, and
 backup-age health correction, plus current-series ComicInfo enrichment for
 newly merged Suwayomi volumes. `app/VERSION` identifies the candidate;
 1.3.2 remains the published, qualified stable release.
 
-The release-preparation PR must pass the local release gates before its exact
-reviewed merge commit is tagged. Publish only the immutable full candidate tag;
-do not move `1.3`, `1`, or `latest`. Record the actual source revision, published
-index/platform digests and dated runtime results in
+The reviewed release-preparation merge
+`fd5dc1d99bce0f65236e4a47e735bd1baa70a723` is tagged `v1.3.3-rc.1`. Publication
+and representative amd64 fresh setup, stopped 1.3.2 copy upgrade, matching rollback,
+metadata refresh and a new eight-chapter download/import passed. The full local
+release gate ran on the reviewed preparation head with an identical tree;
+fast/security/image gates also ran on the exact merge revision.
+
+Published index:
+`sha256:282a196c7c92fe46bb280fbf01e51cd1630dfa5da168dba143f2bd11eb318fcd`.
+Only the full candidate image tag was published; `1.3`, `1`, and `latest` remain
+on 1.3.2. Both platform attestations and fixed High/Critical scans passed.
+See exact source/platform identities, dated runtime results and limitations in
 [candidate qualification](release-qualification.md#133-rc1-qualification).
-Pending evidence is not a deployment or stable-promotion approval.
+Candidate evidence is not stable-promotion approval. This documentation update
+does not change the immutable tagged source or published image.
 
 ## 1.3.2 Stable Status
 
@@ -78,6 +87,7 @@ The release workflow publishes `ghcr.io/kha-kis/manga-arr` with these tags:
 
 | Release | Image tags |
 | --- | --- |
+| `1.3.3-rc.1` (candidate) | `1.3.3-rc.1` |
 | `1.3.2` (qualified stable) | `1.3.2`, `1.3`, `1`, `latest` |
 | `1.3.1` | `1.3.1`, `1.3`, `1`, `latest` |
 | `1.3.0` (superseded security hold) | `1.3.0`, `1.3`, `1`, `latest` |

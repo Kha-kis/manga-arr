@@ -5,7 +5,7 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## 1.3.3-rc.1 Qualification
 
-Status: **IN PREPARATION; NOT PUBLISHED OR RUNTIME-QUALIFIED** (2026-10-10).
+Status: **PUBLISHED; REPRESENTATIVE AMD64 CANDIDATE GATES AND INDEPENDENT REVIEW PASSED** (2026-10-10).
 1.3.2 remains the current qualified stable release and production image.
 
 ### Source Baseline
@@ -40,31 +40,87 @@ nonstandard shell masks: 0002 permitted group writes and 0077 masked an explicit
 No production permissions, safety assertions or application code were changed
 to resolve those environment failures.
 
-### Outstanding Candidate Gates
+### Release Head And Published Artifact
 
-- Verify the release-preparation version/docs change, full local release gates,
-  and exact reviewed merge revision before tagging or publishing.
-- Record the immutable published index and platform digests, source revision,
-  runtime version, attestations and fixed High/Critical security scans.
-- Qualify fresh setup and a stopped 1.3.2 configuration-copy upgrade, including
-  metadata ownership/cache preservation and matching stopped rollback.
-- Exercise a fresh download-to-import workflow, including Suwayomi queued
-  source-folder identity, complete volume filenames and merged-volume
-  ComicInfo.xml generated from current stored metadata. The old local source's
-  eight-chapter, 254-page workflow passed download/import but exposed missing
-  merged-volume enrichment; that is fixed in #418. Repeat the workflow on the
-  corrected immutable artifact with the XML and final history-size checks.
-  Record actual upstream
-  failures separately from application defects; mocks do not satisfy this gate.
-- Smoke-test UI/API, metadata refresh and downloader/import behavior against
-  the candidate. Keep existing downloader configurations and mappings unchanged.
-- Complete independent evidence review before deployment or stable promotion.
+- Reviewed preparation head: `5c5fe8f9bd8a28aaf7182548cd80372c3c75c8ac`.
+  `make release-local` passed: 3,953 Python tests, 17 existing skips, 95 isolated
+  browsers, lint/format, confirmation/route checks, dependency/history-secret/
+  configuration scans and local image verification/fixed High/Critical scanning.
+- PR #417 merged at `fd5dc1d99bce0f65236e4a47e735bd1baa70a723`. Its tree is
+  identical to that fully tested preparation head. Exact merge fast/security/
+  image gates passed. The full gate is not relabeled as a literal merge-commit run.
+- Annotated `v1.3.3-rc.1` tag object: `462903f13f84e1ebaed5990f47608b56b1d5e348`.
+  It points at the exact merge above and has not been moved.
+- [Release Image run 38024951805](https://github.com/Kha-kis/manga-arr/actions/runs/38024951805)
+  succeeded at 2026-10-10T04:45:46Z.
+- Published index: `sha256:282a196c7c92fe46bb280fbf01e51cd1630dfa5da168dba143f2bd11eb318fcd`.
+- amd64 manifest: `sha256:aca5227eabd8657840e0fa93ef22b2df966d70b92db6089c07a25570bc6987ab`.
+- arm64 manifest: `sha256:9605448b51ab2b6f74fa91156a1a17d67db22ffc79123cd5c6f6676d8f5106fb`.
+- Both platforms identify version 1.3.3-rc.1 and the exact merge, with SPDX 2.3
+  SBOMs containing 151 packages and SLSA provenance naming the workflow builder
+  and build arguments. Build date: 2026-10-10T04:41:47Z.
+- Published image version, OCI labels, non-root user and file-inventory checks
+  passed. Dated fixed High/Critical scans passed on both exact platform artifacts;
+  this does not claim all severities or future scan results are clean.
+- `1.3.3-rc.1` is the only new image tag. `1.3.2`, `1.3`, `1` and `latest`
+  still resolve to the qualified 1.3.2 index recorded below.
 
-No candidate image digest or published-runtime result is available at this
-preparation stage. Record observed evidence here after publication; never
-substitute 1.3.2's historical runtime results for this candidate's results.
-Production upgrade requires a matching verified stopped backup and a qualified
-artifact. An older image must not run against the candidate-migrated database.
+### Published Runtime Checks
+
+- Fresh setup, login/logout/relogin, version/API/health and browser error checks
+  passed on the published amd64 artifact.
+- Upgrade from an October 10 stopped production 1.3.2 configuration copy and
+  matching stopped rollback passed. Protected metadata, provenance, candidates,
+  locks, provider IDs, library observations, integration configuration and
+  credential decryption were preserved. The encryption key was unchanged.
+  Upgrade and rollback had no protected-table or observation differences across
+  42 protected tables and 18 positively decrypted credential records.
+- Integration scheduling and two inherited queued Suwayomi jobs were disabled
+  only in the private upgrade/rollback copies. Those rows and IDs were retained;
+  inherited-job replay is excluded from this evidence. Rollback uses its matching
+  pre-upgrade database/key, never the candidate-migrated database.
+- A separate fresh Mangarr/Suwayomi pair completed a new full-volume download
+  through the English MangaDex source: eight chapters, 254 pages, 352.2 seconds.
+  All 66,264,365 source bytes were merged into a 71,197,671-byte CBZ. The exact
+  image ordering/content, ZIP integrity, unique root ComicInfo.xml, current stored
+  series/volume context, absent inherited chapter Number, and final imported
+  history size passed. History records Suwayomi/DDL provenance.
+- Source archives were mounted read-only in Mangarr. Real-run source hashes were
+  captured after download/import completion, before qualification; this is not
+  a measured pre/post-import hash comparison. Separate regression tests prove
+  that boundary, and the real output matches every downloaded image.
+- The fresh workflow used private new state, one job, a 512 MiB scratch limit,
+  copy imports and unchanged deadlines. No existing production downloader jobs,
+  mappings, settings or library files were changed. Owned containers were stopped,
+  forwarding closed and scratch unmounted after the run, without OOM or restarts.
+
+### Coverage Limits And Next Gates
+
+The pinned Suwayomi version could not convert the current publisher APK
+(Java verification failure). Fresh qualification used the unmodified publisher's
+precompiled JAR, installed through the normal extension endpoint; it did not reuse
+production extension state or bypass verification. This proves that compatible
+extension path, not arbitrary extension/runtime compatibility.
+
+Earlier upstream rate-limit/timeout and source `NoChapters` attempts remain
+failed attempts, not passing qualification. A private test-client host missing its
+scheme was corrected before the fresh workflow; public API host validation is a
+separate follow-up. Fractional-volume ComicInfo formatting remains an independent
+follow-up; this candidate does not change the existing formatter.
+
+This candidate has representative amd64 HTTP/metadata/download/import coverage,
+not native ARM runtime, every provider/source, live Suwayomi queue replay, or a
+repeat of 1.3.2's NFS, administrator-reset and large-archive artifact qualification.
+Historical 1.3.2 receipts below are not reassigned to this image. Stable promotion
+requires independent evidence review and any remaining stable acceptance gates.
+
+Production upgrade requires a new matching verified stopped backup and a
+qualified artifact. The older qualification snapshot is not a fresh cutover
+backup. An older image must not run against the candidate-migrated database.
+Independent evidence review cleared the GitHub prerelease and conditionally
+cleared Mangarr-only production RC qualification after that fresh backup. It did
+not clear stable promotion. Production cutover and subsequent live smoke checks
+are separate from the isolated results above.
 
 ## 1.3.2 Stable Qualification
 
