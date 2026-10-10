@@ -95,7 +95,9 @@ def test_job_source_wins_over_stale_and_current_relink(
     if kind == "volume-copy":
         output /= expected.name
     with zipfile.ZipFile(output) as cbz:
-        assert cbz.read(cbz.namelist()[0]) == b"queued-source"
+        assert cbz.read("0001.png") == b"queued-source"
+        if kind == "volume-merge":
+            assert cbz.namelist().count("ComicInfo.xml") == 1
     assert len(queries) == 1
     assert "displayName" in queries[0]
     assert expected.exists()
