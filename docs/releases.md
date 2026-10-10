@@ -15,6 +15,21 @@ Release commits must update `app/VERSION`, `CHANGELOG.md`, and the current
 release shown in `README.md` together. Automated tests enforce SemVer syntax and
 documentation consistency.
 
+## 1.3.3-rc.1 Preparation
+
+The next patch candidate contains the reviewed Suwayomi directory/source,
+volume-file and queue-error fixes, metadata retry/coverage corrections, and
+backup-age health correction, plus current-series ComicInfo enrichment for
+newly merged Suwayomi volumes. `app/VERSION` identifies the candidate;
+1.3.2 remains the published, qualified stable release.
+
+The release-preparation PR must pass the local release gates before its exact
+reviewed merge commit is tagged. Publish only the immutable full candidate tag;
+do not move `1.3`, `1`, or `latest`. Record the actual source revision, published
+index/platform digests and dated runtime results in
+[candidate qualification](release-qualification.md#133-rc1-qualification).
+Pending evidence is not a deployment or stable-promotion approval.
+
 ## 1.3.2 Stable Status
 
 The 1.3.2 image was published on 2026-10-08 from exact source

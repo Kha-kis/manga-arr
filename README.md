@@ -22,20 +22,16 @@ omnibuses, specials, and multi-volume packs instead of treating manga like a
 generic TV or book collection.
 
 **1.3.2 is the current published, qualified stable release.** It includes
-durable NAS file/pack recovery, ownership-loss compensation, rescan
-replay, acquisition-policy preservation, Suwayomi fixes, and compressed-RAR
-decoding. All local release gates passed. Published image identity, attestations,
-and fixed High/Critical scans passed; `1.3.2`, `1.3`, `1`, and `latest` now
-resolve to its verified index. Published amd64 upgrade/rollback, reset,
-large-archive, decoder and NFS checks passed. Temporary emulated qualification
-from the exact published ARM image passed its decoder checks; this is not
-native ARM hardware or ARM NFS/HTTP qualification. Final independent audit/GO
-passed. See the [qualification evidence](docs/release-qualification.md#132-stable-qualification)
+durable NAS recovery, acquisition-policy protection, Suwayomi fixes, and
+compressed-RAR decoding. See the
+[qualification evidence and platform limits](docs/release-qualification.md#132-stable-qualification)
 before upgrading.
 
-**1.3.1** retains its historical qualification and unchanged exact image;
-its former moving aliases now point to 1.3.2. Historical security, upgrade and
-rollback evidence remains in [Release qualification](docs/release-qualification.md#131-stable-qualification).
+**1.3.3-rc.1 is in preparation, not a qualified stable release.** It contains
+further Suwayomi import/retry fixes, metadata retry and coverage corrections,
+and a backup-age health fix. Candidate publication and runtime evidence are
+tracked in [Release qualification](docs/release-qualification.md#133-rc1-qualification).
+The stable image aliases remain on 1.3.2.
 
 Mangarr is self-hosted, designed for a single administrator, and distributed
 as a multi-platform container image.
@@ -149,8 +145,13 @@ and the [release qualification](docs/release-qualification.md#132-stable-qualifi
 
 ## Upgrading
 
-Back up `/config`, then pull the current stable image and recreate the
-container. Persistent settings and library state remain in the mounted paths.
+Record the currently deployed image tag and digest, then stop Mangarr and its
+workers and take a private snapshot of the entire `/config` directory,
+including the database and matching encryption key. Verify the snapshot before
+pulling the current stable image and recreating the container. Persistent
+settings and library state remain in the mounted paths. See the
+[stopped-backup procedure](docs/deployment.md#backups) for the
+complete sequence.
 
 If the installation uses Mangarr's public 1.0.x Compose file, replace its
 interpolated `image:` line with `ghcr.io/kha-kis/manga-arr:latest` before this
@@ -165,9 +166,14 @@ docker compose ps
 ```
 
 Verify `/healthz`, System Status, and a representative search/import workflow.
-For a version pin or rollback, replace `latest` on the `image:` line with an
-exact tag such as `1.0.1`, restore the matching `/config` backup, and run the
-same pull and up commands. Do not run an older image against a database migrated
+To pin a version, replace `latest` on the `image:` line with an exact tag such
+as `1.3.2`, optionally pinned to its published digest. Pinning the current
+version does not require restoring a backup.
+
+For rollback, stop Mangarr and its workers, restore the matching stopped
+`/config` snapshot and encryption key, and select the previous pinned image
+before restarting. Preserve any retained recovery artifacts and their matching
+library/download state. Do not run an older image against a database migrated
 by a newer release. The complete procedure is in
 [Deployment and recovery](docs/deployment.md#upgrading-and-rollback).
 
@@ -193,6 +199,10 @@ Never publish API keys, passwords, private tracker URLs, or encryption keys.
 | Area | Reference |
 | --- | --- |
 | Install, networking, backup, upgrade, and recovery | [Deployment and recovery](docs/deployment.md) |
+| Suwayomi source folders and ambiguous directory matches | [Directory selection](docs/suwayomi-directory-selection.md) |
+| Suwayomi chapter and volume filename matching | [File selection](docs/suwayomi-file-selection.md) |
+| Automatic metadata refresh strategies and retry deadlines | [Metadata retry policy](docs/metadata-retry-policy.md) |
+| Chapter-map coverage, provider failures, and cached maps | [Chapter-map outcomes](docs/chapter-map-outcomes.md) |
 | Supported Sonarr workflows and compatibility limits | [Sonarr parity](docs/sonarr-parity.md) |
 | Versioning and release procedure | [Releases and versioning](docs/releases.md) |
 | Stable-release acceptance gate | [Release qualification](docs/release-qualification.md) |

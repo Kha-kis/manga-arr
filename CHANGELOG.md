@@ -5,12 +5,19 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.3.3-rc.1 - 2026-10-10
+
+Release candidate in preparation. Not yet published or runtime-qualified;
+1.3.2 remains the current stable release. See
+[candidate qualification](docs/release-qualification.md#133-rc1-qualification)
+for evidence and outstanding gates.
+
 ### Fixed
 
 - Generate ComicInfo.xml for newly merged Suwayomi volumes from current stored
   series metadata, preserving selected titles and original chapter archives.
   Metadata enrichment remains best-effort, as with normal imports; existing
-  destination archives and individual chapter copies are unchanged.
+  destination archives and individual chapter copies are unchanged (#418).
 - Measure backup health from the newest ZIP modification time rather than
   filename order, so an older legacy-named archive does not hide a fresh backup.
   Keep the existing seven-day warning threshold; this age check does not
