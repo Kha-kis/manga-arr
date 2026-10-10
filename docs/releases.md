@@ -15,13 +15,30 @@ Release commits must update `app/VERSION`, `CHANGELOG.md`, and the current
 release shown in `README.md` together. Automated tests enforce SemVer syntax and
 documentation consistency.
 
+## 1.3.3-rc.2 Candidate Status
+
+This replacement candidate is prepared but not published or qualified.
+`app/VERSION` identifies 1.3.3-rc.2. PR #423 merged at
+`0df8fc75e0fbe2b2ca79f6299cb66308c7789dee`, adding loose-chapter preservation
+and rescan recovery, dotted-title compatibility and discovered-volume alias
+exclusions. Optional library-file cleanup remains a separate proposal in #422.
+
+The source fix passed its full release-safe gate and independent review.
+The release preparation still requires its own local release gate, reviewed
+merge, immutable tag, publication and exact-artifact qualification. See
+[RC2 qualification](release-qualification.md#133-rc2-qualification).
+Do not reuse RC1's artifact receipts for RC2. Neither `v1.3.3-rc.1` nor its
+published image is replaced; 1.3.2 keeps the stable aliases and production
+remains on the separately deployed RC1 until an authorized qualified cutover.
+
 ## 1.3.3-rc.1 Candidate Status
 
 This patch candidate contains the reviewed Suwayomi directory/source,
 volume-file and queue-error fixes, metadata retry/coverage corrections, and
 backup-age health correction, plus current-series ComicInfo enrichment for
-newly merged Suwayomi volumes. `app/VERSION` identifies the candidate;
-1.3.2 remains the published, qualified stable release.
+newly merged Suwayomi volumes. The immutable RC1 tag identifies its published
+source. It predates the loose-chapter state correction. 1.3.2 remains the
+qualified stable release.
 
 The reviewed release-preparation merge
 `fd5dc1d99bce0f65236e4a47e735bd1baa70a723` is tagged `v1.3.3-rc.1`. Publication

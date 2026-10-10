@@ -3,6 +3,59 @@
 This document defines the evidence required before a Mangarr release candidate
 can become a stable release. Passing unit tests alone is not sufficient.
 
+## 1.3.3-rc.2 Qualification
+
+Status: **PREPARED; NOT PUBLISHED OR ARTIFACT-QUALIFIED** (2026-10-10).
+1.3.2 remains the qualified stable release and owns the stable aliases.
+Production remains on the separately deployed 1.3.3-rc.1 artifact.
+
+### Source Baseline
+
+[PR #423](https://github.com/Kha-kis/manga-arr/pull/423) merged at
+`0df8fc75e0fbe2b2ca79f6299cb66308c7789dee`. Its tree matches the reviewed
+fix head `c3f0f0b1a21e007b942bb00354ad696197528c97`. The frozen patch passed
+`make test-release-safe` with exit zero: 4,135 Python tests, 17 existing skips,
+95 isolated browser cases, lint/format, 13 confirmation checks and 10 route
+checks. Python hashes match the committed fix; this is not relabeled as a
+literal merge-commit run. An owned test network with verified nonconflicting
+IPAM avoided the host's exhausted default Docker pools and was removed by the
+unchanged runner. No existing networks or production services were changed.
+
+The 182 new chapter-state cases include the original deletion/rescan failures
+and reproduced review gaps for dotted current titles, historical persisted
+titles and aliases of all recognized volume candidates. Related focused tests
+passed 445 cases; independent review passed 210 chapter-state/purge controls
+with no actionable finding. Actual scoped LSP had no errors/warnings. Matched
+pre-fix master CLI retained 20 existing errors, with warnings increasing from
+139 to 157; configured three-file CLI retained one existing import cycle and reported
+613 warnings. No diagnostics were suppressed and no globally clean type-check
+is claimed. Committed-fix dependency, history-secret and configuration gates
+passed; these do not qualify a release image.
+
+The correction changes neither metadata ownership nor provider identity,
+schema or APIs. Loose observations do not prove ZIP integrity or content
+equivalence, and do not authorize cleanup. Optional redundant library-file
+cleanup remains a separate contribution proposal in #422.
+
+### Required Candidate Gates
+
+- Run the full local release gate on the clean preparation head, then review
+  and merge that exact preparation without unrelated source changes.
+- Create a new immutable `v1.3.3-rc.2` tag on the reviewed merge. Never move
+  RC1's Git or image tag, and never publish stable aliases for RC2.
+- Verify the exact published index and both platform identities, SPDX/SLSA
+  attestations and dated fixed High/Critical scans.
+- Qualify fresh setup, stopped-copy upgrade and matching rollback. Preserve
+  database/key, identities, provenance, locks, downloaded observations and
+  integration configuration; do not replay inherited live jobs in test copies.
+- Verify deletion/rescan with independent loose chapters and volume aliases
+  on the exact candidate artifact, including representative NAS behavior.
+- Repeat representative metadata and a new bounded download/import workflow;
+  RC1's published runtime results are historical, not RC2 qualification.
+- Obtain independent artifact-evidence review before claiming qualification
+  or stable promotion. A production cutover needs its own authorization and
+  a new matching verified stopped backup; source gates alone do not clear it.
+
 ## 1.3.3-rc.1 Qualification
 
 Status: **PUBLISHED; REPRESENTATIVE AMD64 CANDIDATE GATES AND INDEPENDENT REVIEW PASSED** (2026-10-10).
