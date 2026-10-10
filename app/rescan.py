@@ -438,17 +438,21 @@ def _has_chapter_marker(filename: str) -> bool:
 
 
 def _file_identity_label(filename: str, series_title: str) -> str:
-    prefix = sanitize_filename(series_title) + " "
-    return (
-        filename[len(prefix) :]
-        if filename[: len(prefix)].casefold() == prefix.casefold()
-        else filename
-    )
+    for title in (
+        sanitize_filename(series_title),
+        _apply_format_tokens("{Series.Title}", series_title),
+    ):
+        prefix = title + " "
+        if filename[: len(prefix)].casefold() == prefix.casefold():
+            return filename[len(prefix) :]
+    return filename
 
 
 def _loose_chapter_inventory(
     snapshot: SeriesRescanSnapshot,
     imported_at: str,
+    *,
+    discovered_volume_inodes: set[tuple[int, int]] | None = None,
 ) -> dict[int, InventoryFile]:
     """Existing rows only: persisted independent paths or exact managed CBZ names."""
     series_dir = snapshot.series_dir
@@ -464,7 +468,11 @@ def _loose_chapter_inventory(
         for row in (*snapshot.numbered, *snapshot.packs)
         if row["import_path"]
     }
-    excluded_inodes: set[tuple[int, int]] = set()
+    if discovered_volume_inodes is None:
+        _, _, discovered_volume_inodes = _volume_filesystem_inventory(
+            snapshot, imported_at
+        )
+    excluded_inodes = set(discovered_volume_inodes)
     for path in volume_paths:
         try:
             metadata = os.stat(path)
@@ -528,19 +536,32 @@ def _loose_chapter_inventory(
             if extract_chapter_range(label) is not None:
                 continue
             if path not in canonical_paths and _has_chapter_marker(label):
-                # An exact persisted path can retain an old title containing
-                # "Chapter N"; only its terminal managed suffix identifies the row.
+                # Only an exact persisted path may retain one historical title
+                # marker. Current-title conflicts and ranges remain refused.
                 suffix = f" Ch{number_label}.cbz"
                 if label == filename and label.casefold().endswith(suffix.casefold()):
                     prefix = label[: -len(suffix)]
-                    prefix = re.sub(
-                        r"\bChapter\.?\s*\d+(?:\.\d+)?",
-                        "",
-                        prefix,
-                        flags=re.IGNORECASE,
+                    historical_markers = list(
+                        re.finditer(
+                            r"\b(?:ch(?:a(?:p(?:ter)?)?)?s?|ep(?:isode)?)\.?\s*\d+(?:\.\d+)?"
+                            r"|\bc\d{2,}(?:\.\d+)?|第\s*\d+(?:\.\d+)?\s*話",
+                            prefix,
+                            flags=re.IGNORECASE,
+                        )
                     )
-                    if not _has_chapter_marker(prefix):
-                        label = label[-len(suffix) :]
+                    # Two terminal-style managed chapter labels cannot establish
+                    # which number belongs to a historical title.
+                    managed_prefix = re.search(
+                        r"(?:^|\s)Ch(?:\d{3,}|\d+\.\d+)$", prefix, flags=re.IGNORECASE
+                    )
+                    if len(historical_markers) == 1 and managed_prefix is None:
+                        marker = historical_markers[0]
+                        trailing = prefix[marker.end() :]
+                        remainder = prefix[: marker.start()] + trailing
+                        if not _has_chapter_marker(remainder) and not re.match(
+                            r"\s*[-–—~]\s*\d", trailing
+                        ):
+                            label = label[-len(suffix) :]
                 markers = re.findall(
                     r"\b(?:ch(?:a(?:p(?:ter)?)?)?s?|ep(?:isode)?)\.?\s*\d|\bc\d{2,}|第\s*\d+\s*話",
                     label,
@@ -569,13 +590,14 @@ def _loose_chapter_inventory(
     }
 
 
-def build_filesystem_inventory(
+def _volume_filesystem_inventory(
     snapshot: SeriesRescanSnapshot,
-) -> SeriesFilesystemInventory:
-    """Walk a series directory once and finish all filesystem work for reconciliation."""
+    imported_at: str,
+) -> tuple[dict[float, InventoryFile], bool, set[tuple[int, int]]]:
+    """Observe all volume candidates; inode exclusions include non-winning paths."""
     files_by_volume: dict[float, InventoryFile] = {}
+    volume_inodes: set[tuple[int, int]] = set()
     any_library_files = False
-    imported_at = datetime.utcnow().isoformat()
     preferred_paths = {
         float(volume["volume_num"]): os.path.normcase(
             os.path.abspath(str(volume["import_path"]))
@@ -615,17 +637,28 @@ def build_filesystem_inventory(
                 ) == os.path.normcase(os.path.abspath(path))
                 if _has_chapter_marker(identity_label) and not preferred:
                     continue
-                if volume_num is not None and (
-                    volume_num not in files_by_volume or preferred
-                ):
+                if volume_num is not None:
                     fingerprint = _fingerprint(stat_result)
-                    files_by_volume[volume_num] = InventoryFile(
-                        path=path,
-                        size_bytes=fingerprint.size_bytes,
-                        quality=quality_from_filename(path),
-                        imported_at=imported_at,
-                        fingerprint=fingerprint,
-                    )
+                    volume_inodes.add((fingerprint.device, fingerprint.inode))
+                    if volume_num not in files_by_volume or preferred:
+                        files_by_volume[volume_num] = InventoryFile(
+                            path=path,
+                            size_bytes=fingerprint.size_bytes,
+                            quality=quality_from_filename(path),
+                            imported_at=imported_at,
+                            fingerprint=fingerprint,
+                        )
+    return files_by_volume, any_library_files, volume_inodes
+
+
+def build_filesystem_inventory(
+    snapshot: SeriesRescanSnapshot,
+) -> SeriesFilesystemInventory:
+    """Walk a series directory once and finish all filesystem work for reconciliation."""
+    imported_at = datetime.utcnow().isoformat()
+    files_by_volume, any_library_files, volume_inodes = _volume_filesystem_inventory(
+        snapshot, imported_at
+    )
 
     pack_paths_present: dict[int, bool] = {}
     for pack in snapshot.packs:
@@ -637,7 +670,9 @@ def build_filesystem_inventory(
         files_by_volume=files_by_volume,
         any_library_files=any_library_files,
         pack_paths_present=pack_paths_present,
-        files_by_chapter=_loose_chapter_inventory(snapshot, imported_at),
+        files_by_chapter=_loose_chapter_inventory(
+            snapshot, imported_at, discovered_volume_inodes=volume_inodes
+        ),
     )
 
 

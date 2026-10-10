@@ -209,6 +209,14 @@ private recovery files, volume/pack paths or aliases of those archives. Multiple
 eligible files or conflicting chapter identities are refused. This is not a
 general scan of arbitrary source filenames, ranges or other archive formats.
 
+Alias checks include every recognized volume file discovered during inventory,
+not just persisted paths or the chosen volume candidate. Discovery remains
+observation-only during deletion; it does not import or delete those files.
+Supported dotted title tokens are treated as current title prefixes rather
+than chapter labels. Historical title compatibility requires an exact persisted
+chapter path and a matching terminal managed chapter suffix; ambiguous labels
+and conflicting markers after a recognized current title remain refused.
+
 Monitoring, provider identities, selected metadata and chapter mappings are
 not changed. Database snapshot guards and filesystem-operation fences prevent
 stale reconciliation from overwriting a newer participating operation. Merely

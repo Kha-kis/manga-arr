@@ -502,6 +502,224 @@ def test_persisted_independent_chapter_identity_survives_title_edit(
     assert path.exists()
 
 
+@pytest.mark.parametrize("untracked", [False, True])
+@pytest.mark.parametrize("conflict", [False, True])
+def test_supported_dotted_title_volume_inventory(
+    state_env, monkeypatch, untracked, conflict
+):
+    import files
+    import rescan
+    import shared
+
+    monkeypatch.setitem(shared.CONFIG, "file_format", "{Series.Title} v{Volume:02d}")
+    filename = files.build_filename("Chapter 13", 1, "original.cbz")
+    assert filename == "Chapter.13 v01.cbz"
+    if conflict:
+        filename = filename.replace(" v01", " Chapter 2 v01")
+    path = state_env["library"] / filename
+    archive(path)
+    with sqlite3.connect(state_env["db_path"]) as db:
+        db.execute("UPDATE series SET title='Chapter 13' WHERE id=1")
+        if untracked:
+            db.execute("UPDATE chapters SET volume_id=NULL")
+            db.execute("DELETE FROM volumes")
+    before_chapters = rows(state_env, "chapters")
+    result = rescan.rescan_series_folder(1)
+    assert result["created"] == int(untracked and not conflict)
+    assert result["recovered"] == int(not untracked and not conflict)
+    expected_chapters = [
+        {**chapter, "status": "downloaded"}
+        if not conflict and not untracked
+        else chapter
+        for chapter in before_chapters
+    ]
+    assert rows(state_env, "chapters") == expected_chapters
+    if not conflict:
+        assert rows(state_env, "volumes")[0]["import_path"] == str(path)
+        assert rows(state_env, "volumes")[0]["status"] == "downloaded"
+
+
+@pytest.mark.parametrize("operation", ["delete", "rescan"])
+@pytest.mark.parametrize(
+    "marker", ["Chapter 13", "Episode 2", "Ep 2", "Ch2", "C02", "第2話"]
+)
+@pytest.mark.parametrize(
+    "identity",
+    [
+        "current",
+        "historical",
+        "historical-words",
+        "conflict",
+        "dotted-conflict",
+        "unowned",
+    ],
+)
+def test_persisted_marker_title_has_bounded_terminal_chapter_identity(
+    state_env, operation, marker, identity
+):
+    import rescan
+    import volume_file_deletion
+
+    title = marker if identity == "current" else "Other Title"
+    filename = f"{marker} Ch001.cbz"
+    if identity == "historical-words":
+        filename = f"The {marker} Story Ch001.cbz"
+    if identity in ("conflict", "dotted-conflict"):
+        title = "State Series"
+        prefix = "State.Series" if identity == "dotted-conflict" else title
+        filename = f"{prefix} {marker} Ch001.cbz"
+    path = state_env["library"] / filename
+    volume = state_env["library"] / "State Series v01.cbz"
+    archive(path)
+    if operation == "delete":
+        archive(volume)
+    with sqlite3.connect(state_env["db_path"]) as db:
+        db.execute("UPDATE series SET title=? WHERE id=1", (title,))
+        db.execute(
+            "UPDATE chapters SET status=?,import_path=? WHERE id=1",
+            (
+                "downloaded" if operation == "delete" else "wanted",
+                None if identity == "unowned" else str(path),
+            ),
+        )
+        if operation == "delete":
+            db.execute(
+                "UPDATE volumes SET status='downloaded',import_path=? WHERE id=11",
+                (str(volume),),
+            )
+    before_series = rows(state_env, "series")
+    before_chapters = rows(state_env, "chapters")
+    accepted = identity in ("current", "historical", "historical-words")
+    if operation == "delete":
+        assert volume_file_deletion.delete_volume_file(1, 11).status == "complete"
+    else:
+        result = rescan.rescan_series_folder(1)
+        assert result["recovered"] == int(accepted)
+        assert result["created"] == 0
+    after = rows(state_env, "chapters")
+    assert after[0]["status"] == ("downloaded" if accepted else "wanted")
+    if accepted:
+        assert after[0] == {**before_chapters[0], "status": "downloaded"}
+    assert rows(state_env, "series") == before_series
+    assert path.exists()
+
+
+@pytest.mark.parametrize("operation", ["delete", "rescan"])
+@pytest.mark.parametrize(
+    "prefix",
+    ["Episode 2 Ep 3", "Ch002", "Chapter 2-3", "Ep 2-3", "C02-03", "第2話-第3話"],
+)
+def test_historical_persisted_suffix_does_not_erase_ambiguous_prefix(
+    state_env, operation, prefix
+):
+    import rescan
+    import volume_file_deletion
+
+    path = state_env["library"] / f"{prefix} Ch001.cbz"
+    volume = state_env["library"] / "State Series v01.cbz"
+    archive(path)
+    if operation == "delete":
+        archive(volume)
+    with sqlite3.connect(state_env["db_path"]) as db:
+        db.execute("UPDATE series SET title='Other Title' WHERE id=1")
+        db.execute(
+            "UPDATE chapters SET status=?,import_path=? WHERE id=1",
+            ("downloaded" if operation == "delete" else "wanted", str(path)),
+        )
+        if operation == "delete":
+            db.execute(
+                "UPDATE volumes SET status='downloaded',import_path=? WHERE id=11",
+                (str(volume),),
+            )
+    if operation == "delete":
+        assert volume_file_deletion.delete_volume_file(1, 11).status == "complete"
+    else:
+        assert rescan.rescan_series_folder(1)["recovered"] == 0
+    assert rows(state_env, "chapters")[0]["status"] == "wanted"
+
+
+@pytest.mark.parametrize("operation", ["delete", "rescan"])
+@pytest.mark.parametrize(
+    "ownership", ["wanted", "missing-path", "untracked", "alternate"]
+)
+@pytest.mark.parametrize("alias", [True, False])
+def test_discovered_volume_inode_cannot_be_independent_chapter(
+    state_env, monkeypatch, operation, ownership, alias
+):
+    import rescan
+    import volume_file_deletion
+
+    volume = state_env["library"] / "State Series v01.cbz"
+    discovered = volume
+    persisted = None
+    status = "wanted"
+    if ownership in ("untracked", "alternate"):
+        archive(volume, b"owned volume")
+        persisted = str(volume)
+        status = "downloaded"
+        discovered = state_env["library"] / (
+            "State Series v02.cbz"
+            if ownership == "untracked"
+            else "State Series v01 alternate.cbz"
+        )
+    elif ownership == "missing-path":
+        persisted = str(state_env["library"] / "missing.cbz")
+        status = "downloaded"
+    archive(discovered, b"discovered volume")
+    chapter = state_env["library"] / "State Series Ch001.cbz"
+    if alias:
+        chapter.hardlink_to(discovered)
+    else:
+        archive(chapter, b"independent chapter")
+    with sqlite3.connect(state_env["db_path"]) as db:
+        db.execute(
+            "UPDATE volumes SET status=?,import_path=? WHERE id=11", (status, persisted)
+        )
+        db.execute(
+            "UPDATE chapters SET status=?,import_path=? WHERE id=1",
+            ("downloaded" if operation == "delete" else "wanted", str(chapter)),
+        )
+    observed = []
+    if operation == "delete":
+        original = volume_file_deletion.inspect_volume_file_deletion
+
+        def capture(*args):
+            inspection = original(*args)
+            assert inspection is not None
+            observed.append(inspection.independent_chapters)
+            return inspection
+
+        monkeypatch.setattr(
+            volume_file_deletion, "inspect_volume_file_deletion", capture
+        )
+        assert volume_file_deletion.delete_volume_file(1, 11).status == "complete"
+    else:
+        original = rescan.build_filesystem_inventory
+
+        def capture(*args):
+            inventory = original(*args)
+            observed.append(inventory.files_by_chapter)
+            return inventory
+
+        monkeypatch.setattr(rescan, "build_filesystem_inventory", capture)
+        rescan.rescan_series_folder(1)
+    assert (1 in observed[0]) == (not alias)
+    if operation == "delete" or not alias:
+        assert rows(state_env, "chapters")[0]["status"] == (
+            "wanted" if alias else "downloaded"
+        )
+    assert chapter.exists()
+    if operation == "delete":
+        # The discovery is observation-only; untracked/alternate files are never deleted.
+        assert discovered.exists()
+        with rescan.get_db() as db:
+            snapshot = rescan.snapshot_series_rescan(db, 1)
+        assert snapshot is not None
+        assert (1 in rescan.build_filesystem_inventory(snapshot).files_by_chapter) == (
+            not alias
+        )
+
+
 @pytest.mark.parametrize("operation", ["delete", "rescan"])
 @pytest.mark.parametrize("kind", ["rescan", "import", "publication", "deletion"])
 def test_writer_rechecks_late_competing_fence(state_env, monkeypatch, operation, kind):
