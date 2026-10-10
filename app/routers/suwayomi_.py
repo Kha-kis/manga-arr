@@ -1210,7 +1210,8 @@ def _import_suwayomi_volume_files(
     import main as _m
 
     with get_db() as db:
-        s_row = db.execute("SELECT * FROM series WHERE id=?", (series_id,)).fetchone()
+        series_row = db.execute("SELECT * FROM series WHERE id=?", (series_id,)).fetchone()
+        s_row = dict(series_row) if series_row else None
         series_dir = _m._series_library_dir(db, series_id) if s_row else None
 
     if not s_row:
@@ -1260,7 +1261,10 @@ def _import_suwayomi_volume_files(
             return out_path, os.path.getsize(out_path)
         log.info("Merging %d chapter(s) → %s", len(chapter_paths), out_path)
         size = _merge_cbzs(chapter_paths, out_path)
-        return (out_path, size) if size else (None, 0)
+        if not size:
+            return None, 0
+        _m._try_inject_comicinfo(out_path, s_row, volume_num=volume_num)
+        return out_path, os.path.getsize(out_path)
     else:
         # ── Copy individual chapter CBZs to a volume subdirectory ─────────────
         vol_dir = os.path.join(series_dir, f"v{vol_str}") if series_dir else None

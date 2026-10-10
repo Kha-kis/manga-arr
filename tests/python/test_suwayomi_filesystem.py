@@ -11,10 +11,15 @@ helpers in app/routers/suwayomi_.py:
 
 All paths are inside pytest's tmp_path. No real media folders touched.
 """
+import asyncio
+import hashlib
 import os
+from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+from typing import Any
+import xml.etree.ElementTree as ET
 import zipfile
 
 import pytest
@@ -282,7 +287,166 @@ def test_import_volume_merges_chapters_into_one_cbz(import_env):
     assert size > 0
     assert os.path.basename(path) == "Test Series v01.cbz"
     with zipfile.ZipFile(path) as zf:
-        assert len(zf.namelist()) == 5  # 2 + 3 pages
+        assert len([name for name in zf.namelist() if name.endswith(".png")]) == 5
+
+
+@pytest.fixture
+def merged_volume_env(import_env: dict[str, Any]) -> dict[str, Any]:
+    with sqlite3.connect(import_env["db_path"]) as db:
+        db.execute(
+            "INSERT INTO series(id,title,search_pattern,description,status,pub_year,"
+            "total_volumes,total_chapters,anilist_id,mal_id,mangadex_id)"
+            " VALUES(7,?,?,?,?,?,?,?,?,?,?)",
+            ("Manual & Current", "Old Provider Title", "Persisted summary", "FINISHED",
+             2004, 1, 8, 41734, 100, "46fb8129-fa17-4532-8686-0b9dbdde0236"),
+        )
+        db.execute(
+            "INSERT INTO series_metadata_fields"
+            "(series_id,field_name,value_json,selected_source,locked,selected_at)"
+            " VALUES(7,'title','\"Manual & Current\"','manual',1,'2026-10-10')"
+        )
+        db.execute(
+            "INSERT INTO series_metadata_sources(series_id,source,status,failure_count)"
+            " VALUES(7,'anilist','failed',3)"
+        )
+        before = {
+            table: db.execute(f"SELECT * FROM {table}").fetchall()
+            for table in ("series", "volumes", "chapters", "series_metadata_fields",
+                          "series_metadata_sources")
+        }
+    manga_dir = import_env["swy_root"] / "mangas" / "MangaDex" / "Old Provider Title"
+    manga_dir.mkdir(parents=True)
+    sources: list[Path] = []
+    pages: list[bytes] = []
+    for chapter in range(1, 9):
+        source = manga_dir / f"Vol.1 Ch.{chapter}.cbz"
+        with zipfile.ZipFile(source, "w") as archive:
+            archive.writestr(
+                "ComicInfo.xml",
+                "<ComicInfo><Series>Wrong Chapter Title</Series>"
+                "<Volume>99</Volume><Number>999</Number></ComicInfo>",
+            )
+            for page in (1, 2):
+                image = _TINY_PNG + bytes((chapter, page))
+                pages.append(image)
+                archive.writestr(f"{page:04d}.png", image)
+        sources.append(source)
+    return {
+        **import_env, "sources": sources, "pages": pages, "before": before,
+        "source_hashes": [hashlib.sha256(path.read_bytes()).digest() for path in sources],
+    }
+
+
+def test_import_merged_volume_regenerates_current_series_comicinfo(
+    merged_volume_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import comicinfo
+    from routers.suwayomi_ import _import_suwayomi_volume
+
+    env = merged_volume_env
+    rewrite = comicinfo._rewrite_with_comicinfo
+
+    def rewrite_without_db_writer(path: str, xml: str) -> None:
+        with sqlite3.connect(env["db_path"], timeout=0) as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            writer.rollback()
+        rewrite(path, xml)
+
+    monkeypatch.setattr(comicinfo, "_rewrite_with_comicinfo", rewrite_without_db_writer)
+    path, size = asyncio.run(_import_suwayomi_volume(
+        env["client"], 7, 1.0, swy_title="Old Provider Title",
+    ))
+    assert path is not None
+    assert size == os.path.getsize(path)
+    with zipfile.ZipFile(path) as archive:
+        assert archive.testzip() is None
+        assert archive.namelist().count("ComicInfo.xml") == 1
+        xml = ET.fromstring(archive.read("ComicInfo.xml"))
+        assert xml.findtext("Series") == "Manual & Current"
+        assert xml.findtext("Volume") == "1"
+        assert xml.find("Number") is None
+        assert xml.findtext("Summary") == "Persisted summary"
+        assert xml.findtext("Year") == "2004"
+        assert xml.findtext("Count") == "1"
+        images = [name for name in archive.namelist() if name.endswith(".png")]
+        assert images == [f"{page:04d}.png" for page in range(1, 17)]
+        assert [archive.read(name) for name in images] == env["pages"]
+    assert [hashlib.sha256(source.read_bytes()).digest() for source in env["sources"]] == env["source_hashes"]
+    with sqlite3.connect(env["db_path"]) as db:
+        for table, before in env["before"].items():
+            assert db.execute(f"SELECT * FROM {table}").fetchall() == before
+
+
+@pytest.mark.parametrize("failure", ["metadata", "rewrite"])
+def test_import_merged_volume_comicinfo_failure_is_nonfatal(
+    merged_volume_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    import comicinfo
+    from routers.suwayomi_ import _import_suwayomi_volume
+
+    def fail(*_args: Any, **_kwargs: Any) -> Any:
+        raise OSError("synthetic enrichment failure")
+
+    monkeypatch.setattr(
+        comicinfo,
+        "build_comicinfo_xml" if failure == "metadata" else "_rewrite_with_comicinfo",
+        fail,
+    )
+    env = merged_volume_env
+    path, size = asyncio.run(_import_suwayomi_volume(
+        env["client"], 7, 1.0, swy_title="Old Provider Title",
+    ))
+    assert path is not None
+    assert size == os.path.getsize(path) > 0
+    with zipfile.ZipFile(path) as archive:
+        assert archive.testzip() is None
+        assert [archive.read(name) for name in archive.namelist()] == env["pages"]
+    assert [hashlib.sha256(source.read_bytes()).digest() for source in env["sources"]] == env["source_hashes"]
+    with sqlite3.connect(env["db_path"]) as db:
+        errors = db.execute("SELECT message FROM events WHERE event_type='error'").fetchall()
+        assert any("synthetic enrichment failure" in row[0] for row in errors)
+
+
+def test_import_merged_fractional_volume_passes_unmodified_metadata_context(
+    import_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import comicinfo
+    from routers.suwayomi_ import _import_suwayomi_volume
+
+    with sqlite3.connect(import_env["db_path"]) as db:
+        db.execute(
+            "INSERT INTO series(id,title,search_pattern) VALUES(7,'Test Series','Test Series')"
+        )
+    source = Path(_make_cbz(str(
+        import_env["swy_root"] / "mangas" / "MangaDex" / "Test Series" / "Vol.1.5 Ch.1.cbz"
+    )))
+    original = source.read_bytes()
+    contexts: list[float | None] = []
+    build = comicinfo.build_comicinfo_xml
+
+    def record_context(
+        series: dict[str, Any], volume_num: float | None = None,
+        chapter_num: float | None = None, tags: list[str] | None = None,
+    ) -> str:
+        contexts.append(volume_num)
+        return build(series, volume_num=volume_num, chapter_num=chapter_num, tags=tags)
+
+    monkeypatch.setattr(comicinfo, "build_comicinfo_xml", record_context)
+    path, size = asyncio.run(_import_suwayomi_volume(
+        import_env["client"], 7, 1.5, swy_title="Test Series",
+    ))
+    assert path is not None
+    assert os.path.basename(path) == "Test Series v1.5.cbz"
+    assert size == os.path.getsize(path)
+    assert contexts == [1.5]
+    with zipfile.ZipFile(path) as archive:
+        assert archive.testzip() is None
+        xml = ET.fromstring(archive.read("ComicInfo.xml"))
+        assert xml.findtext("Series") == "Test Series"
+        assert xml.find("Number") is None
+        assert [archive.read(name) for name in archive.namelist() if name.endswith(".png")] == [_TINY_PNG] * 2
+    assert source.read_bytes() == original
 
 
 def test_import_volume_idempotent_when_output_exists(import_env):

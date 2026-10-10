@@ -26,6 +26,12 @@ def cbz(path: Path, page: bytes = b"page") -> None:
         archive.writestr("001.png", page)
 
 
+def merged_image_names(archive: zipfile.ZipFile) -> list[str]:
+    names = archive.namelist()
+    assert names.count("ComicInfo.xml") == 1
+    return [name for name in names if name != "ComicInfo.xml"]
+
+
 @pytest.mark.parametrize(
     "name,number",
     [
@@ -368,8 +374,8 @@ def test_job_assembles_only_queued_chapters_once_in_numeric_order(
     assert volume["status"] == "downloaded"
     if merge:
         with zipfile.ZipFile(volume["import_path"]) as archive:
-            assert archive.namelist() == ["0001.png", "0002.png", "0003.png"]
-            assert [archive.read(name) for name in archive.namelist()] == [
+            assert merged_image_names(archive) == ["0001.png", "0002.png", "0003.png"]
+            assert [archive.read(name) for name in merged_image_names(archive)] == [
                 b"two",
                 b"two-and-half",
                 b"ten",
@@ -420,6 +426,46 @@ def test_missing_queued_id_stays_pending_without_import(env: ImportEnv) -> None:
     assert not env.library.exists()
 
 
+def test_queued_merge_enriches_final_path_under_file_guard_without_sqlite_writer(
+    env: ImportEnv, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import main
+    from file_mutation_lock import FileMutationBusy, file_mutation_guard
+
+    source = env.manga_dir / "Official_Chapter 1.cbz"
+    cbz(source, b"queued-page")
+    original = source.read_bytes()
+    env.queue([{**node(1, 1), "name": "Chapter 1", "scanlator": "Official"}])
+    inject = main._try_inject_comicinfo
+    observed: list[str] = []
+
+    def inspect_boundary(path: str, series: dict[str, Any], *, volume_num: float) -> None:
+        assert path == str(env.library / "Selection v01.cbz")
+        assert env.row("suwayomi_downloads")["status"] == "queued"
+        assert isinstance(series, dict)
+        with zipfile.ZipFile(path) as archive:
+            assert archive.namelist() == ["0001.png"]
+            assert archive.read("0001.png") == b"queued-page"
+        with sqlite3.connect(env.db_path, timeout=0) as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            writer.rollback()
+        with pytest.raises(FileMutationBusy):
+            with file_mutation_guard(str(env.db_path)):
+                pytest.fail("queued import lost its filesystem owner")
+        inject(path, series, volume_num=volume_num)
+        observed.append(path)
+
+    monkeypatch.setattr(main, "_try_inject_comicinfo", inspect_boundary)
+    env.process()
+    assert observed == [str(env.library / "Selection v01.cbz")]
+    assert env.row("suwayomi_downloads")["status"] == "completed"
+    assert env.row("volumes")["status"] == "downloaded"
+    with zipfile.ZipFile(observed[0]) as archive:
+        assert merged_image_names(archive) == ["0001.png"]
+        assert archive.read("0001.png") == b"queued-page"
+    assert source.read_bytes() == original
+
+
 def test_whole_source_job_does_not_use_metadata_split_map(env: ImportEnv) -> None:
     """Assembly only: this manually queued job does not prove grab eligibility."""
     cbz(env.manga_dir / "Official_Chapter 45.cbz", b"whole-45")
@@ -427,7 +473,7 @@ def test_whole_source_job_does_not_use_metadata_split_map(env: ImportEnv) -> Non
     env.process()
     assert env.row("suwayomi_downloads")["status"] == "completed"
     with zipfile.ZipFile(env.row("volumes")["import_path"]) as archive:
-        assert [archive.read(name) for name in archive.namelist()] == [b"whole-45"]
+        assert [archive.read(name) for name in merged_image_names(archive)] == [b"whole-45"]
 
 
 @pytest.mark.parametrize(
@@ -495,7 +541,7 @@ def test_real_grab_then_process_whole_source_with_split_metadata(
         key: value for key, value in after_series.items() if key != "suwayomi_id"
     } == {key: value for key, value in before_series.items() if key != "suwayomi_id"}
     with zipfile.ZipFile(volume["import_path"]) as archive:
-        assert archive.namelist() == ["0001.png"]
+        assert merged_image_names(archive) == ["0001.png"]
         assert archive.read("0001.png") == b"whole-45"
 
 
@@ -593,7 +639,8 @@ def test_edit_post_replaces_split_map_for_real_whole_source_grab(
         assert [path.name for path in output.iterdir()] == ["Official_Chapter 45.cbz"]
         output /= "Official_Chapter 45.cbz"
     with zipfile.ZipFile(output) as archive:
-        assert [archive.read(name) for name in archive.namelist()] == [b"whole-45"]
+        names = merged_image_names(archive) if merge else archive.namelist()
+        assert [archive.read(name) for name in names] == [b"whole-45"]
 
 
 @pytest.mark.parametrize("merge", [True, False])
@@ -814,7 +861,7 @@ def test_real_split_grab_preserves_ids_and_requires_exact_files(
         assert volume["status"] == "downloaded"
         if merge:
             with zipfile.ZipFile(volume["import_path"]) as archive:
-                assert [archive.read(name) for name in archive.namelist()] == [
+                assert [archive.read(name) for name in merged_image_names(archive)] == [
                     b"part-one",
                     b"part-two",
                 ]
@@ -1211,7 +1258,8 @@ def test_source_volume_poll_imports_only_exact_queued_file(
         assert [path.name for path in output.iterdir()] == [filename]
         output /= filename
     with zipfile.ZipFile(output) as archive:
-        assert [archive.read(page) for page in archive.namelist()] == [b"queued-source"]
+        names = merged_image_names(archive) if merge else archive.namelist()
+        assert [archive.read(page) for page in names] == [b"queued-source"]
     assert source.read_bytes() == original
     assert len(env.queries) == 1
     assert "name scanlator" in env.queries[0]
@@ -1425,7 +1473,7 @@ def test_source_volume_poll_deduplicates_only_complete_queued_variants(
     output = Path(volume["import_path"])
     if merge:
         with zipfile.ZipFile(output) as archive:
-            assert [archive.read(page) for page in archive.namelist()] == [
+            assert [archive.read(page) for page in merged_image_names(archive)] == [
                 b"two",
                 b"two-and-half",
                 b"ten",
