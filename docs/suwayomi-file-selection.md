@@ -190,3 +190,32 @@ missing or unknown chapter.
 
 For directory identity and ambiguity refusal before file selection, see
 [Suwayomi directory selection](suwayomi-directory-selection.md).
+
+## Loose Library Chapter State
+
+The correction tracked in [#421](https://github.com/Kha-kis/manga-arr/issues/421)
+is separate from source selection. The published 1.3.3-rc.1 image predates it.
+
+Deleting a merged volume must not erase a downloaded chapter's independent
+library observation. A surviving chapter CBZ can retain downloaded state and
+its own path; chapters backed only by the deleted volume retain the normal
+reset behavior. Rescan can recover existing chapter rows from unambiguous loose
+library CBZs without creating new chapter or volume rows for those files.
+
+Eligible observations use the existing chapter's persisted independent path or
+an exact managed chapter filename, including Suwayomi's `Title Ch001.cbz` naming.
+They must be nonempty regular CBZ files inside the series library, not symlinks,
+private recovery files, volume/pack paths or aliases of those archives. Multiple
+eligible files or conflicting chapter identities are refused. This is not a
+general scan of arbitrary source filenames, ranges or other archive formats.
+
+Monitoring, provider identities, selected metadata and chapter mappings are
+not changed. Database snapshot guards and filesystem-operation fences prevent
+stale reconciliation from overwriting a newer participating operation. Merely
+recovering loose chapters does not imply the volume has been downloaded.
+
+These checks establish a filesystem observation, not ZIP integrity or complete
+content equivalence. They do not authorize cleanup. Existing loose library
+copies remain untouched, as do Suwayomi's source downloads. Optional redundant
+library-file cleanup is a separate, opt-in proposal in
+[#422](https://github.com/Kha-kis/manga-arr/issues/422).
