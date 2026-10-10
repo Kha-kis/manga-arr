@@ -399,7 +399,9 @@ and repository digests, then stop Mangarr and archive the host config directory.
 Run this before pulling a newer image, especially when using a moving tag:
 
 ```bash
-container_id=$(docker compose ps -q mangarr)
+(
+set -eu
+container_id=$(docker compose ps --all -q mangarr)
 test -n "$container_id"
 image_id=$(docker inspect --format '{{.Image}}' "$container_id")
 docker inspect --format 'configured={{.Config.Image}} image={{.Image}}' \
@@ -409,7 +411,12 @@ docker image inspect --format 'digests={{json .RepoDigests}}' \
 docker compose stop mangarr
 tar -C . -czf mangarr-config-backup.tgz config
 docker compose start mangarr
+)
 ```
+
+If any step fails, do not pull or upgrade. Correct the failure first. If Mangarr
+was stopped, `docker compose start mangarr` resumes the existing container without
+recreating it or changing its image.
 
 Keep `mangarr-image-before-upgrade.txt` with the matching config snapshot. For
 rollback, use its `ghcr.io/kha-kis/manga-arr@sha256:...` repository digest rather
