@@ -15,7 +15,7 @@ import os
 import sqlite3
 import stat
 from contextlib import ExitStack
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Literal, cast
 
 import shared
@@ -28,7 +28,15 @@ from file_mutation_lock import (
 )
 from parsing import extract_volume_num
 from shared import build_volume_label, get_db
-from volumes import _cascade_chapters
+from rescan import (
+    SeriesRescanSnapshot,
+    _CHAPTER_GUARD,
+    _CHAPTER_GUARD_SQL,
+    _guard_values,
+    _loose_chapter_inventory,
+    _series_writer_state,
+    snapshot_series_rescan,
+)
 
 _AT_FDCWD = -100
 _RENAME_NOREPLACE = 1
@@ -97,6 +105,8 @@ class DeletionInspection:
     claim_path: str
     target_present: bool
     fingerprint: FileFingerprint | None
+    library_snapshot: SeriesRescanSnapshot | None = None
+    independent_chapters: dict[int, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,10 +271,7 @@ def _resolve_delete_target(
     if volume_num is not None:
         for filename in sorted(os.listdir(import_abs)):
             file_volume = extract_volume_num(filename)
-            if (
-                file_volume is not None
-                and abs(file_volume - volume_num) < 0.01
-            ):
+            if file_volume is not None and abs(file_volume - volume_num) < 0.01:
                 return os.path.join(import_abs, filename), import_abs
     return "", import_abs
 
@@ -349,6 +356,7 @@ def inspect_volume_file_deletion(
 ) -> DeletionInspection | None:
     """Read the volume, then resolve and hash its target without a DB writer."""
     with get_db() as db:
+        library_snapshot = snapshot_series_rescan(db, series_id, include_deleted=True)
         row = db.execute(
             "SELECT * FROM volumes WHERE id=? AND series_id=?",
             (volume_id, series_id),
@@ -376,6 +384,14 @@ def inspect_volume_file_deletion(
             fingerprint = None
         else:
             target_present = True
+    independent_chapters = (
+        {
+            cid: item.path
+            for cid, item in _loose_chapter_inventory(library_snapshot, "").items()
+        }
+        if library_snapshot is not None
+        else {}
+    )
     return DeletionInspection(
         snapshot=snapshot,
         target_path=target_path,
@@ -385,6 +401,8 @@ def inspect_volume_file_deletion(
         ),
         target_present=target_present,
         fingerprint=fingerprint,
+        library_snapshot=library_snapshot,
+        independent_chapters=independent_chapters,
     )
 
 
@@ -547,10 +565,32 @@ def reserve_volume_file_deletion(
         if existing_row is not None:
             return DeletionReservation("existing", int(existing_row["id"]))
 
-        from rescan_file_recovery import active_for_series
+        from rescan_file_recovery import active_for_series, competing_for_series
 
-        if active_for_series(db, series_id):
+        if active_for_series(db, series_id) or competing_for_series(db, series_id):
             return DeletionReservation("import_in_progress")
+
+        library_snapshot = inspection.library_snapshot
+        if (
+            library_snapshot is None
+            or _series_writer_state(db, library_snapshot, include_deleted=True) is None
+        ):
+            return DeletionReservation(
+                "changed",
+                diagnostic="series library changed during deletion inspection",
+            )
+        chapters = library_snapshot.chapters_by_volume.get(volume_id, ())
+        current_chapters = db.execute(
+            "SELECT * FROM chapters WHERE series_id=? AND volume_id=? ORDER BY id",
+            (series_id, volume_id),
+        ).fetchall()
+        if len(current_chapters) != len(chapters) or any(
+            any(current[column] != previous[column] for column in _CHAPTER_GUARD)
+            for current, previous in zip(current_chapters, chapters)
+        ):
+            return DeletionReservation(
+                "changed", diagnostic="chapters changed during deletion inspection"
+            )
 
         current = db.execute(
             "SELECT * FROM volumes WHERE id=? AND series_id=?",
@@ -629,22 +669,21 @@ def reserve_volume_file_deletion(
         )
         if update.rowcount != 1:
             raise RuntimeError("volume deletion lost its snapshot CAS")
-        _cascade_chapters(
-            db,
-            series_id,
-            [volume_id],
-            "wanted",
-            grabbed_at=None,
-            torrent_name=None,
-            torrent_url=None,
-            indexer=None,
-            protocol=None,
-            client=None,
-            download_id=None,
-            download_client_id=None,
-            release_group=None,
-            import_path=None,
-        )
+        for chapter in chapters:
+            independent_path = inspection.independent_chapters.get(chapter["id"])
+            if independent_path is not None and chapter["status"] == "downloaded":
+                db.execute(
+                    "UPDATE chapters SET import_path=? WHERE " + _CHAPTER_GUARD_SQL,
+                    (independent_path, *_guard_values(chapter, _CHAPTER_GUARD)),
+                )
+            elif chapter["monitored"]:
+                db.execute(
+                    "UPDATE chapters SET status='wanted',grabbed_at=NULL,torrent_name=NULL,"
+                    "torrent_url=NULL,indexer=NULL,protocol=NULL,client=NULL,download_id=NULL,"
+                    "download_client_id=NULL,release_group=NULL,import_path=NULL WHERE "
+                    + _CHAPTER_GUARD_SQL,
+                    _guard_values(chapter, _CHAPTER_GUARD),
+                )
     return DeletionReservation("reserved", journal_id)
 
 
@@ -1094,9 +1133,7 @@ def _replay_volume_file_deletion_owned(
             _fsync_directory_when_possible(journal.parent_path)
             guard.verify()
             return (
-                "completed"
-                if _complete_journal(journal, deleted=False)
-                else "terminal"
+                "completed" if _complete_journal(journal, deleted=False) else "terminal"
             )
 
         expected = journal.fingerprint
@@ -1128,9 +1165,7 @@ def _replay_volume_file_deletion_owned(
             _fsync_directory_when_possible(journal.parent_path)
             guard.verify()
             return (
-                "completed"
-                if _complete_journal(journal, deleted=True)
-                else "terminal"
+                "completed" if _complete_journal(journal, deleted=True) else "terminal"
             )
 
         actual_claim = _regular_fingerprint(journal.claim_path)
@@ -1153,11 +1188,7 @@ def _replay_volume_file_deletion_owned(
         _record_blocked(journal, str(exc))
         guard.verify()
         current = _load_journal(journal.journal_id)
-        return (
-            "terminal"
-            if current is None or current.state != "active"
-            else "blocked"
-        )
+        return "terminal" if current is None or current.state != "active" else "blocked"
 
 
 def delete_volume_file(

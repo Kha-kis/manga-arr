@@ -6,10 +6,12 @@ import ctypes
 import errno
 import math
 import os
+import re
 import shutil
 import sqlite3
+import stat
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, TypedDict
 
@@ -18,13 +20,19 @@ from events import add_history
 from files import (
     MANGA_EXTENSIONS,
     _apply_format_tokens,
+    build_filename,
     convert_cbr_to_cbz,
     detect_file_type_magic,
     quality_from_filename,
     sanitize_filename,
 )
 from helpers import _resolve_series_dest_root
-from parsing import extract_volume_num, vol_num_to_display
+from parsing import (
+    extract_chapter_num,
+    extract_chapter_range,
+    extract_volume_num,
+    vol_num_to_display,
+)
 from shared import get_cfg, get_db
 
 
@@ -72,6 +80,7 @@ class SeriesFilesystemInventory:
     files_by_volume: dict[float, InventoryFile]
     any_library_files: bool
     pack_paths_present: dict[int, bool]
+    files_by_chapter: dict[int, InventoryFile] = field(default_factory=dict)
 
     @property
     def on_disk(self) -> frozenset[float]:
@@ -142,6 +151,8 @@ _CHAPTER_GUARD = (
     "id",
     "series_id",
     "volume_id",
+    "chapter_num",
+    "chapter_range_end",
     "status",
     "monitored",
     "grabbed_at",
@@ -172,7 +183,8 @@ _PACK_GUARD_SQL = (
     " AND import_path IS ? AND quality IS ?"
 )
 _CHAPTER_GUARD_SQL = (
-    "id IS ? AND series_id IS ? AND volume_id IS ? AND status IS ?"
+    "id IS ? AND series_id IS ? AND volume_id IS ?"
+    " AND chapter_num IS ? AND chapter_range_end IS ? AND status IS ?"
     " AND monitored IS ? AND grabbed_at IS ? AND torrent_name IS ?"
     " AND torrent_url IS ? AND indexer IS ? AND protocol IS ? AND client IS ?"
     " AND download_id IS ? AND download_client_id IS ? AND release_group IS ?"
@@ -211,7 +223,8 @@ _MARK_VOLUME_DOWNLOADED_SQL = (
 )
 _MARK_CHAPTER_DOWNLOADED_SQL = (
     "UPDATE chapters SET status=? WHERE id IS ? AND series_id IS ?"
-    " AND volume_id IS ? AND status IS ? AND monitored IS ? AND grabbed_at IS ?"
+    " AND volume_id IS ? AND chapter_num IS ? AND chapter_range_end IS ?"
+    " AND status IS ? AND monitored IS ? AND grabbed_at IS ?"
     " AND torrent_name IS ? AND torrent_url IS ? AND indexer IS ? AND protocol IS ?"
     " AND client IS ? AND download_id IS ? AND download_client_id IS ?"
     " AND release_group IS ? AND import_path IS ? AND quality IS ?"
@@ -222,6 +235,7 @@ _RESET_MISSING_CHAPTER_SQL = (
     " torrent_url=NULL,indexer=NULL,protocol=NULL,client=NULL,download_id=NULL,"
     " download_client_id=NULL,release_group=NULL"
     " WHERE id IS ? AND series_id IS ? AND volume_id IS ?"
+    " AND chapter_num IS ? AND chapter_range_end IS ?"
     " AND status IS ? AND monitored IS ? AND grabbed_at IS ?"
     " AND torrent_name IS ? AND torrent_url IS ? AND indexer IS ?"
     " AND protocol IS ? AND client IS ? AND download_id IS ?"
@@ -312,15 +326,16 @@ def _series_library_dir(db: sqlite3.Connection, series_id: int) -> str | None:
 
 
 def snapshot_series_rescan(
-    db: sqlite3.Connection, series_id: int
+    db: sqlite3.Connection, series_id: int, *, include_deleted: bool = False
 ) -> SeriesRescanSnapshot | None:
-    """Copy every row needed by a rescan into connection-independent data."""
+    """Copy rescan rows; deletion inspection may opt into recycled series."""
     started_transaction = not db.in_transaction
     if started_transaction:
         db.execute("BEGIN")
     try:
         series_row = db.execute(
-            "SELECT * FROM series WHERE id=? AND deleted_at IS NULL",
+            "SELECT * FROM series WHERE id=?"
+            + ("" if include_deleted else " AND deleted_at IS NULL"),
             (series_id,),
         ).fetchone()
         if not series_row:
@@ -352,7 +367,7 @@ def snapshot_series_rescan(
             chapters = tuple(
                 dict(row)
                 for row in db.execute(
-                    "SELECT id,series_id,volume_id,status,monitored,grabbed_at,"
+                    "SELECT id,series_id,volume_id,chapter_num,chapter_range_end,status,monitored,grabbed_at,"
                     " torrent_name,torrent_url,indexer,protocol,client,download_id,"
                     " download_client_id,release_group,import_path,quality,"
                     " imported_at,size_bytes"
@@ -412,6 +427,148 @@ def _is_private_inventory_directory(name: str) -> bool:
     )
 
 
+def _has_chapter_marker(filename: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:ch(?:a(?:p(?:ter)?)?)?s?|ep(?:isode)?)\.?\s*\d|\bc\d{2,}|第\s*\d+\s*話",
+            filename,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _file_identity_label(filename: str, series_title: str) -> str:
+    prefix = sanitize_filename(series_title) + " "
+    return (
+        filename[len(prefix) :]
+        if filename[: len(prefix)].casefold() == prefix.casefold()
+        else filename
+    )
+
+
+def _loose_chapter_inventory(
+    snapshot: SeriesRescanSnapshot,
+    imported_at: str,
+) -> dict[int, InventoryFile]:
+    """Existing rows only: persisted independent paths or exact managed CBZ names."""
+    series_dir = snapshot.series_dir
+    if not series_dir or not snapshot.chapters:
+        return {}
+    root = os.path.abspath(series_dir)
+    if any(_is_private_inventory_directory(part) for part in root.split(os.sep)):
+        return {}
+    if os.path.realpath(root) != root or not os.path.isdir(root):
+        return {}
+    volume_paths = {
+        os.path.abspath(str(row["import_path"]))
+        for row in (*snapshot.numbered, *snapshot.packs)
+        if row["import_path"]
+    }
+    excluded_inodes: set[tuple[int, int]] = set()
+    for path in volume_paths:
+        try:
+            metadata = os.stat(path)
+        except OSError:
+            continue
+        excluded_inodes.add((metadata.st_dev, metadata.st_ino))
+    title = sanitize_filename(snapshot.series["title"])
+    volumes = {row["id"]: row["volume_num"] for row in snapshot.numbered}
+    matches: dict[int, InventoryFile] = {}
+    path_owners: dict[str, set[int]] = {}
+    for chapter in snapshot.chapters:
+        number = chapter["chapter_num"]
+        if (
+            not isinstance(number, (int, float))
+            or isinstance(number, bool)
+            or not math.isfinite(number)
+            or number < 0
+        ):
+            continue
+        if chapter["chapter_range_end"] not in (None, number):
+            continue
+        number_label = (
+            str(int(number)).zfill(3) if number == int(number) else str(number)
+        )
+        canonical = f"{title} Ch{number_label}.cbz"
+        canonical_paths = {
+            os.path.join(root, canonical),
+            os.path.join(
+                root,
+                build_filename(
+                    snapshot.series["title"],
+                    volumes.get(chapter["volume_id"]),
+                    canonical,
+                    pub_year=snapshot.series["pub_year"],
+                    chapter_num=number,
+                ),
+            ),
+        }
+        candidates = set(canonical_paths)
+        if chapter["import_path"]:
+            candidates.add(str(chapter["import_path"]))
+        valid: list[InventoryFile] = []
+        for candidate in candidates:
+            path = os.path.abspath(candidate)
+            if os.path.splitext(path)[1].lower() != ".cbz":
+                continue
+            if os.path.commonpath((root, path)) != root or path == root:
+                continue
+            parts = os.path.relpath(path, root).split(os.sep)
+            if any(_is_private_inventory_directory(part) for part in parts):
+                continue
+            if any(
+                path == excluded or path.startswith(excluded + os.sep)
+                for excluded in volume_paths
+            ):
+                continue
+            if os.path.realpath(path) != path:
+                continue
+            filename = os.path.basename(path)
+            label = _file_identity_label(filename, snapshot.series["title"])
+            if extract_chapter_range(label) is not None:
+                continue
+            if path not in canonical_paths and _has_chapter_marker(label):
+                # An exact persisted path can retain an old title containing
+                # "Chapter N"; only its terminal managed suffix identifies the row.
+                suffix = f" Ch{number_label}.cbz"
+                if label == filename and label.casefold().endswith(suffix.casefold()):
+                    prefix = label[: -len(suffix)]
+                    prefix = re.sub(
+                        r"\bChapter\.?\s*\d+(?:\.\d+)?",
+                        "",
+                        prefix,
+                        flags=re.IGNORECASE,
+                    )
+                    if not _has_chapter_marker(prefix):
+                        label = label[-len(suffix) :]
+                markers = re.findall(
+                    r"\b(?:ch(?:a(?:p(?:ter)?)?)?s?|ep(?:isode)?)\.?\s*\d|\bc\d{2,}|第\s*\d+\s*話",
+                    label,
+                    re.IGNORECASE,
+                )
+                if len(markers) != 1 or extract_chapter_num(label) != number:
+                    continue
+            try:
+                metadata = os.lstat(path)
+            except OSError:
+                continue
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size <= 0:
+                continue
+            if (metadata.st_dev, metadata.st_ino) in excluded_inodes:
+                continue
+            valid.append(
+                InventoryFile(
+                    path, metadata.st_size, "cbz", imported_at, _fingerprint(metadata)
+                )
+            )
+            path_owners.setdefault(path, set()).add(chapter["id"])
+        if len(valid) == 1:
+            matches[chapter["id"]] = valid[0]
+    return {
+        cid: item for cid, item in matches.items() if len(path_owners[item.path]) == 1
+    }
+
+
 def build_filesystem_inventory(
     snapshot: SeriesRescanSnapshot,
 ) -> SeriesFilesystemInventory:
@@ -447,12 +604,19 @@ def build_filesystem_inventory(
                     stat_result = os.stat(path)
                 except OSError:
                     continue
-                volume_num = extract_volume_num(filename)
                 any_library_files = True
+                identity_label = _file_identity_label(
+                    filename,
+                    snapshot.series.get("title") or os.path.basename(series_dir),
+                )
+                volume_num = extract_volume_num(filename)
+                preferred = volume_num is not None and preferred_paths.get(
+                    volume_num
+                ) == os.path.normcase(os.path.abspath(path))
+                if _has_chapter_marker(identity_label) and not preferred:
+                    continue
                 if volume_num is not None and (
-                    volume_num not in files_by_volume
-                    or preferred_paths.get(volume_num)
-                    == os.path.normcase(os.path.abspath(path))
+                    volume_num not in files_by_volume or preferred
                 ):
                     fingerprint = _fingerprint(stat_result)
                     files_by_volume[volume_num] = InventoryFile(
@@ -473,6 +637,7 @@ def build_filesystem_inventory(
         files_by_volume=files_by_volume,
         any_library_files=any_library_files,
         pack_paths_present=pack_paths_present,
+        files_by_chapter=_loose_chapter_inventory(snapshot, imported_at),
     )
 
 
@@ -560,12 +725,16 @@ def _capture_enrichment_target(
 def _series_writer_state(
     db: sqlite3.Connection,
     snapshot: SeriesRescanSnapshot,
+    *,
+    include_deleted: bool = False,
 ) -> dict[str, Any] | None:
+    if snapshot.series.get("deleted_at") is not None and not include_deleted:
+        return None
     series_id = int(snapshot.series["id"])
     current_row = db.execute(
         "SELECT root_folder_id,folder_name,monitor_mode FROM series"
-        " WHERE id=? AND deleted_at IS NULL",
-        (series_id,),
+        " WHERE id=? AND deleted_at IS ?",
+        (series_id, snapshot.series.get("deleted_at")),
     ).fetchone()
     if not current_row:
         return None
@@ -703,6 +872,33 @@ def reconcile_series_inventory(
     if writer_state is None:
         return _Reconciliation(result)
 
+    for chapter in snapshot.chapters:
+        item = inventory.files_by_chapter.get(chapter["id"])
+        if item is None or chapter["status"] not in ("wanted", "grabbed", "downloaded"):
+            continue
+        if chapter["status"] == "downloaded" and chapter["import_path"] == item.path:
+            continue
+        if chapter["volume_id"] is not None:
+            parent = next(
+                (row for row in snapshot.numbered if row["id"] == chapter["volume_id"]),
+                None,
+            )
+            if (
+                parent is None
+                or not db.execute(
+                    "SELECT 1 FROM volumes WHERE " + _VOLUME_GUARD_SQL,
+                    _guard_values(parent, _VOLUME_GUARD),
+                ).fetchone()
+            ):
+                continue
+        cursor = db.execute(
+            "UPDATE chapters SET status='downloaded',import_path=? WHERE "
+            + _CHAPTER_GUARD_SQL,
+            (item.path, *_guard_values(chapter, _CHAPTER_GUARD)),
+        )
+        if cursor.rowcount == 1:
+            result["recovered"] += 1
+
     for volume in snapshot.numbered:
         volume_num = float(volume["volume_num"])
         inventory_file = inventory.files_by_volume.get(volume_num)
@@ -722,7 +918,14 @@ def reconcile_series_inventory(
             )
             _cascade_chapter_snapshot(
                 db,
-                snapshot.chapters_by_volume,
+                {
+                    vid: tuple(
+                        ch
+                        for ch in chapters
+                        if ch["id"] not in inventory.files_by_chapter
+                    )
+                    for vid, chapters in snapshot.chapters_by_volume.items()
+                },
                 status="wanted",
                 volume_ids={int(volume["id"])},
                 clear_grab=True,
