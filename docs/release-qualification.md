@@ -6,7 +6,7 @@ can become a stable release. Passing unit tests alone is not sufficient.
 ## 1.3.3-rc.1 Qualification
 
 Status: **PUBLISHED; REPRESENTATIVE AMD64 CANDIDATE GATES AND INDEPENDENT REVIEW PASSED** (2026-10-10).
-1.3.2 remains the current qualified stable release and production image.
+1.3.2 remains the current qualified stable release and owns the stable image aliases.
 
 ### Source Baseline
 
@@ -121,6 +121,37 @@ Independent evidence review cleared the GitHub prerelease and conditionally
 cleared Mangarr-only production RC qualification after that fresh backup. It did
 not clear stable promotion. Production cutover and subsequent live smoke checks
 are separate from the isolated results above.
+
+### Operator Deployment Smoke
+
+A Mangarr-only operator deployment on the published amd64 index above passed
+health and 48 desktop/mobile UI/API checks. The browser allowed GET/HEAD/OPTIONS
+only; filter/clear and selection-toolbar interactions passed without mutation
+attempts, browser errors or failed responses. No library screenshots were taken.
+The short-lived smoke session was revoked and the administrator was unchanged.
+
+The first integration probe failed because AniList returned HTTP 429; the other
+five providers passed. After more than 100 seconds of backoff, one unchanged,
+bounded read-only reprobe passed all six: Prowlarr, qBittorrent, SABnzbd, Suwayomi,
+MangaDex and AniList. Separate post-retry health, exact image, zero restart/OOM
+and unchanged SAB/Suwayomi checks passed. This is composite evidence plus one
+retry, not a successful exit of the original smoke wrapper. The failed receipt
+is retained, and connection probes do not prove a production download/import.
+
+Existing provider IDs, series titles and manual/locked selections were unchanged
+against the new stopped snapshot, and the encryption key matched. Only Mangarr's
+image pin changed; other downloader configuration and mappings were untouched.
+Two existing Suwayomi jobs now report tracked upstream chapter errors for manual
+review. Those jobs were not resumed/retried, and their underlying download failure
+remains undiagnosed. The app log audit found no traceback or HTTP 5xx.
+
+Independent review cleared retaining this RC deployment, not stable promotion.
+The owner-preserving stopped clone was verified before migration. Complete
+sparse archive creation, gzip integrity, full content/metadata comparison against
+that frozen clone, unchanged database/key hashes and archive checksum completed
+successfully after the service was running again. This new cutover snapshot is
+distinct from the older stopped copy used for isolated upgrade/rollback
+qualification. The previous pinned 1.3.2 image is retained for matching rollback.
 
 ## 1.3.2 Stable Qualification
 
