@@ -22,6 +22,24 @@ the reviewed composition with no new scoped type diagnostics (seven unchanged
 baseline diagnostics). These are source-test results, not candidate-image
 runtime evidence or a claim of globally clean typing.
 
+PR #418 adds merged-volume ComicInfo enrichment at
+`0325cd1f67fc155aa63178182097270033c0c039`; the preparation now includes nine
+behavioral fixes. Its frozen patch, committed as
+`ddadd317e929c0915821792b2cd93b5b9a6044c0`, passed `make test-release-safe`:
+3,953 Python tests, 17 existing skips, 95 isolated browser cases, lint/format,
+13 confirmation checks and 10 route checks. The merge tree is identical to that
+fix commit, and its four Python-file hashes match this preparation. Independent
+review found no blocking issue. Actual LSP and scoped CLI ran with no new scoped
+type errors; 29 strict baseline errors remain and warnings increased from 986
+to 1,053. This is not a globally clean type-check claim.
+
+Two earlier full-gate attempts stopped at unchanged ownership fixtures under
+nonstandard shell masks: 0002 permitted group writes and 0077 masked an explicit
+0750 request to 0700. Both affected nodes pass on baseline and fix under standard
+0022, as do ten broader controls; the unchanged complete rerun passed under 0022.
+No production permissions, safety assertions or application code were changed
+to resolve those environment failures.
+
 ### Outstanding Candidate Gates
 
 - Verify the release-preparation version/docs change, full local release gates,
@@ -31,7 +49,12 @@ runtime evidence or a claim of globally clean typing.
 - Qualify fresh setup and a stopped 1.3.2 configuration-copy upgrade, including
   metadata ownership/cache preservation and matching stopped rollback.
 - Exercise a fresh download-to-import workflow, including Suwayomi queued
-  source-folder identity and complete volume filenames. Record actual upstream
+  source-folder identity, complete volume filenames and merged-volume
+  ComicInfo.xml generated from current stored metadata. The old local source's
+  eight-chapter, 254-page workflow passed download/import but exposed missing
+  merged-volume enrichment; that is fixed in #418. Repeat the workflow on the
+  corrected immutable artifact with the XML and final history-size checks.
+  Record actual upstream
   failures separately from application defects; mocks do not satisfy this gate.
 - Smoke-test UI/API, metadata refresh and downloader/import behavior against
   the candidate. Keep existing downloader configurations and mappings unchanged.

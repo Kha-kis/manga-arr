@@ -19,7 +19,8 @@ documentation consistency.
 
 The next patch candidate contains the reviewed Suwayomi directory/source,
 volume-file and queue-error fixes, metadata retry/coverage corrections, and
-backup-age health correction. `app/VERSION` identifies the candidate;
+backup-age health correction, plus current-series ComicInfo enrichment for
+newly merged Suwayomi volumes. `app/VERSION` identifies the candidate;
 1.3.2 remains the published, qualified stable release.
 
 The release-preparation PR must pass the local release gates before its exact

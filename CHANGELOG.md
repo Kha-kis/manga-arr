@@ -14,6 +14,10 @@ for evidence and outstanding gates.
 
 ### Fixed
 
+- Generate ComicInfo.xml for newly merged Suwayomi volumes from current stored
+  series metadata, preserving selected titles and original chapter archives.
+  Metadata enrichment remains best-effort, as with normal imports; existing
+  destination archives and individual chapter copies are unchanged (#418).
 - Measure backup health from the newest ZIP modification time rather than
   filename order, so an older legacy-named archive does not hide a fresh backup.
   Keep the existing seven-day warning threshold; this age check does not
