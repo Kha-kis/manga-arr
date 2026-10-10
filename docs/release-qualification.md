@@ -153,6 +153,26 @@ successfully after the service was running again. This new cutover snapshot is
 distinct from the older stopped copy used for isolated upgrade/rollback
 qualification. The previous pinned 1.3.2 image is retained for matching rollback.
 
+### Third-Party RC Feedback
+
+The [issue #406 reporter](https://github.com/Kha-kis/manga-arr/issues/406#issuecomment-6099624562)
+reported a clean upgrade of a copied 154-series configuration from 1.3.2,
+successful integrity checks, and operation as UID/GID 1024:100 with an NFS
+library. Their source-switch and lookalike-folder checks selected the intended
+Weeb Central files rather than stale MangaDex or similarly named directories.
+They also reported working `Unknown_Episode. N.cbz` selection and a four-chapter
+volume with ComicInfo. These are third-party observations, not additional
+operator-run artifact qualification or a claim of support for every NAS policy.
+
+Two preexisting loose-chapter problems were reported separately. Volume deletion
+can reset chapter state despite surviving library files, and rescan does not
+restore those files' chapter state. [Issue #421](https://github.com/Kha-kis/manga-arr/issues/421)
+tracks that correctness fix and its regression/qualification gate before stable
+promotion. [Issue #422](https://github.com/Kha-kis/manga-arr/issues/422) tracks a
+separate contribution proposal for opt-in redundant library-file cleanup; it
+does not authorize automatic deletion or changes to Suwayomi source downloads.
+Neither follow-up is claimed fixed by the published 1.3.3-rc.1 artifact.
+
 ## 1.3.2 Stable Qualification
 
 Status: **QUALIFIED; CURRENT STABLE** (2026-10-08).

@@ -5,6 +5,14 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+### Fixed
+
+- Preserve independently observed loose library chapter files when deleting a
+  merged volume, and recover existing chapter rows during rescan when their CBZ
+  identity is unambiguous. Keep monitoring, metadata ownership and acquisition
+  guards; never treat the deleted volume as independent chapter evidence. This
+  does not clean up duplicate library files or alter Suwayomi downloads (#421).
+
 ## 1.3.3-rc.1 - 2026-10-10
 
 Published release candidate with representative amd64 runtime checks passing;
