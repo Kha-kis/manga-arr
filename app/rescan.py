@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import hashlib
+import logging
 import math
 import os
 import re
@@ -38,6 +40,12 @@ from shared import get_cfg, get_db
 
 _AT_FDCWD = -100
 _RENAME_NOREPLACE = 1
+_logger = logging.getLogger(__name__)
+_COMPLETED_VOLUME_DELETIONS_SELECT = (
+    "SELECT id,target_dev,target_inode,target_size,target_mtime_ns,target_sha256"
+    " FROM volume_file_deletions WHERE series_id=?"
+    " AND state='completed' AND target_present=1 ORDER BY id"
+)
 
 
 class RescanResult(TypedDict):
@@ -56,6 +64,7 @@ class SeriesRescanSnapshot:
     packs: tuple[dict[str, Any], ...]
     chapters: tuple[dict[str, Any], ...]
     chapters_by_volume: dict[int, tuple[dict[str, Any], ...]]
+    completed_volume_file_deletions: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -382,6 +391,12 @@ def snapshot_series_rescan(
                 packs=packs,
                 chapters=chapters,
                 chapters_by_volume=_index_chapters(chapters),
+                completed_volume_file_deletions=tuple(
+                    dict(row)
+                    for row in db.execute(
+                        _COMPLETED_VOLUME_DELETIONS_SELECT, (series_id,)
+                    ).fetchall()
+                ),
             )
     except BaseException:
         if started_transaction:
@@ -446,6 +461,104 @@ def _file_identity_label(filename: str, series_title: str) -> str:
         if filename[: len(prefix)].casefold() == prefix.casefold():
             return filename[len(prefix) :]
     return filename
+
+
+def _completed_volume_alias(
+    snapshot: SeriesRescanSnapshot, path: str, metadata: os.stat_result
+) -> bool:
+    """Refuse exact retained targets, or unverified stat-matching candidates."""
+    identity = (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+    )
+    for journal in snapshot.completed_volume_file_deletions:
+        recorded = tuple(
+            journal[column]
+            for column in (
+                "target_dev",
+                "target_inode",
+                "target_size",
+                "target_mtime_ns",
+            )
+        )
+        if any(
+            not isinstance(value, int) or isinstance(value, bool) for value in recorded
+        ):
+            _logger.warning(
+                "Incomplete completed deletion fingerprint for series %s journal %s",
+                snapshot.series["id"],
+                journal["id"],
+            )
+            continue
+        if recorded != identity:
+            continue
+        descriptor = directory = -1
+        try:
+            expected_digest = journal["target_sha256"]
+            if not isinstance(expected_digest, str) or not re.fullmatch(
+                r"[0-9a-fA-F]{64}", expected_digest
+            ):
+                raise OSError("missing or invalid retained digest")
+            # Open every component without following symlinks, including parents.
+            directory_flags = (
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+            )
+            directory = os.open(os.sep, directory_flags)
+            parts = os.path.abspath(path).split(os.sep)[1:]
+            for part in parts[:-1]:
+                child = os.open(part, directory_flags, dir_fd=directory)
+                os.close(directory)
+                directory = child
+            descriptor = os.open(
+                parts[-1],
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                dir_fd=directory,
+            )
+            before = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or _fingerprint(before) != _fingerprint(metadata)
+                or before.st_ctime_ns != metadata.st_ctime_ns
+            ):
+                raise OSError("candidate changed before hashing")
+            digest = hashlib.sha256()
+            remaining = before.st_size
+            while remaining:
+                chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+                if not chunk:
+                    raise OSError("candidate truncated while hashing")
+                digest.update(chunk)
+                remaining -= len(chunk)
+            if os.read(descriptor, 1):
+                raise OSError("candidate grew while hashing")
+            after = os.fstat(descriptor)
+            anchored = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+            current = os.lstat(path)
+            if os.path.realpath(path) != path or any(
+                not stat.S_ISREG(observed.st_mode)
+                or _fingerprint(observed) != _fingerprint(before)
+                or observed.st_ctime_ns != before.st_ctime_ns
+                for observed in (after, anchored, current)
+            ):
+                raise OSError("candidate changed while hashing")
+            if digest.hexdigest() == expected_digest.lower():
+                return True
+        except OSError:
+            _logger.warning(
+                "Loose chapter verification refused for series %s: "
+                "completed deletion journal %s could not be verified",
+                snapshot.series["id"],
+                journal["id"],
+            )
+            return True
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if directory >= 0:
+                os.close(directory)
+    return False
 
 
 def _loose_chapter_inventory(
@@ -576,6 +689,8 @@ def _loose_chapter_inventory(
             if not stat.S_ISREG(metadata.st_mode) or metadata.st_size <= 0:
                 continue
             if (metadata.st_dev, metadata.st_ino) in excluded_inodes:
+                continue
+            if _completed_volume_alias(snapshot, path, metadata):
                 continue
             valid.append(
                 InventoryFile(
@@ -907,8 +1022,22 @@ def reconcile_series_inventory(
     if writer_state is None:
         return _Reconciliation(result)
 
+    chapter_files = inventory.files_by_chapter
+    if (
+        chapter_files
+        and tuple(
+            dict(row)
+            for row in db.execute(
+                _COMPLETED_VOLUME_DELETIONS_SELECT, (series_id,)
+            ).fetchall()
+        )
+        != snapshot.completed_volume_file_deletions
+    ):
+        # A deletion completed after inventory; do not promote stale evidence.
+        chapter_files = {}
+
     for chapter in snapshot.chapters:
-        item = inventory.files_by_chapter.get(chapter["id"])
+        item = chapter_files.get(chapter["id"])
         if item is None or chapter["status"] not in ("wanted", "grabbed", "downloaded"):
             continue
         if chapter["status"] == "downloaded" and chapter["import_path"] == item.path:

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from contextlib import contextmanager
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 from typing import Any
 import zipfile
 
@@ -911,3 +914,280 @@ def test_independent_file_checks_never_run_under_sqlite_writer(
     else:
         assert rescan.rescan_series_folder(1)["recovered"] == 1
     assert observed
+
+
+@pytest.fixture
+def deleted_volume_alias(state_env: dict[str, Any]) -> dict[str, Any]:
+    import volume_file_deletion
+
+    volume = state_env["library"] / "State Series v01.cbz"
+    alias = state_env["library"] / "State Series Ch001.cbz"
+    archive(volume, b"page" + b"x" * (2 * 1024 * 1024))
+    alias.hardlink_to(volume)
+    with sqlite3.connect(state_env["db_path"]) as db:
+        db.execute(
+            "UPDATE volumes SET status='downloaded',import_path=? WHERE id=11",
+            (str(volume),),
+        )
+        db.execute(
+            "UPDATE chapters SET status='downloaded',import_path=? WHERE id=1",
+            (str(volume),),
+        )
+    assert volume_file_deletion.delete_volume_file(1, 11).status == "complete"
+    assert not volume.exists()
+    assert alias.stat().st_nlink == 1
+    assert rows(state_env, "chapters")[0]["status"] == "wanted"
+    with sqlite3.connect(state_env["db_path"]) as db:
+        db.row_factory = sqlite3.Row
+        journal = dict(db.execute("SELECT * FROM volume_file_deletions").fetchone())
+    assert journal["state"] == "completed"
+    assert journal["target_present"] == 1
+    return {**state_env, "alias": alias, "journal": journal}
+
+
+@pytest.mark.parametrize("identity", ["canonical", "persisted"])
+def test_completed_deletion_alias_stays_wanted_after_rescan_and_restart(
+    deleted_volume_alias: dict[str, Any], identity: str
+) -> None:
+    import rescan
+
+    env = deleted_volume_alias
+    alias = env["alias"]
+    if identity == "persisted":
+        alias = alias.rename(env["library"] / "Historical Ch001.cbz")
+        with sqlite3.connect(env["db_path"]) as db:
+            db.execute("UPDATE chapters SET import_path=? WHERE id=1", (str(alias),))
+    before = {
+        table: rows(env, table)
+        for table in (
+            "series",
+            "chapters",
+            "volumes",
+            "history",
+            "series_metadata_fields",
+            "series_metadata_sources",
+        )
+    }
+    digest = hashlib.sha256(alias.read_bytes()).hexdigest()
+    for _ in range(2):
+        assert rescan.rescan_series_folder(1) == {
+            "found": 0,
+            "recovered": 0,
+            "missing": 0,
+            "lost": 0,
+            "created": 0,
+        }
+        assert {table: rows(env, table) for table in before} == before
+    restarted = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json,sys,shared,rescan; shared.DB_PATH=sys.argv[1]; "
+            "shared.CONFIG={}; print(json.dumps(rescan.rescan_series_folder(1)))",
+            str(env["db_path"]),
+        ],
+        env={**os.environ, "PYTHONPATH": str(Path(rescan.__file__).parent)},
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    assert json.loads(restarted.stdout)["recovered"] == 0
+    assert {table: rows(env, table) for table in before} == before
+    assert hashlib.sha256(alias.read_bytes()).hexdigest() == digest
+    with sqlite3.connect(env["db_path"]) as db:
+        db.row_factory = sqlite3.Row
+        assert (
+            dict(db.execute("SELECT * FROM volume_file_deletions").fetchone())
+            == env["journal"]
+        )
+
+
+@pytest.mark.parametrize(
+    "control",
+    [
+        "identical-copy",
+        "source-hardlink",
+        "changed-digest",
+        "changed-size",
+        "changed-mtime",
+        "foreign-series",
+        "missing-target",
+        "incomplete-stat",
+        "no-journal",
+    ],
+)
+def test_completed_deletion_does_not_blacklist_independent_chapters(
+    deleted_volume_alias: dict[str, Any], control: str
+) -> None:
+    import rescan
+
+    env = deleted_volume_alias
+    alias = env["alias"]
+    old = alias.stat()
+    if control in ("identical-copy", "source-hardlink"):
+        source = env["tmp"] / "independent.cbz"
+        if control == "identical-copy":
+            source.write_bytes(alias.read_bytes())
+            os.utime(source, ns=(old.st_atime_ns, old.st_mtime_ns))
+        else:
+            archive(source, b"independent chapter")
+        alias.unlink()
+        if control == "source-hardlink":
+            alias.hardlink_to(source)
+            assert alias.stat().st_nlink == 2
+        else:
+            source.rename(alias)
+            assert (
+                hashlib.sha256(alias.read_bytes()).hexdigest()
+                == env["journal"]["target_sha256"]
+            )
+        assert alias.stat().st_ino != old.st_ino
+    elif control == "changed-digest":
+        with alias.open("r+b") as stream:
+            stream.seek(-1, os.SEEK_END)
+            stream.write(b"!")
+        os.utime(alias, ns=(old.st_atime_ns, old.st_mtime_ns))
+        current = alias.stat()
+        assert (
+            current.st_dev,
+            current.st_ino,
+            current.st_size,
+            current.st_mtime_ns,
+        ) == (
+            old.st_dev,
+            old.st_ino,
+            old.st_size,
+            old.st_mtime_ns,
+        )
+        assert (
+            hashlib.sha256(alias.read_bytes()).hexdigest()
+            != env["journal"]["target_sha256"]
+        )
+    elif control == "changed-size":
+        with alias.open("ab") as stream:
+            stream.write(b"new content")
+    elif control == "changed-mtime":
+        os.utime(alias, ns=(old.st_atime_ns, old.st_mtime_ns + 1))
+    else:
+        with sqlite3.connect(env["db_path"]) as db:
+            if control == "foreign-series":
+                db.execute("UPDATE volume_file_deletions SET series_id=2")
+            elif control == "missing-target":
+                db.execute("UPDATE volume_file_deletions SET target_present=0")
+            elif control == "incomplete-stat":
+                db.execute("UPDATE volume_file_deletions SET target_inode=NULL")
+            else:
+                db.execute("DELETE FROM volume_file_deletions")
+    before_series = rows(env, "series")
+    assert rescan.rescan_series_folder(1)["recovered"] == 1
+    assert rows(env, "chapters")[0]["import_path"] == str(alias)
+    assert rows(env, "chapters")[0]["status"] == "downloaded"
+    assert rows(env, "series") == before_series
+    assert rescan.rescan_series_folder(1)["recovered"] == 0
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["open", "read", "path-swap", "symlink-swap", "mutation", "missing-digest"],
+)
+def test_matching_deletion_evidence_verification_failure_refuses_chapter_visibly(
+    deleted_volume_alias: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: str,
+) -> None:
+    import rescan
+
+    env = deleted_volume_alias
+    alias = env["alias"]
+    expected_inode = alias.stat().st_ino
+    replacement = env["tmp"] / "replacement.cbz"
+    archive(replacement, b"independent")
+    real_open, real_read = os.open, os.read
+    triggered = []
+
+    def raced_open(path, flags, *args, **kwargs):
+        if failure == "open" and os.fspath(path) in (str(alias), alias.name):
+            triggered.append(True)
+            raise PermissionError("simulated unreadable candidate")
+        return real_open(path, flags, *args, **kwargs)
+
+    def raced_read(descriptor: int, size: int) -> bytes:
+        if os.fstat(descriptor).st_ino == expected_inode:
+            assert 0 < size <= 1024 * 1024
+            if not triggered:
+                triggered.append(True)
+                if failure == "read":
+                    raise OSError("simulated hash read failure")
+                if failure in ("path-swap", "symlink-swap"):
+                    alias.unlink()
+                    if failure == "path-swap":
+                        replacement.rename(alias)
+                    else:
+                        alias.symlink_to(replacement)
+                elif failure == "mutation":
+                    old = os.fstat(descriptor)
+                    with alias.open("r+b") as stream:
+                        stream.seek(-1, os.SEEK_END)
+                        stream.write(b"!")
+                    os.utime(alias, ns=(old.st_atime_ns, old.st_mtime_ns))
+        return real_read(descriptor, size)
+
+    if failure == "missing-digest":
+        with sqlite3.connect(env["db_path"]) as db:
+            db.execute("UPDATE volume_file_deletions SET target_sha256=NULL")
+    monkeypatch.setattr(rescan.os, "open", raced_open)
+    monkeypatch.setattr(rescan.os, "read", raced_read)
+    assert rescan.rescan_series_folder(1)["recovered"] == 0
+    assert rows(env, "chapters")[0]["status"] == "wanted"
+    assert "verification refused" in caplog.text.lower()
+    if failure != "missing-digest":
+        assert triggered
+
+
+def test_completed_deletion_hash_streams_outside_sqlite_writer(
+    deleted_volume_alias: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import rescan
+
+    env = deleted_volume_alias
+    inode = env["alias"].stat().st_ino
+    real_read = os.read
+    sizes = []
+
+    def checked_read(descriptor: int, size: int) -> bytes:
+        if os.fstat(descriptor).st_ino == inode:
+            sizes.append(size)
+            assert 0 < size <= 1024 * 1024
+            with sqlite3.connect(env["db_path"], timeout=0.05) as writer:
+                writer.execute("BEGIN IMMEDIATE")
+                writer.rollback()
+        return real_read(descriptor, size)
+
+    monkeypatch.setattr(rescan.os, "read", checked_read)
+    assert rescan.rescan_series_folder(1)["recovered"] == 0
+    assert len(sizes) >= 3
+    assert rows(env, "chapters")[0]["status"] == "wanted"
+
+
+def test_completed_deletion_journal_change_after_inventory_fences_recovery(
+    deleted_volume_alias: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import rescan
+
+    env = deleted_volume_alias
+    with sqlite3.connect(env["db_path"]) as db:
+        db.execute("UPDATE volume_file_deletions SET target_present=0")
+    original = rescan.build_filesystem_inventory
+
+    def raced(snapshot):
+        inventory = original(snapshot)
+        assert 1 in inventory.files_by_chapter
+        with sqlite3.connect(env["db_path"]) as db:
+            db.execute("UPDATE volume_file_deletions SET target_present=1")
+        return inventory
+
+    monkeypatch.setattr(rescan, "build_filesystem_inventory", raced)
+    assert rescan.rescan_series_folder(1)["recovered"] == 0
+    assert rows(env, "chapters")[0]["status"] == "wanted"

@@ -5,6 +5,12 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+### Fixed
+
+- Keep positively identified deleted-volume hardlink aliases out of loose
+  chapter rescan recovery, using existing deletion evidence without rejecting
+  legitimate chapter/source hardlinks or unrelated inode reuse (#425).
+
 ## 1.3.3-rc.2 - 2026-10-10
 
 Replacement candidate image published on 2026-10-11; qualification failed at
