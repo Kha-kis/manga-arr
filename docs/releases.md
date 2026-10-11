@@ -17,15 +17,23 @@ documentation consistency.
 
 ## 1.3.3-rc.2 Candidate Status
 
-This replacement candidate is prepared but not published or qualified.
+This replacement candidate image is published, but runtime qualification
+reproduced [#425](https://github.com/Kha-kis/manga-arr/issues/425).
+RC2 is not cleared for promotion or deployment and will not be rebuilt in place.
 `app/VERSION` identifies 1.3.3-rc.2. PR #423 merged at
 `0df8fc75e0fbe2b2ca79f6299cb66308c7789dee`, adding loose-chapter preservation
 and rescan recovery, dotted-title compatibility and discovered-volume alias
 exclusions. Optional library-file cleanup remains a separate proposal in #422.
 
-The source fix passed its full release-safe gate and independent review.
-The release preparation still requires its own local release gate, reviewed
-merge, immutable tag, publication and exact-artifact qualification. See
+The preparation passed its full local release gate and independent review.
+PR #424 merged at `45e8a3fdf6035c72e1365c47c4c74cdb4cbfb748`, with a tree
+identical to the tested preparation. Annotated `v1.3.3-rc.2` points at that
+exact merge. Release Image run
+[38101546771](https://github.com/Kha-kis/manga-arr/actions/runs/38101546771)
+published only the full candidate tag. Both platform identities, attestations
+and dated fixed High/Critical scans passed; these do not clear the runtime
+failure. A separately reviewed correction and a new immutable candidate are
+required. See
 [RC2 qualification](release-qualification.md#133-rc2-qualification).
 Do not reuse RC1's artifact receipts for RC2. Neither `v1.3.3-rc.1` nor its
 published image is replaced; 1.3.2 keeps the stable aliases and production
