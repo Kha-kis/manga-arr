@@ -5,7 +5,7 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## 1.3.3-rc.2 Qualification
 
-Status: **PREPARED; NOT PUBLISHED OR ARTIFACT-QUALIFIED** (2026-10-10).
+Status: **IMAGE PUBLISHED; RUNTIME QUALIFICATION FAILED; NOT CLEARED FOR PROMOTION OR DEPLOYMENT** (2026-10-11).
 1.3.2 remains the qualified stable release and owns the stable aliases.
 Production remains on the separately deployed 1.3.3-rc.1 artifact.
 
@@ -37,15 +37,104 @@ schema or APIs. Loose observations do not prove ZIP integrity or content
 equivalence, and do not authorize cleanup. Optional redundant library-file
 cleanup remains a separate contribution proposal in #422.
 
-### Required Candidate Gates
+### Release Head And Published Artifact
 
-- Run the full local release gate on the clean preparation head, then review
-  and merge that exact preparation without unrelated source changes.
-- Create a new immutable `v1.3.3-rc.2` tag on the reviewed merge. Never move
-  RC1's Git or image tag, and never publish stable aliases for RC2.
-- Verify the exact published index and both platform identities, SPDX/SLSA
-  attestations and dated fixed High/Critical scans.
-- Qualify fresh setup, stopped-copy upgrade and matching rollback. Preserve
+- Reviewed preparation head: `43f2e7ba2feec90d9c0e60530654357446a41e22`.
+  `make release-local` passed with exit zero: 4,135 Python tests, 17 existing
+  skips, 95 isolated browser cases, lint/format, confirmation/route checks,
+  dependency/history-secret/configuration gates and local image verification
+  and fixed High/Critical scanning. Browser tests used the isolated test image
+  from that tree, not the separately built production-style local image or
+  the published registry artifact.
+- PR #424 merged at `45e8a3fdf6035c72e1365c47c4c74cdb4cbfb748`; its tree
+  is identical to the tested preparation. Fresh exact-merge fast/security/image
+  gates passed, including 86 fast tests and 13 confirmation checks. The full
+  preparation gate is not relabeled as a literal merge-commit run.
+- Independent preparation review found no actionable findings, checked 41
+  local links/assets/anchors and passed 53 focused metadata/doc tests.
+- Annotated `v1.3.3-rc.2` tag object:
+  `27db890ec7daf5bcf3e2c826d886d1d1a3cf5b8c`. It points at the exact merge
+  above. Neither RC1's Git tag nor its published image was replaced.
+- [Release Image run 38101546771](https://github.com/Kha-kis/manga-arr/actions/runs/38101546771)
+  passed on that exact revision on 2026-10-11.
+- Published index: `sha256:331aaf78de6ae01f2d13a128dd4f370c5e7f66e6e12589663eb4eac65bbb3caa`.
+- amd64 manifest: `sha256:0493bc8d561ec0a6511272b38b80736fa5f39d7f7c9fd4d1c6871dc0fec3edb6`.
+- arm64 manifest: `sha256:c374336155a56b6cca1f65954d1a46ac88b9d9e96c31e2211aa3d2046efb733e`.
+- Both platforms identify version 1.3.3-rc.2, the exact merge and non-root user
+  `mangarr`, with SPDX 2.3 SBOMs containing 151 packages and SLSA provenance
+  naming the workflow builder and matching build arguments. Build date:
+  2026-10-11T01:21:21Z.
+- Published amd64 embedded-version and file-inventory checks passed. Dated
+  fixed High/Critical scans passed on both exact platform artifacts; this is
+  not an all-severity or future-vulnerability guarantee, nor ARM runtime evidence.
+- `1.3.3-rc.2` is the only new image tag. `1.3.2`, `1.3`, `1` and `latest`
+  still resolve to the qualified 1.3.2 index recorded below.
+
+### Runtime Qualification Failure
+
+- A strict offline application probe on the exact published amd64 artifact
+  reproduced [#425](https://github.com/Kha-kis/manga-arr/issues/425): a
+  chapter-named hard link to a downloaded volume is correctly refused as
+  independent chapter evidence during volume deletion, but is accepted by a
+  later rescan after the volume pathname disappears. The chapter returns from
+  wanted to downloaded even though the completed deletion journal retains the
+  original volume fingerprint.
+- Independent loose-file and volume-only deletion/rescan controls passed
+  before the failing case. The probe used fresh synthetic state and no network;
+  it did not read production configuration or library files. Its container
+  stopped with exit 1, no OOM and no restart. This is a controlled artifact
+  reproduction, not a production incident, HTTP workflow or NAS qualification.
+- Independent assessment confirms a correctness gap in the independence
+  contract. A narrow correction should reuse same-series completed deletion
+  evidence with the full device/inode/size/mtime/SHA-256 fingerprint. Inode-only,
+  content-hash-only or blanket hardlink refusal would be unsafe substitutes.
+- No stopped-copy upgrade/rollback or NAS pass is claimed for RC2. The
+  previously prepared helpers and RC1 receipts do not qualify this artifact.
+  The other scoped results below do not clear the alias failure.
+
+### Other Scoped Runtime Results
+
+- A separate fresh Mangarr/Suwayomi pair passed browser administrator setup
+  and one new complete-volume download/import on the exact published amd64
+  artifact. Expected stored AniList/MangaDex IDs, successful source timestamps,
+  field provenance and all eight chapter-to-volume mappings were verified
+  before completion and after import; task completion alone was not credited.
+- The English MangaDex source supplied eight chapters and 254 pages in 352.5
+  seconds. All 66,264,365 source bytes matched the 71,197,671-byte imported CBZ.
+  Ordered page names/content hashes, ZIP integrity, a unique root ComicInfo.xml
+  with current stored context and no inherited chapter Number, and final
+  Suwayomi/DDL import-history size passed.
+- The unmodified official publisher's precompiled JAR was acquired afresh,
+  its published digest/size checked, and installed through the normal extension
+  endpoint. No production extension state or existing download cache was reused.
+  This does not qualify APK conversion or arbitrary extension compatibility.
+- One job, a 512 MiB private scratch bound and the unchanged 600-second deadline
+  were used. Source archives were mounted read-only and retained through
+  verification. Hashes were measured after download/import completion, not as
+  a measured pre/post-import source comparison. No second download was attempted.
+- A separate network-none provider-failure fixture returned failed refresh
+  status with no series-value changes. Seeded locked selections/candidates
+  remained unchanged and the prior success timestamp was preserved. Its strict
+  whole-table equality guard nevertheless refused because a previously unseeded
+  MangaDex ID selection/candidate was initialized. This is not evidence of cached
+  value loss, but the cache-failure gate is **not passed**. The unchanged assertion
+  and failed receipt are retained; fixture/ownership analysis is a separate
+  follow-up, not part of the alias correction.
+- All owned workflow containers stopped, without OOM or restarts; helper
+  processes, loopback forwarding and scratch mounts were closed. The retained
+  owned egress network has no active endpoints. No production jobs, downloader
+  mappings, configuration or library files were changed.
+
+These are representative amd64 results, not native ARM, every provider/source,
+production queue replay, NAS coverage or a complete candidate qualification.
+
+### Required Follow-Up
+
+- Fix #425 in a separate regression-first, independently reviewed PR, retaining
+  legitimate independent/source-hardlinked chapters and inode-reuse controls.
+- Prepare a new immutable candidate from the reviewed correction. Never move
+  RC2's tag or image, or reassign its receipts to the replacement.
+- Qualify the replacement's fresh setup, stopped-copy upgrade and matching rollback. Preserve
   database/key, identities, provenance, locks, downloaded observations and
   integration configuration; do not replay inherited live jobs in test copies.
 - Verify deletion/rescan with independent loose chapters and volume aliases

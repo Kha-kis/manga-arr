@@ -7,7 +7,9 @@ All notable changes to this project. Format roughly follows
 
 ## 1.3.3-rc.2 - 2026-10-10
 
-Replacement release candidate in preparation; not yet published or qualified.
+Replacement candidate image published on 2026-10-11; qualification failed at
+the deleted-volume alias sequence tracked in [#425](https://github.com/Kha-kis/manga-arr/issues/425).
+Not cleared for promotion or deployment; its tag and image remain immutable.
 It adds loose-chapter state correctness to the unchanged RC1 fixes. 1.3.2
 remains the qualified stable release and owns the stable image aliases. See
 [candidate qualification](docs/release-qualification.md#133-rc2-qualification)

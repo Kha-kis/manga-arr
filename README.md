@@ -27,11 +27,13 @@ compressed-RAR decoding. See the
 [qualification evidence and platform limits](docs/release-qualification.md#132-stable-qualification)
 before upgrading.
 
-**1.3.3-rc.2 is in preparation, not yet published or qualified.** It adds
+**The 1.3.3-rc.2 image is published, but qualification found a release blocker.** It adds
 loose-chapter preservation during volume deletion and recovery during rescan,
 with conservative file identity and volume-alias checks. Follow
 [RC2 qualification](docs/release-qualification.md#133-rc2-qualification)
-for the remaining release gates. Optional duplicate-file cleanup is separate.
+for completed checks and the [deleted-volume alias follow-up](https://github.com/Kha-kis/manga-arr/issues/425).
+RC2 is not cleared for promotion or deployment. Optional
+duplicate-file cleanup is separate.
 
 **1.3.3-rc.1 remains published as a release candidate, not a stable release.** It contains
 further Suwayomi import/retry fixes, metadata retry and coverage corrections,
