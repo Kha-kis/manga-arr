@@ -330,15 +330,38 @@ async def refresh_mangadex_map(series_id: int, *, apply_changes: bool = True) ->
                 )
     mdx_id = s["mangadex_id"]
     links: dict[str, str] = {}
+    fresh_mangadex_evidence = False
     if not mdx_id:
         mdx_id, links = await fetch_mangadex_id(s["title"], s["anilist_id"], s["mu_id"])
+        fresh_mangadex_evidence = bool(mdx_id)
     elif not s["mal_id"] or not s["mu_id"]:
         # Have UUID but missing cross-refs — fetch links from MangaDex by ID
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 r = await client.get(f"https://api.mangadex.org/manga/{mdx_id}")
-            md_data = r.json().get("data", {})
-            links = (md_data.get("attributes") or {}).get("links") or {}
+            r.raise_for_status()
+            payload = r.json()
+            md_data = payload.get("data") if isinstance(payload, dict) else None
+            if (
+                not isinstance(payload, dict)
+                or payload.get("result") != "ok"
+                or not isinstance(md_data, dict)
+                or md_data.get("id") != mdx_id
+                or md_data.get("type") != "manga"
+                or not isinstance(md_data.get("attributes"), dict)
+            ):
+                raise ValueError("invalid MangaDex identity response")
+            md_links = md_data["attributes"].get("links")
+            if md_links is not None and (
+                not isinstance(md_links, dict)
+                or any(
+                    value is not None and not isinstance(value, str)
+                    for value in md_links.values()
+                )
+            ):
+                raise ValueError("invalid MangaDex identity links")
+            links = md_links or {}
+            fresh_mangadex_evidence = True
         except Exception:
             pass
     if not mdx_id:
@@ -390,9 +413,11 @@ async def refresh_mangadex_map(series_id: int, *, apply_changes: bool = True) ->
             provider_details[provider]["http_status"] = result.http_status
         return candidate if usable else {}
 
-    mapping = usable_map(
-        await _fetch_chapter_volume_map_result(mdx_id), "mangadex", "MangaDex"
+    mangadex_result = await _fetch_chapter_volume_map_result(mdx_id)
+    fresh_mangadex_evidence = (
+        fresh_mangadex_evidence or mangadex_result.failure_reason is None
     )
+    mapping = usable_map(mangadex_result, "mangadex", "MangaDex")
     map_source = "mangadex"
 
     # Fallback when MangaDex has no usable chapter data (DMCA'd / sparse): try Kitsu
@@ -437,16 +462,17 @@ async def refresh_mangadex_map(series_id: int, *, apply_changes: bool = True) ->
         int(mal_from_mdx) if mal_from_mdx and str(mal_from_mdx).isdigit() else None,
         mu_from_mdx,
     )
-    record_metadata_candidates(
-        series_id,
-        "mangadex",
-        {
-            "mangadex_id": mdx_id,
-            "mal_id": cross_refs[0],
-            "mu_id": cross_refs[1],
-        },
-        confidence=1.0,
-    )
+    if fresh_mangadex_evidence:
+        record_metadata_candidates(
+            series_id,
+            "mangadex",
+            {
+                "mangadex_id": mdx_id,
+                "mal_id": cross_refs[0],
+                "mu_id": cross_refs[1],
+            },
+            confidence=1.0,
+        )
     if mapping:
         record_metadata_candidates(
             series_id,
@@ -471,7 +497,7 @@ async def refresh_mangadex_map(series_id: int, *, apply_changes: bool = True) ->
         with get_db() as db:
             selected_values: dict[str, object] = {}
             selected_sources: dict[str, str] = {}
-            if not field_locks["mangadex_id"]:
+            if fresh_mangadex_evidence and not field_locks["mangadex_id"]:
                 selected_values["mangadex_id"] = selected_mangadex_id
                 selected_sources["mangadex_id"] = "mangadex"
             if (

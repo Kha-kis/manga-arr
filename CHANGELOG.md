@@ -10,6 +10,10 @@ All notable changes to this project. Format roughly follows
 - Keep positively identified deleted-volume hardlink aliases out of loose
   chapter rescan recovery, using existing deletion evidence without rejecting
   legitimate chapter/source hardlinks or unrelated inode reuse (#425).
+- Preserve cached MangaDex identity provenance and its timestamps when chapter
+  map refresh has no fresh MangaDex evidence. Validate exact-ID detail responses
+  before using their links, while retaining successful empty observations,
+  Kitsu/local fallback maps, locks and retry behavior (#428).
 
 ## 1.3.3-rc.2 - 2026-10-10
 

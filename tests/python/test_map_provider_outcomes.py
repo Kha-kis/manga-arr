@@ -13,10 +13,11 @@ from test_metadata_lifecycle import db_path, _seed_series  # noqa: F401
 
 USABLE = {"1": 1, "2": 2}
 MDX_USABLE = {
+    "result": "ok",
     "volumes": {
         "1": {"chapters": {"1": {}}},
         "2": {"chapters": {"2": {}}},
-    }
+    },
 }
 KITSU_SEARCH = {"data": [{"id": "7", "attributes": {"canonicalTitle": "Exact Series"}}]}
 
@@ -32,12 +33,15 @@ def _response(request, kind, provider):
         return httpx.Response(200, content=b"not json")
     if kind == "malformed_payload":
         return httpx.Response(
-            200, json={"volumes": []} if provider == "mangadex" else {"data": {}}
+            200,
+            json={"result": "ok", "volumes": []}
+            if provider == "mangadex"
+            else {"data": {}},
         )
     if provider == "mangadex":
-        payload = MDX_USABLE if kind == "usable" else {"volumes": {}}
+        payload = MDX_USABLE if kind == "usable" else {"result": "ok", "volumes": {}}
         if kind == "sparse":
-            payload = {"volumes": {"1": {"chapters": {"1": {}}}}}
+            payload = {"result": "ok", "volumes": {"1": {"chapters": {"1": {}}}}}
     else:
         payload = {"data": [], "links": {}}
         if kind in {"usable", "sparse"}:
@@ -240,8 +244,8 @@ def test_kitsu_checks_search_and_chapter_responses(stage, kind, reason):
     [
         ("mangadex", {}),
         ("mangadex", []),
-        ("mangadex", {"volumes": {"1": []}}),
-        ("mangadex", {"volumes": {"1": {"chapters": []}}}),
+        ("mangadex", {"result": "ok", "volumes": {"1": []}}),
+        ("mangadex", {"result": "ok", "volumes": {"1": {"chapters": []}}}),
         ("kitsu", {}),
         ("kitsu", []),
         ("kitsu", {"data": [{"attributes": {}}]}),
@@ -261,6 +265,29 @@ def test_missing_or_malformed_payload_is_not_a_successful_empty_map(provider, pa
             if provider == "mangadex"
             else metadata._fetch_kitsu_chapter_map_result("Exact Series", 123, 20)
         )
+    assert result.mapping == {}
+    assert result.failure_reason == "malformed_payload"
+
+
+@pytest.mark.parametrize(
+    "result_fields",
+    [{}, {"result": None}, {"result": []}, {"result": "unknown"}, {"result": "error"}],
+    ids=["missing", "null", "list", "unknown", "error"],
+)
+@pytest.mark.parametrize(
+    "volumes", [{}, {"1": {"chapters": {"1": {}}}}], ids=["empty", "sparse"]
+)
+def test_mangadex_aggregate_requires_explicit_ok_result(result_fields, volumes):
+    import metadata
+
+    original = httpx.AsyncClient
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, json={**result_fields, "volumes": volumes})
+    )
+    with patch.object(
+        httpx, "AsyncClient", lambda **kwargs: original(**kwargs, transport=transport)
+    ):
+        result = asyncio.run(metadata._fetch_chapter_volume_map_result("mdx-1"))
     assert result.mapping == {}
     assert result.failure_reason == "malformed_payload"
 
@@ -342,7 +369,7 @@ def test_uncollected_chapters_are_successful_empty_observations(provider):
     def handler(request):
         if request.url.host == "api.mangadex.org":
             return httpx.Response(
-                200, json={"volumes": {"none": {"chapters": {"1": {}}}}}
+                200, json={"result": "ok", "volumes": {"none": {"chapters": {"1": {}}}}}
             )
         if request.url.path.endswith("/manga"):
             return httpx.Response(200, json=KITSU_SEARCH)
