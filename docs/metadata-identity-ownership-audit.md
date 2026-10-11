@@ -76,8 +76,9 @@ Startup backfill retains its existing legacy-row behavior.
 Fresh MangaDex identity evidence means one of:
 
 - an accepted ID from the existing MangaDex identity resolver;
-- a successful exact-ID detail response containing the requested manga object,
-  rather than an HTTP error, error payload or another object's links;
+- a successful exact-ID detail response with explicit `result: "ok"` containing
+  the requested manga object, rather than an HTTP error, missing/error result
+  marker or another object's links;
 - a successful, validated aggregate response for the requested ID, even when
   its chapter coverage is empty or insufficient.
 

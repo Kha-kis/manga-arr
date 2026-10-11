@@ -344,7 +344,7 @@ async def refresh_mangadex_map(series_id: int, *, apply_changes: bool = True) ->
             md_data = payload.get("data") if isinstance(payload, dict) else None
             if (
                 not isinstance(payload, dict)
-                or payload.get("result", "ok") != "ok"
+                or payload.get("result") != "ok"
                 or not isinstance(md_data, dict)
                 or md_data.get("id") != mdx_id
                 or md_data.get("type") != "manga"

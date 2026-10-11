@@ -227,6 +227,8 @@ def transport(
                 payload["data"].pop("type")
             elif detail == "error_payload":
                 payload["result"] = "error"
+            elif detail == "missing_result":
+                payload.pop("result")
             elif detail == "malformed_result":
                 payload["result"] = []
             elif detail == "malformed_data":
@@ -357,20 +359,22 @@ def test_malformed_aggregate_result_preserves_cached_identity_provenance(
 
 
 @pytest.mark.parametrize(
-    "detail",
+    "detail,locked",
     [
-        "http_error",
-        "wrong_id",
-        "wrong_type",
-        "missing_type",
-        "error_payload",
-        "malformed_result",
-        "malformed_root",
-        "malformed_data",
-        "malformed_attributes",
-        "malformed_links",
-        "malformed_link_values",
-        "invalid_json",
+        ("http_error", False),
+        ("wrong_id", False),
+        ("wrong_type", False),
+        ("missing_type", False),
+        ("error_payload", False),
+        ("missing_result", False),
+        ("missing_result", True),
+        ("malformed_result", False),
+        ("malformed_root", False),
+        ("malformed_data", False),
+        ("malformed_attributes", False),
+        ("malformed_links", False),
+        ("malformed_link_values", False),
+        ("invalid_json", False),
     ],
 )
 @pytest.mark.parametrize("aggregate", ["failure", "empty"])
@@ -381,12 +385,13 @@ def test_unverified_detail_links_are_never_observations(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     detail: str,
+    locked: bool,
     aggregate: str,
     apply_changes: bool,
 ) -> None:
     import metadata_enrichment as enrichment
 
-    seed(complete=True, locked=False, lookup=True)
+    seed(complete=True, locked=locked, lookup=True)
     before = snapshot()
     transport(monkeypatch, tmp_path / "library", detail=detail, aggregate=aggregate)
     clock["now"] = NOW
@@ -400,7 +405,7 @@ def test_unverified_detail_links_are_never_observations(
         expected["candidates"] = replaced(
             before["candidates"], [candidate("mangadex_id", MDX)], candidates=True
         )
-        if apply_changes:
+        if apply_changes and not locked:
             expected["fields"] = replaced(
                 before["fields"], [selection("mangadex_id", MDX)]
             )
