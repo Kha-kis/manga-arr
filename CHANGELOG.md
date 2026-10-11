@@ -5,6 +5,14 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.3.3-rc.3 - 2026-10-11
+
+Replacement candidate prepared after RC2's runtime qualification failures.
+Not yet tagged, published or artifact-qualified. RC2's tag, image and failed
+receipts remain immutable; 1.3.2 remains the qualified stable release and owns
+the stable image aliases. See [RC3 qualification](docs/release-qualification.md#133-rc3-qualification)
+for the source baseline and required fresh artifact checks.
+
 ### Fixed
 
 - Keep positively identified deleted-volume hardlink aliases out of loose
@@ -14,6 +22,10 @@ All notable changes to this project. Format roughly follows
   map refresh has no fresh MangaDex evidence. Validate exact-ID detail responses
   before using their links, while retaining successful empty observations,
   Kitsu/local fallback maps, locks and retry behavior (#428).
+- Require explicit successful MangaDex detail and aggregate response markers;
+  malformed HTTP-200 envelopes cannot renew identity provenance or supply
+  unverified cross-reference links. Independent valid aggregate evidence, locks
+  and preview behavior remain unchanged (#429).
 
 ## 1.3.3-rc.2 - 2026-10-10
 

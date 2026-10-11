@@ -15,12 +15,32 @@ Release commits must update `app/VERSION`, `CHANGELOG.md`, and the current
 release shown in `README.md` together. Automated tests enforce SemVer syntax and
 documentation consistency.
 
+## 1.3.3-rc.3 Candidate Status
+
+This replacement candidate is in preparation, not yet tagged, published or
+artifact-qualified. `app/VERSION` identifies 1.3.3-rc.3. It starts from reviewed
+master `ad2aeee98465280c88263672732f23ad6fff03b0`, including PR #427's
+deleted-volume alias correction and PR #429's cached MangaDex provenance and
+explicit-success response guards. Other RC1/RC2 behavior is carried forward;
+optional file cleanup #422 remains separate.
+
+Release preparation changes version and documentation only. After review and
+merge, publication must identify the exact reviewed release merge, use an
+immutable annotated `v1.3.3-rc.3`, and publish only `1.3.3-rc.3`. Neither RC2's
+failed runtime receipts nor earlier local images qualify the replacement.
+Fresh artifact checks are listed in
+[RC3 qualification](release-qualification.md#133-rc3-qualification).
+
+RC1/RC2 tags, images and historical evidence remain unchanged. 1.3.2 retains
+`1.3`, `1` and `latest`; production stays on the separately deployed RC1 until
+a separately authorized, qualified cutover with a matching stopped backup.
+
 ## 1.3.3-rc.2 Candidate Status
 
 This replacement candidate image is published, but runtime qualification
 reproduced [#425](https://github.com/Kha-kis/manga-arr/issues/425).
 RC2 is not cleared for promotion or deployment and will not be rebuilt in place.
-`app/VERSION` identifies 1.3.3-rc.2. PR #423 merged at
+The immutable tagged source identifies 1.3.3-rc.2. PR #423 merged at
 `0df8fc75e0fbe2b2ca79f6299cb66308c7789dee`, adding loose-chapter preservation
 and rescan recovery, dotted-title compatibility and discovered-volume alias
 exclusions. Optional library-file cleanup remains a separate proposal in #422.
@@ -112,6 +132,8 @@ The release workflow publishes `ghcr.io/kha-kis/manga-arr` with these tags:
 
 | Release | Image tags |
 | --- | --- |
+| `1.3.3-rc.3` (prepared; not published) | `1.3.3-rc.3` only when published |
+| `1.3.3-rc.2` (published; qualification failed) | `1.3.3-rc.2` |
 | `1.3.3-rc.1` (candidate) | `1.3.3-rc.1` |
 | `1.3.2` (qualified stable) | `1.3.2`, `1.3`, `1`, `latest` |
 | `1.3.1` | `1.3.1`, `1.3`, `1`, `latest` |

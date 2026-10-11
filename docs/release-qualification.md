@@ -3,6 +3,75 @@
 This document defines the evidence required before a Mangarr release candidate
 can become a stable release. Passing unit tests alone is not sufficient.
 
+## 1.3.3-rc.3 Qualification
+
+Status: **PREPARATION; NOT PUBLISHED OR ARTIFACT-QUALIFIED** (2026-10-11).
+1.3.2 remains the qualified stable release and owns the stable aliases.
+Production remains on the separately deployed 1.3.3-rc.1 artifact. RC2's failed
+qualification and immutable source/image identities below remain historical.
+
+### Source Baseline
+
+[PR #427](https://github.com/Kha-kis/manga-arr/pull/427) merged at
+`2b20ab4597f9a3d4eaf11fb9d59f28b653854ea3`, correcting the deleted-volume
+alias sequence from #425. It reuses same-series completed deletion evidence with
+the full device/inode/size/mtime/SHA-256 fingerprint, retaining independent loose
+chapters, legitimate source hardlinks and inode-reuse controls.
+
+[PR #429](https://github.com/Kha-kis/manga-arr/pull/429) merged at
+`ad2aeee98465280c88263672732f23ad6fff03b0`. Its tree is identical to reviewed
+head `c0c94cebe2fe536d968c8d4dbb94be127b11269b`. Cached MangaDex identity
+provenance remains unchanged without fresh evidence, and both detail/aggregate
+responses require explicit success before supplying observations. Valid empty
+or sparse aggregate evidence remains independent of coverage; malformed detail
+links cannot be borrowed from a separately successful aggregate. Locks, preview,
+fallback observations, counts and stored identity matching remain unchanged.
+
+The final frozen source passed `make test-release-safe`: 4,309 Python tests,
+17 existing skips, 95 isolated browser cases, lint/format, 13 confirmation and
+10 route checks. This is source evidence for the identical merge tree, not a
+literal merge-commit full rerun or RC3 image qualification. The 155 new metadata
+cases and the alias controls are included. Final focused metadata/provider tests
+passed 225 cases, broader metadata tests passed 450, and independent source
+review and exact-head Codex review had no remaining findings. Actual scoped LSP
+and matched CLI had no new errors/warnings; one existing argument-type error
+remains. No globally clean type-check is claimed.
+
+### Preparation And Publication Boundary
+
+Release preparation changes only version and documentation. Its full local
+release gate and review are recorded in the preparation PR, separately from the
+source-fix evidence above. Candidate tag, release merge, workflow, registry index,
+platform manifests and published runtime results are pending. Earlier RC1/RC2 or
+local-image receipts must not be reassigned to RC3.
+
+After review/merge and required release gates, tag the exact reviewed release
+merge immutably as `v1.3.3-rc.3`. Publish only `1.3.3-rc.3`, leaving stable
+`1.3.2`, `1.3`, `1` and `latest` unchanged. Stop on a real release blocker.
+
+### Required Fresh Artifact Checks
+
+- Verify exact candidate digest, version, source revision, both platform
+  identities, SBOM/provenance and dated fixed High/Critical vulnerability scans.
+- Repeat strict deletion/rescan controls with independent loose chapters,
+  current-volume aliases and aliases retained after volume deletion. Include
+  representative NAS behavior; source tests alone do not qualify a filesystem.
+- Repeat the unchanged whole-table network-disabled cache-failure guard, then
+  representative successful metadata with stored IDs, selected fields, locks,
+  candidate provenance, retry state and local/downloaded observations intact.
+- Verify fresh administrator setup/login/logout/recovery and DB integrity/FKs.
+- Test a fresh stopped 1.3.2 copy upgrade and matching pristine-snapshot rollback,
+  preserving credentials, mappings, identities, ownership and library state.
+  Do not replay inherited live jobs or run an old image against a migrated DB.
+- Complete a new bounded download/import/rescan workflow with independently
+  verified metadata, exact source identity, source/archive bytes and ComicInfo.
+  Reusing RC2's completed download does not qualify RC3.
+- Observe the required background cycle, recording health, restarts, errors,
+  lock/recovery failures and unexpected identity/provenance or filesystem changes.
+- Obtain independent artifact-evidence review before claiming qualification or
+  stable promotion. Production cutover requires separate authorization and a
+  new verified matching stopped backup; this preparation does not deploy.
+
 ## 1.3.3-rc.2 Qualification
 
 Status: **IMAGE PUBLISHED; RUNTIME QUALIFICATION FAILED; NOT CLEARED FOR PROMOTION OR DEPLOYMENT** (2026-10-11).

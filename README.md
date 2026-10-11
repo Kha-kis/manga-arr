@@ -27,11 +27,17 @@ compressed-RAR decoding. See the
 [qualification evidence and platform limits](docs/release-qualification.md#132-stable-qualification)
 before upgrading.
 
-**The 1.3.3-rc.2 image is published, but qualification found a release blocker.** It adds
+**1.3.3-rc.3 is the replacement candidate in preparation, not yet published or artifact-qualified.**
+It adds the reviewed deleted-volume alias and cached MangaDex provenance
+corrections. See [RC3 qualification](docs/release-qualification.md#133-rc3-qualification)
+for the source baseline and required fresh checks. Stable aliases stay on 1.3.2;
+source tests alone do not authorize deployment.
+
+**The 1.3.3-rc.2 image is published, but qualification found release blockers.** It adds
 loose-chapter preservation during volume deletion and recovery during rescan,
 with conservative file identity and volume-alias checks. Follow
 [RC2 qualification](docs/release-qualification.md#133-rc2-qualification)
-for completed checks and the [deleted-volume alias follow-up](https://github.com/Kha-kis/manga-arr/issues/425).
+for completed checks and the historical [deleted-volume alias failure](https://github.com/Kha-kis/manga-arr/issues/425).
 RC2 is not cleared for promotion or deployment. Optional
 duplicate-file cleanup is separate.
 
