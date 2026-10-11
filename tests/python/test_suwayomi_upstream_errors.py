@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import sqlite3
 import zipfile
 from collections.abc import Iterator
@@ -659,3 +660,128 @@ def test_monitor_continues_after_refresh_exception_without_data_changes(
     assert env.refreshes == [101, 102]
     assert env.preserved() == before and env.job() == job_before
     assert "suwayomi_monitor series 1" in caplog.text
+
+
+@pytest.mark.parametrize("cancel_during", ["monitor-work", "interval-sleep"])
+def test_monitor_shutdown_cancellation_propagates_without_error_or_traceback(
+    env: UpstreamJobs,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    cancel_during: str,
+) -> None:
+    from routers import suwayomi_ as swy
+
+    env.seed([1])
+    before = env.preserved()
+    jobs_before = env.rows("SELECT * FROM suwayomi_downloads")
+    interval = max(3600, int(swy.get_cfg("suwayomi_check_interval", "21600")))
+    sleeps: list[float] = []
+    synced: list[int] = []
+
+    async def cancel_monitor() -> None:
+        ready = asyncio.Event()
+        blocked = asyncio.Event()
+
+        async def sync(_client: dict[str, Any], series: dict[str, Any]) -> tuple[int, int]:
+            synced.append(series["id"])
+            if cancel_during == "monitor-work":
+                ready.set()
+                await blocked.wait()
+            return 0, 0
+
+        async def sleep(delay: float) -> None:
+            sleeps.append(delay)
+            if delay == interval:
+                ready.set()
+                await blocked.wait()
+
+        monkeypatch.setattr(swy, "_suwayomi_sync_series", sync)
+        monkeypatch.setattr(swy._aio, "sleep", sleep)
+        task = asyncio.create_task(swy.suwayomi_monitor_loop())
+        await asyncio.wait_for(ready.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
+
+    with caplog.at_level(logging.DEBUG, logger=swy.log.name):
+        asyncio.run(cancel_monitor())
+
+    assert env.preserved() == before
+    assert env.rows("SELECT * FROM suwayomi_downloads") == jobs_before
+    assert env.queries == [] and env.refreshes == []
+    assert synced == ([1] if cancel_during == "monitor-work" else [1, 2])
+    assert sleeps == ([180] if cancel_during == "monitor-work" else [180, 3, 3, interval])
+    cancellations = [
+        record
+        for record in caplog.records
+        if "Loop cancelled during shutdown" in record.getMessage()
+    ]
+    assert len(cancellations) == 1
+    assert cancellations[0].levelno in (logging.DEBUG, logging.INFO)
+    assert cancellations[0].exc_info is None
+    assert not any(
+        record.levelno >= logging.ERROR
+        for record in caplog.records
+        if record.name == swy.log.name
+    )
+    assert "Traceback" not in caplog.text
+
+
+def test_monitor_unexpected_exception_logs_traceback_and_recovers_next_pass(
+    env: UpstreamJobs,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from routers import suwayomi_ as swy
+
+    env.seed([1])
+    before = env.preserved()
+    jobs_before = env.rows("SELECT * FROM suwayomi_downloads")
+    original_enabled = swy._ddl_enabled
+    failure = RuntimeError("synthetic unexpected monitor failure")
+    checks = 0
+    intervals = 0
+    sleeps: list[float] = []
+    synced: list[int] = []
+    interval = max(3600, int(swy.get_cfg("suwayomi_check_interval", "21600")))
+
+    def enabled() -> bool:
+        nonlocal checks
+        checks += 1
+        if checks == 1:
+            raise failure
+        return original_enabled()
+
+    async def sync(_client: dict[str, Any], series: dict[str, Any]) -> tuple[int, int]:
+        synced.append(series["id"])
+        return 0, 0
+
+    async def sleep(delay: float) -> None:
+        nonlocal intervals
+        sleeps.append(delay)
+        if delay == interval:
+            intervals += 1
+            if intervals == 2:
+                raise asyncio.CancelledError
+
+    monkeypatch.setattr(swy, "_ddl_enabled", enabled)
+    monkeypatch.setattr(swy, "_suwayomi_sync_series", sync)
+    monkeypatch.setattr(swy._aio, "sleep", sleep)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(swy.suwayomi_monitor_loop())
+
+    errors = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "suwayomi_monitor_loop: " + str(failure)
+    ]
+    assert len(errors) == 1
+    assert errors[0].levelno == logging.ERROR
+    assert errors[0].exc_info is not None and errors[0].exc_info[1] is failure
+    assert "Traceback" in caplog.text
+    assert checks == 2 and synced == [1, 2]
+    assert sleeps == [180, interval, 3, 3, interval]
+    assert env.preserved() == before
+    assert env.rows("SELECT * FROM suwayomi_downloads") == jobs_before
+    assert env.queries == [] and env.refreshes == []
