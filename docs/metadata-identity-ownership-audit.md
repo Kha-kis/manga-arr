@@ -64,6 +64,39 @@ locks, refresh state, and existing-library matching as implemented in 1.2.0.
 - Preview refresh records candidates but does not apply series values, aliases,
   tags, manifests, or covers.
 
+### Cached MangaDex identity and observation timestamps
+
+Chapter-map refresh must not re-record a stored MangaDex ID as fresh evidence
+merely because that ID is available in the series row. Without fresh MangaDex
+evidence, it leaves the identity candidate and selected field unchanged,
+including `fetched_at`, `selected_at`, confidence, source and lock state. It
+also does not initialize missing identity provenance from that failed attempt.
+Startup backfill retains its existing legacy-row behavior.
+
+Fresh MangaDex identity evidence means one of:
+
+- an accepted ID from the existing MangaDex identity resolver;
+- a successful exact-ID detail response containing the requested manga object,
+  rather than an HTTP error, error payload or another object's links;
+- a successful, validated aggregate response for the requested ID, even when
+  its chapter coverage is empty or insufficient.
+
+Only a validated identity lookup supplies cross-reference links. Aggregate
+success does not supply MAL or MangaUpdates links. A usable Kitsu or local CBZ
+fallback records its own map observation but cannot renew cached MangaDex
+identity provenance. Fresh identity evidence may still be recorded when a
+separate map fetch fails; map usability is not the identity evidence boundary.
+Locks continue to protect selections while allowing fresh candidates, and
+preview refresh records fresh candidates without applying selections.
+
+This is a chapter-map refresh rule, not a change to shared timestamp helpers or
+global provider precedence. `fetched_at` is renewed by a real source observation;
+replaying a cached ID is not such an observation. Fresh evidence continues
+through the normal selection logic and its existing `selected_at` behavior.
+On total provider failure with no local fallback, the complete field and
+candidate rows remain unchanged. Source attempts, failures and retry deadlines
+still advance normally, while prior success timestamps remain intact.
+
 ## Observed disagreement cases
 
 ### Resolved: stored MangaUpdates identity anchors enrichment
