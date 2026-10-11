@@ -5,6 +5,14 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.3.3-rc.2 - 2026-10-10
+
+Replacement release candidate in preparation; not yet published or qualified.
+It adds loose-chapter state correctness to the unchanged RC1 fixes. 1.3.2
+remains the qualified stable release and owns the stable image aliases. See
+[candidate qualification](docs/release-qualification.md#133-rc2-qualification)
+for the source evidence and remaining artifact gates.
+
 ### Fixed
 
 - Preserve independently observed loose library chapter files when deleting a
@@ -12,6 +20,10 @@ All notable changes to this project. Format roughly follows
   identity is unambiguous. Keep monitoring, metadata ownership and acquisition
   guards; never treat the deleted volume as independent chapter evidence. This
   does not clean up duplicate library files or alter Suwayomi downloads (#421).
+- Recognize supported dotted title filenames and bounded historical titles on
+  persisted chapter paths. Exclude hard links to every discovered volume
+  candidate, including alternatives with no stored import path. Ambiguous
+  chapter identities remain refused (#423).
 
 ## 1.3.3-rc.1 - 2026-10-10
 
