@@ -3,12 +3,70 @@
 This document defines the evidence required before a Mangarr release candidate
 can become a stable release. Passing unit tests alone is not sufficient.
 
-## 1.3.3-rc.3 Qualification
+## 1.3.3-rc.4 Qualification
 
 Status: **PREPARATION; NOT PUBLISHED OR ARTIFACT-QUALIFIED** (2026-10-11).
 1.3.2 remains the qualified stable release and owns the stable aliases.
-Production remains on the separately deployed 1.3.3-rc.1 artifact. RC2's failed
-qualification and immutable source/image identities below remain historical.
+Production remains on the separately deployed 1.3.3-rc.1 artifact. RC3's published
+identity and scoped/failed results below remain unchanged; none qualifies RC4.
+
+### Source Baseline And Preparation Boundary
+
+[PR #431](https://github.com/Kha-kis/manga-arr/pull/431) merged at
+`39c57d63782ecb7161d78a9ae87b872f1e9bbc11`, tree-identical to reviewed head
+`87aa9157bedcc10816afcb5e67f926f897d0872b`. Its only application change makes
+the two expected Suwayomi monitor cancellation logs DEBUG without exc_info.
+Both cancellation re-raises and real-exception ERROR/traceback/recovery behavior
+remain intact; counters, network operations and intervals are unchanged.
+
+That source fix passed 54 targeted tests after two failing cancellation regressions
+and a passing real-error recovery control. Its full source gate passed 4,312
+Python tests with 17 existing skips, 95 isolated browser cases, lint/format,
+13 confirmation and 10 route checks. These are source-fix results, not RC4
+preparation or published-artifact qualification counts. Independent source and
+exact-head Codex reviews found no remaining issues. Scoped LSP/CLI had no new
+errors/warnings; five unchanged unused-symbol/import hints remain.
+
+RC4 preparation changes only `app/VERSION` and release documentation. Its own
+fresh gate/review results belong in the forthcoming preparation PR record, not
+the source-fix totals above. Full preparation gates, reviewed release merge/tag,
+publication identity/security and runtime results are pending. After required
+review/gates, publish only immutable `v1.3.3-rc.4` / image `1.3.3-rc.4`; stable
+`1.3.2`, `1.3`, `1`, `latest` and all earlier candidates stay unchanged.
+
+### Required Fresh RC4 Evidence
+
+- Run the required exact-preparation and release-merge local gates, including
+  release metadata, isolated tests, security and exact-revision image checks.
+  Neither source-fix counts nor old local images qualify this preparation/artifact.
+- Verify the newly published digest/version/revision, both platform identities,
+  SBOM/provenance and dated fixed High/Critical scans; no native ARM runtime
+  coverage is inherited or implied by multi-platform publication.
+- Repeat fresh setup/login/logout/admin recovery, stopped-copy upgrade and
+  pristine rollback with integrity/FKs and strict preservation comparisons.
+- Repeat independent loose-file/current/deleted-volume alias controls and the
+  unchanged whole-table network-disabled cache-failure guard. Obtain successful
+  metadata while preserving IDs, locks, provenance, history and observations.
+- Complete a NEW bounded eight-chapter download/import/rescan workflow with
+  corrected private CSRF handling, independently checked source/archive/page
+  hashes, stored ComicInfo/history bytes and clean stopped state/logs. No RC3
+  download or failed archive supplies credit or seeds background execution.
+- Resolve representative NAS lifecycle/teardown safety and run its actual
+  filesystem checks. Offline preparation alone is not NAS runtime evidence.
+- From a NEW successful workflow archive, observe natural RSS900 and the first
+  scheduled metadata iteration after300 without changing intervals or triggering
+  tasks. A short 1020-second phase does not span the persisted 86400-second
+  recurring-refresh interval; full-repeat coverage stays pending. An unmonitored
+  fixture's metadata no-op supplies no positive provider credit.
+- Obtain independent final artifact-evidence review before qualification or
+  promotion. Production cutover needs separate authorization and a NEW matching
+  verified stopped backup; this preparation does not deploy.
+
+## 1.3.3-rc.3 Qualification
+
+Status: **IMAGE PUBLISHED; OVERALL WORKFLOW FAILED; UNQUALIFIED; NOT CLEARED FOR PROMOTION OR DEPLOYMENT** (2026-10-11).
+1.3.2 retains the qualified stable aliases; production remains RC1. The immutable
+RC3 tag/image and all failed/scoped receipts are unchanged.
 
 ### Source Baseline
 
@@ -37,40 +95,49 @@ review and exact-head Codex review had no remaining findings. Actual scoped LSP
 and matched CLI had no new errors/warnings; one existing argument-type error
 remains. No globally clean type-check is claimed.
 
-### Preparation And Publication Boundary
+### Publication Identity
 
-Release preparation changes only version and documentation. Its full local
-release gate and review are recorded in the preparation PR, separately from the
-source-fix evidence above. Candidate tag, release merge, workflow, registry index,
-platform manifests and published runtime results are pending. Earlier RC1/RC2 or
-local-image receipts must not be reassigned to RC3.
+- Exact PR #430 release merge: `ba367ab7d5f776ed11f2989e6adb49b1ffec7d81`.
+- Annotated `v1.3.3-rc.3` tag object: `b2f6d9aea43323f2d84811c412993b88af1fd25a`.
+- Successful Release Image [run 38152373789](https://github.com/Kha-kis/manga-arr/actions/runs/38152373789).
+- Registry index: `sha256:b485170bc1a91d79a2e85edc877eaad3bff0a12f64507d546cf21eaf74796481`.
+- amd64 manifest: `sha256:3d498b6f24e3121523f56f480a0bb92adb8fad2a85634f9f6c707cc7453d8cac`.
+- arm64 manifest: `sha256:4af506342edb806512e1ce21e53de52444a9a3a76eab0ea028a675447c14fd78`.
 
-After review/merge and required release gates, tag the exact reviewed release
-merge immutably as `v1.3.3-rc.3`. Publish only `1.3.3-rc.3`, leaving stable
-`1.3.2`, `1.3`, `1` and `latest` unchanged. Stop on a real release blocker.
+Publication identity, platform/attestation/SBOM checks and dated configured fixed
+High/Critical scans passed on 2026-10-11. Only the full candidate tag was
+published; stable aliases and earlier candidates were verified unchanged.
+Publication does not imply runtime qualification or native ARM runtime coverage.
 
-### Required Fresh Artifact Checks
+### Scoped Runtime Results And Failed Overall Workflow
 
-- Verify exact candidate digest, version, source revision, both platform
-  identities, SBOM/provenance and dated fixed High/Critical vulnerability scans.
-- Repeat strict deletion/rescan controls with independent loose chapters,
-  current-volume aliases and aliases retained after volume deletion. Include
-  representative NAS behavior; source tests alone do not qualify a filesystem.
-- Repeat the unchanged whole-table network-disabled cache-failure guard, then
-  representative successful metadata with stored IDs, selected fields, locks,
-  candidate provenance, retry state and local/downloaded observations intact.
-- Verify fresh administrator setup/login/logout/recovery and DB integrity/FKs.
-- Test a fresh stopped 1.3.2 copy upgrade and matching pristine-snapshot rollback,
-  preserving credentials, mappings, identities, ownership and library state.
-  Do not replay inherited live jobs or run an old image against a migrated DB.
-- Complete a new bounded download/import/rescan workflow with independently
-  verified metadata, exact source identity, source/archive bytes and ComicInfo.
-  Reusing RC2's completed download does not qualify RC3.
-- Observe the required background cycle, recording health, restarts, errors,
-  lock/recovery failures and unexpected identity/provenance or filesystem changes.
-- Obtain independent artifact-evidence review before claiming qualification or
-  stable promotion. Production cutover requires separate authorization and a
-  new verified matching stopped backup; this preparation does not deploy.
+- Eleven exact-artifact, provider-free loose-file/deletion/rescan controls passed,
+  including current/deleted aliases, missing targets, repeat rescan, owned locks,
+  independent source hardlinks and same-stat changed digest. This is not NAS,
+  actual kernel inode-reallocation or ZIP-content-equivalence credit.
+- A NEW core setup/recovery/upgrade/pristine-rollback run passed with strict
+  preservation, four integrity/FK receipts and an empty baseline directory diff.
+  All 12 owned containers stopped cleanly; earlier failed core receipts stay failed.
+- The unchanged frozen network-disabled cache-failure guard passed. This is
+  cached-state protection, not successful provider/acquisition/background credit.
+- NEW workflow `r20261011t195700z` had all six metadata sources healthy with zero
+  failures and completed eight fresh chapter downloads/import. Independent review
+  verified all 254 page hashes, merged ComicInfo and exact history size
+  71,197,671 bytes, plus stopped-copy integrity/FKs. These are scoped pre-rescan
+  results, not a successful overall workflow or reassigned earlier download.
+
+The rescan POST returned HTTP403: the private helper omitted the required matching
+CSRF header. Separately, normal Suwayomi monitor cancellation logged ERROR with a
+traceback. The wrapper failed; cleanup succeeded but stopped quality failed.
+No error waiver or pass relabel is applied. The separately reviewed CSRF harness
+correction and merged PR #431 application logging fix require fresh new-candidate
+checks; neither changes RC3's published image or retained failed receipts.
+
+No accepted successful workflow archive is available for background. The natural
+short phase has not run, representative NAS remains unresolved, and full
+86400-second refresh-repeat coverage is pending. Earlier transport/provider
+failures remain attributed to their own runs. RC3 stays unqualified; RC4 must
+earn its own preparation, publication and runtime evidence.
 
 ## 1.3.3-rc.2 Qualification
 

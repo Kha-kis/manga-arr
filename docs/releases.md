@@ -15,25 +15,50 @@ Release commits must update `app/VERSION`, `CHANGELOG.md`, and the current
 release shown in `README.md` together. Automated tests enforce SemVer syntax and
 documentation consistency.
 
-## 1.3.3-rc.3 Candidate Status
+## 1.3.3-rc.4 Candidate Status
 
 This replacement candidate is in preparation, not yet tagged, published or
-artifact-qualified. `app/VERSION` identifies 1.3.3-rc.3. It starts from reviewed
-master `ad2aeee98465280c88263672732f23ad6fff03b0`, including PR #427's
-deleted-volume alias correction and PR #429's cached MangaDex provenance and
-explicit-success response guards. Other RC1/RC2 behavior is carried forward;
-optional file cleanup #422 remains separate.
+artifact-qualified. `app/VERSION` identifies 1.3.3-rc.4. Its source baseline is
+PR #431 merge `39c57d63782ecb7161d78a9ae87b872f1e9bbc11`, tree-identical to
+reviewed head `87aa9157bedcc10816afcb5e67f926f897d0872b`. Expected Suwayomi
+monitor cancellation now logs DEBUG without a traceback; cancellation propagation,
+real-error logging/recovery and monitor timing are unchanged. RC3's alias and
+cached-provenance fixes are carried forward; optional file cleanup #422 is separate.
 
 Release preparation changes version and documentation only. After review and
 merge, publication must identify the exact reviewed release merge, use an
-immutable annotated `v1.3.3-rc.3`, and publish only `1.3.3-rc.3`. Neither RC2's
-failed runtime receipts nor earlier local images qualify the replacement.
-Fresh artifact checks are listed in
-[RC3 qualification](release-qualification.md#133-rc3-qualification).
+immutable annotated `v1.3.3-rc.4`, and publish only `1.3.3-rc.4`. Preparation
+gate results must be recorded on the exact reviewed preparation revision before
+publication. No RC3 or earlier runtime/local-image credit is inherited. Fresh
+checks, unresolved representative NAS and pending full 86400-second refresh
+coverage are listed in [RC4 qualification](release-qualification.md#133-rc4-qualification).
 
-RC1/RC2 tags, images and historical evidence remain unchanged. 1.3.2 retains
+RC1/RC2/RC3 tags, images and historical evidence remain unchanged. 1.3.2 retains
 `1.3`, `1` and `latest`; production stays on the separately deployed RC1 until
 a separately authorized, qualified cutover with a matching stopped backup.
+
+## 1.3.3-rc.3 Candidate Status
+
+The candidate was published on 2026-10-11 from exact PR #430 merge
+`ba367ab7d5f776ed11f2989e6adb49b1ffec7d81`, but remains unqualified and is not
+cleared for promotion or deployment. Release Image
+[run 38152373789](https://github.com/Kha-kis/manga-arr/actions/runs/38152373789)
+published only `1.3.3-rc.3`, with index
+`sha256:b485170bc1a91d79a2e85edc877eaad3bff0a12f64507d546cf21eaf74796481`.
+The tag/image must not be rebuilt or replaced.
+
+Scoped core setup/upgrade/rollback, network-disabled cache protection and 11
+loose-file controls passed. A new eight-chapter workflow resolved all six metadata
+sources without failures and independently verified all 254 page hashes,
+ComicInfo and history bytes after download/import. Its overall result failed:
+rescan returned HTTP403 because the private helper omitted the CSRF header, and
+normal monitor shutdown logged ERROR with a cancellation traceback. These are
+separate harness and application defects, not a successful rescan/workflow.
+
+PR #431's logging correction is merged for a new candidate; it does not alter
+RC3's artifact or failed receipts. Background remains unexecuted without a NEW
+successful workflow archive; representative NAS and full recurring-refresh
+coverage remain pending. See [RC3 qualification](release-qualification.md#133-rc3-qualification).
 
 ## 1.3.3-rc.2 Candidate Status
 
@@ -132,7 +157,8 @@ The release workflow publishes `ghcr.io/kha-kis/manga-arr` with these tags:
 
 | Release | Image tags |
 | --- | --- |
-| `1.3.3-rc.3` (prepared; not published) | `1.3.3-rc.3` only when published |
+| `1.3.3-rc.4` (prepared; not published) | `1.3.3-rc.4` only when published |
+| `1.3.3-rc.3` (published; unqualified) | `1.3.3-rc.3` |
 | `1.3.3-rc.2` (published; qualification failed) | `1.3.3-rc.2` |
 | `1.3.3-rc.1` (candidate) | `1.3.3-rc.1` |
 | `1.3.2` (qualified stable) | `1.3.2`, `1.3`, `1`, `latest` |

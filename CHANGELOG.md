@@ -5,13 +5,37 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.3.3-rc.4 - 2026-10-11
+
+Replacement candidate in preparation after RC3's failed overall workflow.
+Not tagged, published or artifact-qualified. This version/documentation-only
+preparation starts from merged PR #431; no RC3 runtime receipt qualifies RC4.
+Fresh preparation and artifact gates remain required, representative NAS is
+unresolved, and full 86400-second recurring-refresh coverage remains pending.
+RC3's published tag/image and failed receipts are unchanged. 1.3.2 retains the
+stable aliases; production remains on RC1. See
+[RC4 qualification](docs/release-qualification.md#133-rc4-qualification).
+
+### Fixed
+
+- Log expected Suwayomi monitor shutdown cancellation at DEBUG without a
+  traceback, both during monitor work and interval sleep. Cancellation still
+  propagates; unexpected exceptions retain ERROR/traceback logging and existing
+  recovery behavior. Polling intervals, counters, jobs and local data are unchanged
+  ([#431](https://github.com/Kha-kis/manga-arr/pull/431)).
+
 ## 1.3.3-rc.3 - 2026-10-11
 
-Replacement candidate prepared after RC2's runtime qualification failures.
-Not yet tagged, published or artifact-qualified. RC2's tag, image and failed
-receipts remain immutable; 1.3.2 remains the qualified stable release and owns
-the stable image aliases. See [RC3 qualification](docs/release-qualification.md#133-rc3-qualification)
-for the source baseline and required fresh artifact checks.
+Replacement candidate published on 2026-10-11 after RC2's runtime failures,
+but still unqualified. Scoped core/cache/loose-file controls passed; a fresh
+eight-chapter download/import and all 254 page hashes were independently verified.
+The overall workflow failed on a private rescan CSRF omission (HTTP403) and
+normal Suwayomi shutdown ERROR/traceback logging. PR #431 fixes the logging in
+new source, not this immutable image; no failed receipt is relabelled as a pass.
+NAS and background coverage remain pending. 1.3.2 remains qualified stable and
+owns the stable aliases; production stays on RC1. See
+[RC3 qualification](docs/release-qualification.md#133-rc3-qualification)
+for exact publication identity and scoped results.
 
 ### Fixed
 

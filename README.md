@@ -27,11 +27,19 @@ compressed-RAR decoding. See the
 [qualification evidence and platform limits](docs/release-qualification.md#132-stable-qualification)
 before upgrading.
 
-**1.3.3-rc.3 is the replacement candidate in preparation, not yet published or artifact-qualified.**
-It adds the reviewed deleted-volume alias and cached MangaDex provenance
-corrections. See [RC3 qualification](docs/release-qualification.md#133-rc3-qualification)
-for the source baseline and required fresh checks. Stable aliases stay on 1.3.2;
-source tests alone do not authorize deployment.
+**1.3.3-rc.4 is the replacement candidate in preparation, not published or artifact-qualified.**
+It carries the reviewed RC3 fixes and PR #431's normal Suwayomi shutdown logging
+correction. See [RC4 qualification](docs/release-qualification.md#133-rc4-qualification)
+for the source baseline and required fresh checks. It inherits no runtime credit;
+representative NAS and full recurring-refresh coverage remain pending.
+
+**1.3.3-rc.3 is published but remains unqualified.** Scoped core/cache/loose-file
+controls passed, and a fresh eight-chapter import had all 254 page hashes verified.
+The overall workflow failed at rescan (a private harness CSRF omission) and normal
+shutdown ERROR logging. See [RC3 results](docs/release-qualification.md#133-rc3-qualification).
+Its immutable image is unchanged; the merged logging correction requires a new
+candidate. Stable aliases stay on 1.3.2 and production stays on the separately
+deployed RC1; source tests alone do not authorize deployment.
 
 **The 1.3.3-rc.2 image is published, but qualification found release blockers.** It adds
 loose-chapter preservation during volume deletion and recovery during rescan,
