@@ -81,6 +81,10 @@ Fresh MangaDex identity evidence means one of:
 - a successful, validated aggregate response for the requested ID, even when
   its chapter coverage is empty or insufficient.
 
+Aggregate success requires an explicit `result: "ok"` and structurally valid
+volume data. Missing, malformed or unrecognized result values are provider
+failures, not fresh identity observations, even with an HTTP 200 response.
+
 Only a validated identity lookup supplies cross-reference links. Aggregate
 success does not supply MAL or MangaUpdates links. A usable Kitsu or local CBZ
 fallback records its own map observation but cannot renew cached MangaDex

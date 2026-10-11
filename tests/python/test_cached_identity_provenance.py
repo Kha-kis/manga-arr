@@ -172,6 +172,7 @@ def transport(
     *,
     detail: str = "timeout",
     aggregate: str = "failure",
+    aggregate_payload: dict[str, Any] | None = None,
     fallback: str | None = None,
 ) -> None:
     import rescan
@@ -189,6 +190,8 @@ def transport(
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host == "api.mangadex.org":
             if request.url.path.endswith("/aggregate"):
+                if aggregate_payload is not None:
+                    return httpx.Response(200, json=aggregate_payload)
                 if aggregate == "failure":
                     return httpx.Response(503, json={"result": "error"})
                 mapping = (
@@ -303,6 +306,48 @@ def test_failed_stored_identity_keeps_full_provenance(
     assert snapshot() == before
     source = state.get_source_states(7)[0]
     assert source["status"] == "degraded"
+    assert source["last_success_at"] == OLD
+    assert source["failure_count"] == 3
+    assert (
+        source["next_retry_at"]
+        == (datetime.fromisoformat(NOW) + timedelta(minutes=20)).isoformat()
+    )
+
+
+@pytest.mark.parametrize(
+    "result_fields",
+    [{}, {"result": None}, {"result": []}, {"result": "unknown"}, {"result": "error"}],
+    ids=["missing", "null", "list", "unknown", "error"],
+)
+@pytest.mark.parametrize("locked", [False, True])
+@pytest.mark.parametrize("apply_changes", [False, True])
+def test_malformed_aggregate_result_preserves_cached_identity_provenance(
+    provenance_db: Path,
+    clock: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    result_fields: dict[str, Any],
+    locked: bool,
+    apply_changes: bool,
+) -> None:
+    import metadata_enrichment as enrichment
+    import metadata_state as state
+
+    seed(complete=True, locked=locked, lookup=False)
+    before = snapshot()
+    transport(
+        monkeypatch,
+        tmp_path / "library",
+        aggregate_payload={**result_fields, "volumes": {}},
+    )
+    clock["now"] = NOW
+    assert (
+        asyncio.run(enrichment.refresh_mangadex_map(7, apply_changes=apply_changes))
+        is False
+    )
+    assert snapshot() == before
+    source = state.get_source_states(7)[0]
+    assert source["details"]["providers"]["mangadex"]["reason"] == "malformed_payload"
     assert source["last_success_at"] == OLD
     assert source["failure_count"] == 3
     assert (

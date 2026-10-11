@@ -520,7 +520,7 @@ async def _fetch_chapter_volume_map_result(mangadex_id: str) -> _ChapterMapResul
         if (
             not isinstance(data, dict)
             or "volumes" not in data
-            or data.get("result") == "error"
+            or data.get("result") != "ok"
         ):
             raise _MapPayloadError()
         mapping: dict[str, int] = {}
