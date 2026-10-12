@@ -37,7 +37,9 @@ cycle. Full 86400-second coverage, representative NAS and
 literal public Compose startup remain pending; no native ARM runtime credit is claimed.
 No earlier candidate result supplies RC5 artifact credit.
 See [RC5 qualification](docs/release-qualification.md#133-rc5-qualification).
-Stable aliases remain on 1.3.2 and production stays on RC1; no cutover is authorized.
+Stable aliases remain on 1.3.2. An owner-controlled production trial now runs RC5
+after a verified stopped backup; 48/48 smoke checks and six integration probes
+passed. This trial does not authorize stable promotion or qualify other deployments.
 
 **1.3.3-rc.4 is published, but remains unqualified for promotion or deployment.**
 It carries the reviewed RC3 fixes and PR #431's normal Suwayomi shutdown logging
@@ -56,8 +58,8 @@ controls passed, and a fresh eight-chapter import had all 254 page hashes verifi
 The overall workflow failed at rescan (a private harness CSRF omission) and normal
 shutdown ERROR logging. See [RC3 results](docs/release-qualification.md#133-rc3-qualification).
 Its immutable image is unchanged; the merged logging correction requires a new
-candidate. Stable aliases stay on 1.3.2 and production stays on the separately
-deployed RC1; source tests alone do not authorize deployment.
+candidate. At that qualification snapshot, production remained on RC1; the later
+RC5 owner trial is recorded above. Source tests alone do not authorize deployment.
 
 **The 1.3.3-rc.2 image is published, but qualification found release blockers.** It adds
 loose-chapter preservation during volume deletion and recovery during rescan,

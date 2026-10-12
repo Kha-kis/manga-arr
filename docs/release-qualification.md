@@ -7,8 +7,10 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 Status: **IMAGE PUBLISHED; PUBLICATION, CORE, SOURCE-LINKAGE, WORKFLOW
 AND OBSERVED BOUNDED SHORT NATURAL BACKGROUND SCOPED AUDITS GO;
-UNQUALIFIED; NOT CLEARED FOR PROMOTION OR DEPLOYMENT** (2026-10-12).
-1.3.2 remains qualified stable and owns stable aliases; production stays on RC1.
+UNQUALIFIED; OWNER-CONTROLLED PRODUCTION TRIAL IN PROGRESS;
+NOT CLEARED FOR STABLE PROMOTION OR GENERAL DEPLOYMENT** (2026-10-12).
+1.3.2 remains qualified stable and owns stable aliases; production now runs RC5
+under the separately authorized bounded trial described below.
 RC4 is immutable and unqualified. Its scoped passes and failed short background
 receipt below remain historical, not inherited RC5 credit.
 
@@ -151,6 +153,46 @@ Final exit 0, no OOM/restarts/state errors and clean combined logs passed.
 No literal 1020-second elapsed observation or full-day repeat is claimed.
 Earlier failures supply no passing credit.
 
+### Owner-Controlled Production Trial
+
+The separately authorized trial deployed the exact published RC5 index and
+revision above on October 12 at 10:46 UTC. A NEW full stopped configuration backup
+completed with matching database/key hashes and permissions, an empty recursive
+content diff, SQLite integrity `ok` and no foreign-key violations. A reviewed
+matching RC1 recovery procedure is retained; no rollback was performed.
+Only Mangarr's image changed. Runtime mounts, ports, user, networks and security
+options were preserved; shared downloaders were not restarted or reconfigured.
+
+Independent actual-deployment/smoke review is GO for this bounded trial only:
+
+- 48/48 desktop/mobile/API checks passed with no browser errors, failed responses
+  or attempted application mutations. No private library screenshots were published.
+- Six read-only integration groups passed: Prowlarr, qBittorrent, SABnzbd, Suwayomi,
+  MangaDex and AniList. These connection probes do not prove a production download.
+- Initial protected capture matched 30 series identities, 360 selected metadata
+  fields, 50 source links and 43 settings, plus credentials/client/root/profile
+  state. Actual live SQLite integrity and foreign-key checks passed; bounded boot
+  logs contained no database-lock messages, tracebacks, HTTP 5xx or critical lines.
+- The initial natural metadata iteration completed at
+  `2026-10-12T10:53:38.056949+00:00`, without manual refresh or interval changes.
+  All 15 locked fields retained their values, sources and locks. Nine total-volume
+  selections changed only their refresh timestamp; a strict whole-record diagnostic
+  is retained as a difference, not counted as a strict pass. Semantic content and
+  all preexisting series identities/titles/monitoring/source links remained unchanged.
+  One degraded chapter-map record was already degraded in the baseline.
+- Owned smoke/observation sessions were positively revoked without changing admin
+  credentials or existing sessions. Final health showed restart count zero, no OOM
+  and the exact published image. These are bounded observations, not perpetual
+  no-error guarantees.
+
+The full natural daily repeat is not yet observed. A one-time read-only collector
+is scheduled for October 13 at 11:15 UTC (6:15 AM America/Chicago), after the actual
+next metadata due time. Scheduling is not execution or qualification; the collected
+timestamps and runtime evidence still require review. The older stable-health
+monitor's historical image/schema expectations are not RC5 acceptance evidence.
+The separate isolated download workflow above does not supply production-download
+credit. No stable alias, release tag or published image changed for this trial.
+
 ### Remaining Evidence
 
 - Full natural 86400-second metadata refresh/repeat coverage remains pending
@@ -164,8 +206,9 @@ Earlier failures supply no passing credit.
   isolated harness receipts do not prove that path. Native ARM runtime is pending,
   not established by multi-platform publication.
 - Obtain independent final artifact-evidence audit before qualification/promotion.
-  Production cutover needs separate authorization and a NEW matching verified
-  stopped backup. No stable/deployment approval follows from these scoped results.
+  The owner-controlled cutover above has its own matching stopped backup; it does
+  not authorize other deployments or supply stable approval. A new production
+  download/import still needs its own actual evidence.
 
 ## 1.3.3-rc.4 Qualification
 

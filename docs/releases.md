@@ -18,7 +18,8 @@ documentation consistency.
 ## 1.3.3-rc.5 Candidate Status
 
 This replacement candidate was published on 2026-10-12, but remains unqualified
-for promotion or deployment. `app/VERSION` identifies 1.3.3-rc.5. It contains
+for stable promotion or general deployment. A separately authorized owner-controlled
+production trial is in progress. `app/VERSION` identifies 1.3.3-rc.5. It contains
 PR #434's reviewed 11-line application correction. Legacy MangaDex linkage is
 seeded only without persisted source links; explicit unlink clears a matching cached ID atomically
 with source-row deletion. Unrelated identities and truly unlinked legacy fallback
@@ -46,7 +47,11 @@ not literal 1020-second elapsed observation or full-day coverage. Representative
 NAS, full natural 86400-second coverage and literal public Compose startup remain
 pending. Exact identities, scoped results and platform boundaries are listed in
 [RC5 qualification](release-qualification.md#133-rc5-qualification).
-Stable aliases remain on 1.3.2 and production stays on RC1; no deployment or stable
+Stable aliases remain on 1.3.2. Production now runs the exact published RC5 image
+in the owner trial after a new verified stopped backup and reviewed recovery plan.
+The trial passed 48/48 desktop/mobile/API smoke checks and all six read-only
+integration groups. Its initial scheduled metadata refresh preserved protected
+content; full daily-repeat coverage remains pending. No general deployment or stable
 approval follows from publication or these scoped results. No tag/image may be
 replaced; older candidate identities and failed receipts remain immutable.
 
