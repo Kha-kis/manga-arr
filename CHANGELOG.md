@@ -5,15 +5,30 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
-## 1.3.3-rc.4 - 2026-10-11
+### Fixed
 
-Replacement candidate in preparation after RC3's failed overall workflow.
-Not tagged, published or artifact-qualified. This version/documentation-only
-preparation starts from merged PR #431; no RC3 runtime receipt qualifies RC4.
-Fresh preparation and artifact gates remain required, representative NAS is
-unresolved, and full 86400-second recurring-refresh coverage remains pending.
-RC3's published tag/image and failed receipts are unchanged. 1.3.2 retains the
-stable aliases; production remains on RC1. See
+- Seed legacy MangaDex linkage at startup only when no source-link rows exist.
+  Explicit unlink clears only a matching cached Suwayomi manga ID in the same
+  transaction as source-row deletion; both changes roll back together on failure.
+  Unrelated identities and truly unlinked legacy fallback are preserved.
+  Historical ambiguous aliases are not automatically removed and require
+  identity-backed manual review ([#434](https://github.com/Kha-kis/manga-arr/pull/434),
+  fixes [#433](https://github.com/Kha-kis/manga-arr/issues/433)).
+  This merged source correction is for a future artifact, not the published RC4 image.
+
+## 1.3.3-rc.4 - 2026-10-12
+
+Replacement candidate published from exact reviewed PR #432 merge after RC3's
+failed overall workflow. Publication identity/security and NEW core, cache and
+11 loose-file controls passed; the scoped runtime audit is GO. A NEW eight-chapter
+download/import/rescan workflow exited 0 and passed independent final audit.
+The short background run failed; a known alternative-source restart linkage
+defect remains in this image. Representative NAS, full natural 86400-second
+coverage and literal public Compose startup remain pending, with no native ARM
+runtime credit. No earlier candidate runtime credit is inherited.
+RC3's published tag/image and failed receipts are
+unchanged. 1.3.2 retains stable aliases and production stays on RC1; no promotion
+or cutover is authorized. See
 [RC4 qualification](docs/release-qualification.md#133-rc4-qualification).
 
 ### Fixed

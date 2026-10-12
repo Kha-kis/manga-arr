@@ -27,11 +27,17 @@ compressed-RAR decoding. See the
 [qualification evidence and platform limits](docs/release-qualification.md#132-stable-qualification)
 before upgrading.
 
-**1.3.3-rc.4 is the replacement candidate in preparation, not published or artifact-qualified.**
+**1.3.3-rc.4 is published, but remains unqualified for promotion or deployment.**
 It carries the reviewed RC3 fixes and PR #431's normal Suwayomi shutdown logging
-correction. See [RC4 qualification](docs/release-qualification.md#133-rc4-qualification)
-for the source baseline and required fresh checks. It inherits no runtime credit;
-representative NAS and full recurring-refresh coverage remain pending.
+correction. Fresh core/upgrade/rollback, cache and loose-file controls passed
+independent audit, as did a NEW successful eight-chapter download/import/rescan
+workflow. The short background run failed, and a known alternative-source restart
+linkage defect remains in this image. Representative NAS, full natural 86400-second
+coverage and literal public Compose startup remain pending; no native ARM runtime
+credit is claimed. The linkage correction merged in
+[PR #434](https://github.com/Kha-kis/manga-arr/pull/434) is for a future artifact,
+not this published image. See
+[RC4 qualification](docs/release-qualification.md#133-rc4-qualification).
 
 **1.3.3-rc.3 is published but remains unqualified.** Scoped core/cache/loose-file
 controls passed, and a fresh eight-chapter import had all 254 page hashes verified.
