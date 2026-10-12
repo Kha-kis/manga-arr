@@ -5,12 +5,14 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## 1.3.3-rc.4 Qualification
 
-Status: **PREPARATION; NOT PUBLISHED OR ARTIFACT-QUALIFIED** (2026-10-11).
+Status: **IMAGE PUBLISHED; SCOPED CORE AND WORKFLOW AUDITS GO;
+SHORT BACKGROUND FAILED; KNOWN MULTI-SOURCE LINKAGE DEFECT;
+UNQUALIFIED; NOT CLEARED FOR PROMOTION OR DEPLOYMENT** (2026-10-12).
 1.3.2 remains the qualified stable release and owns the stable aliases.
 Production remains on the separately deployed 1.3.3-rc.1 artifact. RC3's published
 identity and scoped/failed results below remain unchanged; none qualifies RC4.
 
-### Source Baseline And Preparation Boundary
+### Source Baseline And Exact Preparation Gates
 
 [PR #431](https://github.com/Kha-kis/manga-arr/pull/431) merged at
 `39c57d63782ecb7161d78a9ae87b872f1e9bbc11`, tree-identical to reviewed head
@@ -27,40 +29,135 @@ preparation or published-artifact qualification counts. Independent source and
 exact-head Codex reviews found no remaining issues. Scoped LSP/CLI had no new
 errors/warnings; five unchanged unused-symbol/import hints remain.
 
-RC4 preparation changes only `app/VERSION` and release documentation. Its own
-fresh gate/review results belong in the forthcoming preparation PR record, not
-the source-fix totals above. Full preparation gates, reviewed release merge/tag,
-publication identity/security and runtime results are pending. After required
-review/gates, publish only immutable `v1.3.3-rc.4` / image `1.3.3-rc.4`; stable
-`1.3.2`, `1.3`, `1`, `latest` and all earlier candidates stay unchanged.
+RC4 preparation changed only `app/VERSION` and release documentation. Exact
+reviewed head `2971dca1221f3c2bcac6b70e26d8e4c3db1d57fa` independently passed
+the full local release gate: 4,312 Python tests /17 existing skips, 95 isolated
+browser cases, lint/format, confirmation/routes and dependency/secret/configuration/
+image/security gates. PR #432 merged at `850475085c04694e020ea5a808acb820d98d9503`;
+both revisions have tree `08dfcadbcaf73836c7cd603f4075d10f0a57889d`.
+Fresh exact-merge fast checks passed 86 tests and 13/13 confirmation checks, plus
+lint/format, dependency/secret/configuration/security and exact-revision image checks. This is
+not a literal full-suite rerun on the merge or inherited artifact runtime credit.
 
-### Required Fresh RC4 Evidence
+### Publication Identity
 
-- Run the required exact-preparation and release-merge local gates, including
-  release metadata, isolated tests, security and exact-revision image checks.
-  Neither source-fix counts nor old local images qualify this preparation/artifact.
-- Verify the newly published digest/version/revision, both platform identities,
-  SBOM/provenance and dated fixed High/Critical scans; no native ARM runtime
-  coverage is inherited or implied by multi-platform publication.
-- Repeat fresh setup/login/logout/admin recovery, stopped-copy upgrade and
-  pristine rollback with integrity/FKs and strict preservation comparisons.
-- Repeat independent loose-file/current/deleted-volume alias controls and the
-  unchanged whole-table network-disabled cache-failure guard. Obtain successful
-  metadata while preserving IDs, locks, provenance, history and observations.
-- Complete a NEW bounded eight-chapter download/import/rescan workflow with
-  corrected private CSRF handling, independently checked source/archive/page
-  hashes, stored ComicInfo/history bytes and clean stopped state/logs. No RC3
-  download or failed archive supplies credit or seeds background execution.
-- Resolve representative NAS lifecycle/teardown safety and run its actual
-  filesystem checks. Offline preparation alone is not NAS runtime evidence.
-- From a NEW successful workflow archive, observe natural RSS900 and the first
-  scheduled metadata iteration after300 without changing intervals or triggering
-  tasks. A short 1020-second phase does not span the persisted 86400-second
-  recurring-refresh interval; full-repeat coverage stays pending. An unmonitored
-  fixture's metadata no-op supplies no positive provider credit.
-- Obtain independent final artifact-evidence review before qualification or
-  promotion. Production cutover needs separate authorization and a NEW matching
-  verified stopped backup; this preparation does not deploy.
+- Exact [PR #432](https://github.com/Kha-kis/manga-arr/pull/432) merge: `850475085c04694e020ea5a808acb820d98d9503`.
+- Annotated `v1.3.3-rc.4` tag object: `36635fdc2fcd3551e7dc3c6bade92ec115302552`.
+- Successful Release Image [run 38192482705](https://github.com/Kha-kis/manga-arr/actions/runs/38192482705).
+- Registry index/native inspected image ID: `sha256:e90ba929287154f41ee6dc2c93f8afff1994e554e56e9c7f5c0d2dddda5b8666`.
+- amd64 manifest: `sha256:5879410e8ecd568e056a17042084ce5fd9e3c0320f8994699e2e07e3bb5ee17d`.
+- arm64 manifest: `sha256:868c76540710b33aa69596f3d75771a06cd8a1e5c275b992f8745316dce258ac`.
+- Verified publication receipt SHA256: `a4cc30ce6a92d0e184a9c575ce38afe1a4d532654746ce2a94f1d36b8838a118`.
+
+Version/revision, both platform identities, attestations/SBOM, dated configured
+fixed High/Critical scans and unchanged stable/earlier-candidate aliases passed
+on 2026-10-12. Only `1.3.3-rc.4` was published; no native ARM runtime coverage
+or stable-promotion approval follows from multi-platform publication.
+
+### New Published-Artifact Runtime Results
+
+- Core `q20261012t014748z` exited 0: four fresh setup/logout/login/admin-recovery/
+  upgrade/pristine-rollback browser cycles with zero browser errors, five actual
+  integrity/FK checks and three strict 42-table preservation comparisons passed.
+  The read-only baseline's 161 original files remained byte-identical and its final
+  directory diff was empty. Upgrade used fresh working copies of the historical
+  October 10 stopped 1.3.2 input, not a newly claimed production backup.
+- Loose-file `r20261012t015010z` exited 0: all eleven independent/current/deleted
+  alias, missing-file deletion, repeat rescan, held-lock, legitimate source-hardlink
+  and same-stat/different-digest controls passed. No actual kernel inode-reallocation
+  or NAS qualification is claimed.
+- Cache-failure `r20261012t015044z` exited 0 with the unchanged frozen network-disabled
+  cached-field/candidate/provenance/backoff guard. It is protection under provider
+  failure, not positive provider/acquisition/background credit.
+
+The independent scoped core/cache/loose runtime audit is **GO**. These are NEW
+RC4 artifact receipts; earlier failed/scoped candidate evidence stays unchanged.
+Owned core cleanup positively verified removal of exactly 14 owned container IDs
+and one empty internal bridge, without changing old resources.
+
+NEW workflow `r20261012t015100z` exited 0: all six metadata sources were healthy
+with zero failures; eight newly downloaded chapters supplied 254 pages and the
+merged CBZ was 71,197,671 bytes. ComicInfo/history evidence passed, as did
+selected metadata and full volume/chapter-row preservation after rescan.
+Owned cleanup took 14 seconds, stopped-quality exited 0,
+and normal cancellation produced no ERROR. The independent final workflow audit
+is **GO**, with no findings: it verified all eight source CBZs/254 ordered page
+hashes, XML/history bytes, the selected metadata and full volume/chapter rows,
+archived DB integrity/FKs and clean shutdown. Positive cleanup proves all five exact owned containers and
+both networks absent. This bounded workflow is not complete candidate qualification;
+no RC3 download or failed archive was reused.
+
+### Failed Short Background And Known Source Blocker
+
+Background `b20261012t024901z` reached healthy published-app startup but FAILED
+the first preservation check before collecting any natural-observation samples.
+Stopped-quality exited 2; owned cleanup exited 0 and the temporary mount was
+absent. The application shutdown log contained no ERROR. This is an actual
+runtime failure, not a pre-app refusal or a passed 1020-second observation phase;
+the failed run and its stopped-quality result remain unchanged.
+
+Independent state-delta diagnosis identified three published startup-backfill
+categories: missing chapter observations, two legacy title/MAL-ID candidates and
+one compatibility Suwayomi linkage. Existing candidate/linkage rows, selected
+metadata, locks and files were preserved; eight existing chapter rows changed
+only through the documented missing observations. These changes alone establish
+no application defect in the recorded MangaDex-only fixture.
+The priority-0 source-link tie is an explicit caveat:
+no routing change was observed, and a disabled background fixture does not prove
+general Suwayomi routing equivalence.
+
+Two earlier executions were refused before candidate startup: one lacked the
+caller import context, and one assumed interval rows that a fresh DB can omit.
+The private context and four absent-row default lookups were corrected without
+application changes or DB interval writes. The pre-run harness passed 167 offline
+tests (145 retained plus 22 new), actual LSP and independent source review; these
+are harness results, not background runtime credit. The earlier archive seed
+refusal also remains historical. Its narrow bootstrap-link exception never
+restores that link; config/data links and all other archive links remain refused.
+
+Separately, independent release QA confirmed application issue
+[#433](https://github.com/Kha-kis/manga-arr/issues/433): an alternative-source link
+can retain `mangadex_id` while changing the cached Suwayomi manga ID. Startup
+can then invent a literal MangaDex row from that other source's ID. Explicit
+unlink can leave the invented row as the sole selected linkage, which the finder
+trusts without remote identity verification. No wrong download was observed.
+The successful MangaDex-only scoped audits remain valid, but this is a blocker
+for broad multi-source/restart and production/stable qualification.
+[PR #434](https://github.com/Kha-kis/manga-arr/pull/434) merged on 2026-10-12 at
+`d9b1ccad64d889f9578e1f0c6df3edcf638f7fd8`, tree-identical to reviewed head
+`4a4d160248e35f7ced29362552cff4f9e3107940`. The correction seeds legacy MangaDex
+linkage only when no source-link rows exist, and explicit unlink clears only the
+matching cached ID in the source-row deletion transaction. Truly unlinked legacy
+fallback and unrelated identities remain intact; injected deletion failure rolls
+back both writes. Exact-head source gates passed 4,324 Python tests /17 existing
+skips, 13/13 confirmation checks, 10 route checks and 95 isolated browser cases,
+plus security/image checks, CI, Codex and independent source review. These source
+results do not qualify a new artifact or repair the immutable RC4 image.
+Historical ambiguous aliases require identity-backed manual review; no speculative
+cleanup or new source evidence is authorized.
+
+### Remaining Qualification Boundaries
+
+- Literal public Compose startup without private qualification overrides remains
+  **PENDING** for this candidate. The reviewed core and workflow receipts establish
+  isolated harness behavior, not that deployment path.
+- Short natural background coverage remains **UNQUALIFIED** after the failed run.
+  A successful 1020-second phase must observe the natural 900-second RSS task and
+  first metadata iteration after 300 seconds without changing effective intervals
+  or triggering tasks. Fresh DBs can use published defaults 900/86400 without
+  persisted interval rows; private verification must not insert those rows.
+  A metadata no-op on an unmonitored fixture supplies no positive provider credit.
+  Full natural 86400-second refresh/repeat coverage remains **UNQUALIFIED**;
+  source/harness correction alone supplies neither short-phase nor full-day credit.
+- Representative NAS remains **UNQUALIFIED**. No approved usable NAS/guest target
+  is established; owner-provided target/export metadata and safe bounded teardown
+  proof are needed before actual filesystem checks. No privilege/profile waiver,
+  direct host hard-NFS cleanup assumption or Synology claim is granted.
+- No native ARM runtime credit is established by the published arm64 manifest.
+- Finish the remaining qualification gates and independent final artifact-evidence
+  audit before promotion. Stable `1.3.2`, `1.3`, `1`, `latest` and
+  production RC1 remain unchanged. Cutover requires separate authorization and a
+  NEW matching verified stopped backup; no stable or deployment approval is given.
 
 ## 1.3.3-rc.3 Qualification
 
