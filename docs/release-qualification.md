@@ -185,6 +185,11 @@ Independent actual-deployment/smoke review is GO for this bounded trial only:
   and the exact published image. These are bounded observations, not perpetual
   no-error guarantees.
 
+A later bounded log check recorded eight Suwayomi monitor warnings that existing
+source entries returned no chapters. They are not counted as clean provider
+coverage, a successful import or a confirmed identity defect. Their causes need
+separate review; no historical source links were automatically repaired or removed.
+
 The full natural daily repeat is not yet observed. A one-time read-only collector
 is scheduled for October 13 at 11:15 UTC (6:15 AM America/Chicago), after the actual
 next metadata due time. Scheduling is not execution or qualification; the collected
