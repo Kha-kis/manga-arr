@@ -51,7 +51,9 @@ Stable aliases remain on 1.3.2. Production now runs the exact published RC5 imag
 in the owner trial after a new verified stopped backup and reviewed recovery plan.
 The trial passed 48/48 desktop/mobile/API smoke checks and all six read-only
 integration groups. Its initial scheduled metadata refresh preserved protected
-content; full daily-repeat coverage remains pending. No general deployment or stable
+content. A new guarded production DDL job completed 8/8 chapters and imported one
+volume with all 254 pages verified; old queue rows and protected state were preserved.
+Full daily-repeat coverage remains pending. No general deployment or stable
 approval follows from publication or these scoped results. No tag/image may be
 replaced; older candidate identities and failed receipts remain immutable.
 

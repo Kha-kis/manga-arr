@@ -39,7 +39,9 @@ No earlier candidate result supplies RC5 artifact credit.
 See [RC5 qualification](docs/release-qualification.md#133-rc5-qualification).
 Stable aliases remain on 1.3.2. An owner-controlled production trial now runs RC5
 after a verified stopped backup; 48/48 smoke checks and six integration probes
-passed. This trial does not authorize stable promotion or qualify other deployments.
+passed. A new guarded production download also imported eight chapters into one
+volume, verifying all 254 pages. This trial does not authorize stable promotion or
+qualify other deployments.
 
 **1.3.3-rc.4 is published, but remains unqualified for promotion or deployment.**
 It carries the reviewed RC3 fixes and PR #431's normal Suwayomi shutdown logging

@@ -186,17 +186,51 @@ Independent actual-deployment/smoke review is GO for this bounded trial only:
   no-error guarantees.
 
 A later bounded log check recorded eight Suwayomi monitor warnings that existing
-source entries returned no chapters. They are not counted as clean provider
-coverage, a successful import or a confirmed identity defect. Their causes need
-separate review; no historical source links were automatically repaired or removed.
+source entries returned no chapters. Read-only review matched all eight cached
+manga identities to their stored MangaDex identities; all eight cached chapter
+counts were zero. This does not establish why provider fetches returned no chapters
+or prove current source availability. No historical source links were automatically
+repaired or removed, and the warnings supply no successful-import credit.
+
+#### New Production Download/Import
+
+A NEW guarded shared-production trial completed on October 12 at 14:09 UTC on the
+exact RC5 image/revision above. One fresh, unmonitored series used exact provider
+identity, an explicit English MangaDex source link and one normal Suwayomi DDL
+volume grab. Six metadata sources were healthy before the grab. The job completed
+8/8 chapters and imported one volume through the normal application workflow.
+
+- Eight real source CBZs totaled 66,264,365 bytes. All 254 ordered image hashes
+  matched the merged volume; archive CRCs and source/merged ComicInfo were verified.
+- The imported volume was 71,197,671 bytes, with SHA-256
+  `b0b9fdc0e317b46a5fba8125089e56f69b7321d4a8c8797171811b78d27898c2`.
+  Persisted volume state and imported DDL history matched its actual path and size.
+- Protected preexisting series, metadata ownership/locks, source links, settings,
+  credentials, clients and library state remained unchanged. The four old exhausted
+  Suwayomi queue rows were preserved whole; no retry/reset/cancel was used.
+- Mangarr and Suwayomi retained their exact container/process/configuration
+  identities. Live SQLite integrity was `ok`, with no foreign-key violations.
+  The owned test session was positively revoked and admin credentials were unchanged.
+- The new series remains unmonitored. Its source links, completed job/history,
+  source archives and imported volume are retained for inspection.
+
+This is a guarded shared trial, not exclusive or race-free qualification. Existing
+background producers were not disabled. Guard snapshots tolerated only appended
+RSS informational telemetry and the exact preidentified informational skip of an
+old non-manga downloader item; neither is clean-log or successful-import credit.
+An earlier attempt stopped before authentication, series creation or enqueue when
+it observed an external RSS HTTP 429 warning. That failed receipt and the provider's
+backoff were preserved, not cleared or counted as a pass. The new trial is separate;
+it does not prove all providers, source titles or download clients are available.
 
 The full natural daily repeat is not yet observed. A one-time read-only collector
 is scheduled for October 13 at 11:15 UTC (6:15 AM America/Chicago), after the actual
 next metadata due time. Scheduling is not execution or qualification; the collected
 timestamps and runtime evidence still require review. The older stable-health
 monitor's historical image/schema expectations are not RC5 acceptance evidence.
-The separate isolated download workflow above does not supply production-download
-credit. No stable alias, release tag or published image changed for this trial.
+The separate isolated download workflow above does not supply this production
+trial's credit. No stable alias, release tag or published image changed for either
+trial. The remaining qualification gates still apply.
 
 ### Remaining Evidence
 
