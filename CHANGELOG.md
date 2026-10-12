@@ -15,7 +15,9 @@ observed bounded short natural background cycle. Representative NAS, full
 86400-second coverage and literal public Compose startup remain pending, with
 no native ARM runtime credit. Historical candidate identities and failed results
 remain unchanged; none supplies RC5 artifact credit. Stable aliases remain on
-1.3.2 and production stays on RC1; no promotion or cutover is authorized. See
+1.3.2. An owner-controlled RC5 production trial began after a new verified stopped
+backup, with 48/48 smoke checks and six read-only integration groups passing.
+Stable promotion remains unauthorized. See
 [RC5 qualification](docs/release-qualification.md#133-rc5-qualification).
 
 ### Fixed
