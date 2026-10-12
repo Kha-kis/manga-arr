@@ -3,6 +3,66 @@
 This document defines the evidence required before a Mangarr release candidate
 can become a stable release. Passing unit tests alone is not sufficient.
 
+## 1.3.3-rc.5 Qualification
+
+Status: **PREPARATION; NOT PUBLISHED OR ARTIFACT-QUALIFIED** (2026-10-12).
+1.3.2 remains qualified stable and owns stable aliases; production stays on RC1.
+RC4 is immutable and unqualified. Its scoped passes and failed short background
+receipt below remain historical, not inherited RC5 credit.
+
+### Source And Preparation Boundary
+
+Preparation starts from [PR #435](https://github.com/Kha-kis/manga-arr/pull/435)
+merge `d89e365e861d18a01566c43ec77620d3c113d6a5`, tree-identical to reviewed docs
+head `54505f31033e24b7ff4aa49d6665cc175619adff`. This base contains the reviewed
+[PR #434](https://github.com/Kha-kis/manga-arr/pull/434) correction for
+[#433](https://github.com/Kha-kis/manga-arr/issues/433): startup seeds legacy
+MangaDex linkage only when no source-link rows exist; explicit unlink clears only
+the matching cached Suwayomi ID before source-row deletion in the same transaction.
+Both writes roll back on failure; unrelated identities and truly unlinked legacy
+fallback are preserved. Historical ambiguous aliases require identity-backed manual
+review, not speculative automatic cleanup. No wrong download was observed.
+
+RC5 preparation changes only VERSION and the four release docs, not application
+logic. Source-fix gates are historical source evidence, not RC5 preparation or
+artifact test counts. Fresh exact-head `make release-local`, independent review,
+release merge, publication identity/security and runtime evidence remain required.
+No release merge, published digest, tag or artifact approval is established here.
+
+### Required Fresh Evidence
+
+- Complete the full local gate on the committed preparation, then fresh reviewed
+  release-merge checks; record exact revisions/results without inheriting counts.
+- Main may then publish only immutable `v1.3.3-rc.5` / image `1.3.3-rc.5` after
+  separate authority. Verify revision/version, both platform manifests, provenance/
+  SBOM and dated configured fixed High/Critical scans. A local source image is not
+  publication; stable and earlier candidate aliases stay unchanged.
+- Repeat fresh setup/logout/login/admin recovery, stopped-copy upgrade and pristine
+  rollback with actual integrity/FKs, strict table/credential/provenance comparisons
+  and untouched read-only baseline. Label any historical stopped backup explicitly;
+  it is not a newly captured production backup.
+- Repeat all eleven loose-file/alias/deletion/rescan/hardlink/fingerprint/lock
+  controls and the frozen network-disabled cache-failure preservation guard.
+  Obtain fresh metadata and a NEW bounded eight-chapter download/import/rescan
+  workflow, with independently checked source/page/ComicInfo/history hashes,
+  selected metadata/full volume/chapter-row preservation and clean stopped state.
+- From a NEW passing workflow archive, observe a natural 1020-second short phase
+  at effective defaults RSS900/metadata86400 without interval writes or manual task
+  triggers: the natural RSS task and first scheduled metadata iteration after 300
+  seconds. Account narrowly for proven startup backfills before the strict baseline;
+  source fixes or failed earlier runs supply no observation credit. Metadata no-op
+  on an unmonitored fixture supplies no positive provider credit. Full natural
+  86400-second refresh/repeat coverage remains pending until actually observed.
+- Representative NAS remains pending: an approved usable target and safe bounded
+  lifecycle/teardown proof are needed before new filesystem checks. No host-policy
+  waiver, hard-NFS cleanup assumption or Synology hardware claim is granted.
+- Literal public Compose startup without private overrides remains pending;
+  isolated harness receipts do not prove that path. Native ARM runtime is pending,
+  not established by multi-platform publication.
+- Obtain independent final artifact-evidence audit before qualification/promotion.
+  Production cutover needs separate authorization and a NEW matching verified
+  stopped backup. No stable/deployment approval follows from this preparation.
+
 ## 1.3.3-rc.4 Qualification
 
 Status: **IMAGE PUBLISHED; SCOPED CORE AND WORKFLOW AUDITS GO;

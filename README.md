@@ -27,6 +27,14 @@ compressed-RAR decoding. See the
 [qualification evidence and platform limits](docs/release-qualification.md#132-stable-qualification)
 before upgrading.
 
+**1.3.3-rc.5 is a replacement candidate in preparation, not published or qualified.**
+It contains PR #434's reviewed legacy MangaDex linkage and atomic-unlink fix.
+Historical ambiguous aliases still require identity-backed manual review.
+Fresh exact-preparation gates, publication identity and artifact runtime checks
+are required; no RC4 scoped result or source-fix test count qualifies RC5.
+See [RC5 qualification](docs/release-qualification.md#133-rc5-qualification).
+Stable aliases remain on 1.3.2 and production stays on RC1; no cutover is authorized.
+
 **1.3.3-rc.4 is published, but remains unqualified for promotion or deployment.**
 It carries the reviewed RC3 fixes and PR #431's normal Suwayomi shutdown logging
 correction. Fresh core/upgrade/rollback, cache and loose-file controls passed
