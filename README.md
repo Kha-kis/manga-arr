@@ -27,6 +27,12 @@ compressed-RAR decoding. See the
 [qualification evidence and platform limits](docs/release-qualification.md#132-stable-qualification)
 before upgrading.
 
+**1.3.3-rc.6 is prepared, not published or qualified.** It carries forward the
+reviewed RC5 fixes and [PR #440](https://github.com/Kha-kis/manga-arr/pull/440)'s
+automatic Suwayomi matching correction. Fresh RC6 evidence is required; no earlier
+candidate runtime credit is inherited. Production remains on RC5 and stable
+aliases on 1.3.2. See [RC6 qualification](docs/release-qualification.md#133-rc6-qualification).
+
 **1.3.3-rc.5 is published, with scoped audits GO, but remains unqualified.**
 It contains PR #434's reviewed legacy MangaDex linkage and atomic-unlink fix.
 Historical ambiguous aliases still require identity-backed manual review.
@@ -42,6 +48,9 @@ after a verified stopped backup; 48/48 smoke checks and six integration probes
 passed. A new guarded production download also imported eight chapters into one
 volume, verifying all 254 pages. This trial does not authorize stable promotion or
 qualify other deployments.
+Its automatic-match action has a confirmed SQLite-row `.get()` defect; the passing
+production workflow used an explicit source link. RC6's source correction does not
+change this immutable published image.
 
 **1.3.3-rc.4 is published, but remains unqualified for promotion or deployment.**
 It carries the reviewed RC3 fixes and PR #431's normal Suwayomi shutdown logging
