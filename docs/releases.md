@@ -17,25 +17,38 @@ documentation consistency.
 
 ## 1.3.3-rc.5 Candidate Status
 
-This replacement candidate is in preparation, not tagged, published or qualified.
-`app/VERSION` identifies 1.3.3-rc.5. Preparation starts from reviewed status-docs
-PR #435 merge `d89e365e861d18a01566c43ec77620d3c113d6a5`, including PR #434's
-11-line application correction. Legacy MangaDex linkage is seeded only without
-persisted source links; explicit unlink clears a matching cached ID atomically
+This replacement candidate was published on 2026-10-12, but remains unqualified
+for promotion or deployment. `app/VERSION` identifies 1.3.3-rc.5. It contains
+PR #434's reviewed 11-line application correction. Legacy MangaDex linkage is
+seeded only without persisted source links; explicit unlink clears a matching cached ID atomically
 with source-row deletion. Unrelated identities and truly unlinked legacy fallback
 are preserved. Historical ambiguous aliases require identity-backed manual review;
 they are not automatically removed or reclassified.
 
-Preparation changes VERSION and four release docs only. The required full local
-release gate must pass on the exact committed preparation before merge/tag.
-After independent review, main owns the fresh release merge and official immutable
-publication. No existing tag or image may be replaced. Source-fix checks and
-RC4's scoped audits do not qualify this candidate or its future artifact.
-Fresh runtime, representative NAS, natural background/full 86400-second coverage,
-literal public Compose and platform boundaries are listed in
+Exact reviewed preparation `16df90d5e04da8a6f322725e606d772a14954266` passed
+the full local release gate: 4,324 Python tests /17 existing skips and 95 isolated
+browser cases, plus lint/format and security/image gates. PR #436 merge
+`5a61f2060ff47a849212ca97abf9caa5fd8ac3a3` has the identical tree; fresh merge
+checks passed 86 tests and 13/13 confirmations, security and exact-revision image
+checks. Immutable annotated `v1.3.3-rc.5` was published by Release Image
+[run 38204751356](https://github.com/Kha-kis/manga-arr/actions/runs/38204751356),
+with index `sha256:6fd882a9d0cdb5a9f134e69cfa467cc9bf914af052941184a7ea0588cd9ac068`.
+Independent publication identity/security and fresh actual core/cache/eleven
+loose-file, twelve provider-free linkage and eight-chapter workflow audits are GO.
+Both platform identities, attestations/SBOM and dated configured fixed High/Critical
+scans passed; no native ARM execution credit follows.
+
+The earlier rate-limited workflow remains failed and supplies no background seed.
+The observed bounded short natural background cycle exited 0 and passed
+independent actual audit. Its configured maximum window was 1020 seconds,
+with 1006.429 seconds observed; this is
+not literal 1020-second elapsed observation or full-day coverage. Representative
+NAS, full natural 86400-second coverage and literal public Compose startup remain
+pending. Exact identities, scoped results and platform boundaries are listed in
 [RC5 qualification](release-qualification.md#133-rc5-qualification).
 Stable aliases remain on 1.3.2 and production stays on RC1; no deployment or stable
-approval is granted by preparation.
+approval follows from publication or these scoped results. No tag/image may be
+replaced; older candidate identities and failed receipts remain immutable.
 
 ## 1.3.3-rc.4 Candidate Status
 
@@ -196,7 +209,7 @@ The release workflow publishes `ghcr.io/kha-kis/manga-arr` with these tags:
 
 | Release | Image tags |
 | --- | --- |
-| `1.3.3-rc.5` (prepared; not published) | `1.3.3-rc.5` only when published |
+| `1.3.3-rc.5` (published; unqualified) | `1.3.3-rc.5` |
 | `1.3.3-rc.4` (published; unqualified) | `1.3.3-rc.4` |
 | `1.3.3-rc.3` (published; unqualified) | `1.3.3-rc.3` |
 | `1.3.3-rc.2` (published; qualification failed) | `1.3.3-rc.2` |
