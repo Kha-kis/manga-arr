@@ -15,6 +15,21 @@ Release commits must update `app/VERSION`, `CHANGELOG.md`, and the current
 release shown in `README.md` together. Automated tests enforce SemVer syntax and
 documentation consistency.
 
+## 1.3.3-rc.6 Candidate Status
+
+Prepared on 2026-10-12 from exact [PR #440](https://github.com/Kha-kis/manga-arr/pull/440)
+merge `89e641b3c054ace0c0e8ad46a03cd6640d62c6b5`, tree-identical to reviewed
+head `4d3c1ab6744ebd8c35a468c132a915ad48eec712`. `app/VERSION` identifies
+1.3.3-rc.6. This preparation changes only VERSION and release documentation;
+it carries forward reviewed fixes and the automatic Suwayomi matching correction.
+The candidate is not published or qualified. Preparation `b5e0c3614ed6e4d561b61c8387bc4a3b87c2e659`
+completed all required local subgates across the retained failed aggregate and
+successful security/image resume. New artifact/runtime audits remain required;
+earlier candidate receipts supply no RC6 runtime credit.
+See [RC6 qualification](release-qualification.md#133-rc6-qualification).
+Production remains on RC5; 1.3.2 remains qualified stable and owns stable aliases.
+No tag, publication, deployment or stable promotion is authorized by preparation.
+
 ## 1.3.3-rc.5 Candidate Status
 
 This replacement candidate was published on 2026-10-12, but remains unqualified
@@ -56,6 +71,10 @@ volume with all 254 pages verified; old queue rows and protected state were pres
 Full daily-repeat coverage remains pending. No general deployment or stable
 approval follows from publication or these scoped results. No tag/image may be
 replaced; older candidate identities and failed receipts remain immutable.
+The published RC5 automatic-match action has a confirmed unsupported SQLite-row
+`.get()` failure. Its passing production workflow used an explicit source link,
+not this action. PR #440's correction is carried by the RC6 preparation above;
+it does not repair or replace RC5's immutable image.
 
 ## 1.3.3-rc.4 Candidate Status
 
@@ -216,6 +235,7 @@ The release workflow publishes `ghcr.io/kha-kis/manga-arr` with these tags:
 
 | Release | Image tags |
 | --- | --- |
+| `1.3.3-rc.6` (prepared; not published) | `1.3.3-rc.6` only when published |
 | `1.3.3-rc.5` (published; unqualified) | `1.3.3-rc.5` |
 | `1.3.3-rc.4` (published; unqualified) | `1.3.3-rc.4` |
 | `1.3.3-rc.3` (published; unqualified) | `1.3.3-rc.3` |

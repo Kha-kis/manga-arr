@@ -3,6 +3,50 @@
 This document defines the evidence required before a Mangarr release candidate
 can become a stable release. Passing unit tests alone is not sufficient.
 
+## 1.3.3-rc.6 Qualification
+
+Status: **PREPARED; NOT PUBLISHED; UNQUALIFIED; NOT CLEARED FOR STABLE
+PROMOTION OR DEPLOYMENT** (2026-10-12). Production remains on RC5;
+1.3.2 remains qualified stable and owns stable aliases.
+
+### Source And Pending Gates
+
+Preparation starts from [PR #440](https://github.com/Kha-kis/manga-arr/pull/440)
+merge `89e641b3c054ace0c0e8ad46a03cd6640d62c6b5`, tree-identical to reviewed
+head `4d3c1ab6744ebd8c35a468c132a915ad48eec712`. It carries forward the reviewed
+fixes and converts the automatic-match route's SQLite row to a dictionary inside
+the database context, preserving identity, source, language and JSON behavior.
+The source-fix gate passed 4,334 Python tests /17 skips and 95 isolated browser
+cases on that identical tree. These are PR #440 source results, not an RC6
+preparation gate or new artifact/runtime credit. RC6 preparation changed only
+VERSION and four release docs. Exact preparation `b5e0c3614ed6e4d561b61c8387bc4a3b87c2e659`
+completed all required local subgates: 4,334 Python tests /17 skips /1,040 warnings,
+95 isolated browser cases, 13/13 confirmations, 10 route checks, lint/format,
+dependency/secret/configuration and exact-revision image/security checks.
+The initial `make release-local` exited 2 at the isolated audit tool's temporary
+Python bootstrap failure after tests/browser checks passed. That failed receipt
+remains unchanged. Selecting the host Python for the same pinned audit tool
+resolved the environment failure; separate `make security-local image-scan`
+exited 0, without dependency waivers or application changes. This is completed
+local subgate coverage, not a successful aggregate exit or artifact/runtime credit.
+The documentation-only review follow-up has a distinct tree; application and
+VERSION bytes are unchanged. Its focused checks and exact-revision image gates
+are separate from these historical full-suite/browser receipts.
+
+All RC6 artifact/runtime gates remain pending: actual public Compose startup,
+representative approved NAS, fresh core/upgrade/rollback, cache-failure,
+loose-file, linkage and automatic-match controls, a NEW download/import/rescan
+workflow and NEW natural background observation, both-platform publication
+identity/security/attestation audit and independent final artifact audit.
+Full natural 86400-second repeat and native ARM runtime require actual evidence,
+not inference from short observation or multi-platform publication. No RC5 or
+earlier runtime result is inherited, and optional cleanup #422 is separate.
+
+RC5's automatic-match defect remains in its immutable image. Its independently
+audited production download used an explicit source link, not automatic matching.
+See the [RC5 remaining evidence](#remaining-evidence) and historical receipts below;
+no failed receipt, artifact identity or scoped result is relabelled by RC6 preparation.
+
 ## 1.3.3-rc.5 Qualification
 
 Status: **IMAGE PUBLISHED; PUBLICATION, CORE, SOURCE-LINKAGE, WORKFLOW
@@ -239,8 +283,8 @@ trial. The remaining qualification gates still apply.
   image: an unsupported `.get()` call on a SQLite row returns HTTP 500 before
   provider matching. The production download above used an explicit source link,
   not this action. A tested source correction does not update the immutable image;
-  a replacement candidate containing the reviewed fix needs its own qualification
-  before stable promotion.
+  the [RC6 preparation](#133-rc6-qualification) containing the reviewed PR #440
+  fix needs its own qualification before stable promotion.
 - Full natural 86400-second metadata refresh/repeat coverage remains pending
   until actually observed. The short unmonitored-fixture metadata iteration
   supplies no positive provider-refresh credit; source and earlier failed runs

@@ -5,10 +5,22 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.3.3-rc.6 - 2026-10-12
+
+Replacement candidate preparation only: not published, not qualified, and not
+approved for stable promotion or deployment. Carries forward the reviewed RC5
+fixes and adds [PR #440](https://github.com/Kha-kis/manga-arr/pull/440)'s automatic
+Suwayomi matching correction. RC5's passing production workflow used an explicit
+source link, not the defective automatic-match action. Earlier source and artifact
+receipts remain historical; none supplies RC6 runtime credit. Production remains
+on RC5 and stable aliases remain on 1.3.2. Fresh candidate gates are tracked in
+[RC6 qualification](docs/release-qualification.md#133-rc6-qualification).
+
 ### Fixed
 
 - Automatic Suwayomi matching no longer fails on SQLite-backed series rows.
   Stored MangaDex identity, selected source and language behavior are preserved.
+  The published RC5 image still has this action defect and is not replaced.
 
 ## 1.3.3-rc.5 - 2026-10-12
 
