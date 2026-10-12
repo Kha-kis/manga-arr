@@ -2569,6 +2569,13 @@ async def link_series_to_source(series_id: int, request: Request):
 async def unlink_source(series_id: int, source_id: str):
     """Remove a source linkage from a series."""
     with get_db() as db:
+        # Do not let legacy fallback/startup resurrect the explicitly unlinked feed.
+        db.execute(
+            "UPDATE series SET suwayomi_id=NULL WHERE id=? AND suwayomi_id=("
+            "SELECT suwayomi_manga_id FROM suwayomi_sources"
+            " WHERE series_id=? AND source_id=?)",
+            (series_id, series_id, source_id),
+        )
         db.execute(
             "DELETE FROM suwayomi_sources WHERE series_id=? AND source_id=?",
             (series_id, source_id),
