@@ -18,9 +18,20 @@ fixes and converts the automatic-match route's SQLite row to a dictionary inside
 the database context, preserving identity, source, language and JSON behavior.
 The source-fix gate passed 4,334 Python tests /17 skips and 95 isolated browser
 cases on that identical tree. These are PR #440 source results, not an RC6
-preparation gate or new artifact/runtime credit. This preparation changes only
-VERSION and four release docs. Its exact committed bytes must pass the local
-release gate before any separate publication authority.
+preparation gate or new artifact/runtime credit. RC6 preparation changed only
+VERSION and four release docs. Exact preparation `b5e0c3614ed6e4d561b61c8387bc4a3b87c2e659`
+completed all required local subgates: 4,334 Python tests /17 skips /1,040 warnings,
+95 isolated browser cases, 13/13 confirmations, 10 route checks, lint/format,
+dependency/secret/configuration and exact-revision image/security checks.
+The initial `make release-local` exited 2 at the isolated audit tool's temporary
+Python bootstrap failure after tests/browser checks passed. That failed receipt
+remains unchanged. Selecting the host Python for the same pinned audit tool
+resolved the environment failure; separate `make security-local image-scan`
+exited 0, without dependency waivers or application changes. This is completed
+local subgate coverage, not a successful aggregate exit or artifact/runtime credit.
+The documentation-only review follow-up has a distinct tree; application and
+VERSION bytes are unchanged. Its focused checks and exact-revision image gates
+are separate from these historical full-suite/browser receipts.
 
 All RC6 artifact/runtime gates remain pending: actual public Compose startup,
 representative approved NAS, fresh core/upgrade/rollback, cache-failure,
