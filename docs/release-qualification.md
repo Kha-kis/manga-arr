@@ -199,6 +199,7 @@ exact RC5 image/revision above. One fresh, unmonitored series used exact provide
 identity, an explicit English MangaDex source link and one normal Suwayomi DDL
 volume grab. Six metadata sources were healthy before the grab. The job completed
 8/8 chapters and imported one volume through the normal application workflow.
+Independent actual-artifact audit is GO for this bounded shared trial only.
 
 - Eight real source CBZs totaled 66,264,365 bytes. All 254 ordered image hashes
   matched the merged volume; archive CRCs and source/merged ComicInfo were verified.
@@ -206,8 +207,8 @@ volume grab. Six metadata sources were healthy before the grab. The job complete
   `b0b9fdc0e317b46a5fba8125089e56f69b7321d4a8c8797171811b78d27898c2`.
   Persisted volume state and imported DDL history matched its actual path and size.
 - Protected preexisting series, metadata ownership/locks, source links, settings,
-  credentials, clients and library state remained unchanged. The four old exhausted
-  Suwayomi queue rows were preserved whole; no retry/reset/cancel was used.
+  credentials, clients and persisted library state remained unchanged. The four old
+  exhausted Suwayomi queue rows were preserved whole; no retry/reset/cancel was used.
 - Mangarr and Suwayomi retained their exact container/process/configuration
   identities. Live SQLite integrity was `ok`, with no foreign-key violations.
   The owned test session was positively revoked and admin credentials were unchanged.
@@ -246,8 +247,8 @@ trial. The remaining qualification gates still apply.
   not established by multi-platform publication.
 - Obtain independent final artifact-evidence audit before qualification/promotion.
   The owner-controlled cutover above has its own matching stopped backup; it does
-  not authorize other deployments or supply stable approval. A new production
-  download/import still needs its own actual evidence.
+  not authorize other deployments or supply stable approval. The independently
+  audited shared production download above does not replace these remaining gates.
 
 ## 1.3.3-rc.4 Qualification
 
