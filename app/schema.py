@@ -1370,6 +1370,7 @@ def init_db() -> None:
         )
 
         # ── Backfill suwayomi_sources from existing mangadex_id linkages ──────
+        # A cached manga ID belongs to the persisted source, not necessarily MangaDex.
         db.execute("""
             INSERT OR IGNORE INTO suwayomi_sources
                 (series_id, source_id, source_name, source_lang, suwayomi_manga_id, source_type)
@@ -1377,6 +1378,9 @@ def init_db() -> None:
                    s.suwayomi_id, 'aggregator'
             FROM series s
             WHERE s.mangadex_id IS NOT NULL AND s.suwayomi_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM suwayomi_sources src WHERE src.series_id = s.id
+              )
         """)
 
         # ── Seed DDL settings defaults ────────────────────────────────────────
