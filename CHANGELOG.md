@@ -7,14 +7,15 @@ All notable changes to this project. Format roughly follows
 
 ## 1.3.3-rc.5 - 2026-10-12
 
-Replacement candidate in preparation after RC4's failed short background run and
-confirmed alternative-source restart linkage defect. Contains reviewed PR #434;
-not tagged, published or artifact-qualified. Fresh preparation/publication/runtime
-gates are required; prior source checks and candidate receipts supply no RC5
-artifact credit. Historical RC4 and earlier identities/results remain unchanged.
-Representative NAS, full natural 86400-second coverage and literal public Compose
-startup remain pending, with no native ARM runtime credit. Stable aliases remain
-on 1.3.2 and production stays on RC1. See
+Replacement candidate published from exact reviewed PR #436 merge, containing
+PR #434's source-linkage correction. Publication and fresh core/cache/eleven
+loose-file controls, twelve provider-free linkage cases and an eight-chapter
+download/import/rescan workflow passed independent scoped audit, as did the
+observed bounded short natural background cycle. Representative NAS, full
+86400-second coverage and literal public Compose startup remain pending, with
+no native ARM runtime credit. Historical candidate identities and failed results
+remain unchanged; none supplies RC5 artifact credit. Stable aliases remain on
+1.3.2 and production stays on RC1; no promotion or cutover is authorized. See
 [RC5 qualification](docs/release-qualification.md#133-rc5-qualification).
 
 ### Fixed

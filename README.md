@@ -27,11 +27,15 @@ compressed-RAR decoding. See the
 [qualification evidence and platform limits](docs/release-qualification.md#132-stable-qualification)
 before upgrading.
 
-**1.3.3-rc.5 is a replacement candidate in preparation, not published or qualified.**
+**1.3.3-rc.5 is published, with scoped audits GO, but remains unqualified.**
 It contains PR #434's reviewed legacy MangaDex linkage and atomic-unlink fix.
 Historical ambiguous aliases still require identity-backed manual review.
-Fresh exact-preparation gates, publication identity and artifact runtime checks
-are required; no RC4 scoped result or source-fix test count qualifies RC5.
+Fresh core/upgrade/rollback, cache, eleven loose-file controls, twelve provider-free
+source-linkage cases and an eight-chapter download/import/rescan workflow passed
+independent actual audit, as did the observed bounded short natural background
+cycle. Full 86400-second coverage, representative NAS and
+literal public Compose startup remain pending; no native ARM runtime credit is claimed.
+No earlier candidate result supplies RC5 artifact credit.
 See [RC5 qualification](docs/release-qualification.md#133-rc5-qualification).
 Stable aliases remain on 1.3.2 and production stays on RC1; no cutover is authorized.
 

@@ -5,14 +5,16 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## 1.3.3-rc.5 Qualification
 
-Status: **PREPARATION; NOT PUBLISHED OR ARTIFACT-QUALIFIED** (2026-10-12).
+Status: **IMAGE PUBLISHED; PUBLICATION, CORE, SOURCE-LINKAGE, WORKFLOW
+AND OBSERVED BOUNDED SHORT NATURAL BACKGROUND SCOPED AUDITS GO;
+UNQUALIFIED; NOT CLEARED FOR PROMOTION OR DEPLOYMENT** (2026-10-12).
 1.3.2 remains qualified stable and owns stable aliases; production stays on RC1.
 RC4 is immutable and unqualified. Its scoped passes and failed short background
 receipt below remain historical, not inherited RC5 credit.
 
-### Source And Preparation Boundary
+### Source And Exact Preparation Gates
 
-Preparation starts from [PR #435](https://github.com/Kha-kis/manga-arr/pull/435)
+Preparation started from [PR #435](https://github.com/Kha-kis/manga-arr/pull/435)
 merge `d89e365e861d18a01566c43ec77620d3c113d6a5`, tree-identical to reviewed docs
 head `54505f31033e24b7ff4aa49d6665cc175619adff`. This base contains the reviewed
 [PR #434](https://github.com/Kha-kis/manga-arr/pull/434) correction for
@@ -23,36 +25,138 @@ Both writes roll back on failure; unrelated identities and truly unlinked legacy
 fallback are preserved. Historical ambiguous aliases require identity-backed manual
 review, not speculative automatic cleanup. No wrong download was observed.
 
-RC5 preparation changes only VERSION and the four release docs, not application
-logic. Source-fix gates are historical source evidence, not RC5 preparation or
-artifact test counts. Fresh exact-head `make release-local`, independent review,
-release merge, publication identity/security and runtime evidence remain required.
-No release merge, published digest, tag or artifact approval is established here.
+RC5 preparation changed only VERSION and the four release docs, not application
+logic. Exact reviewed [PR #436](https://github.com/Kha-kis/manga-arr/pull/436)
+head `16df90d5e04da8a6f322725e606d772a14954266` passed full `make release-local`:
+4,324 Python tests /17 existing skips, 95 isolated browser cases, 13/13 confirmation
+and 10 route checks, lint/format, dependency/secret/configuration and image/security
+gates. Full-gate log SHA256:
+`a9959dd59c147669b252c088f2b44c08bd03e6181e5e2bcf18f7b6cbec527feb`.
+Independent exact-head and Codex reviews found no remaining issues.
+Release merge `5a61f2060ff47a849212ca97abf9caa5fd8ac3a3` and preparation share
+tree `2c1604cc6963c7f65ae21101e192b1cb1c41d4e2`. Fresh merge checks passed
+86 tests and 13/13 confirmations, lint/security and exact-revision image checks;
+log SHA256 `ffa671b5ee0b0463ece04ad52d9213a6702695f667c7e0951b29cae710f13361`.
+These are exact source-gate results, not inherited RC4 artifact counts or a literal
+full-suite rerun on the merge. Owned source-gate resources were positively removed;
+the mock's shutdown exit 137 is retained, not relabelled exit 0 or artifact credit.
 
-### Required Fresh Evidence
+### Publication Identity
 
-- Complete the full local gate on the committed preparation, then fresh reviewed
-  release-merge checks; record exact revisions/results without inheriting counts.
-- Main may then publish only immutable `v1.3.3-rc.5` / image `1.3.3-rc.5` after
-  separate authority. Verify revision/version, both platform manifests, provenance/
-  SBOM and dated configured fixed High/Critical scans. A local source image is not
-  publication; stable and earlier candidate aliases stay unchanged.
-- Repeat fresh setup/logout/login/admin recovery, stopped-copy upgrade and pristine
-  rollback with actual integrity/FKs, strict table/credential/provenance comparisons
-  and untouched read-only baseline. Label any historical stopped backup explicitly;
-  it is not a newly captured production backup.
-- Repeat all eleven loose-file/alias/deletion/rescan/hardlink/fingerprint/lock
-  controls and the frozen network-disabled cache-failure preservation guard.
-  Obtain fresh metadata and a NEW bounded eight-chapter download/import/rescan
-  workflow, with independently checked source/page/ComicInfo/history hashes,
-  selected metadata/full volume/chapter-row preservation and clean stopped state.
-- From a NEW passing workflow archive, observe a natural 1020-second short phase
-  at effective defaults RSS900/metadata86400 without interval writes or manual task
-  triggers: the natural RSS task and first scheduled metadata iteration after 300
-  seconds. Account narrowly for proven startup backfills before the strict baseline;
-  source fixes or failed earlier runs supply no observation credit. Metadata no-op
-  on an unmonitored fixture supplies no positive provider credit. Full natural
-  86400-second refresh/repeat coverage remains pending until actually observed.
+- Exact release merge: `5a61f2060ff47a849212ca97abf9caa5fd8ac3a3`.
+- Annotated `v1.3.3-rc.5` tag object: `c6dfd14fce257b6dfa486b0e835ce90c3eeec122`.
+- Successful Release Image [run 38204751356](https://github.com/Kha-kis/manga-arr/actions/runs/38204751356).
+- Registry index/native inspected image ID: `sha256:6fd882a9d0cdb5a9f134e69cfa467cc9bf914af052941184a7ea0588cd9ac068`.
+- amd64 manifest: `sha256:8c8dca2074de621e9608745f9b47f8ba3bffede602a92f63febdc36dbca264de`.
+- arm64 manifest: `sha256:0a9e2e773dc312876caf2dddf20a44e1e8c99393f5049f63d668f8f9591c4eca`.
+- Canonical publication-pins receipt SHA256: `4cec1dc817a8cf147c29b3f88e405f7532a6dbc36bf76a7a1bc4496fbae626c2`.
+
+Independent publication audit is **GO**, with no findings. Exact version/revision,
+both platform configurations, linked provenance/SBOM and dated configured fixed
+High/Critical scans passed. The tag is unsigned; this is not cryptographic signature
+verification or universal vulnerability-free credit. Stable and earlier candidate
+aliases remain unchanged. Only the full RC5 tag was published; no native ARM
+runtime, stable-promotion or deployment approval follows.
+
+### New Published-Artifact Core Results
+
+- Core `q20261012t045255z` exited 0: four fresh setup/logout/login/admin-recovery/
+  upgrade/pristine-rollback browser cycles with zero page errors/local 5xx, five
+  actual integrity/FK checks and three strict 42-table schema/credential/key/
+  provenance/observation comparisons passed. The baseline's 161 original files
+  remained byte-identical; final strict directory diff was empty. Upgrade used
+  fresh copies of the historical October 10 stopped 1.3.2 input, not a new production
+  backup. Capture inspection used a separate copy; the baseline stayed untouched.
+- Loose `r20261012t045556z-loose` exited 0: all eleven independent/current/deleted
+  alias, missing-file deletion, repeated rescan, held-lock, legitimate source-hardlink
+  and same-stat/different-digest controls passed. No actual kernel inode-reallocation
+  or NAS claim is made.
+- Cache `r20261012t045600z-cache` exited 0: the unchanged frozen network-disabled
+  cached-field/candidate/provenance/backoff guard passed. Provider success remained
+  explicitly false; this is failure protection, not positive provider credit.
+
+Independent actual core/cache/loose audit is **GO**, with no findings, at source
+manifest SHA256 `6640785fe44d9b332618e487088cf4685b3fc876ad1ce51cc80d4bd754aaccc1`.
+All 14 owned containers stopped exit 0, without OOM/restarts/state errors. Positive
+cleanup removed only those IDs and their empty internal bridge in 1.484 seconds;
+production and preexisting resources were unchanged.
+
+### Source-Linkage Controls
+
+Control `l20261012t051911z` exited 0: twelve alternative-source/startup/unlink/
+legacy-fallback/numeric-ID/unknown-unlink/rollback/historical-alias cases passed,
+with actual integrity/FKs and zero provider calls. Source manifest SHA256:
+`0b2378f864338c11065ba6dbe54a6690b952f5b19529b5680bbd916012ebeb57`.
+Owned cleanup completed in 1.786 seconds, without OOM/restarts. Independent actual
+audit is **GO**, with no findings. These are installed-app schema/route-function
+controls, not HTTP lifespan or general background routing qualification.
+Earlier created-only `l20261012t050232z` failed exit 75 and supplied no control
+credit; its never-started resource/manual cleanup remain separate. The later
+private disabled-healthcheck metadata correction was a harness change, not an
+application fix or permission to relabel that failure.
+
+### Failed First Workflow And New Audited Workflow
+
+Workflow `r20261012t045107z` remains **FAILED**, exit 2: an archived AniList HTTP429
+event recorded a 38-second retry wait during initial lookup, exceeding the private
+caller's unchanged 35-second read budget. No library series, chapters, queue,
+publication or download was created. Clean stopped-quality and 14-second positive
+cleanup do not supply workflow success or a background seed. No new application
+defect was established by this provider/caller-budget boundary. Archive SHA256:
+`8f6816ec6715ae7f1eba9adbc6404e101942370dccbf67d4ace6b43af24dbdfb`.
+
+After changed external availability and separate authority, NEW workflow
+`r20261012t050859z` exited 0 without source/timeout changes: all six metadata sources
+were healthy, with zero failures/refusals. Eight newly downloaded source CBZs
+contained 254 pages and 66,264,365 bytes; the merged CBZ was 71,197,671 bytes,
+SHA256 `7bd4cfa09f90ce83e20389cba064a58fe29d21e146b0dc8147ed66a184c929c5`.
+Independent actual workflow audit is **GO**, with no findings: all eight source
+CBZs/254 ordered page hashes, ComicInfo/XML/history bytes, selected metadata and
+full volume/chapter-row preservation after rescan, and archived DB integrity/FKs
+were verified. The job took 353 seconds; positive cleanup verified all five owned
+containers and both networks absent in 15 seconds, stopped-quality exited 0 and the
+temporary mount was absent. Four container exits were 0; intentional Suwayomi
+SIGTERM143 was accepted by the existing stopped-quality policy, not relabelled 0.
+Retained archive SHA256:
+`55412fbc6dbff8571c2dcaeabf52cf5a5617096f8743658fcceac111335b9690`.
+No old failed receipt is relabelled as a pass. This bounded scoped GO is not final
+artifact qualification, full-cycle coverage or stable/deployment authority.
+
+### Audited Bounded Short Natural Background
+
+NEW `b20261012t052747z` exited 0, using the independently audited new workflow
+archive under separate main authority. The configured maximum window was 1020
+seconds;
+the receipt records **1006.429 seconds observed**, 67 samples (maximum 68), and
+two completed natural RSS polls separated by 900.002929 seconds. The first
+scheduled metadata iteration passed after its 300-second startup delay, at effective
+RSS900/metadata86400 defaults. The unmonitored, network-none fixture grants no
+provider-success
+or full-refresh/repeat credit; the full 86400-second boundary remains pending.
+No interval writes or manual task triggers supplied natural-cycle credit.
+
+Observation, stopped finalization and cleanup receipts report complete/ok;
+workflow, stopped-quality and cleanup exits were 0. Positive owned-container and
+temporary-mount absence was verified; cleanup took 5 seconds within 90 seconds.
+Final background receipt SHA256:
+`61c06d0d725c074ac5e1b1a145ca6d97d93ddbaf368070a8adf39d34c6664f05`.
+Independent actual audit is **GO** for the observed bounded short natural cycle,
+with no safety/state/quality findings. The scheduler uses 1020 seconds as an upper
+deadline, with its final sampling slot at 1005 seconds; no minimum 1020-second
+elapsed observation is enforced or qualified. All strict post-start and stopped
+protected-state/schema/key/file comparisons and actual integrity/FKs passed,
+following narrowly validated startup backfills. All 68 runtime inspections preserved
+the exact nonroot/read-only/dropcaps/no-new-privileges/network-none resource bounds.
+Final exit 0, no OOM/restarts/state errors and clean combined logs passed.
+No literal 1020-second elapsed observation or full-day repeat is claimed.
+Earlier failures supply no passing credit.
+
+### Remaining Evidence
+
+- Full natural 86400-second metadata refresh/repeat coverage remains pending
+  until actually observed. The short unmonitored-fixture metadata iteration
+  supplies no positive provider-refresh credit; source and earlier failed runs
+  supply neither full-day nor representative NAS evidence.
 - Representative NAS remains pending: an approved usable target and safe bounded
   lifecycle/teardown proof are needed before new filesystem checks. No host-policy
   waiver, hard-NFS cleanup assumption or Synology hardware claim is granted.
@@ -61,7 +165,7 @@ No release merge, published digest, tag or artifact approval is established here
   not established by multi-platform publication.
 - Obtain independent final artifact-evidence audit before qualification/promotion.
   Production cutover needs separate authorization and a NEW matching verified
-  stopped backup. No stable/deployment approval follows from this preparation.
+  stopped backup. No stable/deployment approval follows from these scoped results.
 
 ## 1.3.3-rc.4 Qualification
 
