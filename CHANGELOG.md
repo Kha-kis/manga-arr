@@ -17,6 +17,8 @@ no native ARM runtime credit. Historical candidate identities and failed results
 remain unchanged; none supplies RC5 artifact credit. Stable aliases remain on
 1.3.2. An owner-controlled RC5 production trial began after a new verified stopped
 backup, with 48/48 smoke checks and six read-only integration groups passing.
+A new guarded production download/import also completed eight chapters into one
+volume with all 254 pages verified, preserving the old queue and protected state.
 Stable promotion remains unauthorized. See
 [RC5 qualification](docs/release-qualification.md#133-rc5-qualification).
 
