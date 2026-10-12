@@ -5,6 +5,11 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+### Fixed
+
+- Automatic Suwayomi matching no longer fails on SQLite-backed series rows.
+  Stored MangaDex identity, selected source and language behavior are preserved.
+
 ## 1.3.3-rc.5 - 2026-10-12
 
 Replacement candidate published from exact reviewed PR #436 merge, containing

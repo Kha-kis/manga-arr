@@ -2270,7 +2270,8 @@ async def cancel_suwayomi_job(job_id: int):
 @router.post("/api/series/{series_id}/suwayomi/match")
 async def match_series_endpoint(series_id: int):
     with get_db() as db:
-        s = db.execute("SELECT * FROM series WHERE id=?", (series_id,)).fetchone()
+        row = db.execute("SELECT * FROM series WHERE id=?", (series_id,)).fetchone()
+        s = dict(row) if row is not None else None
         c = get_suwayomi_client(db)
     if not c or not s:
         return JSONResponse({"ok": False, "message": "Not found"}, status_code=404)

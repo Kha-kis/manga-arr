@@ -235,6 +235,12 @@ trial. The remaining qualification gates still apply.
 
 ### Remaining Evidence
 
+- Automatic Suwayomi matching has a confirmed action defect in the published RC5
+  image: an unsupported `.get()` call on a SQLite row returns HTTP 500 before
+  provider matching. The production download above used an explicit source link,
+  not this action. A tested source correction does not update the immutable image;
+  a replacement candidate containing the reviewed fix needs its own qualification
+  before stable promotion.
 - Full natural 86400-second metadata refresh/repeat coverage remains pending
   until actually observed. The short unmonitored-fixture metadata iteration
   supplies no positive provider-refresh credit; source and earlier failed runs
