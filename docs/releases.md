@@ -15,6 +15,28 @@ Release commits must update `app/VERSION`, `CHANGELOG.md`, and the current
 release shown in `README.md` together. Automated tests enforce SemVer syntax and
 documentation consistency.
 
+## 1.3.3-rc.5 Candidate Status
+
+This replacement candidate is in preparation, not tagged, published or qualified.
+`app/VERSION` identifies 1.3.3-rc.5. Preparation starts from reviewed status-docs
+PR #435 merge `d89e365e861d18a01566c43ec77620d3c113d6a5`, including PR #434's
+11-line application correction. Legacy MangaDex linkage is seeded only without
+persisted source links; explicit unlink clears a matching cached ID atomically
+with source-row deletion. Unrelated identities and truly unlinked legacy fallback
+are preserved. Historical ambiguous aliases require identity-backed manual review;
+they are not automatically removed or reclassified.
+
+Preparation changes VERSION and four release docs only. The required full local
+release gate must pass on the exact committed preparation before merge/tag.
+After independent review, main owns the fresh release merge and official immutable
+publication. No existing tag or image may be replaced. Source-fix checks and
+RC4's scoped audits do not qualify this candidate or its future artifact.
+Fresh runtime, representative NAS, natural background/full 86400-second coverage,
+literal public Compose and platform boundaries are listed in
+[RC5 qualification](release-qualification.md#133-rc5-qualification).
+Stable aliases remain on 1.3.2 and production stays on RC1; no deployment or stable
+approval is granted by preparation.
+
 ## 1.3.3-rc.4 Candidate Status
 
 This replacement candidate was published on 2026-10-12, but remains unqualified
@@ -174,6 +196,7 @@ The release workflow publishes `ghcr.io/kha-kis/manga-arr` with these tags:
 
 | Release | Image tags |
 | --- | --- |
+| `1.3.3-rc.5` (prepared; not published) | `1.3.3-rc.5` only when published |
 | `1.3.3-rc.4` (published; unqualified) | `1.3.3-rc.4` |
 | `1.3.3-rc.3` (published; unqualified) | `1.3.3-rc.3` |
 | `1.3.3-rc.2` (published; qualification failed) | `1.3.3-rc.2` |

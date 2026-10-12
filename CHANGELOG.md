@@ -5,6 +5,18 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.3.3-rc.5 - 2026-10-12
+
+Replacement candidate in preparation after RC4's failed short background run and
+confirmed alternative-source restart linkage defect. Contains reviewed PR #434;
+not tagged, published or artifact-qualified. Fresh preparation/publication/runtime
+gates are required; prior source checks and candidate receipts supply no RC5
+artifact credit. Historical RC4 and earlier identities/results remain unchanged.
+Representative NAS, full natural 86400-second coverage and literal public Compose
+startup remain pending, with no native ARM runtime credit. Stable aliases remain
+on 1.3.2 and production stays on RC1. See
+[RC5 qualification](docs/release-qualification.md#133-rc5-qualification).
+
 ### Fixed
 
 - Seed legacy MangaDex linkage at startup only when no source-link rows exist.
@@ -14,7 +26,8 @@ All notable changes to this project. Format roughly follows
   Historical ambiguous aliases are not automatically removed and require
   identity-backed manual review ([#434](https://github.com/Kha-kis/manga-arr/pull/434),
   fixes [#433](https://github.com/Kha-kis/manga-arr/issues/433)).
-  This merged source correction is for a future artifact, not the published RC4 image.
+  This candidate contains the merged source correction; the published RC4 image
+  remains unchanged and unqualified.
 
 ## 1.3.3-rc.4 - 2026-10-12
 
