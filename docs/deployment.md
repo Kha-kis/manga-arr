@@ -226,6 +226,27 @@ lease expiry alone does not remove that protection.
 Do not delete retained carriers or edit journal rows to unblock a rescan. The
 private namespace and its parent directory are persistent recovery authority.
 
+#### Recorded Volume Files
+
+A downloaded volume's recorded file does not become missing merely because its
+custom filename is outside the volume parser's recognized formats. Rescan checks
+recorded paths directly inside the managed series directory under filesystem
+ownership, separately from filename-based discovery.
+
+A reset requires freshly verified absence, unchanged directory and naming
+context, and unambiguous ownership. Unavailable storage, permission errors,
+symlinks, unsupported or nested paths, shared aliases, conflicting identities
+and changed evidence defer the reset. Concurrent database writers and active or
+newly completed file operations retain their existing protections.
+
+This protection does not discover new volumes, recover wanted or grabbed rows,
+or raise local metadata counts. A present historical recorded filename remains
+protected; an alternate current-format candidate can make absence ambiguous.
+This includes case variants and the same expected filename stem in another
+supported manga format; neither alternative receives discovery or count credit.
+Keep the expected library mount available: a readable directory left behind by
+a share unmounted before the scan cannot be distinguished without mount identity.
+
 #### Missing Loose Chapter Files
 
 Rescan can reconcile a downloaded chapter's vanished loose CBZ when its stored

@@ -96,6 +96,14 @@ class _MissingLooseObservation:
 
 
 @dataclass(frozen=True)
+class _RecordedVolumeObservation:
+    directory: FileFingerprint
+    directory_ctime_ns: int
+    file: FileFingerprint | None
+    file_format: str
+
+
+@dataclass(frozen=True)
 class SeriesFilesystemInventory:
     files_by_volume: dict[float, InventoryFile]
     any_library_files: bool
@@ -105,6 +113,10 @@ class SeriesFilesystemInventory:
         default_factory=dict
     )
     missing_loose_revalidated: bool = False
+    recorded_volumes: dict[int, _RecordedVolumeObservation] = field(
+        default_factory=dict
+    )
+    recorded_volumes_revalidated: bool = False
 
     @property
     def on_disk(self) -> frozenset[float]:
@@ -978,6 +990,167 @@ def _missing_loose_observations(
     return result
 
 
+def _recorded_volume_observations(
+    snapshot: SeriesRescanSnapshot,
+) -> dict[int, _RecordedVolumeObservation]:
+    """Observe existing recorded files only; an omitted row has unknown evidence."""
+    eligible = tuple(
+        row
+        for row in snapshot.numbered
+        if row["status"] == "downloaded" and row["import_path"]
+    )
+    if not eligible:
+        return {}
+    root = snapshot.series_dir
+    if (
+        not root
+        or root != os.path.abspath(root)
+        or os.path.realpath(root) != root
+        or any(_is_private_inventory_directory(part) for part in root.split(os.sep))
+    ):
+        return {}
+    path_counts = Counter(
+        os.path.normcase(os.path.abspath(str(row["import_path"])))
+        for row in (*snapshot.numbered, *snapshot.packs)
+        if row["import_path"]
+    )
+    chapter_owners: dict[str, set[int | None]] = {}
+    for chapter in snapshot.chapters:
+        if chapter["import_path"]:
+            path = os.path.normcase(os.path.abspath(chapter["import_path"]))
+            chapter_owners.setdefault(path, set()).add(chapter["volume_id"])
+    result: dict[int, _RecordedVolumeObservation] = {}
+    file_format = str(get_cfg("file_format", ""))
+    try:
+        with _open_rescan_directory(root) as directory:
+            before = os.fstat(directory)
+            names = os.listdir(directory)
+            candidate_names = {
+                name
+                for name in names
+                if os.path.splitext(name)[1].lower() in MANGA_EXTENSIONS
+            }
+            candidate_numbers = {extract_volume_num(name) for name in candidate_names}
+            candidate_stems = {
+                os.path.splitext(name)[0].casefold() for name in candidate_names
+            }
+            for volume in eligible:
+                path = volume["import_path"]
+                number = float(volume["volume_num"])
+                if (
+                    path != os.path.abspath(path)
+                    or os.path.dirname(path) != root
+                    or os.path.splitext(path)[1].lower() not in MANGA_EXTENSIONS
+                    or path_counts[os.path.normcase(path)] != 1
+                    or not math.isfinite(number)
+                    or chapter_owners.get(os.path.normcase(path), set())
+                    - {volume["id"]}
+                ):
+                    continue
+                name = os.path.basename(path)
+                parsed = extract_volume_num(name)
+                if parsed is not None and parsed != number:
+                    continue  # Contradictory recorded identity cannot create a stub.
+                fingerprint = None
+                try:
+                    metadata = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                except FileNotFoundError:
+                    expected = build_filename(
+                        snapshot.series["title"],
+                        number,
+                        name,
+                        pub_year=snapshot.series["pub_year"],
+                    )
+                    if (
+                        os.path.splitext(expected)[0].casefold() in candidate_stems
+                        or number in candidate_numbers
+                    ):
+                        continue  # A different candidate makes absence ambiguous.
+                except OSError:
+                    continue
+                else:
+                    if (
+                        not stat.S_ISREG(metadata.st_mode)
+                        or metadata.st_size <= 0
+                        or metadata.st_nlink != 1
+                    ):
+                        continue
+                    try:
+                        with os.fdopen(
+                            os.open(
+                                name,
+                                os.O_RDONLY
+                                | os.O_NOFOLLOW
+                                | os.O_CLOEXEC
+                                | os.O_NONBLOCK,
+                                dir_fd=directory,
+                            ),
+                            "rb",
+                        ) as stream:
+                            fingerprint = _fingerprint(metadata)
+                            if (
+                                _fingerprint(os.fstat(stream.fileno())) != fingerprint
+                                or not stream.read(1)
+                                or _fingerprint(os.fstat(stream.fileno()))
+                                != fingerprint
+                                or _fingerprint(
+                                    os.stat(
+                                        name, dir_fd=directory, follow_symlinks=False
+                                    )
+                                )
+                                != fingerprint
+                            ):
+                                continue
+                    except OSError:
+                        continue
+                result[volume["id"]] = _RecordedVolumeObservation(
+                    _fingerprint(before), before.st_ctime_ns, fingerprint, file_format
+                )
+            if str(get_cfg("file_format", "")) != file_format or any(
+                _fingerprint(item) != _fingerprint(before)
+                or item.st_ctime_ns != before.st_ctime_ns
+                for item in (os.fstat(directory), os.lstat(root))
+            ):
+                return {}
+    except (OSError, ValueError, TypeError):
+        return {}
+    return result
+
+
+def _recorded_volume_path_owners(
+    db: sqlite3.Connection,
+) -> dict[str, set[tuple[int, int | None]]]:
+    """Index current logical owners once; normalization performs no file lookup."""
+    owners: dict[str, set[tuple[int, int | None]]] = {}
+    for row in db.execute(
+        "SELECT import_path,series_id,id AS volume_id FROM volumes WHERE import_path IS NOT NULL"
+        " UNION ALL SELECT import_path,series_id,volume_id FROM chapters WHERE import_path IS NOT NULL"
+    ):
+        if row["import_path"]:
+            path = os.path.normcase(os.path.abspath(row["import_path"]))
+            owners.setdefault(path, set()).add((row["series_id"], row["volume_id"]))
+    return owners
+
+
+def _quarantine_recorded_volume_files(
+    snapshot: SeriesRescanSnapshot,
+    files: dict[float, InventoryFile],
+    recorded: dict[int, _RecordedVolumeObservation],
+) -> dict[float, InventoryFile]:
+    unsafe_paths = {
+        os.path.normcase(os.path.abspath(row["import_path"]))
+        for row in snapshot.numbered
+        if row["status"] == "downloaded"
+        and row["import_path"]
+        and row["id"] not in recorded
+    }
+    return {
+        number: item
+        for number, item in files.items()
+        if os.path.normcase(os.path.abspath(item.path)) not in unsafe_paths
+    }
+
+
 def build_filesystem_inventory(
     snapshot: SeriesRescanSnapshot,
 ) -> SeriesFilesystemInventory:
@@ -996,12 +1169,17 @@ def build_filesystem_inventory(
     chapter_files = _loose_chapter_inventory(
         snapshot, imported_at, discovered_volume_inodes=volume_inodes
     )
+    recorded = _recorded_volume_observations(snapshot)
+    files_by_volume = _quarantine_recorded_volume_files(
+        snapshot, files_by_volume, recorded
+    )
     return SeriesFilesystemInventory(
         files_by_volume=files_by_volume,
         any_library_files=any_library_files,
         pack_paths_present=pack_paths_present,
         files_by_chapter=chapter_files,
         missing_loose_chapters=_missing_loose_observations(snapshot, chapter_files),
+        recorded_volumes=recorded,
     )
 
 
@@ -1239,7 +1417,20 @@ def reconcile_series_inventory(
     chapter_files = inventory.files_by_chapter
     verified_backing_volumes: dict[int, InventoryFile] = {}
     observed_volumes = set(inventory.on_disk)
-    if (chapter_files or inventory.missing_loose_chapters) and tuple(
+    recorded_volumes = (
+        inventory.recorded_volumes if inventory.recorded_volumes_revalidated else {}
+    )
+    recorded_owners = (
+        _recorded_volume_path_owners(db)
+        if any(
+            row["status"] == "downloaded" and row["import_path"]
+            for row in snapshot.numbered
+        )
+        else {}
+    )
+    if (
+        chapter_files or inventory.missing_loose_chapters or inventory.recorded_volumes
+    ) and tuple(
         dict(row)
         for row in db.execute(
             _COMPLETED_VOLUME_DELETIONS_SELECT, (series_id,)
@@ -1248,6 +1439,7 @@ def reconcile_series_inventory(
         # A deletion completed after inventory; do not promote stale evidence.
         chapter_files = {}
         missing_chapters = {}
+        recorded_volumes = {}
     else:
         missing_chapters = (
             inventory.missing_loose_chapters
@@ -1324,12 +1516,34 @@ def reconcile_series_inventory(
         if cursor.rowcount == 1:
             result["recovered"] += 1
 
+    vetoed_volume_ids: set[int] = set()
     for volume in snapshot.numbered:
         volume_num = float(volume["volume_num"])
         inventory_file = inventory.files_by_volume.get(
             volume_num
         ) or verified_backing_volumes.get(volume["id"])
         if volume["status"] == "downloaded" and inventory_file is None:
+            if volume["import_path"]:
+                proof = recorded_volumes.get(volume["id"])
+                if (
+                    proof is None
+                    or proof.file is not None
+                    or proof.file_format != str(get_cfg("file_format", ""))
+                    or recorded_owners.get(
+                        os.path.normcase(os.path.abspath(volume["import_path"]))
+                    )
+                    != {(series_id, volume["id"])}
+                    or not db.execute(
+                        "SELECT 1 FROM series WHERE id=? AND title IS ? AND pub_year IS ?",
+                        (
+                            series_id,
+                            snapshot.series["title"],
+                            snapshot.series["pub_year"],
+                        ),
+                    ).fetchone()
+                ):
+                    vetoed_volume_ids.add(volume["id"])
+                    continue
             if volume["client"] == "suwayomi":
                 continue
             if not _reset_missing_volume(db, volume):
@@ -1469,7 +1683,15 @@ def reconcile_series_inventory(
 
     if result["created"]:
         _record_local_volume_count(db, series_id)
-    _backfill_snapshot_quality(db, snapshot)
+    _backfill_snapshot_quality(
+        db,
+        replace(
+            snapshot,
+            numbered=tuple(
+                row for row in snapshot.numbered if row["id"] not in vetoed_volume_ids
+            ),
+        ),
+    )
     return _Reconciliation(result, tuple(enrichment_targets))
 
 
@@ -1744,6 +1966,7 @@ def rescan_series_folder(series_id: int) -> RescanResult:
                 current = _missing_loose_observations(
                     snapshot, inventory.files_by_chapter
                 )
+                recorded_current = _recorded_volume_observations(snapshot)
                 inventory = replace(
                     inventory,
                     missing_loose_chapters={
@@ -1752,6 +1975,18 @@ def rescan_series_folder(series_id: int) -> RescanResult:
                         if current.get(cid) == proof
                     },
                     missing_loose_revalidated=True,
+                    recorded_volumes={
+                        vid: proof
+                        for vid, proof in inventory.recorded_volumes.items()
+                        if recorded_current.get(vid) == proof
+                    },
+                    recorded_volumes_revalidated=True,
+                )
+                inventory = replace(
+                    inventory,
+                    files_by_volume=_quarantine_recorded_volume_files(
+                        snapshot, inventory.files_by_volume, inventory.recorded_volumes
+                    ),
                 )
                 guard.verify()
                 reconciliation = reconcile_series_inventory(db, snapshot, inventory)
