@@ -5,6 +5,15 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+### Fixed
+
+- Reconcile a downloaded chapter's vanished loose-file observation during rescan
+  only when absence is verified in its unchanged managed library directory.
+  Verified mapped volume coverage preserves downloaded availability without the
+  stale loose path; otherwise the chapter becomes wanted. Unavailable, ambiguous
+  or changed filesystem evidence is left for a later scan. Monitoring, metadata
+  and acquisition history are preserved; no files are deleted (#444).
+
 ## 1.3.3-rc.6 - 2026-10-12
 
 Replacement candidate preparation only: not published, not qualified, and not
