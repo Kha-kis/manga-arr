@@ -42,6 +42,7 @@ EXPECTED_TABLES = {
     "series_aliases",
     "pending_releases",
     "chapters",
+    "chapter_file_provenance",
     "quality_profiles",
     "custom_formats",
     "release_profiles",

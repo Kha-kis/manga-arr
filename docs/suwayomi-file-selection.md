@@ -227,3 +227,36 @@ content equivalence. They do not authorize cleanup. Existing loose library
 copies remain untouched, as do Suwayomi's source downloads. Optional redundant
 library-file cleanup is a separate, opt-in proposal in
 [#422](https://github.com/Kha-kis/manga-arr/issues/422).
+
+## Chapter Copy Provenance
+
+A chapter job records provenance in `chapter_file_provenance` only when its
+import created the managed library copy itself (exclusive create), verified the
+copy's SHA-256 and size against the bytes read from the source file, and
+selected that source file through the queued chapter's own name and scanlator
+identity. The record holds the resolved Suwayomi client and normalized server
+URL (no credentials), manga, source and chapter IDs, the library path, and the
+copy's device, inode, size, mtime and SHA-256.
+
+The copy is fingerprinted again before the settlement transaction, outside any
+SQLite writer; the transaction records it only if the chapter row settles to
+that exact path, and the record is dropped if the file's identity changes
+before commit completes. Nothing is recorded for a reused destination, the
+original Suwayomi file kept when no managed library directory is configured,
+legacy filename matches, an unknown source ID or historical files; no backfill
+infers ownership from names or chapter numbers.
+
+The copy is also refused when the source file's identity or size changes
+while it is read, so a chapter Suwayomi is still writing never gets evidence.
+Files above the 4 GiB fingerprint bound import without evidence.
+
+When a copy, its verification or the settlement transaction fails, only the
+partial or unsettled copy that import created is removed, and only if it is
+still the same file. A failure to build evidence never fails the import.
+
+Provenance is evidence for later validation. It does not authorize cleanup,
+and no code reads it to move or delete files. Rows are not removed when their
+file is later deleted or replaced, and a later import that reuses the path
+leaves an earlier row as it was; anything that relies on a row must re-check
+the file's SHA-256 and size first. `file_dev` is not stable across NFS
+remounts or container restarts and must not be treated as identity on its own.
