@@ -37,6 +37,12 @@ Preparation alone did not authorize publication; the subsequent publication and
 runtime runs had separate source-bound approvals. No stable promotion or RC6
 production cutover is authorized by these scoped audits.
 
+The confirmed missing-loose-chapter rescan defect
+([#444](https://github.com/Kha-kis/manga-arr/issues/444)) blocks stable approval.
+The correction in [#445](https://github.com/Kha-kis/manga-arr/pull/445) is under
+review and requires a replacement candidate with fresh qualification; it does
+not repair or replace the published RC6 image.
+
 ## 1.3.3-rc.5 Candidate Status
 
 This replacement candidate was published on 2026-10-12, but remains unqualified

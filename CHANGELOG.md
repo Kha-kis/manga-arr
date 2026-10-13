@@ -20,6 +20,11 @@ scoped audits on October 13. Full-day and remaining environment/platform gates
 are pending. Production remains on RC5 and stable aliases remain on 1.3.2. See
 [RC6 qualification](docs/release-qualification.md#133-rc6-qualification).
 
+RC6 retains the confirmed missing-loose-chapter rescan defect
+([#444](https://github.com/Kha-kis/manga-arr/issues/444)). Its correction is under
+review in [#445](https://github.com/Kha-kis/manga-arr/pull/445) for a future
+candidate; the published RC6 image and earlier scoped receipts remain unchanged.
+
 ### Fixed
 
 - Automatic Suwayomi matching no longer fails on SQLite-backed series rows.

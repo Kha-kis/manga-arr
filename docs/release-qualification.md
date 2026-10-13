@@ -10,6 +10,15 @@ AND FRESH WORKFLOW/SHORT NATURAL BACKGROUND SCOPED AUDITS GO; UNQUALIFIED;
 NOT CLEARED FOR STABLE PROMOTION OR DEPLOYMENT** (2026-10-13). Production remains on RC5;
 1.3.2 remains qualified stable and owns stable aliases.
 
+RC6 has a confirmed correctness blocker:
+[#444](https://github.com/Kha-kis/manga-arr/issues/444), stale downloaded
+observations after a loose chapter disappears. The correction in
+[#445](https://github.com/Kha-kis/manga-arr/pull/445) is under review and is not
+part of this immutable artifact. Earlier scoped passes remain valid only for
+their tested cases; they do not qualify the missing-file behavior. A corrected
+replacement candidate needs fresh artifact/runtime evidence before stable
+approval, rather than inheriting RC6's results.
+
 ### Source And Exact Preparation Gates
 
 Preparation starts from [PR #440](https://github.com/Kha-kis/manga-arr/pull/440)
