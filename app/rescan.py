@@ -842,6 +842,14 @@ def _missing_loose_observations(
         with _open_rescan_directory(root) as directory:
             before = os.fstat(directory)
             names = os.listdir(directory)  # Permission/storage errors are not absence.
+            alternatives = {}
+            for name in names:
+                if os.path.splitext(name)[1].lower() in MANGA_EXTENSIONS:
+                    label = _file_identity_label(name, snapshot.series["title"])
+                    alternatives[os.path.join(root, name)] = (
+                        extract_chapter_num(label),
+                        extract_chapter_range(label),
+                    )
             for chapter in snapshot.chapters:
                 number, path = chapter["chapter_num"], chapter["import_path"]
                 if (
@@ -863,6 +871,18 @@ def _missing_loose_observations(
                     else f"{sanitize_filename(snapshot.series['title'])} Ch{number}.cbz"
                 )
                 parent = volumes.get(chapter["volume_id"])
+                targets = assignments.get(number, set())
+                if targets and (len(targets) != 1 or None in targets):
+                    continue
+                assigned = next(iter(targets), None)
+                backing_path = (
+                    parent["import_path"]
+                    if parent
+                    and parent["status"] == "downloaded"
+                    and assigned is not None
+                    and assigned == parent["volume_num"]
+                    else None
+                )
                 candidates = {
                     canonical,
                     build_filename(
@@ -877,22 +897,24 @@ def _missing_loose_observations(
                     continue
                 if any(os.path.basename(name) != name for name in candidates):
                     continue
-                if any(name in names for name in candidates):
+                if any(
+                    name in names and os.path.join(root, name) != backing_path
+                    for name in candidates
+                ):
                     continue  # Present but invalid/unproven never authorizes erasure.
                 if any(
-                    extract_chapter_num(
-                        _file_identity_label(name, snapshot.series["title"])
+                    alternative != backing_path
+                    and (
+                        bounds[0] <= number <= bounds[1]
+                        if bounds is not None
+                        else chapter_number == number
                     )
-                    == number
-                    or extract_chapter_range(
-                        _file_identity_label(name, snapshot.series["title"])
-                    )
-                    is not None
-                    for name in names
-                    if os.path.splitext(name)[1].lower() in MANGA_EXTENSIONS
+                    for alternative, (chapter_number, bounds) in alternatives.items()
                 ):
                     continue  # Alternate/range identity is ambiguous.
                 for name in candidates:
+                    if os.path.join(root, name) == backing_path:
+                        continue  # The recorded parent is verified separately below.
                     try:
                         os.stat(name, dir_fd=directory, follow_symlinks=False)
                     except FileNotFoundError:
@@ -900,10 +922,6 @@ def _missing_loose_observations(
                     else:
                         raise OSError("loose observation returned")
                 backing = None
-                targets = assignments.get(number, set())
-                if targets and (len(targets) != 1 or None in targets):
-                    continue
-                assigned = next(iter(targets), None)
                 if (
                     parent
                     and parent["status"] == "downloaded"
@@ -1219,6 +1237,8 @@ def reconcile_series_inventory(
         return _Reconciliation(result)
 
     chapter_files = inventory.files_by_chapter
+    verified_backing_volumes: dict[int, InventoryFile] = {}
+    observed_volumes = set(inventory.on_disk)
     if (chapter_files or inventory.missing_loose_chapters) and tuple(
         dict(row)
         for row in db.execute(
@@ -1274,6 +1294,10 @@ def reconcile_series_inventory(
             )
             if cursor.rowcount == 1:
                 result["missing"] += 1
+                if backing is not None and parent is not None:
+                    verified_backing_volumes[parent["id"]] = backing
+                    observed_volumes.add(float(parent["volume_num"]))
+                    result["found"] = len(observed_volumes)
             continue
         if item is None or chapter["status"] not in ("wanted", "grabbed", "downloaded"):
             continue
@@ -1302,7 +1326,9 @@ def reconcile_series_inventory(
 
     for volume in snapshot.numbered:
         volume_num = float(volume["volume_num"])
-        inventory_file = inventory.files_by_volume.get(volume_num)
+        inventory_file = inventory.files_by_volume.get(
+            volume_num
+        ) or verified_backing_volumes.get(volume["id"])
         if volume["status"] == "downloaded" and inventory_file is None:
             if volume["client"] == "suwayomi":
                 continue
@@ -1703,7 +1729,11 @@ def rescan_series_folder(series_id: int) -> RescanResult:
         return _empty_result()
 
     import shared
-    from file_mutation_lock import FileMutationLockError, file_mutation_guard
+    from file_mutation_lock import (
+        FileMutationBusy,
+        FileMutationLockError,
+        file_mutation_guard,
+    )
 
     try:
         with file_mutation_guard(shared.DB_PATH) as guard:
@@ -1725,6 +1755,8 @@ def rescan_series_folder(series_id: int) -> RescanResult:
                 )
                 guard.verify()
                 reconciliation = reconcile_series_inventory(db, snapshot, inventory)
+    except FileMutationBusy:
+        raise
     except FileMutationLockError:
         return _empty_result()
     if not recovered_operation:

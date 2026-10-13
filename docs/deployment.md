@@ -235,6 +235,11 @@ treating a missing inventory match as proof. Unavailable directories, permission
 errors, symlinks, ambiguous alternatives and changed observations leave the
 chapter untouched.
 
+A chapter-range archive is ambiguous only for chapters within its range. A
+recorded, mapped backing volume is verified separately even when its filename
+contains a chapter marker or uses a custom volume format; consumed backing
+evidence cannot reset that same parent to wanted in the same scan.
+
 If the chapter's stored mapping and a verified, downloaded volume file provide
 coverage, the chapter remains downloaded and its path points to that volume.
 Otherwise it becomes wanted with no file path. Both outcomes clear the obsolete
@@ -246,6 +251,10 @@ Coverage lookup accepts existing numeric chapter-key and volume-value forms,
 including `1`, `1.0` and `001`, without rewriting the stored map. Equivalent keys
 must agree; conflicting or invalid assignments defer reconciliation rather than
 letting map ordering choose coverage.
+
+If another filesystem operation holds ownership, asynchronous manual and
+full-library rescans wait and retry instead of reporting an unexecuted scan as
+"nothing changed." Cancellation while waiting leaves observations untouched.
 
 Historical filenames, nested or external paths, chapter ranges and unverified
 volume coverage remain unchanged for review. Directory checks detect an absent,
