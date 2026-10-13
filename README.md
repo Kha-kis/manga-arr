@@ -27,10 +27,13 @@ compressed-RAR decoding. See the
 [qualification evidence and platform limits](docs/release-qualification.md#132-stable-qualification)
 before upgrading.
 
-**1.3.3-rc.6 is prepared, not published or qualified.** It carries forward the
-reviewed RC5 fixes and [PR #440](https://github.com/Kha-kis/manga-arr/pull/440)'s
-automatic Suwayomi matching correction. Fresh RC6 evidence is required; no earlier
-candidate runtime credit is inherited. Production remains on RC5 and stable
+**1.3.3-rc.6 is published as a prerelease, but remains unqualified.** It carries
+forward the reviewed RC5 fixes and [PR #440](https://github.com/Kha-kis/manga-arr/pull/440)'s
+automatic Suwayomi matching correction. Fresh core/cache/file/linkage controls,
+a real automatic-match/eight-chapter import/rescan workflow, and bounded natural
+background coverage passed independent scoped audits. Full-day and remaining
+environment/platform gates are still pending; no earlier candidate runtime
+credit is inherited. Production remains on RC5 and stable
 aliases on 1.3.2. See [RC6 qualification](docs/release-qualification.md#133-rc6-qualification).
 
 **1.3.3-rc.5 is published, with scoped audits GO, but remains unqualified.**
