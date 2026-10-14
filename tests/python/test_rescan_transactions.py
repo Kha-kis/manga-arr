@@ -437,7 +437,7 @@ def test_missing_reset_clears_owner_and_records_original_owner(rescan_env):
         rescan_env["db_path"],
         1.0,
         "downloaded",
-        import_path="/missing/import.cbz",
+        import_path=str(rescan_env["series_dir"] / "missing-import.cbz"),
         download_id="owned-download",
         download_client_id=101,
         torrent_name="Owned release",
@@ -1009,7 +1009,7 @@ def test_missing_chapter_cascade_uses_preindexed_rows_once(
             rescan_env["db_path"],
             float(volume_num),
             "downloaded",
-            import_path=f"/missing/v{volume_num}.cbz",
+            import_path=str(rescan_env["series_dir"] / f"v{volume_num}.cbz"),
         )
         for volume_num in range(1, 9)
     ]
@@ -1021,9 +1021,6 @@ def test_missing_chapter_cascade_uses_preindexed_rows_once(
                     " status,monitored) VALUES(7,?,?,'downloaded',1)",
                     (volume_id, volume_index * 10 + chapter_num),
                 )
-    with shared.get_db() as db:
-        snapshot = rescan.snapshot_series_rescan(db, 7)
-    assert snapshot is not None
     considered: list[int] = []
     real_cascade = rescan._cascade_chapter_snapshot
 
@@ -1042,12 +1039,9 @@ def test_missing_chapter_cascade_uses_preindexed_rows_once(
         )
 
     monkeypatch.setattr(rescan, "_cascade_chapter_snapshot", checked_cascade)
-    inventory = rescan.build_filesystem_inventory(snapshot)
+    result = rescan.rescan_series_folder(7)
 
-    with shared.get_db() as db:
-        reconciliation = rescan.reconcile_series_inventory(db, snapshot, inventory)
-
-    assert reconciliation.result["missing"] == len(volume_ids)
+    assert result["missing"] == len(volume_ids)
     assert len(considered) == len(set(considered)) == len(volume_ids) * 3
 
 
