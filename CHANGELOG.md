@@ -16,16 +16,57 @@ All notable changes to this project. Format roughly follows
   verification or database settlement now removes only the partial copy that
   import created. Additive table, no schema-version change.
 
+## 1.3.3-rc.7 - 2026-10-14
+
+Replacement candidate published from exact reviewed PR #448 merge, but remains
+unqualified and not approved for stable promotion or deployment. Includes merged rescan corrections
+[PR #445](https://github.com/Kha-kis/manga-arr/pull/445) and
+[PR #447](https://github.com/Kha-kis/manga-arr/pull/447), carrying forward RC6's
+automatic Suwayomi matching fix and the earlier reviewed corrections. Earlier
+artifacts and qualification receipts remain immutable; none supplies RC7 runtime
+credit. Fresh local release and publication identity/attestation/security audit
+passed, as did fresh core/cache/file/linkage, automatic-match controls and ten
+installed-image rescan regressions; independent scoped audits are GO. A fresh
+real-provider automatic-match/eight-chapter import/rescan workflow also passed,
+including ComicInfo and content preservation. Time/environment/platform
+qualification remains pending. Production remains RC5 and stable
+aliases remain 1.3.2. See
+[RC7 qualification](docs/release-qualification.md#133-rc7-qualification).
+
+### Fixed
+
+- Reconcile a downloaded chapter's vanished loose-file observation during rescan
+  only when absence is verified in its unchanged managed library directory.
+  Verified mapped volume coverage preserves downloaded availability without the
+  stale loose path; otherwise the chapter becomes wanted. Unavailable, ambiguous
+  or changed filesystem evidence is left for a later scan. Monitoring, metadata
+  and acquisition history are preserved; no files are deleted (#444).
+- Preserve a recorded downloaded volume with a custom filename when a fresh
+  managed-library observation verifies it, even if filename parsing misses it.
+  Unverified, missing or ambiguously owned recorded paths cannot supply discovery
+  or pack coverage. Local metadata and monitoring remain unchanged (#446).
+
 ## 1.3.3-rc.6 - 2026-10-12
 
-Replacement candidate preparation only: not published, not qualified, and not
-approved for stable promotion or deployment. Carries forward the reviewed RC5
-fixes and adds [PR #440](https://github.com/Kha-kis/manga-arr/pull/440)'s automatic
+Replacement candidate published from exact reviewed PR #441 merge, but remains
+unqualified and not approved for stable promotion or deployment. Carries forward
+the reviewed RC5 fixes and adds [PR #440](https://github.com/Kha-kis/manga-arr/pull/440)'s automatic
 Suwayomi matching correction. RC5's passing production workflow used an explicit
 source link, not the defective automatic-match action. Earlier source and artifact
-receipts remain historical; none supplies RC6 runtime credit. Production remains
-on RC5 and stable aliases remain on 1.3.2. Fresh candidate gates are tracked in
+receipts remain historical; none supplies RC6 runtime credit. Publication is
+independently audited. Fresh RC6 core/cache/file/linkage controls, real automatic
+matching and eight-chapter download/import/rescan, and bounded short natural
+background passed independent
+scoped audits on October 13. Full-day and remaining environment/platform gates
+are pending. Production remains on RC5 and stable aliases remain on 1.3.2. See
 [RC6 qualification](docs/release-qualification.md#133-rc6-qualification).
+
+RC6 retains the confirmed missing-loose-chapter and recorded custom-volume
+rescan defects ([#444](https://github.com/Kha-kis/manga-arr/issues/444),
+[#446](https://github.com/Kha-kis/manga-arr/issues/446)). Source corrections
+merged in [#445](https://github.com/Kha-kis/manga-arr/pull/445) and
+[#447](https://github.com/Kha-kis/manga-arr/pull/447) require a replacement
+candidate; the published RC6 image and earlier scoped receipts remain unchanged.
 
 ### Fixed
 

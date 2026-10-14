@@ -15,6 +15,39 @@ Release commits must update `app/VERSION`, `CHANGELOG.md`, and the current
 release shown in `README.md` together. Automated tests enforce SemVer syntax and
 documentation consistency.
 
+## 1.3.3-rc.7 Candidate Status
+
+Preparation began on 2026-10-14 from exact documentation [PR #442](https://github.com/Kha-kis/manga-arr/pull/442)
+merge `45c05608bd8d0909057b83d589f2784722f47116`. It contains the reviewed
+rescan corrections merged in [PR #445](https://github.com/Kha-kis/manga-arr/pull/445)
+and [PR #447](https://github.com/Kha-kis/manga-arr/pull/447), alongside the earlier
+automatic Suwayomi matching and source-linkage fixes. This preparation changes
+only `app/VERSION` and four release documents; no application, schema, provider,
+API, dependency or Compose behavior changes here.
+
+Reviewed preparation `2a847a9731509f50576d49a49d53544f8bc40e35` passed the
+complete local release gate: 4,519 Python tests /17 skips and 95 isolated browser
+cases, confirmations/routes, lint/format, dependency/secret/configuration security
+and exact-revision image checks. Exact-head CI and independent source review
+passed. [PR #448](https://github.com/Kha-kis/manga-arr/pull/448) merge
+`0465715975c2b633cfc9fb77073232b3de9829f2` has the identical reviewed tree;
+fresh merge fast/security/image checks passed before immutable tagging.
+
+Release Image [run 38546983055](https://github.com/Kha-kis/manga-arr/actions/runs/38546983055)
+published the multiarch candidate and a [non-latest prerelease](https://github.com/Kha-kis/manga-arr/releases/tag/v1.3.3-rc.7)
+was created. Fresh publication identity/attestation/security and unchanged-alias
+checks passed independent actual audit. Ten installed-artifact rescan regressions
+passed independent actual audit. Fresh core/cache/eleven file controls and twelve
+installed-function linkage plus ten ASGI automatic-match controls passed;
+independent core and linkage audits are GO. A fresh real-provider automatic-match
+workflow downloaded eight chapters and imported a 254-page volume, with ComicInfo,
+source/merged content hashes, history/provenance and protected-state rescan checks
+passing. Time/environment/platform gates are still required.
+Older receipts supply no RC7 runtime credit. See
+[RC7 qualification](release-qualification.md#133-rc7-qualification).
+Production remains RC5; qualified stable and stable aliases remain 1.3.2.
+Preparation is not stable-promotion or production-cutover approval.
+
 ## 1.3.3-rc.6 Candidate Status
 
 Prepared on 2026-10-12 from exact [PR #440](https://github.com/Kha-kis/manga-arr/pull/440)
@@ -22,13 +55,28 @@ merge `89e641b3c054ace0c0e8ad46a03cd6640d62c6b5`, tree-identical to reviewed
 head `4d3c1ab6744ebd8c35a468c132a915ad48eec712`. `app/VERSION` identifies
 1.3.3-rc.6. This preparation changes only VERSION and release documentation;
 it carries forward reviewed fixes and the automatic Suwayomi matching correction.
-The candidate is not published or qualified. Preparation `b5e0c3614ed6e4d561b61c8387bc4a3b87c2e659`
+Preparation `b5e0c3614ed6e4d561b61c8387bc4a3b87c2e659`
 completed all required local subgates across the retained failed aggregate and
-successful security/image resume. New artifact/runtime audits remain required;
-earlier candidate receipts supply no RC6 runtime credit.
+successful security/image resume. The reviewed [PR #441](https://github.com/Kha-kis/manga-arr/pull/441)
+merge `a4dcd1d5c152a0025a1fa94d150653e1b584af5c` was subsequently tagged and
+published as a non-latest prerelease. Independent publication and fresh scoped
+core/cache/file/linkage, real automatic-match/download/import/rescan and short
+natural background audits passed. The candidate remains unqualified: full-day
+and remaining environment/platform gates require separate evidence. Earlier
+candidate receipts supply no RC6 runtime credit.
 See [RC6 qualification](release-qualification.md#133-rc6-qualification).
 Production remains on RC5; 1.3.2 remains qualified stable and owns stable aliases.
-No tag, publication, deployment or stable promotion is authorized by preparation.
+Preparation alone did not authorize publication; the subsequent publication and
+runtime runs had separate source-bound approvals. No stable promotion or RC6
+production cutover is authorized by these scoped audits.
+
+The confirmed missing-loose-chapter and recorded custom-volume rescan defects
+([#444](https://github.com/Kha-kis/manga-arr/issues/444),
+[#446](https://github.com/Kha-kis/manga-arr/issues/446)) block stable approval.
+Source corrections merged in [#445](https://github.com/Kha-kis/manga-arr/pull/445)
+and [#447](https://github.com/Kha-kis/manga-arr/pull/447) require a replacement
+candidate with fresh qualification; they do not repair or replace the published
+RC6 image.
 
 ## 1.3.3-rc.5 Candidate Status
 
@@ -235,7 +283,8 @@ The release workflow publishes `ghcr.io/kha-kis/manga-arr` with these tags:
 
 | Release | Image tags |
 | --- | --- |
-| `1.3.3-rc.6` (prepared; not published) | `1.3.3-rc.6` only when published |
+| `1.3.3-rc.7` (published; unqualified) | `1.3.3-rc.7` |
+| `1.3.3-rc.6` (published; unqualified) | `1.3.3-rc.6` |
 | `1.3.3-rc.5` (published; unqualified) | `1.3.3-rc.5` |
 | `1.3.3-rc.4` (published; unqualified) | `1.3.3-rc.4` |
 | `1.3.3-rc.3` (published; unqualified) | `1.3.3-rc.3` |

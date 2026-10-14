@@ -267,6 +267,8 @@ Background loops and async tasks.
 | `test_phantom_stub_detection.py` | Phantom volume-stub detection |
 | `test_populate_chapters_relinks_unlinked.py` | `populate_chapters` re-links orphans |
 | `test_loose_chapter_state.py` | Independent loose-chapter state across merged-volume deletion and rescan |
+| `test_recorded_volume_rescan.py` | Recorded custom-volume files, verified absence, ownership and race refusals without discovery/count credit |
+| `test_missing_loose_observations.py` | Confirmed loose-chapter disappearance, verified volume coverage, unavailable storage and concurrent-writer refusal |
 | `test_map_drift_reconcile.py` | MangaDex chapter-map drift detection |
 | `test_state_diagnostics.py` | `/state` diagnostic page |
 | `test_patch_total_volumes_validation.py` | `total_volumes` PATCH validates non-negative + cascades |

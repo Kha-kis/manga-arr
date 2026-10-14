@@ -3,13 +3,242 @@
 This document defines the evidence required before a Mangarr release candidate
 can become a stable release. Passing unit tests alone is not sufficient.
 
-## 1.3.3-rc.6 Qualification
+## 1.3.3-rc.7 Qualification
 
-Status: **PREPARED; NOT PUBLISHED; UNQUALIFIED; NOT CLEARED FOR STABLE
-PROMOTION OR DEPLOYMENT** (2026-10-12). Production remains on RC5;
+Status: **IMAGE PUBLISHED; PUBLICATION, CORE/CACHE/FILE, LINKAGE/AUTOMATIC-MATCH
+AND TEN INSTALLED RESCAN CONTROL SCOPED AUDITS GO; UNQUALIFIED; NOT CLEARED FOR
+STABLE PROMOTION OR DEPLOYMENT** (2026-10-14). Production remains RC5;
 1.3.2 remains qualified stable and owns stable aliases.
 
-### Source And Pending Gates
+### Source And Preparation Boundary
+
+Baseline [PR #442](https://github.com/Kha-kis/manga-arr/pull/442) merge
+`45c05608bd8d0909057b83d589f2784722f47116` includes merged corrections
+[PR #445](https://github.com/Kha-kis/manga-arr/pull/445) and
+[PR #447](https://github.com/Kha-kis/manga-arr/pull/447). Missing loose-chapter
+observations reconcile only against fresh unchanged managed-directory evidence;
+verified mapped volume coverage preserves availability. Recorded custom-volume
+files are preserved when freshly verified even without a parser match;
+unverified or ambiguously owned aliases cannot supply discovery/pack coverage.
+Unknown evidence defers mutation. Monitoring, metadata, provenance and
+acquisition history remain protected. The exact source-fix gate is recorded in
+the RC6 blocker section below; it does not supply RC7 artifact credit.
+
+Preparation changed only VERSION and four release documents. Exact preparation
+`2a847a9731509f50576d49a49d53544f8bc40e35` passed `make release-local` (exit 0):
+4,519 Python tests /17 skips /1,263 warnings in 1,041.41 seconds, 13 confirmations,
+10 route checks, first-run authentication and 95 isolated browser cases
+(32 smoke, 22 integration, 29 E2E, 12 settings), lint/configured format,
+strict pinned pip-audit, gitleaks, Trivy configuration and exact-revision image
+verification/configured fixed HIGH/CRITICAL scan gates. Test storage was fresh
+and private under umask 0022. Browser resources were positively removed;
+production remained the same healthy RC5 container with zero restarts.
+
+Exact-head Fast CI [38543949057](https://github.com/Kha-kis/manga-arr/actions/runs/38543949057)
+and independent bounded source review passed. Reviewed [PR #448](https://github.com/Kha-kis/manga-arr/pull/448)
+merge `0465715975c2b633cfc9fb77073232b3de9829f2` shares tree
+`ad76af847671a89357a3625803202f6da51c5c50` with that preparation. Fresh merge
+checks passed 86 fast tests, 13 confirmations, release metadata, security and
+exact-merge image gates before tagging. No second full-suite/browser run is
+claimed for the merge. Trivy 0.70's skipped AWS policy requiring 0.72 and vendor
+severity warnings remain retained; credit is limited to configured gates,
+not all policies/severities or unfixed vulnerability absence.
+
+### Published Artifact
+
+Annotated immutable `v1.3.3-rc.7` targets the exact reviewed merge above, with
+Kha-kis noreply tagger. Release Image [run 38546983055](https://github.com/Kha-kis/manga-arr/actions/runs/38546983055)
+passed and published both architectures. The [GitHub prerelease](https://github.com/Kha-kis/manga-arr/releases/tag/v1.3.3-rc.7)
+is explicitly non-latest and unqualified.
+
+Immutable index/native image ID observed on this amd64 host:
+`sha256:09734610f03484cf10c7f6fa05a41c3c08ff6a5635b82c259187ea91c57a0553`.
+Platform manifests are distinct:
+
+- amd64: `sha256:edff1386f790fe0f2409fed89a061a7665b97c946f06641fa5559f79bebf73e8`.
+- arm64: `sha256:6658ea363dd9be0c48f9b2d8d53fe974a1b5098996ceaf242de6f977b69833a8`.
+
+The newly reviewed source-bound collector exited 0 and verified exact workflow,
+tag, both platform labels/build arguments, SLSA/SPDX attestations, nonempty SBOMs,
+native amd64 embedded VERSION/content checks and digest-pinned fixed HIGH/CRITICAL
+scans on both platforms. Stable aliases and RC1-RC6 tags were unchanged. Verifier
+containers were positively absent. Independent actual publication audit is GO;
+no signing, native ARM runtime or universal vulnerability-absence claim.
+
+### Installed Rescan Controls
+
+A separately source-reviewed and main-bound provider-free phase executed ten
+fresh cases against the published amd64 image's real schema/SQLite/rescan code,
+not a repository overlay: independent missing chapter, verified mapped backing,
+custom recorded volume and repeat, proven missing volume, alternate-format
+refusal, contradictory backing, late casefold/dot-path pack ownership,
+canonical two-pack positive, extra MAIN trigger and extra TEMP trigger ownership.
+All passed, including protected metadata/history/monitoring checks as applicable,
+database integrity and foreign keys. The image's schema/shared/rescan hashes
+matched the approved binding. Only the control script was mounted; application
+modules were verified at `/app`. Socket/DNS/subprocess attempts were refused,
+with zero external attempts observed.
+
+Execution and quality/owned cleanup exited 0. The network-none, read-only-root,
+nonprivileged container used private tmpfs state and no ports or shared paths;
+it had zero restarts/OOMs and was positively removed. No Docker network was
+created. Independent actual rescan/cleanup audit is GO. These are
+representative regressions, not exhaustive filesystem, provider-positive, NAS,
+cache/linkage, end-to-end import or full-day qualification.
+
+Result SHA256: `77bfc1eef2d49c7b9f78d7c6b36774a126cbb267642508ea9cab6a724f6f33c5`.
+Evidence manifest SHA256:
+`1ff75ab0e8ecb23f835a89db0f565e0220425de3dab7b761c0cda450ed1148d8`.
+
+### Fresh Core, Cache And File Controls
+
+Separate exact-artifact execution passed fresh setup, login/logout and
+administrator recovery. Upgrade of the historical October 10 stopped 1.3.2 copy
+and rollback using a pristine historical copy preserved all 42 table/column
+inventories, 18 encrypted credentials and positive decryption receipts, keys and
+observations. Database integrity and foreign keys passed; original historical
+source inputs were preserved. This is not a new RC5 production backup or an
+in-place downgrade. Playwright checked the private UI because the Browser plugin
+was unavailable; this does not inherit the earlier source-gate browser run.
+
+Installed-image provider-failure controls preserved populated cached fields and
+candidates while recording degradation/backoff; no provider success is claimed.
+Eleven installed file-handling controls passed, including explicit raw-worker
+busy refusal. They are not HTTP-lifespan or NFS coverage. Core, cache and file
+execution exited 0. All fourteen owned containers, the explicitly allocated
+internal `10.253.240.16/28` network and loopback listener were positively removed
+or absent. Production remained the same healthy RC5 container with zero restarts.
+Independent actual core/cleanup audit is GO. The final 814-file runtime manifest
+SHA256 is `9ccdc2f0c13bc6453940587ae8c6d3663fbc61d8a0870ec4d889c9a692b510f4`;
+full verification completed with exit 0. An earlier verification read only a
+partial manifest and is retained without passing credit. It is not substituted
+for the complete final verification.
+
+One source-only qualification packaging attempt was rejected before execution:
+its external-input manifest retained three RC6 hashes at RC7 paths. A new
+source-only sibling corrected those entries after failing regression tests,
+passed 164 offline tests and scoped actual LSP/CLI checks, and received independent
+source GO. Original source/QA seals and NO-GO remain unchanged. No application
+change or policy waiver was made. Source-only prepare also refused existing
+sealed wrappers; the reviewed wrappers were not overwritten, and main generated
+fresh private credentials separately. These failed source-preparation receipts
+do not supply passing runtime credit.
+
+### Installed Linkage And Automatic Match
+
+Twelve installed-function source-linkage cases and ten separate installed ASGI
+automatic-match cases passed using real private SQLite rows. They covered stored
+identity, unlink/restart/rollback, historical alias preservation, language/source
+selection, cached linkage and missing/provider-error cases. Seven fake provider
+boundary calls and zero external calls were observed. Manual selections/locks and
+observations remained protected; integrity and foreign keys passed. Candidate
+history was empty in these fixtures, not populated-history preservation evidence.
+
+Execution and owned cleanup exited 0; exact installed hashes, bindings and
+container isolation passed independent actual audit. The network-none container
+had zero restarts/OOMs and was positively removed, with no new network or shared
+paths. This is not provider-positive or end-to-end workflow qualification.
+Result SHA256: `a11bd8dcb9f764bdd2526c4a629e1bc4468af5320e90a723d13afaf40163fdc2`.
+Evidence manifest SHA256:
+`7c16f13f63b9ff860c50e0942be1a0c83007ea269611ffa3283427d0c7c4b330`.
+
+### Prior Provider-Limited Attempts
+
+The first fresh real-provider workflow did not complete: AniList returned HTTP
+429 with a 45-second retry wait during the initial series lookup, exceeding the
+workflow client's 35-second request budget. No series was created and no download
+or import credit follows. The candidate's pending request exceeded its bounded
+shutdown allowance and ended with exit 137, not OOM; candidate quality was not
+passing. All five owned containers, both networks and scratch mount were removed,
+and the failed receipt/archive remain unchanged. This does not invalidate the
+separately audited controls above or qualify the missing real workflow. Provider
+backoff must be respected before a separately approved fresh attempt; no old
+successful archive or provider substitute supplies that credit.
+
+A second independently source-reviewed fresh attempt, approximately 30 minutes
+later, also stopped before series creation or import: the retained event recorded
+AniList HTTP 429 with a 59-second wait at 12:01:12 UTC, again exceeding the
+unchanged 35-second workflow request budget. Its candidate ended with exit 137,
+not OOM, and remains a quality failure. Its five containers, two networks,
+loopback listener and scratch mount were removed; the separate failed receipt
+and archive are retained. No timeouts, provider-failure rules or rate-limit
+controls were weakened, and no alternate IP or earlier candidate data was used.
+Further live attempts were deferred until provider availability changed. These
+responses do not establish why the provider rate-limited the requests. Neither
+failed attempt supplies passing workflow credit; its separate evidence remains
+unchanged.
+
+### Fresh Real-Provider Workflow
+
+After a single bounded readiness check returned HTTP 200 with the expected
+identity, a new source-only attempt3 bundle received independent source GO. Its
+runtime delta was limited to three private-root substitutions; 49 offline tests,
+five-document actual stdio LSP, CLI, Ruff and Bash checks passed. New main-issued
+bindings authorized only fresh run `r20261014t122230z` against the published RC7
+image/revision above. Neither earlier failed run's approvals nor data were reused.
+The readiness probe alone is not qualification evidence.
+
+Fresh empty candidate/Suwayomi state completed provider metadata, automatic source
+matching, eight-chapter download and import of one 254-page volume. All 254 source
+pages were verified in the merged archive; source hashes, ComicInfo,
+71,197,671-byte import provenance and matching history size passed. The job took
+354 seconds with unchanged normal polling; no forced scheduled-task runs, timeout enlargement,
+provider/IP substitute or earlier successful seed were used. Rescan preserved
+protected metadata and local observations. Source hashes were captured after job
+completion and remained unchanged through qualification checks; they do not prove
+source immutability before that capture. This is one successful real workflow,
+not exhaustive provider reliability or full-day scheduler coverage.
+
+Execution, stopped quality and cleanup exited 0. All five stopped-quality receipts
+passed; final database integrity and foreign keys were clean. The five owned
+containers, explicit internal `10.253.133.32/28` and outbound `10.253.134.0/28`
+networks, loopback listener and private scratch mount were positively absent.
+Fresh whole-host/VPN/Tailscale/Docker route/IPAM review preceded allocation; no
+household queues, configuration or production paths changed. The private retained
+archive is hash-bound. The complete 102-file runtime manifest verified with exit 0;
+its SHA256 is
+`5369d279342e1c7c6cf422f8e877a745201548527b1950b11389b0972d995107`.
+Production remained the same healthy RC5 container; stable aliases remain 1.3.2.
+
+### Remaining Fresh Qualification
+
+- Natural full 86400-second metadata refresh/repeat with unchanged intervals;
+  a short observation or timer stamp alone is not full-day credit.
+- Representative approved NAS, literal public Compose startup without private
+  overrides, native ARM execution and independent final artifact-evidence audit.
+
+Earlier artifacts, failed attempts and scoped receipts are unchanged and supply
+no RC7 runtime credit. A production cutover requires a new matching verified
+stopped RC5 backup and separate authority. No stable-promotion approval follows
+from preparation, source tests or publication alone. Optional #422 cleanup and
+the deferred rescan owner-query indexing follow-up remain separate.
+
+## 1.3.3-rc.6 Qualification
+
+Status: **IMAGE PUBLISHED; PUBLICATION, CORE, LINKAGE, AUTOMATIC-MATCH
+AND FRESH WORKFLOW/SHORT NATURAL BACKGROUND SCOPED AUDITS GO; UNQUALIFIED;
+NOT CLEARED FOR STABLE PROMOTION OR DEPLOYMENT** (2026-10-13). Production remains on RC5;
+1.3.2 remains qualified stable and owns stable aliases.
+
+RC6 has two confirmed correctness blockers: stale downloaded observations after
+a loose chapter disappears ([#444](https://github.com/Kha-kis/manga-arr/issues/444))
+and recorded custom-volume filenames being missed by rescan
+([#446](https://github.com/Kha-kis/manga-arr/issues/446)). Source corrections
+merged in [#445](https://github.com/Kha-kis/manga-arr/pull/445) and
+[#447](https://github.com/Kha-kis/manga-arr/pull/447) are not part of this
+immutable artifact. Earlier scoped passes remain valid only for their tested
+cases; they do not qualify these defects. A corrected replacement candidate
+needs fresh artifact/runtime evidence before stable approval, rather than
+inheriting RC6's results.
+
+The corrected source at merge `eff049ab15dd1812825ece932f976bc4bc6426c8`
+(tree `d35553c57bf4fe3214fa3e0f1eba88208fefb300`) passed 219 targeted tests,
+the full release-safe gate (4,519 Python tests /17 skips, 95 isolated browser
+cases, 13 confirmations, 10 route checks and lint/format), scoped type/LSP checks
+and independent bounded review. Exact-head Fast PR CI also passed. These are
+source-fix results, not replacement-image publication or runtime credit.
+
+### Source And Exact Preparation Gates
 
 Preparation starts from [PR #440](https://github.com/Kha-kis/manga-arr/pull/440)
 merge `89e641b3c054ace0c0e8ad46a03cd6640d62c6b5`, tree-identical to reviewed
@@ -33,14 +262,104 @@ The documentation-only review follow-up has a distinct tree; application and
 VERSION bytes are unchanged. Its focused checks and exact-revision image gates
 are separate from these historical full-suite/browser receipts.
 
-All RC6 artifact/runtime gates remain pending: actual public Compose startup,
-representative approved NAS, fresh core/upgrade/rollback, cache-failure,
-loose-file, linkage and automatic-match controls, a NEW download/import/rescan
-workflow and NEW natural background observation, both-platform publication
-identity/security/attestation audit and independent final artifact audit.
-Full natural 86400-second repeat and native ARM runtime require actual evidence,
-not inference from short observation or multi-platform publication. No RC5 or
-earlier runtime result is inherited, and optional cleanup #422 is separate.
+### Published Artifact
+
+[PR #441](https://github.com/Kha-kis/manga-arr/pull/441) merged as
+`a4dcd1d5c152a0025a1fa94d150653e1b584af5c`, tree-identical to reviewed head
+`ab059a2a66cc6079b6ebb7154c58fa1bdd9ee722`. The exact merge was tagged
+`v1.3.3-rc.6`; [publication run 38300697307](https://github.com/Kha-kis/manga-arr/actions/runs/38300697307)
+succeeded and published a [non-latest prerelease](https://github.com/Kha-kis/manga-arr/releases/tag/v1.3.3-rc.6).
+
+Immutable image: `ghcr.io/kha-kis/manga-arr@sha256:c3cb5f9091ac75cf0ac91ed6ec1c9eb8802a42cc17fcd1a9e4ed43a626258c3f`.
+The index is also the native Docker image ID observed on this amd64 host;
+platform manifest/config IDs are distinct:
+
+- amd64 manifest: `sha256:7215b6605923e86e70a1bcac73f785ab2fca3cfcb3d59083c3da4c63145d4979`.
+- arm64 manifest: `sha256:2bdfcaefe3451ebd180e45636bb1c048b470b322c171e506b7c91ed5470ab835`.
+
+Independent publication audit verified both platform identities, SLSA/SPDX
+attestations, the configured fixed HIGH/CRITICAL scan gates, prerelease status,
+and unchanged stable aliases. This is not a signing, native ARM runtime, or
+universal vulnerability-absence claim. The immutable release is not retagged
+by this subsequent qualification documentation.
+
+### New Scoped Runtime Evidence
+
+All checks below used the exact RC6 artifact with fresh private state and were
+independently audited; no earlier candidate's runtime result supplies RC6 credit.
+
+- Fresh setup, logout/login and administrator recovery passed. Historical
+  stopped-copy upgrade and pristine-copy rollback preserved 42 tables/column
+  inventories, 18 encrypted credentials, keys and observations; integrity and
+  foreign keys passed. All 161 original historical source files were preserved.
+  The October 10 stable input is not a current RC5 production backup, and this
+  is not in-place downgrade coverage.
+- Installed-image provider-failure controls preserved cached fields and populated
+  candidates while recording degradation/backoff. Eleven file-handling controls
+  passed. These injected/offline checks do not establish provider-positive or NAS
+  behavior.
+- Twelve source-linkage controls passed through installed functions and ten
+  automatic-match controls through installed ASGI routes, with real private
+  SQLite rows. Seven fake provider-boundary calls and
+  zero external calls exercised identity/language/source and failure cases;
+  selected manual locks and observations remained protected. Candidate history
+  was empty in these fixtures, not populated-history preservation evidence.
+- A separate real-provider workflow used the normal automatic-match action with
+  no explicit-link rescue, then downloaded eight fresh chapters and imported one
+  merged volume. All 254 ordered pages, retained source hashes, ComicInfo,
+  71,197,671 imported bytes/history size and provenance, and rescans passed.
+  Populated metadata/candidate snapshots and local/downloaded observations were
+  unchanged across import and rescan; database integrity/foreign keys passed.
+  Completion followed normal download-status polling, not a forced task call.
+  Workflow receipt SHA256:
+  `c5a38d9fdcd8ab5581be16641dc651cc53968e589f00ff0b34820fe05deecbae`.
+  Evidence manifest SHA256:
+  `a665575ca79e7a5b0102452b807b778c1d08dd96fe77b7c2756d23fc22e66b05`.
+
+Workflow and owned cleanup/quality checks exited 0. Five workflow containers,
+both isolated networks and the scratch mount were removed with positive absence
+proof. Suwayomi's retained logs include known Java preferences warnings and the
+exact hash-bound CEF startup block allowed by the unchanged quality policy;
+intentional JVM shutdown exit 143 is not an OOM. No new waiver was added and no
+error-free Suwayomi claim is made. Earlier core/control resources were also
+cleaned up. Production remained the same healthy RC5 container with zero restarts.
+
+### Short Natural Background
+
+A separate network-none RC6 copy used only the new successful workflow's
+retained archive. Independent runtime and cleanup audit passed. The observer
+recorded 68 container inspections (one starting, then 67 healthy) and 67 healthy
+samples over 1,006.31 seconds within its 1,020-second cap, not 68 samples or a
+literal 1,020 seconds observed. Two native RSS polls were 900.004553 seconds
+apart; four download-status iterations retained their 300-second cadence. One
+initial metadata iteration recorded its next run exactly 86,400 seconds later.
+No intervals were shortened and no task was manually forced.
+
+Schema, protected files/key/imported-volume hashes, cached metadata, populated
+candidates, source linkage, history and downloaded observations matched the
+validated post-start baseline through live and stopped checks. The declared
+startup transition was separately validated. Only events/sequence advance as
+instrumentation; session expiry is permitted by the retained policy, but sessions
+were unchanged in this run. No new error events or configured failure-log
+patterns occurred; integrity and foreign keys passed. The candidate had zero
+restarts/OOMs; shutdown and cleanup exited 0, with positive container/mount
+absence proof. No network was created for this phase.
+
+Final background receipt SHA256:
+`c336ce7f750d7057845327fdca4b24bb759edb00a3912c1359d86e2125e7cc47`.
+Evidence manifest SHA256:
+`397f0fbfe07784860b30463ee29aaa022a078d74f134a58045699820b2df639d`.
+This unmonitored, client-disabled fixture proves bounded scheduling and state
+preservation, not provider-positive scheduled refresh or monitored acquisition.
+
+### Remaining RC6 Evidence
+
+Full natural 86400-second metadata refresh/repeat still needs elapsed-time evidence;
+short observation cannot supply that credit. Representative approved NAS,
+literal public Compose startup without private overrides, native ARM runtime,
+and independent final artifact-evidence audit remain pending. Production cutover
+also requires a new matching verified stopped RC5 backup and separate authority.
+Stable aliases remain 1.3.2. Optional cleanup #422 remains separate.
 
 RC5's automatic-match defect remains in its immutable image. Its independently
 audited production download used an explicit source link, not automatic matching.
