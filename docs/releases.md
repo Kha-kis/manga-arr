@@ -25,13 +25,22 @@ automatic Suwayomi matching and source-linkage fixes. This preparation changes
 only `app/VERSION` and four release documents; no application, schema, provider,
 API, dependency or Compose behavior changes here.
 
-The candidate is not published or qualified. Fresh local release-safe, security
-and exact-revision image gates, independent review and exact-head CI are required
-before the reviewed merge can be tagged. Publication must be immutable and
-non-latest. Fresh installed-artifact rescan, core/cache/linkage, automatic-match
-and download/import/rescan checks are required after publication, plus the
-remaining time/environment/platform gates. Older receipts supply no RC7 runtime
-credit. See [RC7 qualification](release-qualification.md#133-rc7-qualification).
+Reviewed preparation `2a847a9731509f50576d49a49d53544f8bc40e35` passed the
+complete local release gate: 4,519 Python tests /17 skips and 95 isolated browser
+cases, confirmations/routes, lint/format, dependency/secret/configuration security
+and exact-revision image checks. Exact-head CI and independent source review
+passed. [PR #448](https://github.com/Kha-kis/manga-arr/pull/448) merge
+`0465715975c2b633cfc9fb77073232b3de9829f2` has the identical reviewed tree;
+fresh merge fast/security/image checks passed before immutable tagging.
+
+Release Image [run 38546983055](https://github.com/Kha-kis/manga-arr/actions/runs/38546983055)
+published the multiarch candidate and a [non-latest prerelease](https://github.com/Kha-kis/manga-arr/releases/tag/v1.3.3-rc.7)
+was created. Fresh publication identity/attestation/security and unchanged-alias
+checks passed independent actual audit. Ten installed-artifact rescan regressions
+passed independent actual audit; remaining core/cache/linkage, automatic-match,
+download/import/rescan and time/environment/platform gates are still pending.
+Older receipts supply no RC7 runtime credit. See
+[RC7 qualification](release-qualification.md#133-rc7-qualification).
 Production remains RC5; qualified stable and stable aliases remain 1.3.2.
 Preparation is not stable-promotion or production-cutover approval.
 
@@ -270,7 +279,7 @@ The release workflow publishes `ghcr.io/kha-kis/manga-arr` with these tags:
 
 | Release | Image tags |
 | --- | --- |
-| `1.3.3-rc.7` (preparation; unpublished) | `1.3.3-rc.7` |
+| `1.3.3-rc.7` (published; unqualified) | `1.3.3-rc.7` |
 | `1.3.3-rc.6` (published; unqualified) | `1.3.3-rc.6` |
 | `1.3.3-rc.5` (published; unqualified) | `1.3.3-rc.5` |
 | `1.3.3-rc.4` (published; unqualified) | `1.3.3-rc.4` |
