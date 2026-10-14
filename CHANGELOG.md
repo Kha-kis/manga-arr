@@ -15,8 +15,10 @@ automatic Suwayomi matching fix and the earlier reviewed corrections. Earlier
 artifacts and qualification receipts remain immutable; none supplies RC7 runtime
 credit. Fresh local release and publication identity/attestation/security audit
 passed, as did fresh core/cache/file/linkage, automatic-match controls and ten
-installed-image rescan regressions; independent scoped audits are GO. Real workflow/
-time/environment/platform qualification remains pending. Production remains RC5 and stable
+installed-image rescan regressions; independent scoped audits are GO. A fresh
+real-provider automatic-match/eight-chapter import/rescan workflow also passed,
+including ComicInfo and content preservation. Time/environment/platform
+qualification remains pending. Production remains RC5 and stable
 aliases remain 1.3.2. See
 [RC7 qualification](docs/release-qualification.md#133-rc7-qualification).
 

@@ -34,7 +34,9 @@ merged missing-loose-chapter and recorded custom-volume rescan corrections
 automatic Suwayomi matching fix. Fresh local release gates and published-artifact
 identity/attestation/security audit passed. Fresh core/cache/file/linkage and
 automatic-match controls passed, alongside ten installed-image rescan regressions;
-independent scoped audits are GO. Real workflow/time/environment/platform gates
+independent scoped audits are GO. A fresh real-provider automatic-match workflow
+also downloaded eight chapters, imported a 254-page volume and passed ComicInfo,
+content-hash and protected-state rescan checks. Time/environment/platform gates
 remain pending.
 No earlier candidate's results qualify this replacement. Production
 remains RC5 and stable aliases remain 1.3.2. See
