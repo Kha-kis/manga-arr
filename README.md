@@ -27,12 +27,14 @@ compressed-RAR decoding. See the
 [qualification evidence and platform limits](docs/release-qualification.md#132-stable-qualification)
 before upgrading.
 
-**1.3.3-rc.7 is being prepared, not yet published or qualified.** It includes the
+**1.3.3-rc.7 is published as a prerelease, but remains unqualified.** It includes the
 merged missing-loose-chapter and recorded custom-volume rescan corrections
 ([#445](https://github.com/Kha-kis/manga-arr/pull/445),
 [#447](https://github.com/Kha-kis/manga-arr/pull/447)) and carries forward RC6's
-automatic Suwayomi matching fix. Fresh release and artifact/runtime gates are
-required; no earlier candidate's results qualify this replacement. Production
+automatic Suwayomi matching fix. Fresh local release gates and published-artifact
+identity/attestation/security audit passed. Ten installed-image rescan regressions
+passed; remaining core/workflow and time/environment/platform qualification is pending.
+No earlier candidate's results qualify this replacement. Production
 remains RC5 and stable aliases remain 1.3.2. See
 [RC7 qualification](docs/release-qualification.md#133-rc7-qualification).
 

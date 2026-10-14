@@ -5,7 +5,8 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## 1.3.3-rc.7 Qualification
 
-Status: **PREPARATION ONLY; NOT PUBLISHED; NOT QUALIFIED; NOT CLEARED FOR
+Status: **IMAGE PUBLISHED; PUBLICATION AND TEN INSTALLED RESCAN CONTROL AUDITS
+GO; UNQUALIFIED; NOT CLEARED FOR
 STABLE PROMOTION OR DEPLOYMENT** (2026-10-14). Production remains RC5;
 1.3.2 remains qualified stable and owns stable aliases.
 
@@ -23,17 +24,75 @@ Unknown evidence defers mutation. Monitoring, metadata, provenance and
 acquisition history remain protected. The exact source-fix gate is recorded in
 the RC6 blocker section below; it does not supply RC7 artifact credit.
 
-Preparation changes only VERSION and four release documents. Required fresh
-local release-safe, security and exact-revision image results will be recorded
-separately at their actual reviewed commits. No publication identity or passing
-runtime result exists for RC7 at preparation time.
+Preparation changed only VERSION and four release documents. Exact preparation
+`2a847a9731509f50576d49a49d53544f8bc40e35` passed `make release-local` (exit 0):
+4,519 Python tests /17 skips /1,263 warnings in 1,041.41 seconds, 13 confirmations,
+10 route checks, first-run authentication and 95 isolated browser cases
+(32 smoke, 22 integration, 29 E2E, 12 settings), lint/configured format,
+strict pinned pip-audit, gitleaks, Trivy configuration and exact-revision image
+verification/configured fixed HIGH/CRITICAL scan gates. Test storage was fresh
+and private under umask 0022. Browser resources were positively removed;
+production remained the same healthy RC5 container with zero restarts.
 
-### Required Fresh Qualification
+Exact-head Fast CI [38543949057](https://github.com/Kha-kis/manga-arr/actions/runs/38543949057)
+and independent bounded source review passed. Reviewed [PR #448](https://github.com/Kha-kis/manga-arr/pull/448)
+merge `0465715975c2b633cfc9fb77073232b3de9829f2` shares tree
+`ad76af847671a89357a3625803202f6da51c5c50` with that preparation. Fresh merge
+checks passed 86 fast tests, 13 confirmations, release metadata, security and
+exact-merge image gates before tagging. No second full-suite/browser run is
+claimed for the merge. Trivy 0.70's skipped AWS policy requiring 0.72 and vendor
+severity warnings remain retained; credit is limited to configured gates,
+not all policies/severities or unfixed vulnerability absence.
 
-- Immutable exact-reviewed-merge publication; both platform identities,
-  attestations/SBOM and configured fixed HIGH/CRITICAL security checks;
-  non-latest prerelease and unchanged stable aliases.
-- Installed-image regressions for #444/#446, fresh setup/recovery, historical
+### Published Artifact
+
+Annotated immutable `v1.3.3-rc.7` targets the exact reviewed merge above, with
+Kha-kis noreply tagger. Release Image [run 38546983055](https://github.com/Kha-kis/manga-arr/actions/runs/38546983055)
+passed and published both architectures. The [GitHub prerelease](https://github.com/Kha-kis/manga-arr/releases/tag/v1.3.3-rc.7)
+is explicitly non-latest and unqualified.
+
+Immutable index/native image ID observed on this amd64 host:
+`sha256:09734610f03484cf10c7f6fa05a41c3c08ff6a5635b82c259187ea91c57a0553`.
+Platform manifests are distinct:
+
+- amd64: `sha256:edff1386f790fe0f2409fed89a061a7665b97c946f06641fa5559f79bebf73e8`.
+- arm64: `sha256:6658ea363dd9be0c48f9b2d8d53fe974a1b5098996ceaf242de6f977b69833a8`.
+
+The newly reviewed source-bound collector exited 0 and verified exact workflow,
+tag, both platform labels/build arguments, SLSA/SPDX attestations, nonempty SBOMs,
+native amd64 embedded VERSION/content checks and digest-pinned fixed HIGH/CRITICAL
+scans on both platforms. Stable aliases and RC1-RC6 tags were unchanged. Verifier
+containers were positively absent. Independent actual publication audit is GO;
+no signing, native ARM runtime or universal vulnerability-absence claim.
+
+### Installed Rescan Controls
+
+A separately source-reviewed and main-bound provider-free phase executed ten
+fresh cases against the published amd64 image's real schema/SQLite/rescan code,
+not a repository overlay: independent missing chapter, verified mapped backing,
+custom recorded volume and repeat, proven missing volume, alternate-format
+refusal, contradictory backing, late casefold/dot-path pack ownership,
+canonical two-pack positive, extra MAIN trigger and extra TEMP trigger ownership.
+All passed, including protected metadata/history/monitoring checks as applicable,
+database integrity and foreign keys. The image's schema/shared/rescan hashes
+matched the approved binding. Only the control script was mounted; application
+modules were verified at `/app`. Socket/DNS/subprocess attempts were refused,
+with zero external attempts observed.
+
+Execution and quality/owned cleanup exited 0. The network-none, read-only-root,
+nonprivileged container used private tmpfs state and no ports or shared paths;
+it had zero restarts/OOMs and was positively removed. No Docker network was
+created. Independent actual rescan/cleanup audit is GO. These are
+representative regressions, not exhaustive filesystem, provider-positive, NAS,
+cache/linkage, end-to-end import or full-day qualification.
+
+Result SHA256: `77bfc1eef2d49c7b9f78d7c6b36774a126cbb267642508ea9cab6a724f6f33c5`.
+Evidence manifest SHA256:
+`1ff75ab0e8ecb23f835a89db0f565e0220425de3dab7b761c0cda450ed1148d8`.
+
+### Remaining Fresh Qualification
+
+- Fresh setup/recovery, historical
   copy upgrade/pristine-copy rollback, cached-provider-failure protection,
   file/linkage and automatic-match controls.
 - New real-provider automatic-match/download/import/rescan workflow with fresh
