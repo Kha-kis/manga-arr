@@ -5,6 +5,19 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+### Fixed
+
+- Reconcile a downloaded chapter's vanished loose-file observation during rescan
+  only when absence is verified in its unchanged managed library directory.
+  Verified mapped volume coverage preserves downloaded availability without the
+  stale loose path; otherwise the chapter becomes wanted. Unavailable, ambiguous
+  or changed filesystem evidence is left for a later scan. Monitoring, metadata
+  and acquisition history are preserved; no files are deleted (#444).
+- Preserve a recorded downloaded volume with a custom filename when a fresh
+  managed-library observation verifies it, even if filename parsing misses it.
+  Unverified, missing or ambiguously owned recorded paths cannot supply discovery
+  or pack coverage. Local metadata and monitoring remain unchanged (#446).
+
 ## 1.3.3-rc.6 - 2026-10-12
 
 Replacement candidate published from exact reviewed PR #441 merge, but remains
@@ -20,9 +33,11 @@ scoped audits on October 13. Full-day and remaining environment/platform gates
 are pending. Production remains on RC5 and stable aliases remain on 1.3.2. See
 [RC6 qualification](docs/release-qualification.md#133-rc6-qualification).
 
-RC6 retains the confirmed missing-loose-chapter rescan defect
-([#444](https://github.com/Kha-kis/manga-arr/issues/444)). Its correction is under
-review in [#445](https://github.com/Kha-kis/manga-arr/pull/445) for a future
+RC6 retains the confirmed missing-loose-chapter and recorded custom-volume
+rescan defects ([#444](https://github.com/Kha-kis/manga-arr/issues/444),
+[#446](https://github.com/Kha-kis/manga-arr/issues/446)). Source corrections
+merged in [#445](https://github.com/Kha-kis/manga-arr/pull/445) and
+[#447](https://github.com/Kha-kis/manga-arr/pull/447) require a replacement
 candidate; the published RC6 image and earlier scoped receipts remain unchanged.
 
 ### Fixed

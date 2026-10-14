@@ -26,6 +26,7 @@ from typing import Any, TYPE_CHECKING, TypeVar, cast
 import private_file_claim as claims
 import shared
 from file_mutation_lock import (
+    FileMutationBusy,
     FileMutationGuard,
     FileMutationLockError,
     file_mutation_guard,
@@ -900,7 +901,13 @@ async def _rescan_work_in_thread(
 async def rescan_series_in_thread(
     series_id: int, worker: Callable[[int], RescanResult]
 ) -> RescanResult:
-    return await _rescan_work_in_thread(worker, series_id)
+    while True:
+        try:
+            return await _rescan_work_in_thread(worker, series_id)
+        except FileMutationBusy:
+            # Contention is not a completed scan. Retry outside ownership/DB
+            # contexts; cancellation during this wait has no owned work to drain.
+            await asyncio.sleep(1)
 
 
 async def adopt_folder_in_thread(

@@ -10,14 +10,23 @@ AND FRESH WORKFLOW/SHORT NATURAL BACKGROUND SCOPED AUDITS GO; UNQUALIFIED;
 NOT CLEARED FOR STABLE PROMOTION OR DEPLOYMENT** (2026-10-13). Production remains on RC5;
 1.3.2 remains qualified stable and owns stable aliases.
 
-RC6 has a confirmed correctness blocker:
-[#444](https://github.com/Kha-kis/manga-arr/issues/444), stale downloaded
-observations after a loose chapter disappears. The correction in
-[#445](https://github.com/Kha-kis/manga-arr/pull/445) is under review and is not
-part of this immutable artifact. Earlier scoped passes remain valid only for
-their tested cases; they do not qualify the missing-file behavior. A corrected
-replacement candidate needs fresh artifact/runtime evidence before stable
-approval, rather than inheriting RC6's results.
+RC6 has two confirmed correctness blockers: stale downloaded observations after
+a loose chapter disappears ([#444](https://github.com/Kha-kis/manga-arr/issues/444))
+and recorded custom-volume filenames being missed by rescan
+([#446](https://github.com/Kha-kis/manga-arr/issues/446)). Source corrections
+merged in [#445](https://github.com/Kha-kis/manga-arr/pull/445) and
+[#447](https://github.com/Kha-kis/manga-arr/pull/447) are not part of this
+immutable artifact. Earlier scoped passes remain valid only for their tested
+cases; they do not qualify these defects. A corrected replacement candidate
+needs fresh artifact/runtime evidence before stable approval, rather than
+inheriting RC6's results.
+
+The corrected source at merge `eff049ab15dd1812825ece932f976bc4bc6426c8`
+(tree `d35553c57bf4fe3214fa3e0f1eba88208fefb300`) passed 219 targeted tests,
+the full release-safe gate (4,519 Python tests /17 skips, 95 isolated browser
+cases, 13 confirmations, 10 route checks and lint/format), scoped type/LSP checks
+and independent bounded review. Exact-head Fast PR CI also passed. These are
+source-fix results, not replacement-image publication or runtime credit.
 
 ### Source And Exact Preparation Gates
 

@@ -497,7 +497,7 @@ def test_live_filesystem_owner_blocks_rescan_shared_mutation(
     rescan_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import rescan
-    from file_mutation_lock import file_mutation_guard
+    from file_mutation_lock import FileMutationBusy, file_mutation_guard
 
     _, source, original = _seed_source(rescan_env, "cbr")
 
@@ -511,7 +511,8 @@ def test_live_filesystem_owner_blocks_rescan_shared_mutation(
     monkeypatch.setattr(rescan, "convert_cbr_to_cbz", convert)
 
     with file_mutation_guard(str(rescan_env["db_path"])) as guard:
-        rescan.rescan_series_folder(7)
+        with pytest.raises(FileMutationBusy):
+            rescan.rescan_series_folder(7)
         guard.verify()
         assert source.is_file(), "rescan mutated shared files behind another live owner"
         assert source.read_bytes() == original

@@ -35,10 +35,12 @@ background coverage passed independent scoped audits. Full-day and remaining
 environment/platform gates are still pending; no earlier candidate runtime
 credit is inherited. Production remains on RC5 and stable
 aliases on 1.3.2. See [RC6 qualification](docs/release-qualification.md#133-rc6-qualification).
-The confirmed missing-loose-chapter rescan defect in
-[#444](https://github.com/Kha-kis/manga-arr/issues/444) is a stable-release blocker;
-its correction is under review in [#445](https://github.com/Kha-kis/manga-arr/pull/445)
-and is not present in the immutable RC6 image.
+The confirmed missing-loose-chapter and recorded custom-volume rescan defects
+([#444](https://github.com/Kha-kis/manga-arr/issues/444),
+[#446](https://github.com/Kha-kis/manga-arr/issues/446)) block stable approval.
+Their source corrections are merged in [#445](https://github.com/Kha-kis/manga-arr/pull/445)
+and [#447](https://github.com/Kha-kis/manga-arr/pull/447), but are not present in
+the immutable RC6 image. A replacement candidate needs fresh qualification.
 
 **1.3.3-rc.5 is published, with scoped audits GO, but remains unqualified.**
 It contains PR #434's reviewed legacy MangaDex linkage and atomic-unlink fix.
