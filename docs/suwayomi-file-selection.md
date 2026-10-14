@@ -236,7 +236,9 @@ copy's SHA-256 and size against the bytes read from the source file, and
 selected that source file through the queued chapter's own name and scanlator
 identity. The record holds the resolved Suwayomi client and normalized server
 URL (no credentials), manga, source and chapter IDs, the library path, and the
-copy's device, inode, size, mtime and SHA-256.
+copy's device, inode, size, mtime and SHA-256. Device and inode are stored as
+decimal text because NFS file IDs are unsigned 64-bit values that can exceed
+SQLite's signed INTEGER range.
 
 The copy is fingerprinted again before the settlement transaction, outside any
 SQLite writer; the transaction records it only if the chapter row settles to
@@ -248,7 +250,11 @@ infers ownership from names or chapter numbers.
 
 The copy is also refused when the source file's identity or size changes
 while it is read, so a chapter Suwayomi is still writing never gets evidence.
-Files above the 4 GiB fingerprint bound import without evidence.
+Every write and metadata change goes through the exclusively created
+descriptor, so a file or symlink swapped in at the destination is never
+written to or treated as this import's copy. Files above the 4 GiB fingerprint
+bound import without evidence, and fingerprinting stops reading once a file
+grows past that bound.
 
 When a copy, its verification or the settlement transaction fails, only the
 partial or unsettled copy that import created is removed, and only if it is

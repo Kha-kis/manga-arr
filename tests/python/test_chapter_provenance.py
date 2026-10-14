@@ -177,6 +177,26 @@ def _source_untouched(env):
     return os.path.exists(env["source"]) and _sha(env["source"]) == env["source_sha"]
 
 
+def _fail_settlement(monkeypatch, before_raise=lambda: None):
+    """Fail the settlement transaction, not the unit's pre-copy check.
+
+    Each attempt calls the availability check twice: once before the copy and
+    once inside the settlement transaction. Only the second call fails.
+    """
+    import routers.suwayomi_ as swy
+
+    calls = {"n": 0}
+
+    def _fail(*a, **k):
+        calls["n"] += 1
+        if calls["n"] % 2 == 0:
+            before_raise()
+            raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(swy, "assert_library_file_mutation_available", _fail)
+    return calls
+
+
 # ── recorded ────────────────────────────────────────────────────────────────
 
 def test_new_verified_copy_records_full_context_and_fingerprint(env):
@@ -193,7 +213,7 @@ def test_new_verified_copy_records_full_context_and_fingerprint(env):
     assert row["library_path"] == dest
     assert row["sha256"] == _sha(dest) == env["source_sha"]
     assert (row["size_bytes"], row["file_dev"], row["file_inode"], row["mtime_ns"]) == (
-        st.st_size, st.st_dev, st.st_ino, st.st_mtime_ns)
+        st.st_size, str(st.st_dev), str(st.st_ino), st.st_mtime_ns)
     assert row["suwayomi_client_id"] == 1
     assert row["suwayomi_server"] == "http://swy.local:4567"
     assert "secret" not in row["suwayomi_server"]
@@ -339,15 +359,12 @@ def test_db_failure_never_removes_a_reused_destination(env, monkeypatch):
     dest = _make_cbz(env["lib"] / "Freezing Ch012.cbz", page_count=5)
     before = _sha(dest)
 
-    def _fail(*a, **k):
-        raise sqlite3.OperationalError("database is locked")
-
     # Force the settlement transaction itself to fail for a reused file.
-    import routers.suwayomi_ as swy
-    monkeypatch.setattr(swy, "assert_library_file_mutation_available", _fail)
+    calls = _fail_settlement(monkeypatch)
     _queue(env)
     _run(env)
     prov, _ch, jobs = _rows(env)
+    assert calls["n"] == 6
     assert jobs[0]["status"] == "error"
     assert os.path.exists(dest) and _sha(dest) == before
     assert prov == []
@@ -433,6 +450,8 @@ def test_remove_if_unchanged_keeps_a_replaced_file(tmp_path):
         ({"id": 1, "host": "http://user:pw@Swy.Local:4567/"}, "http://swy.local:4567"),
         ({"id": 1, "host": "https://swy.example/base/?x=1"}, "https://swy.example/base"),
         ({"id": 1, "host": "http://swy", "port": 4567}, "http://swy:4567"),
+        ({"id": 1, "host": "http://[2001:DB8::1]:80"}, "http://[2001:db8::1]:80"),
+        ({"id": 1, "host": "http://[2001:db8::1:80]"}, "http://[2001:db8::1:80]"),
     ],
 )
 def test_suwayomi_server_identity_has_no_credentials(client, expected):
@@ -504,17 +523,15 @@ def test_source_changing_during_copy_is_refused(env, monkeypatch):
 
 def test_oversized_copy_is_rolled_back_on_db_failure(env, monkeypatch):
     import chapter_provenance
-    import routers.suwayomi_ as swy
 
     monkeypatch.setattr(chapter_provenance, "FINGERPRINT_MAX_BYTES", 10)
-
-    def _fail(*a, **k):
-        raise sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(swy, "assert_library_file_mutation_available", _fail)
+    copied = []
+    calls = _fail_settlement(
+        monkeypatch, lambda: copied.append(os.path.exists(_library_copy(env))))
     _queue(env)
     _run(env)
     prov, ch, jobs = _rows(env)
+    assert calls["n"] == 6 and copied == [True, True, True]
     assert jobs[0]["status"] == "error"
     assert ch["status"] == "wanted"
     assert not os.path.exists(_library_copy(env))
@@ -588,3 +605,118 @@ def test_downloaded_chapter_with_other_path_keeps_old_file(env):
     assert ch["import_path"] == _library_copy(env)
     assert len(prov) == 1 and prov[0]["library_path"] == _library_copy(env)
     assert os.path.exists(old) and _sha(old) == before
+
+
+# ── second review ───────────────────────────────────────────────────────────
+
+def _swap_destination_on_first_write(monkeypatch, dst, replace):
+    import chapter_provenance
+
+    real = chapter_provenance._write_all
+    calls = {"n": 0}
+
+    def _swap(fd, chunk):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            os.unlink(dst)
+            replace(dst)
+        real(fd, chunk)
+
+    monkeypatch.setattr(chapter_provenance, "_write_all", _swap)
+    return calls
+
+
+@pytest.mark.parametrize("limit", [10, 4 * 1024 * 1024 * 1024])
+def test_copy_never_writes_a_regular_file_swapped_in(tmp_path, monkeypatch, limit):
+    import chapter_provenance
+
+    monkeypatch.setattr(chapter_provenance, "FINGERPRINT_MAX_BYTES", limit)
+    src = _make_cbz(tmp_path / "src.cbz")
+    dst = str(tmp_path / "dst.cbz")
+    _swap_destination_on_first_write(
+        monkeypatch, dst, lambda p: _make_cbz(p, page_count=6))
+    with pytest.raises(chapter_provenance.ProvenanceError):
+        chapter_provenance.copy_new_file(src, dst)
+    assert _sha(dst) == _sha(_make_cbz(tmp_path / "ref.cbz", page_count=6))
+
+
+@pytest.mark.parametrize("limit", [10, 4 * 1024 * 1024 * 1024])
+def test_copy_never_writes_through_a_symlink_swapped_in(tmp_path, monkeypatch, limit):
+    import chapter_provenance
+
+    monkeypatch.setattr(chapter_provenance, "FINGERPRINT_MAX_BYTES", limit)
+    src = _make_cbz(tmp_path / "src.cbz")
+    dst = str(tmp_path / "dst.cbz")
+    target = _make_cbz(tmp_path / "target.cbz", page_count=8)
+    before = _sha(target)
+    _swap_destination_on_first_write(monkeypatch, dst, lambda p: os.symlink(target, p))
+    with pytest.raises(chapter_provenance.ProvenanceError):
+        chapter_provenance.copy_new_file(src, dst)
+    assert os.path.islink(dst)
+    assert _sha(target) == before
+
+
+def test_oversized_settlement_failure_keeps_a_swapped_in_file(env, monkeypatch):
+    import chapter_provenance
+
+    monkeypatch.setattr(chapter_provenance, "FINGERPRINT_MAX_BYTES", 10)
+    dest = _library_copy(env)
+    foreign = {}
+
+    def _swap():
+        if not foreign:
+            os.unlink(dest)
+            foreign["sha"] = _sha(_make_cbz(dest, page_count=6))
+
+    _fail_settlement(monkeypatch, _swap)
+    _queue(env)
+    _run(env)
+    prov, ch, jobs = _rows(env)
+    assert jobs[0]["status"] == "error"
+    assert ch["status"] == "wanted"
+    assert foreign and os.path.exists(dest) and _sha(dest) == foreign["sha"]
+    assert prov == []
+    assert _source_untouched(env)
+
+
+def test_unsigned_64bit_inode_is_recorded_losslessly(env, monkeypatch):
+    import chapter_provenance
+
+    real = chapter_provenance._identity
+
+    def _nfs_fileid(st):
+        dev, inode, size, mtime_ns = real(st)
+        return dev, inode + 2**63, size, mtime_ns
+
+    monkeypatch.setattr(chapter_provenance, "_identity", _nfs_fileid)
+    _queue(env)
+    _run(env)
+    prov, ch, jobs = _rows(env)
+    assert jobs[0]["status"] == "completed"
+    assert ch["status"] == "downloaded" and ch["import_path"] == _library_copy(env)
+    assert len(prov) == 1
+    assert prov[0]["file_inode"] == str(os.stat(_library_copy(env)).st_ino + 2**63)
+
+
+def test_fingerprint_stops_reading_at_its_bound(tmp_path, monkeypatch):
+    import chapter_provenance
+
+    monkeypatch.setattr(chapter_provenance, "FINGERPRINT_MAX_BYTES", 8)
+    monkeypatch.setattr(chapter_provenance, "_HASH_CHUNK_SIZE", 4)
+    path = tmp_path / "growing.bin"
+    path.write_bytes(b"abcd")
+    real_read = os.read
+    consumed = {"n": 0}
+
+    def _read(fd, n):
+        data = real_read(fd, n)
+        if consumed["n"] == 0:
+            with open(path, "ab") as fh:
+                fh.write(b"x" * 1024)
+        consumed["n"] += len(data)
+        return data
+
+    monkeypatch.setattr(chapter_provenance.os, "read", _read)
+    with pytest.raises(chapter_provenance.ProvenanceError):
+        chapter_provenance.fingerprint(str(path))
+    assert consumed["n"] <= 9

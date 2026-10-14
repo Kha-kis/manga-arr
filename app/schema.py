@@ -783,8 +783,8 @@ def init_db() -> None:
                 series_id           INTEGER NOT NULL
                                             REFERENCES series(id) ON DELETE CASCADE,
                 library_path        TEXT    NOT NULL UNIQUE,
-                file_dev            INTEGER NOT NULL,
-                file_inode          INTEGER NOT NULL,
+                file_dev            TEXT    NOT NULL,
+                file_inode          TEXT    NOT NULL,
                 size_bytes          INTEGER NOT NULL CHECK(size_bytes > 0),
                 mtime_ns            INTEGER NOT NULL,
                 sha256              TEXT    NOT NULL CHECK(length(sha256) = 64),

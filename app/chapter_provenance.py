@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 import sqlite3
 import stat
 from collections.abc import Mapping
@@ -84,7 +83,15 @@ def fingerprint(path: str) -> FileEvidence:
         if before.st_size > FINGERPRINT_MAX_BYTES:
             raise ProvenanceError(f"file exceeds fingerprint bound: {path}")
         digest = hashlib.sha256()
-        while chunk := os.read(descriptor, _HASH_CHUNK_SIZE):
+        consumed = 0
+        # Read at most one byte past the bound, so a growing file is refused
+        # without streaming whatever it grows to.
+        while chunk := os.read(
+            descriptor, min(_HASH_CHUNK_SIZE, FINGERPRINT_MAX_BYTES - consumed + 1)
+        ):
+            consumed += len(chunk)
+            if consumed > FINGERPRINT_MAX_BYTES:
+                raise ProvenanceError(f"file grew past fingerprint bound: {path}")
             digest.update(chunk)
         after = os.fstat(descriptor)
     finally:
@@ -132,45 +139,47 @@ def copy_new_file(src: str, dst: str) -> tuple[FileEvidence, bool]:
     this call created, so a caller can roll it back. ``verified`` is true only
     when the copy's SHA-256 and size match the bytes read from a source that
     did not change during the read; a source above the fingerprint bound is
-    copied unverified. Raises ``FileExistsError`` when ``dst`` already exists,
-    so a pre-existing file is never treated as created here. Any other failure
+    copied unverified. All writes and metadata go through the exclusively
+    created descriptor, so a file swapped in at ``dst`` is never written to or
+    adopted. Raises ``FileExistsError`` when ``dst`` already exists, so a
+    pre-existing file is never treated as created here. Any other failure
     removes the partial copy this call created and re-raises.
     """
-    oversized = os.path.getsize(src) > FINGERPRINT_MAX_BYTES
+    verify = os.path.getsize(src) <= FINGERPRINT_MAX_BYTES
     fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
     created = os.fstat(fd)
-    if oversized:
-        os.close(fd)
-        try:
-            shutil.copy2(src, dst)
-            current = os.lstat(dst)
-        except BaseException:
-            _unlink_created(dst, created)
-            raise
-        dev, inode, size, mtime_ns = _identity(current)
-        return FileEvidence(dev, inode, size, mtime_ns, ""), False
     try:
         digest = hashlib.sha256()
         size = 0
         with open(src, "rb") as source:
             source_before = os.fstat(source.fileno())
             while chunk := source.read(_HASH_CHUNK_SIZE):
-                digest.update(chunk)
                 size += len(chunk)
+                if size > source_before.st_size:
+                    raise ProvenanceError(f"source grew while copying: {src}")
+                if verify:
+                    digest.update(chunk)
                 _write_all(fd, chunk)
             source_after = os.fstat(source.fileno())
+        if _identity(source_before) != _identity(source_after) or size != source_after.st_size:
+            raise ProvenanceError(f"source changed while copying: {src}")
+        os.fchmod(fd, stat.S_IMODE(source_after.st_mode))
+        os.utime(fd, ns=(source_after.st_atime_ns, source_after.st_mtime_ns))
         os.fsync(fd)
+        written = os.fstat(fd)
     except BaseException:
         os.close(fd)
         _unlink_created(dst, created)
         raise
     os.close(fd)
     try:
-        if _identity(source_before) != _identity(source_after) or size != source_after.st_size:
-            raise ProvenanceError(f"source changed while copying: {src}")
-        shutil.copystat(src, dst)
+        current = os.lstat(dst)
+        if stat.S_ISLNK(current.st_mode) or _identity(current) != _identity(written):
+            raise ProvenanceError(f"copy was replaced while copying: {dst}")
+        if not verify:
+            return FileEvidence(*_identity(written), ""), False
         evidence = fingerprint(dst)
-        if (evidence.dev, evidence.inode) != (int(created.st_dev), int(created.st_ino)):
+        if (evidence.dev, evidence.inode) != _identity(created)[:2]:
             raise ProvenanceError(f"copy was replaced while verifying: {dst}")
         if evidence.size != size or evidence.sha256 != digest.hexdigest():
             raise ProvenanceError(f"copy does not match source bytes: {dst}")
@@ -202,6 +211,9 @@ def suwayomi_server(client: Mapping[str, Any]) -> str:
 
     parts = urlsplit(client_base_url(dict(client)))
     host = parts.hostname or ""
+    if ":" in host:
+        # Keep IPv6 literals bracketed so the host/port boundary survives.
+        host = f"[{host}]"
     if parts.port:
         host = f"{host}:{parts.port}"
     return urlunsplit((parts.scheme.lower(), host.lower(), parts.path.rstrip("/"), "", ""))
@@ -282,8 +294,10 @@ def record(
             row["id"],
             series_id,
             path,
-            evidence.dev,
-            evidence.inode,
+            # Text, not INTEGER: st_dev/st_ino are unsigned 64-bit (NFS file
+            # IDs) and can exceed SQLite's signed range.
+            str(evidence.dev),
+            str(evidence.inode),
             evidence.size,
             evidence.mtime_ns,
             evidence.sha256,
