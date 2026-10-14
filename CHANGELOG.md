@@ -5,6 +5,12 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+### Fixed
+
+- Preserve IPv6 address brackets when adding a separately configured
+  download-client port. Existing embedded ports and URL paths are retained
+  (#453).
+
 ## 1.3.3-rc.7 - 2026-10-14
 
 Replacement candidate published from exact reviewed PR #448 merge, but remains
