@@ -155,6 +155,17 @@ separately audited controls above or qualify the missing real workflow. Provider
 backoff must be respected before a separately approved fresh attempt; no old
 successful archive or provider substitute supplies that credit.
 
+A second independently source-reviewed fresh attempt, approximately 30 minutes
+later, also stopped before series creation or import: the retained event recorded
+AniList HTTP 429 with a 59-second wait at 12:01:12 UTC, again exceeding the
+unchanged 35-second workflow request budget. Its candidate ended with exit 137,
+not OOM, and remains a quality failure. Its five containers, two networks,
+loopback listener and scratch mount were removed; the separate failed receipt
+and archive are retained. No timeouts, provider-failure rules or rate-limit
+controls were weakened, and no alternate IP or earlier candidate data was used.
+Further live attempts are deferred until provider availability changes. These
+responses do not establish why the provider rate-limited the requests.
+
 - New real-provider automatic-match/download/import/rescan workflow with fresh
   data, protected metadata/observations, content hashes and owned cleanup.
 - Natural full 86400-second metadata refresh/repeat with unchanged intervals;
