@@ -15,6 +15,26 @@ Release commits must update `app/VERSION`, `CHANGELOG.md`, and the current
 release shown in `README.md` together. Automated tests enforce SemVer syntax and
 documentation consistency.
 
+## 1.3.3-rc.7 Candidate Status
+
+Preparation began on 2026-10-14 from exact documentation [PR #442](https://github.com/Kha-kis/manga-arr/pull/442)
+merge `45c05608bd8d0909057b83d589f2784722f47116`. It contains the reviewed
+rescan corrections merged in [PR #445](https://github.com/Kha-kis/manga-arr/pull/445)
+and [PR #447](https://github.com/Kha-kis/manga-arr/pull/447), alongside the earlier
+automatic Suwayomi matching and source-linkage fixes. This preparation changes
+only `app/VERSION` and four release documents; no application, schema, provider,
+API, dependency or Compose behavior changes here.
+
+The candidate is not published or qualified. Fresh local release-safe, security
+and exact-revision image gates, independent review and exact-head CI are required
+before the reviewed merge can be tagged. Publication must be immutable and
+non-latest. Fresh installed-artifact rescan, core/cache/linkage, automatic-match
+and download/import/rescan checks are required after publication, plus the
+remaining time/environment/platform gates. Older receipts supply no RC7 runtime
+credit. See [RC7 qualification](release-qualification.md#133-rc7-qualification).
+Production remains RC5; qualified stable and stable aliases remain 1.3.2.
+Preparation is not stable-promotion or production-cutover approval.
+
 ## 1.3.3-rc.6 Candidate Status
 
 Prepared on 2026-10-12 from exact [PR #440](https://github.com/Kha-kis/manga-arr/pull/440)
@@ -250,6 +270,7 @@ The release workflow publishes `ghcr.io/kha-kis/manga-arr` with these tags:
 
 | Release | Image tags |
 | --- | --- |
+| `1.3.3-rc.7` (preparation; unpublished) | `1.3.3-rc.7` |
 | `1.3.3-rc.6` (published; unqualified) | `1.3.3-rc.6` |
 | `1.3.3-rc.5` (published; unqualified) | `1.3.3-rc.5` |
 | `1.3.3-rc.4` (published; unqualified) | `1.3.3-rc.4` |
