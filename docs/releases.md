@@ -39,9 +39,10 @@ was created. Fresh publication identity/attestation/security and unchanged-alias
 checks passed independent actual audit. Ten installed-artifact rescan regressions
 passed independent actual audit. Fresh core/cache/eleven file controls and twelve
 installed-function linkage plus ten ASGI automatic-match controls passed;
-independent core and linkage audits are GO. A new real
-automatic-match/download/import/rescan workflow and time/environment/platform
-gates are still required.
+independent core and linkage audits are GO. A fresh real-provider automatic-match
+workflow downloaded eight chapters and imported a 254-page volume, with ComicInfo,
+source/merged content hashes, history/provenance and protected-state rescan checks
+passing. Time/environment/platform gates are still required.
 Older receipts supply no RC7 runtime credit. See
 [RC7 qualification](release-qualification.md#133-rc7-qualification).
 Production remains RC5; qualified stable and stable aliases remain 1.3.2.

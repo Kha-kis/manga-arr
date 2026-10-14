@@ -142,7 +142,7 @@ Result SHA256: `a11bd8dcb9f764bdd2526c4a629e1bc4468af5320e90a723d13afaf40163fdc2
 Evidence manifest SHA256:
 `7c16f13f63b9ff860c50e0942be1a0c83007ea269611ffa3283427d0c7c4b330`.
 
-### Remaining Fresh Qualification
+### Prior Provider-Limited Attempts
 
 The first fresh real-provider workflow did not complete: AniList returned HTTP
 429 with a 45-second retry wait during the initial series lookup, exceeding the
@@ -163,11 +163,45 @@ not OOM, and remains a quality failure. Its five containers, two networks,
 loopback listener and scratch mount were removed; the separate failed receipt
 and archive are retained. No timeouts, provider-failure rules or rate-limit
 controls were weakened, and no alternate IP or earlier candidate data was used.
-Further live attempts are deferred until provider availability changes. These
-responses do not establish why the provider rate-limited the requests.
+Further live attempts were deferred until provider availability changed. These
+responses do not establish why the provider rate-limited the requests. Neither
+failed attempt supplies passing workflow credit; its separate evidence remains
+unchanged.
 
-- New real-provider automatic-match/download/import/rescan workflow with fresh
-  data, protected metadata/observations, content hashes and owned cleanup.
+### Fresh Real-Provider Workflow
+
+After a single bounded readiness check returned HTTP 200 with the expected
+identity, a new source-only attempt3 bundle received independent source GO. Its
+runtime delta was limited to three private-root substitutions; 49 offline tests,
+five-document actual stdio LSP, CLI, Ruff and Bash checks passed. New main-issued
+bindings authorized only fresh run `r20261014t122230z` against the published RC7
+image/revision above. Neither earlier failed run's approvals nor data were reused.
+The readiness probe alone is not qualification evidence.
+
+Fresh empty candidate/Suwayomi state completed provider metadata, automatic source
+matching, eight-chapter download and import of one 254-page volume. All 254 source
+pages were verified in the merged archive; source hashes, ComicInfo,
+71,197,671-byte import provenance and matching history size passed. The job took
+354 seconds with unchanged normal polling; no forced scheduled-task runs, timeout enlargement,
+provider/IP substitute or earlier successful seed were used. Rescan preserved
+protected metadata and local observations. Source hashes were captured after job
+completion and remained unchanged through qualification checks; they do not prove
+source immutability before that capture. This is one successful real workflow,
+not exhaustive provider reliability or full-day scheduler coverage.
+
+Execution, stopped quality and cleanup exited 0. All five stopped-quality receipts
+passed; final database integrity and foreign keys were clean. The five owned
+containers, explicit internal `10.253.133.32/28` and outbound `10.253.134.0/28`
+networks, loopback listener and private scratch mount were positively absent.
+Fresh whole-host/VPN/Tailscale/Docker route/IPAM review preceded allocation; no
+household queues, configuration or production paths changed. The private retained
+archive is hash-bound. The complete 102-file runtime manifest verified with exit 0;
+its SHA256 is
+`5369d279342e1c7c6cf422f8e877a745201548527b1950b11389b0972d995107`.
+Production remained the same healthy RC5 container; stable aliases remain 1.3.2.
+
+### Remaining Fresh Qualification
+
 - Natural full 86400-second metadata refresh/repeat with unchanged intervals;
   a short observation or timer stamp alone is not full-day credit.
 - Representative approved NAS, literal public Compose startup without private
