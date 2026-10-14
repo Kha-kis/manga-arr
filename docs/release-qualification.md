@@ -3,6 +3,52 @@
 This document defines the evidence required before a Mangarr release candidate
 can become a stable release. Passing unit tests alone is not sufficient.
 
+## 1.3.3-rc.7 Qualification
+
+Status: **PREPARATION ONLY; NOT PUBLISHED; NOT QUALIFIED; NOT CLEARED FOR
+STABLE PROMOTION OR DEPLOYMENT** (2026-10-14). Production remains RC5;
+1.3.2 remains qualified stable and owns stable aliases.
+
+### Source And Preparation Boundary
+
+Baseline [PR #442](https://github.com/Kha-kis/manga-arr/pull/442) merge
+`45c05608bd8d0909057b83d589f2784722f47116` includes merged corrections
+[PR #445](https://github.com/Kha-kis/manga-arr/pull/445) and
+[PR #447](https://github.com/Kha-kis/manga-arr/pull/447). Missing loose-chapter
+observations reconcile only against fresh unchanged managed-directory evidence;
+verified mapped volume coverage preserves availability. Recorded custom-volume
+files are preserved when freshly verified even without a parser match;
+unverified or ambiguously owned aliases cannot supply discovery/pack coverage.
+Unknown evidence defers mutation. Monitoring, metadata, provenance and
+acquisition history remain protected. The exact source-fix gate is recorded in
+the RC6 blocker section below; it does not supply RC7 artifact credit.
+
+Preparation changes only VERSION and four release documents. Required fresh
+local release-safe, security and exact-revision image results will be recorded
+separately at their actual reviewed commits. No publication identity or passing
+runtime result exists for RC7 at preparation time.
+
+### Required Fresh Qualification
+
+- Immutable exact-reviewed-merge publication; both platform identities,
+  attestations/SBOM and configured fixed HIGH/CRITICAL security checks;
+  non-latest prerelease and unchanged stable aliases.
+- Installed-image regressions for #444/#446, fresh setup/recovery, historical
+  copy upgrade/pristine-copy rollback, cached-provider-failure protection,
+  file/linkage and automatic-match controls.
+- New real-provider automatic-match/download/import/rescan workflow with fresh
+  data, protected metadata/observations, content hashes and owned cleanup.
+- Natural full 86400-second metadata refresh/repeat with unchanged intervals;
+  a short observation or timer stamp alone is not full-day credit.
+- Representative approved NAS, literal public Compose startup without private
+  overrides, native ARM execution and independent final artifact-evidence audit.
+
+Earlier artifacts, failed attempts and scoped receipts are unchanged and supply
+no RC7 runtime credit. A production cutover requires a new matching verified
+stopped RC5 backup and separate authority. No stable-promotion approval follows
+from preparation, source tests or publication alone. Optional #422 cleanup and
+the deferred rescan owner-query indexing follow-up remain separate.
+
 ## 1.3.3-rc.6 Qualification
 
 Status: **IMAGE PUBLISHED; PUBLICATION, CORE, LINKAGE, AUTOMATIC-MATCH

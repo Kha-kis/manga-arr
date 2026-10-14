@@ -5,6 +5,17 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.3.3-rc.7 - 2026-10-14
+
+Replacement candidate preparation only: not published, not qualified and not
+approved for stable promotion or deployment. Includes merged rescan corrections
+[PR #445](https://github.com/Kha-kis/manga-arr/pull/445) and
+[PR #447](https://github.com/Kha-kis/manga-arr/pull/447), carrying forward RC6's
+automatic Suwayomi matching fix and the earlier reviewed corrections. Earlier
+artifacts and qualification receipts remain immutable; none supplies RC7 runtime
+credit. Production remains RC5 and stable aliases remain 1.3.2. See
+[RC7 qualification](docs/release-qualification.md#133-rc7-qualification).
+
 ### Fixed
 
 - Reconcile a downloaded chapter's vanished loose-file observation during rescan
