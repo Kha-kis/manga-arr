@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import errno
 import hashlib
+import json
 import logging
 import math
 import os
@@ -13,7 +14,10 @@ import shutil
 import sqlite3
 import stat
 import tempfile
-from dataclasses import dataclass, field
+from collections import Counter
+from collections.abc import Generator
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, TypedDict
 
@@ -85,11 +89,22 @@ class InventoryFile:
 
 
 @dataclass(frozen=True)
+class _MissingLooseObservation:
+    directory: FileFingerprint
+    directory_ctime_ns: int
+    backing_file: InventoryFile | None
+
+
+@dataclass(frozen=True)
 class SeriesFilesystemInventory:
     files_by_volume: dict[float, InventoryFile]
     any_library_files: bool
     pack_paths_present: dict[int, bool]
     files_by_chapter: dict[int, InventoryFile] = field(default_factory=dict)
+    missing_loose_chapters: dict[int, _MissingLooseObservation] = field(
+        default_factory=dict
+    )
+    missing_loose_revalidated: bool = False
 
     @property
     def on_disk(self) -> frozenset[float]:
@@ -766,6 +781,203 @@ def _volume_filesystem_inventory(
     return files_by_volume, any_library_files, volume_inodes
 
 
+@contextmanager
+def _open_rescan_directory(path: str) -> Generator[int, None, None]:
+    """Anchor every component without following symlinks; never create entries."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open(os.sep, flags)
+    try:
+        for part in path.split(os.sep)[1:]:
+            child = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+def _missing_loose_observations(
+    snapshot: SeriesRescanSnapshot, chapter_files: dict[int, InventoryFile]
+) -> dict[int, _MissingLooseObservation]:
+    """Only exact managed, previously downloaded paths can prove disappearance."""
+    if (
+        not snapshot.chapters
+        or not {"title", "pub_year", "chapter_vol_map"} <= snapshot.series.keys()
+    ):
+        return {}
+    root = snapshot.series_dir
+    if not root or root != os.path.abspath(root) or os.path.realpath(root) != root:
+        return {}
+    if any(_is_private_inventory_directory(part) for part in root.split(os.sep)):
+        return {}
+    result: dict[int, _MissingLooseObservation] = {}
+    volumes = {row["id"]: row for row in snapshot.numbered}
+    path_counts = Counter(
+        row["import_path"] for row in snapshot.chapters if row["import_path"]
+    )
+    volume_paths = {row["import_path"] for row in (*snapshot.numbered, *snapshot.packs)}
+    try:
+        mapping = json.loads(snapshot.series["chapter_vol_map"] or "{}")
+        if not isinstance(mapping, dict):
+            return {}
+        # Match the population paths' numeric semantics, but require consensus
+        # across equivalent keys instead of choosing a first alias.
+        assignments: dict[float, set[float | None]] = {}
+        for raw_chapter, raw_volume in mapping.items():
+            try:
+                mapped_chapter = float(raw_chapter)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(mapped_chapter):
+                continue
+            try:
+                if raw_volume is None or isinstance(raw_volume, bool):
+                    raise ValueError("unknown volume assignment")
+                mapped_volume = float(raw_volume)
+                if not math.isfinite(mapped_volume):
+                    raise ValueError("nonfinite volume assignment")
+            except (TypeError, ValueError, OverflowError):
+                mapped_volume = None
+            assignments.setdefault(mapped_chapter, set()).add(mapped_volume)
+        with _open_rescan_directory(root) as directory:
+            before = os.fstat(directory)
+            names = os.listdir(directory)  # Permission/storage errors are not absence.
+            alternatives = {}
+            for name in names:
+                if os.path.splitext(name)[1].lower() in MANGA_EXTENSIONS:
+                    label = _file_identity_label(name, snapshot.series["title"])
+                    alternatives[os.path.join(root, name)] = (
+                        extract_chapter_num(label),
+                        extract_chapter_range(label),
+                    )
+            for chapter in snapshot.chapters:
+                number, path = chapter["chapter_num"], chapter["import_path"]
+                if (
+                    chapter["id"] in chapter_files
+                    or chapter["status"] != "downloaded"
+                    or not path
+                    or path in volume_paths
+                    or not isinstance(number, (int, float))
+                    or isinstance(number, bool)
+                    or not math.isfinite(number)
+                    or number < 0
+                    or chapter["chapter_range_end"] not in (None, number)
+                    or path_counts[path] != 1
+                ):
+                    continue
+                canonical = (
+                    f"{sanitize_filename(snapshot.series['title'])} Ch{int(number):03d}.cbz"
+                    if number == int(number)
+                    else f"{sanitize_filename(snapshot.series['title'])} Ch{number}.cbz"
+                )
+                parent = volumes.get(chapter["volume_id"])
+                targets = assignments.get(number, set())
+                if targets and (len(targets) != 1 or None in targets):
+                    continue
+                assigned = next(iter(targets), None)
+                backing_path = (
+                    parent["import_path"]
+                    if parent
+                    and parent["status"] == "downloaded"
+                    and assigned is not None
+                    and assigned == parent["volume_num"]
+                    else None
+                )
+                candidates = {
+                    canonical,
+                    build_filename(
+                        snapshot.series["title"],
+                        parent["volume_num"] if parent else None,
+                        canonical,
+                        pub_year=snapshot.series["pub_year"],
+                        chapter_num=number,
+                    ),
+                }
+                if path not in {os.path.join(root, name) for name in candidates}:
+                    continue
+                if any(os.path.basename(name) != name for name in candidates):
+                    continue
+                if any(
+                    name in names and os.path.join(root, name) != backing_path
+                    for name in candidates
+                ):
+                    continue  # Present but invalid/unproven never authorizes erasure.
+                if any(
+                    alternative != backing_path
+                    and (
+                        bounds[0] <= number <= bounds[1]
+                        if bounds is not None
+                        else chapter_number == number
+                    )
+                    for alternative, (chapter_number, bounds) in alternatives.items()
+                ):
+                    continue  # Alternate/range identity is ambiguous.
+                for name in candidates:
+                    if os.path.join(root, name) == backing_path:
+                        continue  # The recorded parent is verified separately below.
+                    try:
+                        os.stat(name, dir_fd=directory, follow_symlinks=False)
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        raise OSError("loose observation returned")
+                backing = None
+                if (
+                    parent
+                    and parent["status"] == "downloaded"
+                    and assigned is not None
+                    and assigned == parent["volume_num"]
+                ):
+                    volume_path = parent["import_path"]
+                    if (
+                        not volume_path
+                        or os.path.dirname(volume_path) != root
+                        or os.path.splitext(volume_path)[1].lower()
+                        not in MANGA_EXTENSIONS
+                    ):
+                        continue
+                    with os.fdopen(
+                        os.open(
+                            os.path.basename(volume_path),
+                            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                            dir_fd=directory,
+                        ),
+                        "rb",
+                    ) as stream:
+                        metadata = os.fstat(stream.fileno())
+                        if (
+                            not stat.S_ISREG(metadata.st_mode)
+                            or metadata.st_size <= 0
+                            or not stream.read(1)
+                        ):
+                            continue
+                        if _fingerprint(os.fstat(stream.fileno())) != _fingerprint(
+                            metadata
+                        ):
+                            continue
+                    backing = InventoryFile(
+                        volume_path,
+                        metadata.st_size,
+                        quality_from_filename(volume_path),
+                        "",
+                        _fingerprint(metadata),
+                    )
+                result[chapter["id"]] = _MissingLooseObservation(
+                    _fingerprint(before), before.st_ctime_ns, backing
+                )
+            after = os.fstat(directory)
+            current = os.lstat(root)
+            if any(
+                _fingerprint(item) != _fingerprint(before)
+                or item.st_ctime_ns != before.st_ctime_ns
+                for item in (after, current)
+            ):
+                return {}
+    except (OSError, ValueError, TypeError):
+        return {}
+    return result
+
+
 def build_filesystem_inventory(
     snapshot: SeriesRescanSnapshot,
 ) -> SeriesFilesystemInventory:
@@ -781,13 +993,15 @@ def build_filesystem_inventory(
         pack_paths_present[int(pack["id"])] = bool(
             import_path and os.path.exists(import_path)
         )
+    chapter_files = _loose_chapter_inventory(
+        snapshot, imported_at, discovered_volume_inodes=volume_inodes
+    )
     return SeriesFilesystemInventory(
         files_by_volume=files_by_volume,
         any_library_files=any_library_files,
         pack_paths_present=pack_paths_present,
-        files_by_chapter=_loose_chapter_inventory(
-            snapshot, imported_at, discovered_volume_inodes=volume_inodes
-        ),
+        files_by_chapter=chapter_files,
+        missing_loose_chapters=_missing_loose_observations(snapshot, chapter_files),
     )
 
 
@@ -1023,21 +1237,68 @@ def reconcile_series_inventory(
         return _Reconciliation(result)
 
     chapter_files = inventory.files_by_chapter
-    if (
-        chapter_files
-        and tuple(
-            dict(row)
-            for row in db.execute(
-                _COMPLETED_VOLUME_DELETIONS_SELECT, (series_id,)
-            ).fetchall()
-        )
-        != snapshot.completed_volume_file_deletions
-    ):
+    verified_backing_volumes: dict[int, InventoryFile] = {}
+    observed_volumes = set(inventory.on_disk)
+    if (chapter_files or inventory.missing_loose_chapters) and tuple(
+        dict(row)
+        for row in db.execute(
+            _COMPLETED_VOLUME_DELETIONS_SELECT, (series_id,)
+        ).fetchall()
+    ) != snapshot.completed_volume_file_deletions:
         # A deletion completed after inventory; do not promote stale evidence.
         chapter_files = {}
+        missing_chapters = {}
+    else:
+        missing_chapters = (
+            inventory.missing_loose_chapters
+            if inventory.missing_loose_revalidated
+            else {}
+        )
 
     for chapter in snapshot.chapters:
         item = chapter_files.get(chapter["id"])
+        absence = missing_chapters.get(chapter["id"])
+        if (
+            absence is not None
+            and db.execute(
+                "SELECT 1 FROM series WHERE id=? AND title IS ? AND chapter_vol_map IS ? AND pub_year IS ?",
+                (
+                    series_id,
+                    snapshot.series["title"],
+                    snapshot.series["chapter_vol_map"],
+                    snapshot.series["pub_year"],
+                ),
+            ).fetchone()
+        ):
+            parent = next(
+                (row for row in snapshot.numbered if row["id"] == chapter["volume_id"]),
+                None,
+            )
+            if chapter["volume_id"] is not None and (
+                parent is None
+                or not db.execute(
+                    "SELECT 1 FROM volumes WHERE " + _VOLUME_GUARD_SQL,
+                    _guard_values(parent, _VOLUME_GUARD),
+                ).fetchone()
+            ):
+                continue
+            backing = absence.backing_file
+            cursor = db.execute(
+                "UPDATE chapters SET status=?,import_path=?,size_bytes=NULL,quality=NULL,imported_at=NULL WHERE "
+                + _CHAPTER_GUARD_SQL,
+                (
+                    "downloaded" if backing else "wanted",
+                    backing.path if backing else None,
+                    *_guard_values(chapter, _CHAPTER_GUARD),
+                ),
+            )
+            if cursor.rowcount == 1:
+                result["missing"] += 1
+                if backing is not None and parent is not None:
+                    verified_backing_volumes[parent["id"]] = backing
+                    observed_volumes.add(float(parent["volume_num"]))
+                    result["found"] = len(observed_volumes)
+            continue
         if item is None or chapter["status"] not in ("wanted", "grabbed", "downloaded"):
             continue
         if chapter["status"] == "downloaded" and chapter["import_path"] == item.path:
@@ -1065,7 +1326,9 @@ def reconcile_series_inventory(
 
     for volume in snapshot.numbered:
         volume_num = float(volume["volume_num"])
-        inventory_file = inventory.files_by_volume.get(volume_num)
+        inventory_file = inventory.files_by_volume.get(
+            volume_num
+        ) or verified_backing_volumes.get(volume["id"])
         if volume["status"] == "downloaded" and inventory_file is None:
             if volume["client"] == "suwayomi":
                 continue
@@ -1465,9 +1728,37 @@ def rescan_series_folder(series_id: int) -> RescanResult:
     if snapshot is None:
         return _empty_result()
 
-    inventory = build_filesystem_inventory(snapshot)
-    with get_db() as db:
-        reconciliation = reconcile_series_inventory(db, snapshot, inventory)
+    import shared
+    from file_mutation_lock import (
+        FileMutationBusy,
+        FileMutationLockError,
+        file_mutation_guard,
+    )
+
+    try:
+        with file_mutation_guard(shared.DB_PATH) as guard:
+            inventory = build_filesystem_inventory(snapshot)
+            # Revalidate absence and backing files outside the SQL writer, under
+            # cooperative filesystem ownership; CAS still protects DB writers.
+            with get_db() as db:
+                current = _missing_loose_observations(
+                    snapshot, inventory.files_by_chapter
+                )
+                inventory = replace(
+                    inventory,
+                    missing_loose_chapters={
+                        cid: proof
+                        for cid, proof in inventory.missing_loose_chapters.items()
+                        if current.get(cid) == proof
+                    },
+                    missing_loose_revalidated=True,
+                )
+                guard.verify()
+                reconciliation = reconcile_series_inventory(db, snapshot, inventory)
+    except FileMutationBusy:
+        raise
+    except FileMutationLockError:
+        return _empty_result()
     if not recovered_operation:
         enrich_reconciled_files(reconciliation)
     return reconciliation.result

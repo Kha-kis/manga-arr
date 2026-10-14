@@ -3691,7 +3691,7 @@ async def rescan_series(request: Request, series_id: int):
     if result["recovered"]:
         parts.append(f"{result['recovered']} marked downloaded")
     if result["missing"]:
-        parts.append(f"{result['missing']} reset to wanted (files missing)")
+        parts.append(f"{result['missing']} missing file observation(s) reconciled")
     if result["lost"]:
         parts.append(f"{result['lost']} reset to wanted (grab lost)")
     if result.get("created"):
