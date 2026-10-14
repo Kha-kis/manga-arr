@@ -117,6 +117,7 @@ class SeriesFilesystemInventory:
         default_factory=dict
     )
     recorded_volumes_revalidated: bool = False
+    library_files: dict[str, FileFingerprint] | None = None
 
     @property
     def on_disk(self) -> frozenset[float]:
@@ -735,11 +736,13 @@ def _loose_chapter_inventory(
 def _volume_filesystem_inventory(
     snapshot: SeriesRescanSnapshot,
     imported_at: str,
-) -> tuple[dict[float, InventoryFile], bool, set[tuple[int, int]]]:
+) -> tuple[
+    dict[float, InventoryFile], dict[str, FileFingerprint], set[tuple[int, int]]
+]:
     """Observe all volume candidates; inode exclusions include non-winning paths."""
     files_by_volume: dict[float, InventoryFile] = {}
     volume_inodes: set[tuple[int, int]] = set()
-    any_library_files = False
+    library_files: dict[str, FileFingerprint] = {}
     preferred_paths = {
         float(volume["volume_num"]): os.path.normcase(
             os.path.abspath(str(volume["import_path"]))
@@ -768,7 +771,7 @@ def _volume_filesystem_inventory(
                     stat_result = os.stat(path)
                 except OSError:
                     continue
-                any_library_files = True
+                library_files[path] = _fingerprint(stat_result)
                 identity_label = _file_identity_label(
                     filename,
                     snapshot.series.get("title") or os.path.basename(series_dir),
@@ -790,7 +793,7 @@ def _volume_filesystem_inventory(
                             imported_at=imported_at,
                             fingerprint=fingerprint,
                         )
-    return files_by_volume, any_library_files, volume_inodes
+    return files_by_volume, library_files, volume_inodes
 
 
 @contextmanager
@@ -990,6 +993,11 @@ def _missing_loose_observations(
     return result
 
 
+def _recorded_path_key(path: str) -> str:
+    """Conservative logical alias key; filesystem access and CAS retain raw paths."""
+    return os.path.abspath(path).casefold()
+
+
 def _recorded_volume_observations(
     snapshot: SeriesRescanSnapshot,
 ) -> dict[int, _RecordedVolumeObservation]:
@@ -1010,14 +1018,14 @@ def _recorded_volume_observations(
     ):
         return {}
     path_counts = Counter(
-        os.path.normcase(os.path.abspath(str(row["import_path"])))
+        _recorded_path_key(str(row["import_path"]))
         for row in (*snapshot.numbered, *snapshot.packs)
         if row["import_path"]
     )
     chapter_owners: dict[str, set[int | None]] = {}
     for chapter in snapshot.chapters:
         if chapter["import_path"]:
-            path = os.path.normcase(os.path.abspath(chapter["import_path"]))
+            path = _recorded_path_key(chapter["import_path"])
             chapter_owners.setdefault(path, set()).add(chapter["volume_id"])
     result: dict[int, _RecordedVolumeObservation] = {}
     file_format = str(get_cfg("file_format", ""))
@@ -1041,9 +1049,9 @@ def _recorded_volume_observations(
                     path != os.path.abspath(path)
                     or os.path.dirname(path) != root
                     or os.path.splitext(path)[1].lower() not in MANGA_EXTENSIONS
-                    or path_counts[os.path.normcase(path)] != 1
+                    or path_counts[_recorded_path_key(path)] != 1
                     or not math.isfinite(number)
-                    or chapter_owners.get(os.path.normcase(path), set())
+                    or chapter_owners.get(_recorded_path_key(path), set())
                     - {volume["id"]}
                 ):
                     continue
@@ -1119,36 +1127,61 @@ def _recorded_volume_observations(
 
 def _recorded_volume_path_owners(
     db: sqlite3.Connection,
+    demanded: set[str],
 ) -> dict[str, set[tuple[int, int | None]]]:
-    """Index current logical owners once; normalization performs no file lookup."""
+    """Retain demanded owners only; the unindexed scan remains O(database rows)."""
     owners: dict[str, set[tuple[int, int | None]]] = {}
     for row in db.execute(
         "SELECT import_path,series_id,id AS volume_id FROM volumes WHERE import_path IS NOT NULL"
         " UNION ALL SELECT import_path,series_id,volume_id FROM chapters WHERE import_path IS NOT NULL"
     ):
         if row["import_path"]:
-            path = os.path.normcase(os.path.abspath(row["import_path"]))
-            owners.setdefault(path, set()).add((row["series_id"], row["volume_id"]))
+            path = _recorded_path_key(row["import_path"])
+            if path in demanded:
+                owners.setdefault(path, set()).add((row["series_id"], row["volume_id"]))
     return owners
 
 
 def _quarantine_recorded_volume_files(
     snapshot: SeriesRescanSnapshot,
-    files: dict[float, InventoryFile],
+    inventory: SeriesFilesystemInventory,
     recorded: dict[int, _RecordedVolumeObservation],
-) -> dict[float, InventoryFile]:
+) -> SeriesFilesystemInventory:
     unsafe_paths = {
-        os.path.normcase(os.path.abspath(row["import_path"]))
+        _recorded_path_key(row["import_path"])
         for row in snapshot.numbered
         if row["status"] == "downloaded"
         and row["import_path"]
         and row["id"] not in recorded
     }
-    return {
-        number: item
-        for number, item in files.items()
-        if os.path.normcase(os.path.abspath(item.path)) not in unsafe_paths
+    carriers = inventory.library_files or {}
+    unsafe_inodes = {
+        (proof.device, proof.inode)
+        for path, proof in carriers.items()
+        if _recorded_path_key(path) in unsafe_paths
     }
+    files = {
+        number: item
+        for number, item in inventory.files_by_volume.items()
+        if _recorded_path_key(item.path) not in unsafe_paths
+        and (item.fingerprint.device, item.fingerprint.inode) not in unsafe_inodes
+    }
+    carriers = {
+        path: proof
+        for path, proof in carriers.items()
+        if _recorded_path_key(path) not in unsafe_paths
+        and (proof.device, proof.inode) not in unsafe_inodes
+    }
+    return replace(
+        inventory,
+        files_by_volume=files,
+        library_files=carriers if inventory.library_files is not None else None,
+        any_library_files=(
+            bool(carriers)
+            if inventory.library_files is not None
+            else inventory.any_library_files and not unsafe_paths
+        ),
+    )
 
 
 def build_filesystem_inventory(
@@ -1156,7 +1189,7 @@ def build_filesystem_inventory(
 ) -> SeriesFilesystemInventory:
     """Walk a series directory once and finish all filesystem work for reconciliation."""
     imported_at = datetime.utcnow().isoformat()
-    files_by_volume, any_library_files, volume_inodes = _volume_filesystem_inventory(
+    files_by_volume, library_files, volume_inodes = _volume_filesystem_inventory(
         snapshot, imported_at
     )
 
@@ -1170,17 +1203,16 @@ def build_filesystem_inventory(
         snapshot, imported_at, discovered_volume_inodes=volume_inodes
     )
     recorded = _recorded_volume_observations(snapshot)
-    files_by_volume = _quarantine_recorded_volume_files(
-        snapshot, files_by_volume, recorded
-    )
-    return SeriesFilesystemInventory(
+    inventory = SeriesFilesystemInventory(
         files_by_volume=files_by_volume,
-        any_library_files=any_library_files,
+        any_library_files=bool(library_files),
+        library_files=library_files,
         pack_paths_present=pack_paths_present,
         files_by_chapter=chapter_files,
         missing_loose_chapters=_missing_loose_observations(snapshot, chapter_files),
         recorded_volumes=recorded,
     )
+    return _quarantine_recorded_volume_files(snapshot, inventory, recorded)
 
 
 def _guard_values(row: dict[str, Any], columns: tuple[str, ...]) -> tuple[Any, ...]:
@@ -1223,17 +1255,20 @@ def _cascade_chapter_snapshot(
     status: str,
     volume_ids: set[int],
     clear_grab: bool = False,
-) -> None:
+) -> int:
+    changed = 0
     for volume_id in volume_ids:
         for chapter in chapters_by_volume.get(volume_id, ()):
             if not chapter["monitored"]:
                 continue
-            db.execute(
+            cursor = db.execute(
                 _RESET_MISSING_CHAPTER_SQL
                 if clear_grab
                 else _MARK_CHAPTER_DOWNLOADED_SQL,
                 (status, *_guard_values(chapter, _CHAPTER_GUARD)),
             )
+            changed += cursor.rowcount
+    return changed
 
 
 def _mark_volume_from_pack(
@@ -1416,16 +1451,9 @@ def reconcile_series_inventory(
 
     chapter_files = inventory.files_by_chapter
     verified_backing_volumes: dict[int, InventoryFile] = {}
-    observed_volumes = set(inventory.on_disk)
     recorded_volumes = (
-        inventory.recorded_volumes if inventory.recorded_volumes_revalidated else {}
-    )
-    recorded_owners = (
-        _recorded_volume_path_owners(db)
-        if any(
-            row["status"] == "downloaded" and row["import_path"]
-            for row in snapshot.numbered
-        )
+        dict(inventory.recorded_volumes)
+        if inventory.recorded_volumes_revalidated
         else {}
     )
     if (
@@ -1447,6 +1475,206 @@ def reconcile_series_inventory(
             else {}
         )
 
+    parents = {row["id"]: row for row in snapshot.numbered}
+
+    def current_parent(parent: dict[str, Any]) -> bool:
+        return bool(
+            db.execute(
+                "SELECT 1 FROM volumes WHERE " + _VOLUME_GUARD_SQL,
+                _guard_values(parent, _VOLUME_GUARD),
+            ).fetchone()
+        )
+
+    def current_context(*, chapter_map: bool = False) -> bool:
+        columns = (
+            ("title", "pub_year", "chapter_vol_map")
+            if chapter_map
+            else ("title", "pub_year")
+        )
+        return bool(
+            db.execute(
+                "SELECT 1 FROM series WHERE id=? AND "
+                + " AND ".join(f"{column} IS ?" for column in columns),
+                (series_id, *(snapshot.series[column] for column in columns)),
+            ).fetchone()
+        )
+
+    def matching_backing(
+        parent: dict[str, Any] | None, absence: _MissingLooseObservation
+    ) -> bool:
+        if parent is None or absence.backing_file is None:
+            return False
+        proof = recorded_volumes.get(parent["id"])
+        return bool(
+            proof is not None
+            and proof.file == absence.backing_file.fingerprint
+            and proof.directory == absence.directory
+            and proof.directory_ctime_ns == absence.directory_ctime_ns
+            and proof.file_format == str(get_cfg("file_format", ""))
+            and parent["import_path"] == absence.backing_file.path
+            and current_parent(parent)
+            and current_context(chapter_map=True)
+        )
+
+    def current_carrier(volume: dict[str, Any]) -> bool:
+        proof = recorded_volumes.get(volume["id"])
+        return bool(
+            proof is not None
+            and proof.file is not None
+            and (inventory.library_files or {}).get(volume["import_path"]) == proof.file
+            and proof.file_format == str(get_cfg("file_format", ""))
+            and current_parent(volume)
+            and current_context()
+        )
+
+    def pack_uses_carrier(pack: dict[str, Any], volume: dict[str, Any]) -> bool:
+        if pack["pack_type"] == "complete":
+            return inventory.any_library_files
+        item = inventory.files_by_volume.get(float(volume["volume_num"]))
+        return bool(
+            pack["pack_type"] == "volume"
+            and pack["vol_range_start"] is not None
+            and pack["vol_range_end"] is not None
+            and pack["vol_range_start"] <= volume["volume_num"] <= pack["vol_range_end"]
+            and item is not None
+            and _recorded_path_key(item.path)
+            == _recorded_path_key(volume["import_path"])
+        )
+
+    demanded: set[str] = set()
+    for chapter in snapshot.chapters:
+        absence = missing_chapters.get(chapter["id"])
+        if absence is None or absence.backing_file is None:
+            continue
+        parent = parents.get(chapter["volume_id"])
+        if matching_backing(parent, absence):
+            if db.execute(
+                "SELECT 1 FROM chapters WHERE " + _CHAPTER_GUARD_SQL,
+                _guard_values(chapter, _CHAPTER_GUARD),
+            ).fetchone():
+                demanded.add(_recorded_path_key(absence.backing_file.path))
+        elif parent is not None:
+            recorded_volumes.pop(parent["id"], None)
+    for volume in snapshot.numbered:
+        proof = recorded_volumes.get(volume["id"])
+        if (
+            volume["status"] == "downloaded"
+            and volume["client"] != "suwayomi"
+            and volume["import_path"]
+            and float(volume["volume_num"]) not in inventory.on_disk
+            and proof is not None
+            and proof.file is None
+            and proof.file_format == str(get_cfg("file_format", ""))
+            and current_parent(volume)
+            and current_context()
+        ):
+            demanded.add(_recorded_path_key(volume["import_path"]))
+
+    pack_carrier_ids: set[int] = set()
+    usable_packs = tuple(
+        pack
+        for pack in snapshot.packs
+        if pack["status"] == "grabbed"
+        and pack["pack_type"] in ("complete", "volume")
+        and db.execute(
+            "SELECT 1 FROM volumes WHERE " + _PACK_GUARD_SQL,
+            _guard_values(pack, _PACK_GUARD),
+        ).fetchone()
+    )
+    for volume in snapshot.numbered:
+        proof = recorded_volumes.get(volume["id"])
+        if (
+            proof is None
+            or proof.file is None
+            or not any(pack_uses_carrier(pack, volume) for pack in usable_packs)
+        ):
+            continue
+        pack_carrier_ids.add(volume["id"])
+        if current_carrier(volume):
+            demanded.add(_recorded_path_key(volume["import_path"]))
+        else:
+            recorded_volumes.pop(volume["id"], None)
+
+    recorded_owners: dict[str, set[tuple[int, int | None]]] | None = None
+    owner_version = db.total_changes
+
+    def uniquely_owned(volume: dict[str, Any]) -> bool:
+        nonlocal recorded_owners, owner_version, recorded_volumes, inventory
+        key = _recorded_path_key(volume["import_path"])
+        if key not in demanded:
+            return False
+        before = len(recorded_volumes)
+        if recorded_owners is None:
+            owner_version = db.total_changes
+            recorded_owners = _recorded_volume_path_owners(db, demanded)
+            recorded_volumes = {
+                vid: proof
+                for vid, proof in recorded_volumes.items()
+                if _recorded_path_key(parents[vid]["import_path"]) not in demanded
+                or recorded_owners.get(_recorded_path_key(parents[vid]["import_path"]))
+                == {(series_id, vid)}
+            }
+        if db.total_changes != owner_version:
+            recorded_volumes = {}
+        elif recorded_owners.get(key) != {(series_id, volume["id"])}:
+            recorded_volumes.pop(volume["id"], None)
+        if len(recorded_volumes) != before:
+            inventory = _quarantine_recorded_volume_files(
+                snapshot, inventory, recorded_volumes
+            )
+            observed_volumes.intersection_update(
+                inventory.on_disk
+                | {
+                    float(parents[vid]["volume_num"])
+                    for vid in verified_backing_volumes
+                }
+            )
+            result["found"] = len(observed_volumes)
+        return volume["id"] in recorded_volumes and db.total_changes == owner_version
+
+    def owned_changes(
+        count: int, path: str | None = None, volume_id: int | None = None
+    ) -> None:
+        nonlocal owner_version
+        owner_version += count
+        if recorded_owners is not None and path:
+            key = _recorded_path_key(path)
+            if key in demanded:
+                # Keep released owners conservatively; only add new observations.
+                recorded_owners.setdefault(key, set()).add((series_id, volume_id))
+
+    def downloaded_cascade_writes(volume: dict[str, Any]) -> int:
+        if recorded_owners is None or volume["status"] == "downloaded":
+            return 0
+        triggers = db.execute(
+            "SELECT 'main' AS catalog,name,sql FROM sqlite_master"
+            " WHERE type='trigger' AND tbl_name COLLATE NOCASE IN ('volumes','chapters')"
+            " UNION ALL SELECT 'temp' AS catalog,name,sql FROM sqlite_temp_master"
+            " WHERE type='trigger' AND tbl_name COLLATE NOCASE IN ('volumes','chapters')"
+        ).fetchall()
+        expected = """CREATE TRIGGER trg_vol_downloaded_cascade
+            AFTER UPDATE OF status ON volumes
+            WHEN NEW.status = 'downloaded' AND OLD.status != 'downloaded'
+            BEGIN UPDATE chapters SET status = 'downloaded'
+            WHERE volume_id = NEW.id AND status != 'downloaded'; END"""
+        # Other triggers can replace canonical writes; never credit their effects.
+        if (
+            len(triggers) != 1
+            or triggers[0]["catalog"] != "main"
+            or triggers[0]["name"] != "trg_vol_downloaded_cascade"
+            or " ".join(triggers[0]["sql"].split()) != " ".join(expected.split())
+        ):
+            return 0
+        # This reviewed trigger changes status only, not logical ownership.
+        return db.execute(
+            "SELECT COUNT(*) AS n FROM chapters WHERE volume_id=? AND status != 'downloaded'",
+            (volume["id"],),
+        ).fetchone()["n"]
+
+    inventory = _quarantine_recorded_volume_files(snapshot, inventory, recorded_volumes)
+    observed_volumes = set(inventory.on_disk)
+    result["found"] = len(observed_volumes)
+
     for chapter in snapshot.chapters:
         item = chapter_files.get(chapter["id"])
         absence = missing_chapters.get(chapter["id"])
@@ -1462,10 +1690,7 @@ def reconcile_series_inventory(
                 ),
             ).fetchone()
         ):
-            parent = next(
-                (row for row in snapshot.numbered if row["id"] == chapter["volume_id"]),
-                None,
-            )
+            parent = parents.get(chapter["volume_id"])
             if chapter["volume_id"] is not None and (
                 parent is None
                 or not db.execute(
@@ -1475,6 +1700,12 @@ def reconcile_series_inventory(
             ):
                 continue
             backing = absence.backing_file
+            if backing is not None and (
+                not matching_backing(parent, absence)
+                or parent is None
+                or not uniquely_owned(parent)
+            ):
+                continue
             cursor = db.execute(
                 "UPDATE chapters SET status=?,import_path=?,size_bytes=NULL,quality=NULL,imported_at=NULL WHERE "
                 + _CHAPTER_GUARD_SQL,
@@ -1485,6 +1716,9 @@ def reconcile_series_inventory(
                 ),
             )
             if cursor.rowcount == 1:
+                owned_changes(
+                    1, backing.path if backing else None, chapter["volume_id"]
+                )
                 result["missing"] += 1
                 if backing is not None and parent is not None:
                     verified_backing_volumes[parent["id"]] = backing
@@ -1496,10 +1730,7 @@ def reconcile_series_inventory(
         if chapter["status"] == "downloaded" and chapter["import_path"] == item.path:
             continue
         if chapter["volume_id"] is not None:
-            parent = next(
-                (row for row in snapshot.numbered if row["id"] == chapter["volume_id"]),
-                None,
-            )
+            parent = parents.get(chapter["volume_id"])
             if (
                 parent is None
                 or not db.execute(
@@ -1514,6 +1745,7 @@ def reconcile_series_inventory(
             (item.path, *_guard_values(chapter, _CHAPTER_GUARD)),
         )
         if cursor.rowcount == 1:
+            owned_changes(1, item.path, chapter["volume_id"])
             result["recovered"] += 1
 
     vetoed_volume_ids: set[int] = set()
@@ -1522,6 +1754,11 @@ def reconcile_series_inventory(
         inventory_file = inventory.files_by_volume.get(
             volume_num
         ) or verified_backing_volumes.get(volume["id"])
+        cascade_writes = (
+            downloaded_cascade_writes(volume)
+            if volume["status"] in ("wanted", "grabbed") and inventory_file is not None
+            else 0
+        )
         if volume["status"] == "downloaded" and inventory_file is None:
             if volume["import_path"]:
                 proof = recorded_volumes.get(volume["id"])
@@ -1529,10 +1766,8 @@ def reconcile_series_inventory(
                     proof is None
                     or proof.file is not None
                     or proof.file_format != str(get_cfg("file_format", ""))
-                    or recorded_owners.get(
-                        os.path.normcase(os.path.abspath(volume["import_path"]))
-                    )
-                    != {(series_id, volume["id"])}
+                    or not current_parent(volume)
+                    or not uniquely_owned(volume)
                     or not db.execute(
                         "SELECT 1 FROM series WHERE id=? AND title IS ? AND pub_year IS ?",
                         (
@@ -1548,6 +1783,7 @@ def reconcile_series_inventory(
                 continue
             if not _reset_missing_volume(db, volume):
                 continue
+            owned_changes(1)
             add_history(
                 db,
                 "file_deleted",
@@ -1557,7 +1793,8 @@ def reconcile_series_inventory(
                 source_title=volume["torrent_name"] or "",
                 data={"download_client_id": volume["download_client_id"]},
             )
-            _cascade_chapter_snapshot(
+            owned_changes(1)
+            cascaded = _cascade_chapter_snapshot(
                 db,
                 {
                     vid: tuple(
@@ -1571,12 +1808,14 @@ def reconcile_series_inventory(
                 volume_ids={int(volume["id"])},
                 clear_grab=True,
             )
+            owned_changes(cascaded)
             result["missing"] += 1
         elif (
             volume["status"] in ("wanted", "grabbed")
             and inventory_file is not None
             and _recover_volume(db, volume, inventory_file)
         ):
+            owned_changes(1 + cascade_writes, inventory_file.path, volume["id"])
             result["recovered"] += 1
             target = _capture_enrichment_target(
                 db,
@@ -1598,12 +1837,36 @@ def reconcile_series_inventory(
                     _guard_values(pack, _PACK_GUARD),
                 )
                 if cursor.rowcount == 1:
+                    owned_changes(1)
                     result["missing"] += 1
             continue
         if pack["status"] != "grabbed":
             continue
 
         pack_type = pack["pack_type"] or ""
+        if pack_type in ("complete", "volume"):
+            if not db.execute(
+                "SELECT 1 FROM volumes WHERE " + _PACK_GUARD_SQL,
+                _guard_values(pack, _PACK_GUARD),
+            ).fetchone():
+                continue
+            for vid in pack_carrier_ids:
+                volume = parents[vid]
+                if not pack_uses_carrier(pack, volume):
+                    continue
+                if not current_carrier(volume) or not uniquely_owned(volume):
+                    recorded_volumes.pop(vid, None)
+            inventory = _quarantine_recorded_volume_files(
+                snapshot, inventory, recorded_volumes
+            )
+            observed_volumes.intersection_update(
+                inventory.on_disk
+                | {
+                    float(parents[vid]["volume_num"])
+                    for vid in verified_backing_volumes
+                }
+            )
+            result["found"] = len(observed_volumes)
         confirmed = pack_type == "complete" and inventory.any_library_files
         if (
             pack_type == "volume"
@@ -1622,6 +1885,7 @@ def reconcile_series_inventory(
         )
         if cursor.rowcount != 1:
             continue
+        owned_changes(1)
 
         if pack_type == "complete":
             covered = snapshot.numbered
@@ -1635,14 +1899,17 @@ def reconcile_series_inventory(
             )
         guarded_parent_ids: set[int] = set()
         for volume in covered:
+            cascade_writes = downloaded_cascade_writes(volume)
             if _mark_volume_from_pack(db, volume):
+                owned_changes(1 + cascade_writes)
                 guarded_parent_ids.add(int(volume["id"]))
-        _cascade_chapter_snapshot(
+        cascaded = _cascade_chapter_snapshot(
             db,
             snapshot.chapters_by_volume,
             status="downloaded",
             volume_ids=guarded_parent_ids,
         )
+        owned_changes(cascaded)
         result["recovered"] += 1
 
     stubbed = {float(row["volume_num"]) for row in snapshot.numbered}
@@ -1982,11 +2249,20 @@ def rescan_series_folder(series_id: int) -> RescanResult:
                     },
                     recorded_volumes_revalidated=True,
                 )
-                inventory = replace(
-                    inventory,
-                    files_by_volume=_quarantine_recorded_volume_files(
-                        snapshot, inventory.files_by_volume, inventory.recorded_volumes
-                    ),
+                if inventory.library_files is not None and any(
+                    row["status"] == "grabbed" and row["pack_type"] == "complete"
+                    for row in snapshot.packs
+                ):
+                    current_carriers = {}
+                    for path, proof in inventory.library_files.items():
+                        try:
+                            if _fingerprint(os.stat(path)) == proof:
+                                current_carriers[path] = proof
+                        except OSError:
+                            pass
+                    inventory = replace(inventory, library_files=current_carriers)
+                inventory = _quarantine_recorded_volume_files(
+                    snapshot, inventory, inventory.recorded_volumes
                 )
                 guard.verify()
                 reconciliation = reconcile_series_inventory(db, snapshot, inventory)

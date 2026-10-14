@@ -244,6 +244,18 @@ or raise local metadata counts. A present historical recorded filename remains
 protected; an alternate current-format candidate can make absence ambiguous.
 This includes case variants and the same expected filename stem in another
 supported manga format; neither alternative receives discovery or count credit.
+
+Quarantined recorded archives and their observed inode aliases cannot confirm a
+complete or volume-range pack. Recorded carriers require current, unique database
+ownership before confirming a pack. Safe independent archives remain eligible
+under the existing pack policy. A missing chapter may use volume backing only
+with the same revalidated, present recorded-file proof and current ownership
+checks before its guarded update or file-count credit.
+
+Logical ownership and quarantine keys conservatively fold case, including on
+case-sensitive filesystems. Conflicting aliases defer automatic changes; stored
+paths, filesystem accesses and database comparison values keep their exact case.
+
 Keep the expected library mount available: a readable directory left behind by
 a share unmounted before the scan cannot be distinguished without mount identity.
 
