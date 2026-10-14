@@ -37,8 +37,11 @@ Release Image [run 38546983055](https://github.com/Kha-kis/manga-arr/actions/run
 published the multiarch candidate and a [non-latest prerelease](https://github.com/Kha-kis/manga-arr/releases/tag/v1.3.3-rc.7)
 was created. Fresh publication identity/attestation/security and unchanged-alias
 checks passed independent actual audit. Ten installed-artifact rescan regressions
-passed independent actual audit; remaining core/cache/linkage, automatic-match,
-download/import/rescan and time/environment/platform gates are still pending.
+passed independent actual audit. Fresh core/cache/eleven file controls and twelve
+installed-function linkage plus ten ASGI automatic-match controls passed;
+independent core and linkage audits are GO. A new real
+automatic-match/download/import/rescan workflow and time/environment/platform
+gates are still required.
 Older receipts supply no RC7 runtime credit. See
 [RC7 qualification](release-qualification.md#133-rc7-qualification).
 Production remains RC5; qualified stable and stable aliases remain 1.3.2.
