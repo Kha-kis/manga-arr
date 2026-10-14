@@ -22,13 +22,28 @@ merge `89e641b3c054ace0c0e8ad46a03cd6640d62c6b5`, tree-identical to reviewed
 head `4d3c1ab6744ebd8c35a468c132a915ad48eec712`. `app/VERSION` identifies
 1.3.3-rc.6. This preparation changes only VERSION and release documentation;
 it carries forward reviewed fixes and the automatic Suwayomi matching correction.
-The candidate is not published or qualified. Preparation `b5e0c3614ed6e4d561b61c8387bc4a3b87c2e659`
+Preparation `b5e0c3614ed6e4d561b61c8387bc4a3b87c2e659`
 completed all required local subgates across the retained failed aggregate and
-successful security/image resume. New artifact/runtime audits remain required;
-earlier candidate receipts supply no RC6 runtime credit.
+successful security/image resume. The reviewed [PR #441](https://github.com/Kha-kis/manga-arr/pull/441)
+merge `a4dcd1d5c152a0025a1fa94d150653e1b584af5c` was subsequently tagged and
+published as a non-latest prerelease. Independent publication and fresh scoped
+core/cache/file/linkage, real automatic-match/download/import/rescan and short
+natural background audits passed. The candidate remains unqualified: full-day
+and remaining environment/platform gates require separate evidence. Earlier
+candidate receipts supply no RC6 runtime credit.
 See [RC6 qualification](release-qualification.md#133-rc6-qualification).
 Production remains on RC5; 1.3.2 remains qualified stable and owns stable aliases.
-No tag, publication, deployment or stable promotion is authorized by preparation.
+Preparation alone did not authorize publication; the subsequent publication and
+runtime runs had separate source-bound approvals. No stable promotion or RC6
+production cutover is authorized by these scoped audits.
+
+The confirmed missing-loose-chapter and recorded custom-volume rescan defects
+([#444](https://github.com/Kha-kis/manga-arr/issues/444),
+[#446](https://github.com/Kha-kis/manga-arr/issues/446)) block stable approval.
+Source corrections merged in [#445](https://github.com/Kha-kis/manga-arr/pull/445)
+and [#447](https://github.com/Kha-kis/manga-arr/pull/447) require a replacement
+candidate with fresh qualification; they do not repair or replace the published
+RC6 image.
 
 ## 1.3.3-rc.5 Candidate Status
 
@@ -235,7 +250,7 @@ The release workflow publishes `ghcr.io/kha-kis/manga-arr` with these tags:
 
 | Release | Image tags |
 | --- | --- |
-| `1.3.3-rc.6` (prepared; not published) | `1.3.3-rc.6` only when published |
+| `1.3.3-rc.6` (published; unqualified) | `1.3.3-rc.6` |
 | `1.3.3-rc.5` (published; unqualified) | `1.3.3-rc.5` |
 | `1.3.3-rc.4` (published; unqualified) | `1.3.3-rc.4` |
 | `1.3.3-rc.3` (published; unqualified) | `1.3.3-rc.3` |
