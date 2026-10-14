@@ -5,8 +5,8 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## 1.3.3-rc.7 Qualification
 
-Status: **IMAGE PUBLISHED; PUBLICATION AND TEN INSTALLED RESCAN CONTROL AUDITS
-GO; UNQUALIFIED; NOT CLEARED FOR
+Status: **IMAGE PUBLISHED; PUBLICATION, CORE/CACHE/FILE, LINKAGE/AUTOMATIC-MATCH
+AND TEN INSTALLED RESCAN CONTROL SCOPED AUDITS GO; UNQUALIFIED; NOT CLEARED FOR
 STABLE PROMOTION OR DEPLOYMENT** (2026-10-14). Production remains RC5;
 1.3.2 remains qualified stable and owns stable aliases.
 
@@ -90,11 +90,71 @@ Result SHA256: `77bfc1eef2d49c7b9f78d7c6b36774a126cbb267642508ea9cab6a724f6f33c5
 Evidence manifest SHA256:
 `1ff75ab0e8ecb23f835a89db0f565e0220425de3dab7b761c0cda450ed1148d8`.
 
+### Fresh Core, Cache And File Controls
+
+Separate exact-artifact execution passed fresh setup, login/logout and
+administrator recovery. Upgrade of the historical October 10 stopped 1.3.2 copy
+and rollback using a pristine historical copy preserved all 42 table/column
+inventories, 18 encrypted credentials and positive decryption receipts, keys and
+observations. Database integrity and foreign keys passed; original historical
+source inputs were preserved. This is not a new RC5 production backup or an
+in-place downgrade. Playwright checked the private UI because the Browser plugin
+was unavailable; this does not inherit the earlier source-gate browser run.
+
+Installed-image provider-failure controls preserved populated cached fields and
+candidates while recording degradation/backoff; no provider success is claimed.
+Eleven installed file-handling controls passed, including explicit raw-worker
+busy refusal. They are not HTTP-lifespan or NFS coverage. Core, cache and file
+execution exited 0. All fourteen owned containers, the explicitly allocated
+internal `10.253.240.16/28` network and loopback listener were positively removed
+or absent. Production remained the same healthy RC5 container with zero restarts.
+Independent actual core/cleanup audit is GO. The final 814-file runtime manifest
+SHA256 is `9ccdc2f0c13bc6453940587ae8c6d3663fbc61d8a0870ec4d889c9a692b510f4`;
+full verification completed with exit 0. An earlier verification read only a
+partial manifest and is retained without passing credit. It is not substituted
+for the complete final verification.
+
+One source-only qualification packaging attempt was rejected before execution:
+its external-input manifest retained three RC6 hashes at RC7 paths. A new
+source-only sibling corrected those entries after failing regression tests,
+passed 164 offline tests and scoped actual LSP/CLI checks, and received independent
+source GO. Original source/QA seals and NO-GO remain unchanged. No application
+change or policy waiver was made. Source-only prepare also refused existing
+sealed wrappers; the reviewed wrappers were not overwritten, and main generated
+fresh private credentials separately. These failed source-preparation receipts
+do not supply passing runtime credit.
+
+### Installed Linkage And Automatic Match
+
+Twelve installed-function source-linkage cases and ten separate installed ASGI
+automatic-match cases passed using real private SQLite rows. They covered stored
+identity, unlink/restart/rollback, historical alias preservation, language/source
+selection, cached linkage and missing/provider-error cases. Seven fake provider
+boundary calls and zero external calls were observed. Manual selections/locks and
+observations remained protected; integrity and foreign keys passed. Candidate
+history was empty in these fixtures, not populated-history preservation evidence.
+
+Execution and owned cleanup exited 0; exact installed hashes, bindings and
+container isolation passed independent actual audit. The network-none container
+had zero restarts/OOMs and was positively removed, with no new network or shared
+paths. This is not provider-positive or end-to-end workflow qualification.
+Result SHA256: `a11bd8dcb9f764bdd2526c4a629e1bc4468af5320e90a723d13afaf40163fdc2`.
+Evidence manifest SHA256:
+`7c16f13f63b9ff860c50e0942be1a0c83007ea269611ffa3283427d0c7c4b330`.
+
 ### Remaining Fresh Qualification
 
-- Fresh setup/recovery, historical
-  copy upgrade/pristine-copy rollback, cached-provider-failure protection,
-  file/linkage and automatic-match controls.
+The first fresh real-provider workflow did not complete: AniList returned HTTP
+429 with a 45-second retry wait during the initial series lookup, exceeding the
+workflow client's 35-second request budget. No series was created and no download
+or import credit follows. The candidate's pending request exceeded its bounded
+shutdown allowance and ended with exit 137, not OOM; candidate quality was not
+passing. All five owned containers, both networks and scratch mount were removed,
+and the failed receipt/archive remain unchanged. This does not invalidate the
+separately audited controls above or qualify the missing real workflow. Provider
+backoff must be respected before a separately approved fresh attempt; no old
+successful archive or provider substitute supplies that credit.
+
 - New real-provider automatic-match/download/import/rescan workflow with fresh
   data, protected metadata/observations, content hashes and owned cleanup.
 - Natural full 86400-second metadata refresh/repeat with unchanged intervals;

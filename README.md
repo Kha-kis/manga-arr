@@ -32,8 +32,10 @@ merged missing-loose-chapter and recorded custom-volume rescan corrections
 ([#445](https://github.com/Kha-kis/manga-arr/pull/445),
 [#447](https://github.com/Kha-kis/manga-arr/pull/447)) and carries forward RC6's
 automatic Suwayomi matching fix. Fresh local release gates and published-artifact
-identity/attestation/security audit passed. Ten installed-image rescan regressions
-passed; remaining core/workflow and time/environment/platform qualification is pending.
+identity/attestation/security audit passed. Fresh core/cache/file/linkage and
+automatic-match controls passed, alongside ten installed-image rescan regressions;
+independent scoped audits are GO. Real workflow/time/environment/platform gates
+remain pending.
 No earlier candidate's results qualify this replacement. Production
 remains RC5 and stable aliases remain 1.3.2. See
 [RC7 qualification](docs/release-qualification.md#133-rc7-qualification).
