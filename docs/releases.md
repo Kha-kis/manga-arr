@@ -27,11 +27,33 @@ foundation and the independent IPv6/NZBGet URL fixes merged in
 only VERSION and four release documents; no further application, schema,
 provider, dependency, API or Compose behavior changes.
 
-No RC8 tag, image or GitHub release is published by this preparation. Source
-gate results belong to the preparation PR; they are not installed-artifact
-qualification. A separately reviewed exact merge and fresh publication/runtime
-evidence are required. RC7's interrupted full-day run supplies no passing
-elapsed or daily-repeat credit and must not be resumed or relabeled.
+Reviewed preparation `125e3f287a466c230967c050393e9c856590e321` passed one complete
+local release gate: 4,694 Python tests /17 skips, 95 isolated browser cases,
+confirmations/routes, configured lint/security and exact-revision image checks.
+Independent source/evidence review, exact-head Fast CI and Codex review passed.
+[PR #457](https://github.com/Kha-kis/manga-arr/pull/457) merge
+`d5c012192da149118f662e064e503b4a704da563` has the identical reviewed tree
+`7ea2a9f43354872b93b014cb37e267dd0b46636c`. Fresh merge fast/security/image
+checks passed before immutable tagging; no second full-suite run is claimed.
+
+Annotated `v1.3.3-rc.8` targets that exact merge. Release Image
+[run 38793313727](https://github.com/Kha-kis/manga-arr/actions/runs/38793313727)
+published linux/amd64 and linux/arm64. The
+[GitHub prerelease](https://github.com/Kha-kis/manga-arr/releases/tag/v1.3.3-rc.8)
+is explicitly non-latest and unqualified. Its immutable index is
+`sha256:5357979f5b68400dd05cb6092304b6a54e95e0a3653ae914f42716976502da51`.
+
+A fresh source-reviewed collector passed exact workflow/tag/platform identity,
+SLSA/SPDX metadata and nonempty SBOM checks, native amd64 content verification,
+and digest-pinned configured fixed HIGH/CRITICAL scans on both platforms.
+Independent actual publication audit is GO. Fourteen protected registry tag
+identities and 46 snapshotted Git refs were unchanged; stable/latest remain
+1.3.2. This does not claim signing, native ARM execution or application/runtime
+qualification. Scanner warnings and scope remain explicit in the evidence.
+
+Fresh runtime/environment/platform gates are still required. RC7's interrupted
+full-day run supplies no passing elapsed or daily-repeat credit and must not
+be resumed or relabeled.
 Production remains the owner-controlled RC5 trial; qualified stable and stable
 aliases remain 1.3.2. See
 [RC8 qualification](release-qualification.md#133-rc8-qualification).

@@ -27,11 +27,12 @@ compressed-RAR decoding. See the
 [qualification evidence and platform limits](docs/release-qualification.md#132-stable-qualification)
 before upgrading.
 
-**1.3.3-rc.8 is in source preparation, not published or qualified.** It adds the
+**1.3.3-rc.8 is published as a prerelease, but remains unqualified.** It adds the
 reviewed Suwayomi chapter-provenance foundation and IPv6/NZBGet URL corrections.
-Provenance does not enable automatic file cleanup. Fresh publication and
-artifact qualification remain required; production remains RC5 and stable
-aliases remain 1.3.2. See
+Provenance does not enable automatic file cleanup. Source release gates and a
+fresh publication identity/attestation/security audit passed. Runtime and
+platform qualification remain incomplete; no earlier candidate's runtime
+receipts qualify RC8. Production remains RC5 and stable aliases remain 1.3.2. See
 [RC8 qualification](docs/release-qualification.md#133-rc8-qualification).
 
 **1.3.3-rc.7 is published as a prerelease, but remains unqualified.** It includes the
