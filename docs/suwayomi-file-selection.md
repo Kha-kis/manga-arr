@@ -282,16 +282,22 @@ does not protect against hostile same-UID tampering inside the private carrier.
 New copies persist a `0600` JSON `.mangarr-claim-chapter-pending-*` marker before
 creating the public file. Its original inode stays pinned until retirement,
 which uses the same private capture/identity check as copy rollback. A replaced
-or unknown marker is preserved and refuses success, not removed by pathname.
-Successful copies and confirmed rollback retire only their owned marker.
-Before returning for settlement, the copy's parent is synchronized with intent
-still present, then synchronized again after owned intent is retired. A failed
-barrier fails the operation and retains or exclusively re-establishes pending
-intent; repair failures are logged for explicit review. If copying, rollback
-or retirement cannot safely finish, pending intent prevents retries from
-reusing a partial or unsettled file. Existing or unknown pending markers are
-never adopted or silently cleared. A failure to build optional provenance
-evidence alone still does not fail an otherwise successful import.
+or unknown marker is preserved and refuses retirement, not removed by pathname.
+The same live attempt holds the destination inode, parent directory and marker
+through settlement. Creation, verification and rollback use that pinned parent;
+a renamed or replaced public parent refuses settlement rather than creating
+output in a different directory. Before settlement, data and its parent are
+synchronized with intent still present. Successful settlement or confirmed
+owned rollback retires only the owned marker and synchronizes its parent again.
+Refused or exceptional rollback retains uncertainty before releasing handles.
+A marker-retirement failure after database commit does not roll back a committed
+copy or demote its completed job: the pending barrier remains for explicit
+review, a warning is logged, and guarded evidence validation still runs.
+Failed barriers retain or exclusively re-establish pending intent; repair
+failures are logged, not claimed repaired. Existing or unknown pending entries
+are never adopted or silently cleared. A failure to build optional provenance evidence alone still
+does not fail an otherwise successful import. Compatibility helpers without
+database settlement retire their owned intent before returning.
 Only a missing-marker result permits reuse; lookup errors refuse it. Existing
 markers of any type, including old directories, remain blocking without migration.
 Both marker and capture names use the existing reserved private namespace, so
@@ -300,6 +306,11 @@ While pending-copy intent exists, shared inventory refuses the series rather
 than accepting a public partial CBZ or treating it as verified absence.
 Rescan and folder adoption therefore leave existing downloaded state, metadata
 and count floors unchanged until that intent is explicitly resolved.
+Full and scheduled library rescans log and skip that unavailable series while
+continuing with the remaining series; direct inventory and adoption still refuse
+it. A destination appearing during exclusive creation is reusable only when it
+is a nonempty regular, non-symlink file without pending intent. Empty or
+nonregular race winners are preserved and do not become downloaded chapters.
 
 Retained rollback entries and pending markers need explicit operator review;
 there is no automatic recovery or garbage collection. Pause imports before

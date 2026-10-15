@@ -50,6 +50,7 @@ class _OwnedCopy:
     """Live allocation authority, never reconstructed from file evidence."""
 
     _descriptor: int | None = None
+    _intent: _CopyIntent | None = field(default=None, repr=False)
 
     def matches(self, expected: tuple[int, ...]) -> bool:
         if self._descriptor is None:
@@ -60,10 +61,107 @@ class _OwnedCopy:
             return False
         return stat.S_ISREG(held.st_mode) and _identity(held)[:2] == expected[:2]
 
-    def close(self) -> None:
+    def _close_file(self) -> None:
         descriptor, self._descriptor = self._descriptor, None
         if descriptor is not None:
             os.close(descriptor)
+
+    def close(self) -> None:
+        try:
+            self._close_file()
+        finally:
+            intent, self._intent = self._intent, None
+            if intent is not None:
+                intent.close()
+
+    def verify_parent(self) -> None:
+        if self._intent is not None:
+            self._intent.verify_parent()
+            if not self._intent.retired:
+                self._intent.verify_marker()
+
+    def retire_pending(self) -> None:
+        if self._intent is not None:
+            self._intent.retire()
+
+    def retain_pending(self) -> None:
+        if self._intent is not None:
+            self._intent.retain()
+
+
+@dataclass
+class _CopyIntent:
+    """One live attempt's parent binding and exclusive uncertainty marker."""
+
+    path: str
+    parent_fd: int
+    marker: _OwnedCopy = field(default_factory=_OwnedCopy)
+    identity: tuple[int, int] | None = None
+    retired: bool = False
+
+    @property
+    def pending(self) -> str:
+        return _pending_path(self.path)
+
+    def verify_parent(self) -> None:
+        held = os.fstat(self.parent_fd)
+        current = os.stat(os.path.dirname(self.path), follow_symlinks=False)
+        if not stat.S_ISDIR(current.st_mode) or _identity(held)[:2] != _identity(current)[:2]:
+            raise ProvenanceError(f"chapter parent binding changed: {self.path}")
+
+    def retain(self) -> None:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+        try:
+            descriptor = os.open(
+                os.path.basename(self.pending), flags, 0o600, dir_fd=self.parent_fd,
+            )
+        except FileExistsError:
+            return
+        with os.fdopen(descriptor, "w", encoding="ascii") as marker:
+            json.dump({"version": 1, "origin": self.path}, marker)
+            marker.flush()
+            os.fsync(marker.fileno())
+        os.fsync(self.parent_fd)
+
+    def verify_marker(self) -> None:
+        current = os.stat(
+            os.path.basename(self.pending), dir_fd=self.parent_fd, follow_symlinks=False,
+        )
+        if (
+            self.identity is None or not stat.S_ISREG(current.st_mode)
+            or _identity(current)[:2] != self.identity or not self.marker.matches(self.identity)
+        ):
+            raise ProvenanceError(f"chapter pending binding changed: {self.pending}")
+
+    def retire(self) -> None:
+        if self.retired or self.identity is None:
+            return
+        try:
+            self.verify_parent()
+            os.fsync(self.parent_fd)
+            if not _remove_captured(
+                self.pending, self.identity, self.marker, _parent_fd=self.parent_fd,
+            ):
+                raise ProvenanceError(f"chapter pending retirement refused: {self.pending}")
+            os.fsync(self.parent_fd)
+            self.verify_parent()
+            self.retired = True
+            self.marker.close()
+        except BaseException:
+            try:
+                self.retain()
+            except OSError as exc:
+                log.error("Pending barrier repair refused at %s: %s", self.pending, exc)
+            log.error("Chapter copy pending explicit review at %s", self.pending)
+            raise
+
+    def close(self) -> None:
+        try:
+            self.marker.close()
+        finally:
+            descriptor, self.parent_fd = self.parent_fd, -1
+            if descriptor >= 0:
+                os.close(descriptor)
 
 
 @dataclass(frozen=True)
@@ -104,10 +202,11 @@ def _identity(st: os.stat_result) -> tuple[int, int, int, int]:
     return (int(st.st_dev), int(st.st_ino), int(st.st_size), int(st.st_mtime_ns))
 
 
-def fingerprint(path: str) -> FileEvidence:
+def fingerprint(path: str, *, _dir_fd: int | None = None) -> FileEvidence:
     """Hash one non-symlink regular file, refusing if it changes meanwhile."""
+    entry = os.path.basename(path) if _dir_fd is not None else path
     descriptor = os.open(
-        path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+        entry, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0), dir_fd=_dir_fd,
     )
     try:
         before = os.fstat(descriptor)
@@ -129,7 +228,10 @@ def fingerprint(path: str) -> FileEvidence:
         after = os.fstat(descriptor)
     finally:
         os.close(descriptor)
-    current = os.lstat(path)
+    current = (
+        os.lstat(path) if _dir_fd is None
+        else os.stat(entry, dir_fd=_dir_fd, follow_symlinks=False)
+    )
     if (
         stat.S_ISLNK(current.st_mode)
         or _identity(before) != _identity(after)
@@ -165,6 +267,7 @@ def remove_if_unchanged(
 
 def copy_new_file(
     src: str, dst: str, *, _owner: _OwnedCopy | None = None,
+    _defer_retirement: bool = False,
 ) -> tuple[FileEvidence, bool]:
     """Create ``dst`` exclusively from ``src`` and verify the copy.
 
@@ -178,16 +281,22 @@ def copy_new_file(
     pre-existing file is never treated as created here. Other failures roll
     back only the captured created file or retain a pending receipt that
     blocks reuse until explicit review.
+
+    Internal route owners may defer intent retirement through settlement;
+    standalone tuple callers retire it before returning.
     """
     if _owner is not None and _owner._descriptor is not None:
         raise ProvenanceError("copy owner already holds an inode")
+    owned = _owner if _owner is not None else _OwnedCopy()
     try:
-        with _pending_copy(dst) as release:
-            return _copy_new_file(src, dst, release, _owner)
+        with _pending_copy(dst, _owner=owned, _defer_retirement=_defer_retirement) as release:
+            return _copy_new_file(src, dst, release, owned)
     except BaseException:
-        if _owner is not None:
-            _owner.close()
+        owned.close()
         raise
+    finally:
+        if _owner is None:
+            owned.close()
 
 
 def _pending_path(path: str) -> str:
@@ -207,15 +316,18 @@ def assert_not_pending(path: str) -> None:
 
 
 @contextmanager
-def _pending_copy(path: str) -> Generator[Callable[[], None], None, None]:
+def _pending_copy(
+    path: str, *, _owner: _OwnedCopy | None = None, _defer_retirement: bool = False,
+) -> Generator[Callable[[], None], None, None]:
     """Persist intent before public creation; never adopt an existing intent."""
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-    pending = _pending_path(path)
-    parent_fd = os.open(os.path.dirname(pending), flags)
-    pending_owner = _OwnedCopy()
-    accepted: os.stat_result | None = None
+    owned = _owner if _owner is not None else _OwnedCopy()
+    intent = _CopyIntent(os.path.abspath(path), os.open(os.path.dirname(_pending_path(path)), flags))
+    owned._intent = intent
+    pending, parent_fd, pending_owner = intent.pending, intent.parent_fd, intent.marker
     marker_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
     retire = True
+    completed = False
 
     def release() -> None:
         nonlocal retire
@@ -235,51 +347,25 @@ def _pending_copy(path: str) -> Generator[Callable[[], None], None, None]:
             or stat.S_IMODE(held.st_mode) != 0o600
         ):
             raise ProvenanceError("chapter pending marker identity/permissions changed")
-        accepted = held
+        intent.identity = _identity(held)[:2]
         with os.fdopen(os.dup(pending_owner._descriptor), "w", encoding="ascii") as marker:
             json.dump({"version": 1, "origin": os.path.abspath(path)}, marker)
             marker.flush()
             os.fsync(marker.fileno())
         os.fsync(parent_fd)
+        intent.verify_parent()
         retire = False
         yield release
+        completed = True
     finally:
         try:
-            if accepted is not None:
-                if retire:
-                    try:
-                        # Prove the public name/absence before retiring intent.
-                        os.fsync(parent_fd)
-                        if not _remove_captured(pending, _identity(accepted)[:2], pending_owner):
-                            raise ProvenanceError(f"chapter pending retirement refused: {pending}")
-                        os.fsync(parent_fd)
-                    except BaseException:
-                        try:
-                            repair_fd = os.open(
-                                os.path.basename(pending), marker_flags, 0o600, dir_fd=parent_fd,
-                            )
-                        except FileExistsError:
-                            pass  # Unknown intent already blocks reuse/inventory.
-                        except OSError as exc:
-                            log.error("Could not re-establish pending barrier at %s: %s", pending, exc)
-                        else:
-                            try:
-                                with os.fdopen(repair_fd, "w", encoding="ascii") as marker:
-                                    json.dump({"version": 1, "origin": os.path.abspath(path)}, marker)
-                                    marker.flush()
-                                    os.fsync(marker.fileno())
-                                os.fsync(parent_fd)
-                            except OSError as exc:
-                                log.error("Pending barrier sync refused at %s: %s", pending, exc)
-                        log.error("Chapter copy pending explicit review at %s", pending)
-                        raise
-                else:
-                    log.error("Chapter copy pending explicit review at %s", pending)
+            if retire and not (_defer_retirement and completed):
+                intent.retire()
+            elif not retire:
+                log.error("Chapter copy pending explicit review at %s", pending)
         finally:
-            try:
-                pending_owner.close()
-            finally:
-                os.close(parent_fd)
+            if _owner is None:
+                owned.close()
 
 
 def _copy_new_file(
@@ -291,6 +377,8 @@ def _copy_new_file(
     output_created = False
     succeeded = False
     try:
+        assert owned._intent is not None
+        parent_fd = owned._intent.parent_fd
         source_fd = os.open(src, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
         digest = hashlib.sha256()
         size = 0
@@ -300,7 +388,10 @@ def _copy_new_file(
             if not stat.S_ISREG(source_before.st_mode):
                 raise ProvenanceError(f"source is not a regular file: {src}")
             verify = source_before.st_size <= FINGERPRINT_MAX_BYTES
-            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o644)
+            fd = os.open(
+                os.path.basename(dst), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+                0o644, dir_fd=parent_fd,
+            )
             owned._descriptor = fd
             output_created = True
             created = os.fstat(fd)
@@ -318,17 +409,20 @@ def _copy_new_file(
         os.utime(fd, ns=(source_after.st_atime_ns, source_after.st_mtime_ns))
         os.fsync(fd)
         written = os.fstat(fd)
-        current = os.lstat(dst)
+        current = os.stat(os.path.basename(dst), dir_fd=parent_fd, follow_symlinks=False)
         if stat.S_ISLNK(current.st_mode) or _identity(current) != _identity(written):
             raise ProvenanceError(f"copy was replaced while copying: {dst}")
         if verify:
-            evidence = fingerprint(dst)
+            evidence = fingerprint(dst, _dir_fd=parent_fd)
             if (evidence.dev, evidence.inode) != _identity(created)[:2]:
                 raise ProvenanceError(f"copy was replaced while verifying: {dst}")
             if evidence.size != size or evidence.sha256 != digest.hexdigest():
                 raise ProvenanceError(f"copy does not match source bytes: {dst}")
         else:
             evidence = FileEvidence(*_identity(written), "")
+        owned.verify_parent()
+        os.fsync(parent_fd)
+        owned.verify_parent()
         release()
         succeeded = True
         return evidence, verify
@@ -342,7 +436,7 @@ def _copy_new_file(
                 os.close(source_fd)
         finally:
             if not succeeded or owner is None:
-                owned.close()
+                owned._close_file()
 
 
 def _write_all(fd: int, chunk: bytes) -> None:
@@ -356,7 +450,10 @@ def _unlink_created(path: str, created: os.stat_result, owner: _OwnedCopy) -> bo
     return _remove_captured(path, _identity(created)[:2], owner)
 
 
-def _remove_captured(path: str, expected: tuple[int, ...], owner: _OwnedCopy | None = None) -> bool:
+def _remove_captured(
+    path: str, expected: tuple[int, ...], owner: _OwnedCopy | None = None,
+    *, _parent_fd: int | None = None,
+) -> bool:
     """Capture before checking; never unlink the shared/public entry.
 
     Unlike durable application claims, rollback must also work after the DB
@@ -369,6 +466,10 @@ def _remove_captured(path: str, expected: tuple[int, ...], owner: _OwnedCopy | N
     if owner is None or not owner.matches(expected):
         return False
     path = os.path.abspath(path)
+    if _parent_fd is None and owner._intent is not None:
+        if path != owner._intent.path:
+            return False
+        _parent_fd = owner._intent.parent_fd
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     parent_fd: int | None = None
     carrier_fd: int | None = None
@@ -377,9 +478,12 @@ def _remove_captured(path: str, expected: tuple[int, ...], owner: _OwnedCopy | N
     captured = False
     try:
         parent = os.path.dirname(path)
-        parent_fd = os.open(parent, flags)
-        carrier_path = tempfile.mkdtemp(prefix=".mangarr-claim-chapter-rollback-", dir=parent)
-        created = os.lstat(carrier_path)
+        parent_fd = os.dup(_parent_fd) if _parent_fd is not None else os.open(parent, flags)
+        carrier = tempfile.mkdtemp(
+            prefix=".mangarr-claim-chapter-rollback-", dir=f"/proc/self/fd/{parent_fd}",
+        )
+        carrier_path = os.path.join(os.readlink(f"/proc/self/fd/{parent_fd}"), os.path.basename(carrier))
+        created = os.stat(os.path.basename(carrier), dir_fd=parent_fd, follow_symlinks=False)
         carrier_fd = os.open(os.path.basename(carrier_path), flags, dir_fd=parent_fd)
         held = os.fstat(carrier_fd)
         if (

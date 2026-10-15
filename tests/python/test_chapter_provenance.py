@@ -325,7 +325,7 @@ def test_copy_failure_removes_partial_copy_and_settles_nothing(env, monkeypatch)
 def test_verification_failure_removes_copy(env, monkeypatch):
     import chapter_provenance
 
-    def _bad(path):
+    def _bad(path, **_kwargs):
         raise chapter_provenance.ProvenanceError("changed while hashing")
 
     monkeypatch.setattr(chapter_provenance, "fingerprint", _bad)
@@ -584,11 +584,11 @@ def test_revalidation_failure_alone_keeps_import_without_evidence(env, monkeypat
     real = chapter_provenance.fingerprint
     calls = {"n": 0}
 
-    def _second_fails(path):
+    def _second_fails(path, **kwargs):
         calls["n"] += 1
         if calls["n"] == 2:  # 1 = copy verification, 2 = pre-commit revalidation
             raise chapter_provenance.ProvenanceError("changed while hashing")
-        return real(path)
+        return real(path, **kwargs)
 
     monkeypatch.setattr(chapter_provenance, "fingerprint", _second_fails)
     _queue(env)
@@ -1036,7 +1036,7 @@ def test_rollback_closes_directory_fds_when_owned_receipt_cleanup_fails(
     source = tmp_path / "source.cbz"
     source.write_bytes(b"owned copy bytes")
     evidence, _verified = provenance.copy_new_file(str(source), str(destination), _owner=owned_copy)
-    real_open, real_unlink = os.open, os.unlink
+    real_open, real_unlink, real_dup = os.open, os.unlink, os.dup
     opened = []
     error_number = getattr(errno, error_name)
 
@@ -1051,8 +1051,15 @@ def test_rollback_closes_directory_fds_when_owned_receipt_cleanup_fails(
             raise OSError(error_number, "injected owned receipt cleanup failure")
         return real_unlink(path, *args, **kwargs)
 
+    def record_parent_dup(fd):
+        duplicate = real_dup(fd)
+        if owned_copy._intent is not None and fd == owned_copy._intent.parent_fd:
+            opened.append(duplicate)
+        return duplicate
+
     monkeypatch.setattr(provenance.os, "open", record_directory_open)
     monkeypatch.setattr(provenance.os, "unlink", refuse_receipt_cleanup)
+    monkeypatch.setattr(provenance.os, "dup", record_parent_dup)
     try:
         with pytest.raises(OSError) as error:
             provenance.remove_if_unchanged(str(destination), evidence, _owner=owned_copy)
@@ -1094,7 +1101,7 @@ def test_created_inode_stays_pinned_through_failure_capture(tmp_path, monkeypatc
 
     def open_file(path, flags, *args, **kwargs):
         fd = real_open(path, flags, *args, **kwargs)
-        if os.fspath(path) == destination and flags & os.O_CREAT:
+        if os.path.basename(os.fspath(path)) == os.path.basename(destination) and flags & os.O_CREAT:
             created.append((fd, os.fstat(fd)))
         return fd
 
@@ -1109,7 +1116,7 @@ def test_created_inode_stays_pinned_through_failure_capture(tmp_path, monkeypatc
             observed.append(False)
         return real_capture(*args, **kwargs)
 
-    def fail(*args):
+    def fail(*args, **kwargs):
         raise provenance.ProvenanceError("injected copy boundary failure")
 
     monkeypatch.setattr(provenance.os, "open", open_file)
@@ -1150,7 +1157,7 @@ def test_route_pins_created_inode_until_settlement_then_closes(env, monkeypatch,
 
     def open_file(path, flags, *args, **kwargs):
         fd = real_open(path, flags, *args, **kwargs)
-        if os.fspath(path) == destination and flags & os.O_CREAT:
+        if os.path.basename(os.fspath(path)) == os.path.basename(destination) and flags & os.O_CREAT:
             created.append((fd, os.fstat(fd)))
         return fd
 
@@ -1318,10 +1325,10 @@ source, destination, boundary = sys.argv[1:]
 source_evidence = provenance.fingerprint(source)
 real_fingerprint = provenance.fingerprint
 if boundary == 'copy_verification':
-    def replace_with_fifo(path):
+    def replace_with_fifo(path, **kwargs):
         os.unlink(path)
         os.mkfifo(path)
-        return real_fingerprint(path)
+        return real_fingerprint(path, **kwargs)
     provenance.fingerprint = replace_with_fifo
     try:
         provenance.copy_new_file(source, destination)
@@ -1418,7 +1425,7 @@ def test_completed_copy_syncs_parent_before_and_after_pending_retirement(
     events = []
     marker_pins = []
 
-    def capture(path, expected, owner):
+    def capture(path, expected, owner, **kwargs):
         if path == pending:
             assert owner is not None and owner._descriptor is not None
             held = os.fstat(owner._descriptor)
@@ -1427,7 +1434,7 @@ def test_completed_copy_syncs_parent_before_and_after_pending_retirement(
             with open(pending, encoding="ascii") as marker:
                 assert json.load(marker) == {"version": 1, "origin": destination}
             marker_pins.append(owner._descriptor)
-        return real_capture(path, expected, owner)
+        return real_capture(path, expected, owner, **kwargs)
 
     def sync(fd):
         held = os.fstat(fd)
@@ -1504,9 +1511,12 @@ def test_pending_retirement_sync_failure_refuses_settlement_and_retry(
     _run(env)
     prov, chapter, jobs = _rows(env)
     assert failures
-    assert chapter is not None and chapter["status"] == "wanted"
-    assert chapter["import_path"] is None and prov == []
-    assert jobs[0]["status"] == "error"
+    committed = barrier == "after_retire"
+    assert chapter is not None and chapter["status"] == ("downloaded" if committed else "wanted")
+    assert chapter["import_path"] == (destination if committed else None)
+    assert len(prov) == int(committed)
+    retained_provenance = prov
+    assert jobs[0]["status"] == ("completed" if committed else "error")
     assert os.path.lexists(pending)
     assert _sha(destination) == env["source_sha"]
     assert directory_fds
@@ -1521,9 +1531,10 @@ def test_pending_retirement_sync_failure_refuses_settlement_and_retry(
     _queue(env)
     _run(env)
     prov, chapter, jobs = _rows(env)
-    assert chapter is not None and chapter["status"] == "wanted"
-    assert chapter["import_path"] is None and prov == []
-    assert [job["status"] for job in jobs] == ["error", "error"]
+    assert chapter is not None and chapter["status"] == ("downloaded" if committed else "wanted")
+    assert chapter["import_path"] == (destination if committed else None)
+    assert prov == retained_provenance
+    assert [job["status"] for job in jobs] == ["completed" if committed else "error", "error"]
     assert os.path.lexists(pending)
     assert _sha(destination) == env["source_sha"] and _source_untouched(env)
 
@@ -1609,7 +1620,8 @@ def test_pending_retirement_preserves_substituted_public_barrier(env, monkeypatc
         assert foreign.read_bytes() == b"foreign symlink target"
     old_receipt = displaced / "receipt.json" if displaced.is_dir() else displaced
     assert old_receipt.read_bytes() == receipt[0]
-    assert _sha(destination) == env["source_sha"] and _source_untouched(env)
+    assert not os.path.lexists(destination), "owned precommit copy was not rolled back"
+    assert _source_untouched(env)
 
 
 @pytest.mark.parametrize("error_name", ["EIO", "ESTALE", "EACCES"])
@@ -1647,3 +1659,253 @@ def test_pending_lookup_error_never_reuses_retained_partial(env, monkeypatch, er
         assert partial.read() == b"x"
     assert receipt.read_bytes() == b"preexisting pending intent"
     assert _source_untouched(env)
+
+
+@pytest.mark.parametrize("failure", ["changed", "capture_refused", "capture_exception"])
+def test_refused_settlement_rollback_blocks_retry_and_inventory(env, monkeypatch, failure):
+    import chapter_provenance as provenance
+    import rescan
+    import routers.suwayomi_ as swy
+
+    destination = _library_copy(env)
+    real_available = swy.assert_library_file_mutation_available
+    real_capture = provenance._remove_captured
+
+    def change_before_failure():
+        if failure == "changed":
+            with open(destination, "ab") as copied:
+                copied.write(b"unknown mutation before rollback")
+
+    def refuse_capture(path, *args, **kwargs):
+        if path == destination:
+            if failure == "capture_exception":
+                raise OSError("injected settlement capture exception")
+            return False
+        return real_capture(path, *args, **kwargs)
+
+    if failure in ("capture_refused", "capture_exception"):
+        monkeypatch.setattr(provenance, "_remove_captured", refuse_capture)
+    _fail_settlement(monkeypatch, change_before_failure)
+    _queue(env)
+    _run(env)
+    prov, chapter, jobs = _rows(env)
+    assert chapter is not None and chapter["status"] == "wanted"
+    assert chapter["import_path"] is None and prov == []
+    assert jobs[0]["status"] == "error"
+    retained = _sha(destination)
+    with pytest.raises(provenance.ProvenanceError, match="pending explicit review"):
+        provenance.assert_not_pending(destination)
+    snapshot = rescan.SeriesRescanSnapshot({}, str(env["lib"]), (), (), (), {})
+    with pytest.raises(OSError):
+        rescan.build_filesystem_inventory(snapshot)
+
+    monkeypatch.setattr(swy, "assert_library_file_mutation_available", real_available)
+    monkeypatch.setattr(provenance, "_remove_captured", real_capture)
+    _queue(env)
+    _run(env)
+    prov, chapter, jobs = _rows(env)
+    assert chapter is not None and chapter["status"] == "wanted"
+    assert chapter["import_path"] is None and prov == []
+    assert [job["status"] for job in jobs] == ["error", "error"]
+    assert _sha(destination) == retained and _source_untouched(env)
+
+
+def test_parent_replaced_after_evidence_refuses_settlement_and_rolls_back_bound_copy(env, monkeypatch):
+    import chapter_provenance as provenance
+    import routers.suwayomi_ as swy
+    from file_mutation_lock import file_mutation_guard
+
+    _queue(env)
+    with sqlite3.connect(env["db"]) as db:
+        db.row_factory = sqlite3.Row
+        job = dict(db.execute("SELECT * FROM suwayomi_downloads").fetchone())
+    original = env["lib"].with_name("displaced-series-7")
+    real_evidence = swy._chapter_ownership_evidence
+    held = []
+
+    def replace_after_evidence(*args):
+        result = real_evidence(*args)
+        assert result[0] is not None
+        imported = args[3]
+        assert imported._owner is not None
+        held.append(imported._owner._descriptor)
+        env["lib"].rename(original)
+        env["lib"].mkdir()
+        return result
+
+    monkeypatch.setattr(swy, "_chapter_ownership_evidence", replace_after_evidence)
+    with pytest.raises((OSError, provenance.ProvenanceError)):
+        with file_mutation_guard(env["db"]) as guard:
+            swy._complete_suwayomi_job_files(
+                _client(env), job, [CHAPTER_ID],
+                {CHAPTER_ID: {"name": CHAPTER_NAME, "scanlator": "Scans",
+                              "chapterNumber": 12.0, "isDownloaded": True}},
+                "Freezing", guard, source_display_name="Weeb Central (EN)", source_id=SOURCE_ID,
+            )
+    prov, chapter, jobs = _rows(env)
+    assert chapter is not None and chapter["status"] == "wanted"
+    assert chapter["import_path"] is None and prov == [] and jobs[0]["status"] == "queued"
+    assert list(env["lib"].iterdir()) == []
+    assert not (original / "Freezing Ch012.cbz").exists()
+    assert held and held[0] is not None
+    with pytest.raises(OSError):
+        os.fstat(held[0])
+    assert _source_untouched(env)
+
+
+@pytest.mark.parametrize("boundary", ["after_parent_pin", "before_destination_create"])
+def test_copy_never_creates_in_a_replacement_parent(tmp_path, monkeypatch, boundary):
+    from pathlib import Path
+    import chapter_provenance as provenance
+
+    parent = tmp_path / "library"
+    parent.mkdir()
+    displaced = tmp_path / "displaced-library"
+    source = _make_cbz(tmp_path / "source.cbz")
+    source_sha = _sha(source)
+    destination = str(parent / "chapter.cbz")
+    real_open = os.open
+    swapped = []
+    parent_fds = []
+
+    def replace_parent():
+        parent.rename(displaced)
+        parent.mkdir()
+        swapped.append(True)
+
+    def open_file(path, flags, *args, **kwargs):
+        is_parent = os.fspath(path) == str(parent) and flags & os.O_DIRECTORY
+        is_destination = os.path.basename(os.fspath(path)) == "chapter.cbz" and flags & os.O_CREAT
+        if boundary == "before_destination_create" and is_destination and not swapped:
+            replace_parent()
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if is_parent:
+            parent_fds.append(descriptor)
+            if boundary == "after_parent_pin" and not swapped:
+                replace_parent()
+        return descriptor
+
+    monkeypatch.setattr(provenance.os, "open", open_file)
+    with pytest.raises((OSError, provenance.ProvenanceError)):
+        provenance.copy_new_file(source, destination)
+    assert swapped == [True]
+    assert list(parent.iterdir()) == [], "copy or intent escaped into replacement parent"
+    retained = displaced / "chapter.cbz"
+    if retained.exists():
+        assert _sha(str(retained)) == source_sha
+        assert Path(provenance._pending_path(str(retained))).exists()
+    assert _sha(source) == source_sha
+    assert parent_fds
+    for descriptor in parent_fds:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
+@pytest.mark.parametrize("kind", ["empty", "fifo", "symlink"])
+def test_raced_destination_requires_a_nonempty_regular_file(env, monkeypatch, kind):
+    import chapter_provenance as provenance
+
+    destination = _library_copy(env)
+    foreign = destination + ".foreign"
+    real_open = os.open
+    raced = []
+
+    def open_file(path, flags, *args, **kwargs):
+        if os.path.basename(os.fspath(path)) == os.path.basename(destination) and flags & os.O_CREAT and not raced:
+            if kind == "empty":
+                with open(destination, "wb"):
+                    pass
+            elif kind == "fifo":
+                os.mkfifo(destination)
+            else:
+                with open(foreign, "wb") as target:
+                    target.write(b"foreign symlink target")
+                os.symlink(foreign, destination)
+            raced.append(True)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(provenance.os, "open", open_file)
+    _queue(env)
+    _run(env)
+    prov, chapter, jobs = _rows(env)
+    assert raced == [True]
+    assert chapter is not None and chapter["status"] == "wanted"
+    assert chapter["import_path"] is None and prov == []
+    assert jobs[0]["status"] == "error"
+    if kind == "empty":
+        assert os.stat(destination).st_size == 0
+    elif kind == "symlink":
+        assert os.path.islink(destination)
+        with open(foreign, "rb") as target:
+            assert target.read() == b"foreign symlink target"
+    assert _source_untouched(env)
+
+
+@pytest.mark.parametrize("mutation", ["none", "file", "database"])
+def test_postcommit_retirement_refusal_is_not_a_poller_retry(env, monkeypatch, mutation):
+    import chapter_provenance as provenance
+    import routers.suwayomi_ as swy
+
+    _queue(env)
+    destination = _library_copy(env)
+    pending = provenance._pending_path(destination)
+    real_fsync, real_evidence = os.fsync, swy._chapter_ownership_evidence
+    responses = _gql()
+    requests, injected, handles, foreign_hash = [], [], [], []
+    committed_copy = []
+
+    async def gql(*args, **kwargs):
+        requests.append(True)
+        return await responses(*args, **kwargs)
+
+    def evidence(*args):
+        imported = args[3]
+        assert imported._owner is not None and imported._owner._intent is not None
+        owner, intent = imported._owner, imported._owner._intent
+        assert owner._descriptor is not None and intent.marker._descriptor is not None
+        handles.extend((owner._descriptor, intent.parent_fd, intent.marker._descriptor))
+        return real_evidence(*args)
+
+    def fail_retirement(fd):
+        held = os.fstat(fd)
+        if os.path.exists(destination) and not os.path.lexists(pending) and not injected:
+            parent = os.stat(os.path.dirname(destination))
+            if (held.st_dev, held.st_ino) == (parent.st_dev, parent.st_ino):
+                with sqlite3.connect(env["db"]) as db:
+                    assert db.execute("SELECT status FROM suwayomi_downloads").fetchone()[0] == "completed"
+                    assert db.execute("SELECT status FROM chapters").fetchone()[0] == "downloaded"
+                if mutation == "file":
+                    with open(destination, "ab") as copied:
+                        copied.write(b"changed after settlement")
+                elif mutation == "database":
+                    foreign = env["db"] + ".foreign"
+                    with sqlite3.connect(env["db"]) as db, sqlite3.connect(foreign) as other:
+                        db.backup(other)
+                        other.execute("CREATE TABLE foreign_marker(value TEXT)")
+                        other.execute("INSERT INTO foreign_marker VALUES('preserve all bytes')")
+                    os.replace(env["db"], env["db"] + ".committed")
+                    os.replace(foreign, env["db"])
+                    foreign_hash.append(_sha(env["db"]))
+                committed_copy.append(_sha(destination))
+                injected.append(True)
+                raise OSError("injected postcommit retirement refusal")
+        real_fsync(fd)
+
+    monkeypatch.setattr(swy, "_chapter_ownership_evidence", evidence)
+    monkeypatch.setattr(provenance.os, "fsync", fail_retirement)
+    with patch.object(swy, "_gql", new=gql), \
+         patch.object(swy, "get_suwayomi_client", new=lambda _db: _client(env)):
+        asyncio.run(swy.check_suwayomi_jobs())
+    assert injected == [True] and requests == [True], "cleanup failure retried a committed import"
+    prov, chapter, jobs = _rows(env)
+    assert chapter is not None and chapter["status"] == "downloaded"
+    assert chapter["import_path"] == destination and jobs[0]["status"] == "completed"
+    assert len(prov) == (0 if mutation == "file" else 1)
+    if foreign_hash:
+        assert _sha(env["db"]) == foreign_hash[0]
+    assert os.path.lexists(pending)
+    assert _sha(destination) == committed_copy[0] and _source_untouched(env)
+    assert len(handles) == 3
+    for descriptor in handles:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)

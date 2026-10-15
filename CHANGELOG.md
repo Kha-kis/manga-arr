@@ -15,8 +15,10 @@ All notable changes to this project. Format roughly follows
   legacy filename matches and historical files record nothing. Failed imports
   roll back only an identity-verified private capture of their own copy;
   uncertain entries are retained for review, and pending-copy markers prevent
-  partial-file reuse or rescan/adoption while a copy is unsettled. Settlement
-  rechecks database ownership after hashing.
+  partial-file reuse or rescan/adoption while a copy is unsettled. Other series
+  continue scanning. Settlement retains the pinned parent and pending intent,
+  rechecks database ownership after hashing, and refuses empty or nonregular
+  destination race winners.
   Additive table, no schema-version change.
 
 ### Fixed

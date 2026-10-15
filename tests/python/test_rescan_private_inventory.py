@@ -89,6 +89,57 @@ def test_chapter_private_directories_are_not_inventory_evidence(
     assert source.read_bytes() == b"owned source bytes"
 
 
+def test_full_rescan_isolates_pending_series_and_processes_healthy_series(
+    rescan_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import chapter_provenance as provenance
+    import main
+    import rescan
+    import routers.series_ as series_router
+
+    root = cast(Path, rescan_env["library_root"])
+    blocked = cast(Path, rescan_env["series_dir"])
+    healthy = root / "Healthy Manga"
+    healthy.mkdir()
+    with zipfile.ZipFile(healthy / "Healthy Manga v01.cbz", "w") as archive:
+        archive.writestr("001.jpg", b"healthy page bytes")
+    partial = blocked / "Race Manga Ch001.cbz"
+    partial.write_bytes(b"x")
+    marker = Path(provenance._pending_path(str(partial)))
+    marker.write_bytes(b"retained pending intent")
+    with sqlite3.connect(str(rescan_env["db_path"])) as db:
+        db.execute(
+            "INSERT INTO series(id,title,search_pattern,root_folder_id,folder_name)"
+            " VALUES(8,'Healthy Manga','Healthy Manga',1,'Healthy Manga')"
+        )
+        db.execute(
+            "INSERT INTO chapters(series_id,chapter_num,status,import_path,size_bytes)"
+            " VALUES(7,1,'downloaded',?,123)", (str(partial),),
+        )
+        before_series = db.execute("SELECT * FROM series WHERE id=7").fetchall()
+        before_chapters = db.execute("SELECT * FROM chapters WHERE series_id=7").fetchall()
+    real_rescan = main.rescan_series_folder
+    visited = []
+
+    def run(series_id):
+        visited.append(series_id)
+        return real_rescan(series_id)
+
+    monkeypatch.setattr(main, "rescan_series_folder", run)
+    monkeypatch.setattr(rescan, "enrich_reconciled_files", lambda _result: None)
+    asyncio.run(series_router._rescan_all_impl())
+    asyncio.run(series_router._rescan_all_impl())
+    assert visited == [7, 8, 7, 8]
+    with sqlite3.connect(str(rescan_env["db_path"])) as db:
+        assert db.execute("SELECT * FROM series WHERE id=7").fetchall() == before_series
+        assert db.execute("SELECT * FROM chapters WHERE series_id=7").fetchall() == before_chapters
+        volume = db.execute("SELECT status,import_path FROM volumes WHERE series_id=8").fetchone()
+        assert volume is not None and volume[0] == "downloaded"
+        assert volume[1] == str(healthy / "Healthy Manga v01.cbz")
+    assert partial.read_bytes() == b"x" and marker.read_bytes() == b"retained pending intent"
+
+
 def _failed_pending_public_copy(
     tmp_path: Path, destination: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[Path, Path, bytes]:

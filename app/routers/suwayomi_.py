@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import sqlite3
+import stat
 from typing import Any
 import unicodedata
 
@@ -1321,6 +1322,8 @@ def _import_suwayomi_chapter_files(
         source_display_name=source_display_name,
     )
     try:
+        if result._owner is not None:
+            result._owner.retire_pending()
         return result.path, result.size
     finally:
         result.close()
@@ -1391,7 +1394,9 @@ def _import_suwayomi_chapter_copy(
         return chapter_provenance.ChapterImport(out_path, os.path.getsize(out_path))
     owner = chapter_provenance._OwnedCopy()
     try:
-        created, verified = chapter_provenance.copy_new_file(src, out_path, _owner=owner)
+        created, verified = chapter_provenance.copy_new_file(
+            src, out_path, _owner=owner, _defer_retirement=True,
+        )
         return chapter_provenance.ChapterImport(
             out_path, created.size, created, verified, identified, _owner=owner,
         )
@@ -1400,9 +1405,12 @@ def _import_suwayomi_chapter_copy(
         # Appeared after the check above: another writer owns it.
         chapter_provenance.assert_not_pending(out_path)
         try:
-            return chapter_provenance.ChapterImport(out_path, os.path.getsize(out_path))
+            current = os.lstat(out_path)
+            if stat.S_ISREG(current.st_mode) and current.st_size > 0:
+                return chapter_provenance.ChapterImport(out_path, current.st_size)
         except FileNotFoundError:
-            return no_import
+            pass
+        return no_import
     except BaseException:
         owner.close()
         raise
@@ -1701,6 +1709,7 @@ def _complete_suwayomi_job_files(
             return None, 0
         provenance_id: int | None = None
         evidence: chapter_provenance.FileEvidence | None = None
+        settled = False
         try:
             quality = _m.quality_from_filename(import_path)
             guard.verify()
@@ -1708,6 +1717,8 @@ def _complete_suwayomi_job_files(
                 c, job, chapter_ids, chapter_import, source_id
             )
             guard.verify()
+            if chapter_import._owner is not None:
+                chapter_import._owner.verify_parent()
             with get_db() as db:
                 assert_library_file_mutation_available(db, job["series_id"])
                 db.execute(
@@ -1742,15 +1753,38 @@ def _complete_suwayomi_job_files(
                         source=identity,
                         job_id=job["id"],
                     )
+            settled = True
         except BaseException:
             # Nothing was settled: roll back only the copy this import created.
             if chapter_import.created is not None:
-                chapter_provenance.remove_if_unchanged(
-                    import_path, chapter_import.created, _owner=chapter_import._owner,
-                )
+                try:
+                    removed = chapter_provenance.remove_if_unchanged(
+                        import_path, chapter_import.created, _owner=chapter_import._owner,
+                    )
+                except (OSError, chapter_provenance.ProvenanceError) as exc:
+                    log.error("Chapter settlement rollback refused for %s: %s", import_path, exc)
+                    removed = False
+                if chapter_import._owner is not None:
+                    if removed:
+                        chapter_import._owner.retire_pending()
+                    else:
+                        chapter_import._owner.retain_pending()
             raise
         finally:
-            chapter_import.close()
+            try:
+                if settled and chapter_import._owner is not None:
+                    try:
+                        chapter_import._owner.retire_pending()
+                    except (OSError, chapter_provenance.ProvenanceError) as exc:
+                        log.warning("Committed chapter cleanup pending for %s: %s", import_path, exc)
+            finally:
+                try:
+                    chapter_import.close()
+                except OSError as exc:
+                    if not settled:
+                        raise
+                    log.warning("Committed chapter handle close refused for %s: %s", import_path, exc)
+        guard.verify()
         if (
             provenance_id is not None
             and evidence is not None
