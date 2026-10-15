@@ -624,13 +624,11 @@ async def nzbget_grab(
     nzb_url: str, client: dict | None = None
 ) -> tuple[bool, str | None, bool]:
     """Add to NZBGet via JSON-RPC. Returns (success, nzb_id_or_None, client_healthy)."""
-    host = ((client or {}).get("host") or "").rstrip("/")
-    user = (client or {}).get("username") or ""
-    pw = (client or {}).get("password") or ""
     cat = (client or {}).get("category") or get_cfg("category")
-    port = (client or {}).get("port") or 6789
-    api_url = f"http://{user}:{pw}@{host}:{port}/jsonrpc"
     try:
+        from routers.download_clients import _nzbget_rpc_url
+
+        api_url = _nzbget_rpc_url(client or {})
         async with httpx.AsyncClient(timeout=20) as cli:
             r = await cli.post(
                 api_url,

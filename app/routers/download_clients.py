@@ -149,6 +149,8 @@ def _nzbget_rpc_url(c: dict) -> str:
     hostname = parsed.hostname or parsed.path
     if not hostname:
         return raw
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
     port = parsed.port or c.get("port") or 6789
     netloc = hostname
     if port:

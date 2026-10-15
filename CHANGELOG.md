@@ -10,6 +10,9 @@ All notable changes to this project. Format roughly follows
 - Preserve IPv6 address brackets when adding a separately configured
   download-client port. Existing embedded ports and URL paths are retained
   (#453).
+- Use the same NZBGet RPC destination for connection tests and downloads,
+  preserving TLS, IPv6 brackets, configured ports, paths and credential
+  encoding without changing append payloads or result handling (#454).
 
 ## 1.3.3-rc.7 - 2026-10-14
 
