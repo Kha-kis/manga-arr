@@ -1294,3 +1294,103 @@ def test_live_pin_prevents_recreated_entry_from_becoming_owned(tmp_path, owned_c
     with open(destination, "rb") as foreign:
         assert foreign.read() == foreign_bytes
     assert _sha(source) == evidence.sha256
+
+
+@pytest.mark.parametrize("boundary", ["copy_verification", "job_revalidation"])
+def test_fingerprint_fifo_substitution_is_refused_without_blocking(tmp_path, boundary):
+    import subprocess
+
+    source = _make_cbz(tmp_path / "source.cbz")
+    destination = str(tmp_path / "copy.cbz")
+    script = """
+import os
+import stat
+import sys
+import chapter_provenance as provenance
+
+source, destination, boundary = sys.argv[1:]
+source_evidence = provenance.fingerprint(source)
+real_fingerprint = provenance.fingerprint
+if boundary == 'copy_verification':
+    def replace_with_fifo(path):
+        os.unlink(path)
+        os.mkfifo(path)
+        return real_fingerprint(path)
+    provenance.fingerprint = replace_with_fifo
+    try:
+        provenance.copy_new_file(source, destination)
+    except provenance.ProvenanceError:
+        pass
+    else:
+        raise AssertionError('FIFO copy verification was accepted')
+else:
+    from routers import suwayomi_ as swy
+    with open(source, 'rb') as src, open(destination, 'wb') as dst:
+        dst.write(src.read())
+    evidence = real_fingerprint(destination)
+    imported = provenance.ChapterImport(destination, evidence.size, evidence, True, True)
+    os.unlink(destination)
+    os.mkfifo(destination)
+    assert swy._chapter_ownership_evidence(
+        {'id': 1, 'host': 'http://swy.local:4567'},
+        {'suwayomi_manga_id': 99}, [4242], imported, '2131019126180322627',
+    ) == (None, None)
+assert stat.S_ISFIFO(os.lstat(destination).st_mode)
+assert real_fingerprint(source) == source_evidence
+"""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", script, source, destination, boundary],
+            capture_output=True, text=True, timeout=3,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"{boundary} blocked opening a substituted FIFO")
+    assert result.returncode == 0, result.stderr
+
+
+def test_db_replaced_before_postcommit_void_writer_is_preserved(env, monkeypatch):
+    import chapter_provenance
+    import routers.suwayomi_ as swy
+    from file_mutation_lock import FileMutationLockError, file_mutation_guard
+
+    _queue(env)
+    original = env["db"] + ".committed"
+    foreign = env["db"] + ".foreign"
+    with sqlite3.connect(env["db"]) as db:
+        db.row_factory = sqlite3.Row
+        job = dict(db.execute("SELECT * FROM suwayomi_downloads").fetchone())
+    observed = []
+
+    def replace_after_commit(path, evidence):
+        with sqlite3.connect(env["db"]) as db, sqlite3.connect(foreign) as other:
+            assert db.execute("SELECT COUNT(*) FROM chapter_file_provenance").fetchone()[0] == 1
+            assert db.execute("SELECT status FROM suwayomi_downloads").fetchone()[0] == "completed"
+            db.backup(other)
+            other.execute("CREATE TABLE foreign_marker(value TEXT)")
+            other.execute("INSERT INTO foreign_marker VALUES('preserve foreign database')")
+        with open(path, "ab") as copied:
+            copied.write(b"changed after commit")
+        os.replace(env["db"], original)
+        os.replace(foreign, env["db"])
+        observed.append((_sha(env["db"]), _sha(path)))
+        return False
+
+    monkeypatch.setattr(chapter_provenance, "same_file", replace_after_commit)
+    with pytest.raises(FileMutationLockError):
+        with file_mutation_guard(env["db"]) as guard:
+            swy._complete_suwayomi_job_files(
+                _client(env), job, [CHAPTER_ID],
+                {CHAPTER_ID: {"name": CHAPTER_NAME, "scanlator": "Scans",
+                              "chapterNumber": 12.0, "isDownloaded": True}},
+                "Freezing", guard, source_display_name="Weeb Central (EN)",
+                source_id=SOURCE_ID,
+            )
+    assert len(observed) == 1
+    assert _sha(env["db"]) == observed[0][0]
+    assert _sha(_library_copy(env)) == observed[0][1]
+    for path in (env["db"], original):
+        with sqlite3.connect(path) as db:
+            assert db.execute("SELECT COUNT(*) FROM chapter_file_provenance").fetchone()[0] == 1
+            assert db.execute("SELECT status FROM chapters").fetchone()[0] == "downloaded"
+            assert db.execute("SELECT status FROM suwayomi_downloads").fetchone()[0] == "completed"
+    assert _source_untouched(env)

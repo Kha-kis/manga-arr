@@ -106,7 +106,9 @@ def _identity(st: os.stat_result) -> tuple[int, int, int, int]:
 
 def fingerprint(path: str) -> FileEvidence:
     """Hash one non-symlink regular file, refusing if it changes meanwhile."""
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    descriptor = os.open(
+        path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+    )
     try:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):

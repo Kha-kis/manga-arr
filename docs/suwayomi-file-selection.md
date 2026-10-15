@@ -242,10 +242,14 @@ SQLite's signed INTEGER range.
 
 The copy is fingerprinted again before the settlement transaction, outside any
 SQLite writer; the transaction records it only if the chapter row settles to
-that exact path, and the record is dropped if the file's identity changes
-before commit completes. The filesystem mutation guard is revalidated after
-fingerprinting and before opening the settlement writer; a changed database
-identity refuses settlement. Nothing is recorded for a reused destination, the
+that exact path. Fingerprint opens reject nonregular files without blocking on
+a FIFO. The filesystem mutation guard is revalidated after hashing and before
+opening either the settlement writer or a later provenance-invalidation writer.
+While that guard is valid, changed-file evidence is discarded after commit.
+An invalid guard refuses fresh writes instead of touching a replacement DB;
+a committed copy is not rolled back and any retained row still requires later
+hash validation. Online database replacement remains unsupported, not a restore
+workflow. Nothing is recorded for a reused destination, the
 original Suwayomi file kept when no managed library directory is configured,
 legacy filename matches, an unknown source ID or historical files; no backfill
 infers ownership from names or chapter numbers.

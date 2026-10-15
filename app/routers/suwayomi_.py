@@ -1757,6 +1757,7 @@ def _complete_suwayomi_job_files(
             and not chapter_provenance.same_file(import_path, evidence)
         ):
             # Changed between verification and commit: the evidence is void.
+            guard.verify()
             try:
                 with get_db() as db:
                     db.execute(
