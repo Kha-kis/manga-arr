@@ -112,7 +112,10 @@ def client_base_url(c: dict) -> str:
         parsed = urlparse(host)
         if not parsed.port:
             # Only the hostname is in the URL — append the port
-            netloc = f"{parsed.hostname}:{port}"
+            hostname = parsed.hostname
+            if hostname and ":" in hostname:
+                hostname = f"[{hostname}]"
+            netloc = f"{hostname}:{port}"
             parsed = parsed._replace(netloc=netloc)
             host = urlunparse(parsed).rstrip("/")
     return host
@@ -146,6 +149,8 @@ def _nzbget_rpc_url(c: dict) -> str:
     hostname = parsed.hostname or parsed.path
     if not hostname:
         return raw
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
     port = parsed.port or c.get("port") or 6789
     netloc = hostname
     if port:
