@@ -7,12 +7,16 @@ All notable changes to this project. Format roughly follows
 
 ## 1.3.3-rc.8 - 2026-10-15
 
-Source preparation only; no RC8 image is published or qualified. Includes the
+Replacement candidate published from exact reviewed
+[PR #457](https://github.com/Kha-kis/manga-arr/pull/457) merge, but remains
+unqualified and is not approved for stable promotion or deployment. Includes the
 reviewed Suwayomi chapter-provenance foundation and download-client URL fixes
 merged in [#443](https://github.com/Kha-kis/manga-arr/pull/443),
 [#455](https://github.com/Kha-kis/manga-arr/pull/455), and
 [#456](https://github.com/Kha-kis/manga-arr/pull/456). No earlier artifact's
-runtime receipts qualify this candidate. Production remains RC5; qualified
+runtime receipts qualify this candidate. Source gates and fresh publication
+identity/attestation/security checks passed independent scoped review; remaining
+runtime/environment/platform gates are unqualified. Production remains RC5; qualified
 stable and stable aliases remain 1.3.2. See
 [RC8 qualification](docs/release-qualification.md#133-rc8-qualification).
 

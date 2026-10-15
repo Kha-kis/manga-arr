@@ -5,8 +5,11 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## 1.3.3-rc.8 Qualification
 
-Status: **SOURCE PREPARATION ONLY; NOT PUBLISHED OR QUALIFIED; NO STABLE
-PROMOTION OR PRODUCTION CUTOVER APPROVAL** (2026-10-15).
+Status: **IMAGE PUBLISHED; PUBLICATION IDENTITY/ATTESTATION/SECURITY SCOPED
+AUDIT GO; UNQUALIFIED; NO STABLE PROMOTION OR PRODUCTION CUTOVER APPROVAL**
+(2026-10-15).
+
+### Source And Preparation Boundary
 
 Baseline is reviewed [PR #443](https://github.com/Kha-kis/manga-arr/pull/443)
 merge `f7cf47b0bebc35e6d42a69c1abacccd641838b71`, tree
@@ -21,14 +24,62 @@ historical ownership backfill; [#422](https://github.com/Kha-kis/manga-arr/issue
 remains open. Download-client corrections preserve IPv6 brackets and use the
 same NZBGet RPC destination for tests and downloads.
 
-This preparation changes VERSION and four release documents only. Exact-source
-release-local results are recorded on its PR, not claimed as published-image
-tests here. No prior candidate's runtime receipts qualify RC8.
+Preparation changed VERSION and four release documents only. Reviewed head
+`125e3f287a466c230967c050393e9c856590e321` passed one `make release-local`
+with exit zero: 4,694 Python tests /17 skips /1,288 warnings in 1,121.61 seconds,
+13 confirmations, 10 route checks, 95 isolated browser cases, configured
+lint/format, strict pinned dependency audit, Gitleaks history scan and configured
+Trivy configuration/image gates. All 1,026 tracked source/export hashes matched
+before and after. Independent source/evidence review and exact-head CI/Codex
+review passed.
 
-Before stable approval, publish only the separately reviewed exact merge and
-collect fresh identity/attestation/security, install/upgrade/recovery, cached
-metadata failure, file/linkage, new provenance safety and real download/import
-evidence. A new uninterrupted natural metadata-repeat observation is required;
+Reviewed [PR #457](https://github.com/Kha-kis/manga-arr/pull/457) merge
+`d5c012192da149118f662e064e503b4a704da563` has the same tree
+`7ea2a9f43354872b93b014cb37e267dd0b46636c`. Fresh merge checks passed 86 fast
+tests, 13 confirmations, release metadata, configured security and exact-merge
+image checks before tagging. No second full suite or image-runtime qualification
+is claimed through this identical-tree proof. No prior candidate's runtime
+receipts qualify RC8.
+
+### Published Artifact
+
+Annotated immutable `v1.3.3-rc.8`, object
+`e61419ddacdafb53b7f30d53799fbc6eb83258f8`, targets the exact reviewed merge
+above with the Kha-kis noreply tagger. The tag is unsigned; no signing claim.
+Release Image [run 38793313727](https://github.com/Kha-kis/manga-arr/actions/runs/38793313727)
+completed successfully on attempt 1 and published both architectures. The
+[GitHub prerelease](https://github.com/Kha-kis/manga-arr/releases/tag/v1.3.3-rc.8)
+is non-latest and explicitly unqualified.
+
+Immutable index:
+`sha256:5357979f5b68400dd05cb6092304b6a54e95e0a3653ae914f42716976502da51`.
+
+- amd64: `sha256:deb67704da683bde02310b0c37d6808eb3b46589acd924ca9021e3f72b9df0fd`.
+- arm64: `sha256:16307911052e0a6def6fdc93d121b4de7c372b41a76e0413c5a46cc14ae4a097`.
+
+A new independently reviewed collector, with a MAIN binding to that exact tag
+object, merge, tree, workflow and index, completed once with exit zero. All 35
+evidence checksums verified. Fresh checks cover both platform configs, non-root
+user, VERSION/revision/build arguments, SLSA builder/run metadata, nonempty
+SPDX 2.3 SBOMs, native amd64 embedded-version/forbidden-file inventory and dated
+remote fixed HIGH/CRITICAL scans of each platform manifest. Independent actual
+publication evidence review is GO. Fourteen protected registry tag identities
+and all 46 snapshotted prior Git refs matched the fresh prepublication baseline;
+GitHub latest and stable aliases remained 1.3.2. Verifier containers were absent.
+
+Trivy 0.70's third-party SBOM and vendor-severity warnings remain retained.
+Image scan scope excludes unfixed and lower-severity findings; the historical
+local configuration gate also skipped an unrelated AWS policy requiring 0.72.
+No all-policy, universally vulnerability-free, cryptographic signature or
+complete transitive reproducibility claim is made. The publication utilities
+did not start the application or perform HTTP/workflow/provider checks. No
+native ARM execution or broader platform/runtime credit follows.
+
+### Remaining Qualification
+
+Before stable approval, collect fresh install/upgrade/recovery, cached metadata
+failure, file/linkage, new provenance safety and real download/import evidence.
+A new uninterrupted natural metadata-repeat observation is required;
 use a maintenance-aware window without disabling unattended host updates.
 Representative NAS, literal public Compose startup, native ARM runtime and
 independent final artifact-evidence review remain unqualified; no waiver is
