@@ -243,7 +243,9 @@ SQLite's signed INTEGER range.
 The copy is fingerprinted again before the settlement transaction, outside any
 SQLite writer; the transaction records it only if the chapter row settles to
 that exact path, and the record is dropped if the file's identity changes
-before commit completes. Nothing is recorded for a reused destination, the
+before commit completes. The filesystem mutation guard is revalidated after
+fingerprinting and before opening the settlement writer; a changed database
+identity refuses settlement. Nothing is recorded for a reused destination, the
 original Suwayomi file kept when no managed library directory is configured,
 legacy filename matches, an unknown source ID or historical files; no backfill
 infers ownership from names or chapter numbers.
@@ -256,9 +258,35 @@ written to or treated as this import's copy. Files above the 4 GiB fingerprint
 bound import without evidence, and fingerprinting stops reading once a file
 grows past that bound.
 
-When a copy, its verification or the settlement transaction fails, only the
-partial or unsettled copy that import created is removed, and only if it is
-still the same file. A failure to build evidence never fails the import.
+When a copy, its verification or the settlement transaction fails, rollback
+first captures the destination entry into a fresh private directory, then
+checks the captured identity. Only the captured copy this import created can
+be deleted; rollback never unlinks a public pathname after checking it.
+A different regular file or symlink is restored without overwriting another
+entry. If no-clobber restore is unsupported or the public path is occupied,
+the captured entry and its origin/expected-identity receipt are retained under
+`.mangarr-claim-chapter-rollback-*`, and the recovery location is logged. No unsafe
+rename fallback is used on NAS filesystems. This private-directory boundary
+does not protect against hostile same-UID tampering inside the private carrier.
+
+New copies persist a `.mangarr-claim-chapter-pending-*` marker before creating the
+public file. Successful copies and confirmed rollback retire that marker.
+If copy rollback cannot safely finish, it remains and prevents retries from
+reusing a partial or unsettled file. Existing or unknown pending markers are
+never adopted or silently cleared. A failure to build optional provenance
+evidence alone still does not fail an otherwise successful import.
+Both directory names use the existing reserved private namespace, so inventory,
+rescan and library adoption do not treat their contents as library evidence.
+
+Retained rollback entries and pending markers need explicit operator review;
+there is no automatic recovery or garbage collection. Pause imports before
+recovery and preserve the complete private directory and receipt. Inspect its
+recorded origin and compare the current library file with the source contents.
+Restore a captured entry only to an absent destination using a no-clobber
+operation; preserve both entries if another file occupies that path. Clear a
+pending marker only after resolving the original destination and verifying
+that no incomplete copy can be reused. Do not delete these private directories
+as a blanket cleanup step.
 
 Provenance is evidence for later validation. It does not authorize cleanup,
 and no code reads it to move or delete files. Rows are not removed when their

@@ -13,10 +13,14 @@ chapters resolved by legacy filename matching, or historical files.
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import os
 import sqlite3
 import stat
-from collections.abc import Mapping
+import tempfile
+from collections.abc import Callable, Generator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -25,6 +29,7 @@ _HASH_CHUNK_SIZE = 1024 * 1024
 # Fingerprints stream in fixed chunks; files above this bound are still
 # imported but never get ownership evidence.
 FINGERPRINT_MAX_BYTES = 4 * 1024 * 1024 * 1024
+log = logging.getLogger(__name__)
 
 
 class ProvenanceError(RuntimeError):
@@ -123,13 +128,9 @@ def same_file(path: str, evidence: FileEvidence) -> bool:
 
 def remove_if_unchanged(path: str, evidence: FileEvidence) -> bool:
     """Roll back a copy this import created, only if it is still that file."""
-    if not same_file(path, evidence):
-        return False
-    try:
-        os.unlink(path)
-    except FileNotFoundError:
-        return False
-    return True
+    return _remove_captured(
+        path, (evidence.dev, evidence.inode, evidence.size, evidence.mtime_ns)
+    )
 
 
 def copy_new_file(src: str, dst: str) -> tuple[FileEvidence, bool]:
@@ -142,11 +143,97 @@ def copy_new_file(src: str, dst: str) -> tuple[FileEvidence, bool]:
     copied unverified. All writes and metadata go through the exclusively
     created descriptor, so a file swapped in at ``dst`` is never written to or
     adopted. Raises ``FileExistsError`` when ``dst`` already exists, so a
-    pre-existing file is never treated as created here. Any other failure
-    removes the partial copy this call created and re-raises.
+    pre-existing file is never treated as created here. Other failures roll
+    back only the captured created file or retain a pending receipt that
+    blocks reuse until explicit review.
     """
-    verify = os.path.getsize(src) <= FINGERPRINT_MAX_BYTES
-    fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    with _pending_copy(dst) as release:
+        return _copy_new_file(src, dst, release)
+
+
+def _pending_path(path: str) -> str:
+    path = os.path.abspath(path)
+    key = hashlib.sha256(os.fsencode(os.path.basename(path))).hexdigest()
+    return os.path.join(os.path.dirname(path), f".mangarr-claim-chapter-pending-{key}")
+
+
+def assert_not_pending(path: str) -> None:
+    """Unknown/pending creation intent is never authority to reuse a file."""
+    pending = _pending_path(path)
+    if os.path.lexists(pending):
+        raise ProvenanceError(f"chapter copy pending explicit review: {pending}")
+
+
+@contextmanager
+def _pending_copy(path: str) -> Generator[Callable[[], None], None, None]:
+    """Persist intent before public creation; never adopt an existing intent."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    pending = _pending_path(path)
+    parent_fd = os.open(os.path.dirname(pending), flags)
+    pending_fd: int | None = None
+    receipt_created = False
+    retire = True
+
+    def release() -> None:
+        nonlocal retire
+        retire = True
+
+    try:
+        try:
+            os.mkdir(os.path.basename(pending), 0o700, dir_fd=parent_fd)
+        except FileExistsError as exc:
+            raise ProvenanceError(f"chapter copy pending explicit review: {pending}") from exc
+        created = os.stat(os.path.basename(pending), dir_fd=parent_fd, follow_symlinks=False)
+        pending_fd = os.open(os.path.basename(pending), flags, dir_fd=parent_fd)
+        held = os.fstat(pending_fd)
+        if (
+            (held.st_dev, held.st_ino) != (created.st_dev, created.st_ino)
+            or held.st_uid != os.geteuid()
+            or stat.S_IMODE(held.st_mode) not in (0o700, 0o2700)
+        ):
+            raise ProvenanceError("chapter pending private directory identity/permissions changed")
+        os.fchmod(pending_fd, 0o700)
+        marker_fd = os.open(
+            "receipt.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600, dir_fd=pending_fd,
+        )
+        receipt_created = True
+        with os.fdopen(marker_fd, "w", encoding="ascii") as marker:
+            json.dump({"version": 1, "origin": os.path.abspath(path)}, marker)
+            marker.flush()
+            os.fsync(marker.fileno())
+        os.fsync(pending_fd)
+        os.fsync(parent_fd)
+        retire = False
+        yield release
+    finally:
+        try:
+            if pending_fd is not None:
+                try:
+                    if retire and receipt_created:
+                        try:
+                            os.unlink("receipt.json", dir_fd=pending_fd)
+                        except FileNotFoundError:
+                            pass
+                    elif not retire:
+                        log.error("Chapter copy pending explicit review at %s", pending)
+                finally:
+                    os.close(pending_fd)
+                if retire and receipt_created:
+                    os.rmdir(os.path.basename(pending), dir_fd=parent_fd)
+        finally:
+            os.close(parent_fd)
+
+
+def _copy_new_file(
+    src: str, dst: str, release: Callable[[], None],
+) -> tuple[FileEvidence, bool]:
+    try:
+        verify = os.path.getsize(src) <= FINGERPRINT_MAX_BYTES
+        fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except BaseException:
+        release()
+        raise
     created = os.fstat(fd)
     try:
         digest = hashlib.sha256()
@@ -169,7 +256,8 @@ def copy_new_file(src: str, dst: str) -> tuple[FileEvidence, bool]:
         written = os.fstat(fd)
     except BaseException:
         os.close(fd)
-        _unlink_created(dst, created)
+        if _unlink_created(dst, created):
+            release()
         raise
     os.close(fd)
     try:
@@ -177,6 +265,7 @@ def copy_new_file(src: str, dst: str) -> tuple[FileEvidence, bool]:
         if stat.S_ISLNK(current.st_mode) or _identity(current) != _identity(written):
             raise ProvenanceError(f"copy was replaced while copying: {dst}")
         if not verify:
+            release()
             return FileEvidence(*_identity(written), ""), False
         evidence = fingerprint(dst)
         if (evidence.dev, evidence.inode) != _identity(created)[:2]:
@@ -184,8 +273,10 @@ def copy_new_file(src: str, dst: str) -> tuple[FileEvidence, bool]:
         if evidence.size != size or evidence.sha256 != digest.hexdigest():
             raise ProvenanceError(f"copy does not match source bytes: {dst}")
     except BaseException:
-        _unlink_created(dst, created)
+        if _unlink_created(dst, created):
+            release()
         raise
+    release()
     return evidence, True
 
 
@@ -196,13 +287,106 @@ def _write_all(fd: int, chunk: bytes) -> None:
         view = view[written:]
 
 
-def _unlink_created(path: str, created: os.stat_result) -> None:
+def _unlink_created(path: str, created: os.stat_result) -> bool:
+    return _remove_captured(path, _identity(created)[:2])
+
+
+def _remove_captured(path: str, expected: tuple[int, ...]) -> bool:
+    """Capture before checking; never unlink the shared/public entry.
+
+    Unlike durable application claims, rollback must also work after the DB
+    guard becomes invalid. A fresh private carrier needs no DB authority and
+    is never adopted/reused. Same-UID tampering inside it is outside the same
+    private-directory boundary used by private_file_claim.
+    """
+    from import_publication import _rename_noreplace
+
+    path = os.path.abspath(path)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    parent_fd: int | None = None
+    carrier_fd: int | None = None
+    carrier_path: str | None = None
+    receipt_created = False
+    captured = False
     try:
-        current = os.lstat(path)
+        parent = os.path.dirname(path)
+        parent_fd = os.open(parent, flags)
+        carrier_path = tempfile.mkdtemp(prefix=".mangarr-claim-chapter-rollback-", dir=parent)
+        created = os.lstat(carrier_path)
+        carrier_fd = os.open(os.path.basename(carrier_path), flags, dir_fd=parent_fd)
+        held = os.fstat(carrier_fd)
+        if (
+            (held.st_dev, held.st_ino) != (created.st_dev, created.st_ino)
+            or held.st_uid != os.geteuid()
+            or stat.S_IMODE(held.st_mode) not in (0o700, 0o2700)
+        ):
+            raise ProvenanceError("rollback private directory identity/permissions changed")
+        # Normalize inherited setgid only after accepting this private inode.
+        os.fchmod(carrier_fd, 0o700)
+        marker_fd = os.open(
+            "receipt.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600, dir_fd=carrier_fd,
+        )
+        receipt_created = True
+        with os.fdopen(marker_fd, "w", encoding="ascii") as marker:
+            json.dump({"version": 1, "origin": path, "expected": expected}, marker)
+            marker.flush()
+            os.fsync(marker.fileno())
+        os.fsync(carrier_fd)
+        os.fsync(parent_fd)
+        os.rename(
+            os.path.basename(path), "artifact",
+            src_dir_fd=parent_fd, dst_dir_fd=carrier_fd,
+        )
+        captured = True
+        os.fsync(carrier_fd)
+        os.fsync(parent_fd)
+        current = os.stat("artifact", dir_fd=carrier_fd, follow_symlinks=False)
+        if stat.S_ISREG(current.st_mode) and _identity(current)[:len(expected)] == expected:
+            os.unlink("artifact", dir_fd=carrier_fd)
+            captured = False
+            os.fsync(carrier_fd)
+            return True
     except FileNotFoundError:
-        return
-    if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
-        os.unlink(path)
+        pass
+    except (OSError, ProvenanceError) as exc:
+        log.warning("Chapter rollback refused for %s: %s", path, exc)
+    finally:
+        try:
+            try:
+                if captured and carrier_fd is not None and parent_fd is not None:
+                    try:
+                        # Existing atomic primitive; no check-then-rename fallback on NAS.
+                        _rename_noreplace(
+                            f"/proc/self/fd/{carrier_fd}/artifact",
+                            f"/proc/self/fd/{parent_fd}/{os.path.basename(path)}",
+                        )
+                        captured = False
+                        os.fsync(carrier_fd)
+                        os.fsync(parent_fd)
+                    except OSError as exc:
+                        log.error(
+                            "Chapter rollback retained entry at %s; restore refused: %s",
+                            carrier_path, exc,
+                        )
+                if carrier_fd is not None and not captured and receipt_created:
+                    try:
+                        os.unlink("receipt.json", dir_fd=carrier_fd)
+                    except FileNotFoundError:
+                        pass
+            finally:
+                if carrier_fd is not None:
+                    os.close(carrier_fd)
+            if parent_fd is not None and carrier_path is not None and not captured and receipt_created:
+                try:
+                    os.rmdir(os.path.basename(carrier_path), dir_fd=parent_fd)
+                    os.fsync(parent_fd)
+                except OSError:
+                    pass
+        finally:
+            if parent_fd is not None:
+                os.close(parent_fd)
+    return False
 
 
 def suwayomi_server(client: Mapping[str, Any]) -> str:

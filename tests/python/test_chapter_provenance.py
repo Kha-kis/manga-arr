@@ -720,3 +720,344 @@ def test_fingerprint_stops_reading_at_its_bound(tmp_path, monkeypatch):
     with pytest.raises(chapter_provenance.ProvenanceError):
         chapter_provenance.fingerprint(str(path))
     assert consumed["n"] <= 9
+
+
+def test_db_replaced_during_ownership_evidence_never_receives_settlement(env, monkeypatch):
+    import routers.suwayomi_ as swy
+    from file_mutation_lock import FileMutationLockError, file_mutation_guard
+
+    _queue(env)
+    foreign = env["db"] + ".foreign"
+    original = env["db"] + ".original"
+    with sqlite3.connect(env["db"]) as db, sqlite3.connect(foreign) as other:
+        db.backup(other)
+        other.execute("CREATE TABLE foreign_marker(value TEXT)")
+        other.execute("INSERT INTO foreign_marker VALUES('must remain unchanged')")
+        db.row_factory = sqlite3.Row
+        job = dict(db.execute("SELECT * FROM suwayomi_downloads").fetchone())
+    foreign_sha = _sha(foreign)
+    real = swy._chapter_ownership_evidence
+    observed = []
+
+    def replace_after_hash(*args):
+        result = real(*args)
+        assert result[0] is not None
+        os.replace(env["db"], original)
+        os.replace(foreign, env["db"])
+        observed.append(True)
+        return result
+
+    monkeypatch.setattr(swy, "_chapter_ownership_evidence", replace_after_hash)
+    with pytest.raises(FileMutationLockError):
+        with file_mutation_guard(env["db"]) as guard:
+            swy._complete_suwayomi_job_files(
+                _client(env), job, [CHAPTER_ID],
+                {CHAPTER_ID: {"name": CHAPTER_NAME, "scanlator": "Scans",
+                              "chapterNumber": 12.0, "isDownloaded": True}},
+                "Freezing", guard, source_display_name="Weeb Central (EN)",
+                source_id=SOURCE_ID,
+            )
+    assert observed == [True]
+    assert _sha(env["db"]) == foreign_sha
+    prov, chapter, jobs = _rows(env)
+    assert chapter is not None
+    assert prov == [] and chapter["status"] == "wanted"
+    assert jobs[0]["status"] == "queued"
+    with sqlite3.connect(original) as db:
+        assert db.execute("SELECT status FROM chapters").fetchone()[0] == "wanted"
+        assert db.execute("SELECT COUNT(*) FROM chapter_file_provenance").fetchone()[0] == 0
+    assert not os.path.lexists(_library_copy(env))
+    assert _source_untouched(env)
+
+
+@pytest.mark.parametrize("cleanup", ["copy_failure", "settlement_failure"])
+@pytest.mark.parametrize("replacement", ["regular", "symlink"])
+@pytest.mark.parametrize("limit", [10, 10_000_000])
+def test_rollback_preserves_entry_replaced_at_capture_boundary(
+    tmp_path, monkeypatch, cleanup, replacement, limit,
+):
+    import chapter_provenance as provenance
+
+    src = _make_cbz(tmp_path / "source.cbz")
+    dst = str(tmp_path / "copy.cbz")
+    displaced = str(tmp_path / "displaced-owned.cbz")
+    foreign = tmp_path / "foreign.cbz"
+    foreign.write_bytes(b"unrelated file must survive")
+    foreign_bytes = foreign.read_bytes()
+    monkeypatch.setattr(provenance, "FINGERPRINT_MAX_BYTES", limit)
+    evidence = None
+    if cleanup == "settlement_failure":
+        evidence, _verified = provenance.copy_new_file(src, dst)
+    else:
+        real_write = provenance._write_all
+
+        def fail_after_write(fd, data):
+            real_write(fd, data)
+            raise OSError("injected copy failure")
+
+        monkeypatch.setattr(provenance, "_write_all", fail_after_write)
+
+    real_rename, real_unlink = os.rename, os.unlink
+    swapped = []
+
+    def swap_public_entry(path, parent_fd=None):
+        candidate = os.fspath(path)
+        if parent_fd is not None and not os.path.isabs(candidate):
+            candidate = os.path.join(os.readlink(f"/proc/self/fd/{parent_fd}"), candidate)
+        if candidate == dst and not swapped:
+            os.replace(dst, displaced)
+            if replacement == "symlink":
+                os.symlink(foreign, dst)
+            else:
+                os.replace(foreign, dst)
+            swapped.append(True)
+
+    def rename(source, destination, *args, **kwargs):
+        swap_public_entry(source, kwargs.get("src_dir_fd"))
+        return real_rename(source, destination, *args, **kwargs)
+
+    def unlink(path, *args, **kwargs):
+        swap_public_entry(path, kwargs.get("dir_fd"))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(provenance.os, "rename", rename)
+    monkeypatch.setattr(provenance.os, "unlink", unlink)
+    if cleanup == "copy_failure":
+        with pytest.raises(OSError, match="injected copy failure"):
+            provenance.copy_new_file(src, dst)
+    else:
+        assert evidence is not None
+        assert provenance.remove_if_unchanged(dst, evidence) is False
+    assert swapped == [True]
+    assert os.path.lexists(dst)
+    if replacement == "symlink":
+        assert os.path.islink(dst) and os.readlink(dst) == str(foreign)
+        assert foreign.read_bytes() == foreign_bytes
+    else:
+        with open(dst, "rb") as fh:
+            assert fh.read() == foreign_bytes
+    assert _sha(src) == _sha(displaced)
+
+
+@pytest.mark.parametrize("replacement", ["regular", "symlink"])
+@pytest.mark.parametrize("refusal", ["collision", "unsupported"])
+def test_rollback_retains_captured_foreign_entry_when_restore_refused(
+    tmp_path, monkeypatch, caplog, replacement, refusal,
+):
+    import errno
+    import chapter_provenance as provenance
+    import import_publication
+
+    src = _make_cbz(tmp_path / "source.cbz")
+    dst = tmp_path / "copy.cbz"
+    evidence, _verified = provenance.copy_new_file(src, str(dst))
+    foreign = tmp_path / "foreign.cbz"
+    foreign.write_bytes(b"captured foreign bytes")
+    displaced = tmp_path / "displaced-owned.cbz"
+    real_rename = os.rename
+    captured = []
+
+    def rename(source, destination, *args, **kwargs):
+        candidate = os.fspath(source)
+        if "src_dir_fd" in kwargs:
+            candidate = os.path.join(
+                os.readlink(f"/proc/self/fd/{kwargs['src_dir_fd']}"), candidate,
+            )
+        if candidate == str(dst) and not captured:
+            os.replace(dst, displaced)
+            if replacement == "symlink":
+                os.symlink(foreign, dst)
+            else:
+                os.replace(foreign, dst)
+            result = real_rename(source, destination, *args, **kwargs)
+            captured.append(True)
+            if refusal == "collision":
+                dst.write_bytes(b"new public occupant")
+            return result
+        return real_rename(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(provenance.os, "rename", rename)
+    if refusal == "unsupported":
+        def unsupported(source, destination):
+            raise OSError(errno.EOPNOTSUPP, "no atomic restore")
+
+        monkeypatch.setattr(import_publication, "_rename_noreplace", unsupported)
+    assert provenance.remove_if_unchanged(str(dst), evidence) is False
+    assert captured == [True]
+    if refusal == "collision":
+        assert dst.read_bytes() == b"new public occupant"
+    else:
+        assert not os.path.lexists(dst)
+    carriers = list(tmp_path.glob(".mangarr-claim-chapter-rollback-*"))
+    assert len(carriers) == 1
+    artifact = carriers[0] / "artifact"
+    if replacement == "symlink":
+        assert artifact.is_symlink() and os.readlink(artifact) == str(foreign)
+        assert foreign.read_bytes() == b"captured foreign bytes"
+    else:
+        assert artifact.read_bytes() == b"captured foreign bytes"
+    receipt = json.loads((carriers[0] / "receipt.json").read_text())
+    assert receipt["origin"] == str(dst)
+    assert receipt["expected"][:2] == [evidence.dev, evidence.inode]
+    assert str(carriers[0]) in caplog.text
+    assert _sha(src) == _sha(displaced)
+
+
+def test_partial_copy_with_refused_rollback_is_never_reused_on_retry(env, monkeypatch):
+    import chapter_provenance as provenance
+
+    real_write, real_fsync = provenance._write_all, os.fsync
+    writes = []
+
+    def partial_write(fd, chunk):
+        real_write(fd, chunk[:1])
+        writes.append(True)
+        raise OSError("injected partial write")
+
+    def refuse_rollback_barrier(fd):
+        if writes:
+            raise OSError("injected rollback barrier failure")
+        real_fsync(fd)
+
+    monkeypatch.setattr(provenance, "_write_all", partial_write)
+    monkeypatch.setattr(provenance.os, "fsync", refuse_rollback_barrier)
+    _queue(env)
+    _run(env)
+    assert writes
+    prov, chapter, jobs = _rows(env)
+    assert chapter is not None
+    assert jobs[0]["status"] == "error"
+    assert chapter["status"] == "wanted" and chapter["import_path"] is None
+    assert prov == []
+    with open(_library_copy(env), "rb") as partial, open(env["source"], "rb") as source:
+        assert partial.read() == source.read(1)
+
+    # Even after the transient barrier error ends, the failed public copy is
+    # not a reusable destination; recovery of the pending receipt is explicit.
+    monkeypatch.setattr(provenance, "_write_all", real_write)
+    monkeypatch.setattr(provenance.os, "fsync", real_fsync)
+    _queue(env)
+    _run(env)
+    prov, chapter, jobs = _rows(env)
+    assert chapter is not None
+    assert [job["status"] for job in jobs] == ["error", "error"]
+    assert chapter["status"] == "wanted" and chapter["import_path"] is None
+    assert prov == [] and _source_untouched(env)
+
+
+@pytest.mark.parametrize("helper", ["pending", "rollback"])
+@pytest.mark.parametrize("failure", ["existing_receipt", "chmod_refusal", "nonprivate_mode"])
+def test_initialization_refusal_preserves_unknown_receipt_and_directory(
+    tmp_path, monkeypatch, helper, failure,
+):
+    import errno
+    import chapter_provenance as provenance
+
+    foreign = tmp_path / "preexisting-directory"
+    foreign.mkdir(mode=0o700)
+    if failure == "nonprivate_mode":
+        foreign.chmod(0o775)
+    original_mode = foreign.stat().st_mode
+    receipt_bytes = b"unrelated existing recovery authority"
+    (foreign / "receipt.json").write_bytes(receipt_bytes)
+    (foreign / "keep.bin").write_bytes(b"unrelated existing content")
+    destination = tmp_path / "copy.cbz"
+    destination.write_bytes(b"owned copy remains untouched")
+    evidence = provenance.fingerprint(str(destination))
+    displaced = tmp_path / "displaced-fresh-directory"
+    prefix = f".mangarr-claim-chapter-{helper}-"
+    real_open, real_chmod = os.open, os.fchmod
+    opened = []
+
+    def replace_before_open(path, flags, *args, **kwargs):
+        if isinstance(path, str) and path.startswith(prefix) and flags & os.O_DIRECTORY and not opened:
+            public = tmp_path / path
+            os.rename(public, displaced)
+            os.rename(foreign, public)
+            opened.append(public)
+        return real_open(path, flags, *args, **kwargs)
+
+    def chmod(fd, mode):
+        if opened and failure == "chmod_refusal":
+            raise PermissionError(errno.EPERM, "injected initialization chmod refusal")
+        return real_chmod(fd, mode)
+
+    monkeypatch.setattr(provenance.os, "open", replace_before_open)
+    monkeypatch.setattr(provenance.os, "fchmod", chmod)
+    error = None
+    try:
+        if helper == "pending":
+            with provenance._pending_copy(str(destination)):
+                pytest.fail("initialization unexpectedly accepted foreign receipt")
+        else:
+            assert provenance.remove_if_unchanged(str(destination), evidence) is False
+    except (OSError, provenance.ProvenanceError) as exc:
+        error = exc
+    assert len(opened) == 1
+    assert (opened[0] / "receipt.json").read_bytes() == receipt_bytes
+    assert (opened[0] / "keep.bin").read_bytes() == b"unrelated existing content"
+    assert opened[0].stat().st_mode == original_mode
+    assert sorted(path.name for path in opened[0].iterdir()) == ["keep.bin", "receipt.json"]
+    assert list(displaced.iterdir()) == []
+    assert destination.read_bytes() == b"owned copy remains untouched"
+    if helper == "pending":
+        # The created-directory snapshot now permits refusal before chmod or
+        # exclusive receipt creation; cleanup must preserve that root error.
+        assert isinstance(error, provenance.ProvenanceError)
+        assert "private directory identity/permissions changed" in str(error)
+    else:
+        assert error is None
+
+
+@pytest.mark.parametrize("error_name", ["EIO", "EROFS"])
+def test_rollback_closes_directory_fds_when_owned_receipt_cleanup_fails(
+    tmp_path, monkeypatch, error_name,
+):
+    import errno
+    import chapter_provenance as provenance
+
+    destination = tmp_path / "owned-copy.cbz"
+    destination.write_bytes(b"owned copy bytes")
+    evidence = provenance.fingerprint(str(destination))
+    real_open, real_unlink = os.open, os.unlink
+    opened = []
+    error_number = getattr(errno, error_name)
+
+    def record_directory_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if flags & os.O_DIRECTORY:
+            opened.append(fd)
+        return fd
+
+    def refuse_receipt_cleanup(path, *args, **kwargs):
+        if path == "receipt.json":
+            raise OSError(error_number, "injected owned receipt cleanup failure")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(provenance.os, "open", record_directory_open)
+    monkeypatch.setattr(provenance.os, "unlink", refuse_receipt_cleanup)
+    try:
+        with pytest.raises(OSError) as error:
+            provenance.remove_if_unchanged(str(destination), evidence)
+        assert error.value.errno == error_number
+        assert len(opened) == 2
+        still_open = []
+        for fd in opened:
+            try:
+                os.fstat(fd)
+            except OSError as exc:
+                assert exc.errno == errno.EBADF
+            else:
+                still_open.append(fd)
+        assert still_open == [], "receipt cleanup leaked parent/carrier directory FDs"
+        assert not destination.exists()
+        carriers = list(tmp_path.glob(".mangarr-claim-chapter-rollback-*"))
+        assert len(carriers) == 1 and (carriers[0] / "receipt.json").is_file()
+        assert not (carriers[0] / "artifact").exists()
+    finally:
+        # Close descriptors leaked by the RED baseline, never leave QA leaks.
+        for fd in opened:
+            try:
+                os.close(fd)
+            except OSError:
+                pass

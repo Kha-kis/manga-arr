@@ -1374,6 +1374,7 @@ def _import_suwayomi_chapter_copy(
     out_name = f"{safe_title} Ch{ch_str}.cbz"
     out_path = os.path.join(series_dir, out_name)
 
+    chapter_provenance.assert_not_pending(out_path)
     if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
         # Reused destination: not created here, so it never gains ownership.
         return chapter_provenance.ChapterImport(out_path, os.path.getsize(out_path))
@@ -1389,6 +1390,7 @@ def _import_suwayomi_chapter_copy(
         created, verified = chapter_provenance.copy_new_file(src, out_path)
     except FileExistsError:
         # Appeared after the check above: another writer owns it.
+        chapter_provenance.assert_not_pending(out_path)
         try:
             return chapter_provenance.ChapterImport(out_path, os.path.getsize(out_path))
         except FileNotFoundError:
@@ -1696,6 +1698,7 @@ def _complete_suwayomi_job_files(
             evidence, identity = _chapter_ownership_evidence(
                 c, job, chapter_ids, chapter_import, source_id
             )
+            guard.verify()
             with get_db() as db:
                 assert_library_file_mutation_available(db, job["series_id"])
                 db.execute(

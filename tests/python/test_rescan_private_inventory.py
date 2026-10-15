@@ -13,6 +13,70 @@ from test_rescan_transactions import rescan_env as rescan_env
 from test_import_publication_journal import _seed_queue, journal_env as journal_env
 
 
+@pytest.mark.parametrize("kind", ["pending", "rollback"])
+def test_chapter_private_directories_are_not_inventory_evidence(
+    rescan_env: dict[str, Any], tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, kind: str,
+) -> None:
+    import errno
+    import os
+    import chapter_provenance as provenance
+    import import_publication
+    import rescan
+
+    series_dir = cast(Path, rescan_env["series_dir"])
+    destination = series_dir / "owned-copy.bin"
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"owned source bytes")
+    if kind == "pending":
+        with provenance._pending_copy(str(destination)):
+            private = Path(provenance._pending_path(str(destination)))
+            artifact = private / "Private Manga v08.cbz"
+            artifact.write_bytes(b"unexpected pending private bytes")
+    else:
+        evidence, _verified = provenance.copy_new_file(str(source), str(destination))
+        foreign = tmp_path / "foreign-directory"
+        foreign.mkdir()
+        (foreign / "Private Manga v08.cbz").write_bytes(b"foreign private bytes")
+        real_rename = os.rename
+        captured = []
+
+        def swap_directory(source_name, target_name, *args, **kwargs):
+            candidate = os.fspath(source_name)
+            if "src_dir_fd" in kwargs:
+                candidate = os.path.join(
+                    os.readlink(f"/proc/self/fd/{kwargs['src_dir_fd']}"), candidate,
+                )
+            if candidate == str(destination) and not captured:
+                os.replace(destination, tmp_path / "displaced-owned.bin")
+                real_rename(foreign, destination)
+                captured.append(True)
+            return real_rename(source_name, target_name, *args, **kwargs)
+
+        def unsupported_restore(_source, _destination):
+            raise OSError(errno.EOPNOTSUPP, "atomic restore unsupported")
+
+        monkeypatch.setattr(provenance.os, "rename", swap_directory)
+        monkeypatch.setattr(import_publication, "_rename_noreplace", unsupported_restore)
+        assert provenance.remove_if_unchanged(str(destination), evidence) is False
+        assert captured == [True]
+        artifacts = list(series_dir.glob("*/artifact/Private Manga v08.cbz"))
+        assert len(artifacts) == 1
+        artifact = artifacts[0]
+        private = artifact.parent.parent
+    before = artifact.read_bytes()
+    receipt = (private / "receipt.json").read_bytes()
+    snapshot = rescan.SeriesRescanSnapshot({}, str(series_dir), (), (), (), {})
+
+    inventory = rescan.build_filesystem_inventory(snapshot)
+
+    assert inventory.on_disk == frozenset(), "chapter private bytes became volume evidence"
+    assert not inventory.any_library_files
+    assert artifact.read_bytes() == before
+    assert (private / "receipt.json").read_bytes() == receipt
+    assert source.read_bytes() == b"owned source bytes"
+
+
 @pytest.mark.parametrize(
     "private_name",
     [".mangarr-claims", ".mangarr-claim-unregistered", ".mangarr-rescan-unregistered"],
