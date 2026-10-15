@@ -15,6 +15,27 @@ Release commits must update `app/VERSION`, `CHANGELOG.md`, and the current
 release shown in `README.md` together. Automated tests enforce SemVer syntax and
 documentation consistency.
 
+## 1.3.3-rc.8 Candidate Status
+
+Source preparation began on 2026-10-15 from exact reviewed
+[PR #443](https://github.com/Kha-kis/manga-arr/pull/443) merge
+`f7cf47b0bebc35e6d42a69c1abacccd641838b71`, tree
+`5711265474d2d283a2abf8e1928a99326e67fb1c`. It includes the chapter-provenance
+foundation and the independent IPv6/NZBGet URL fixes merged in
+[#455](https://github.com/Kha-kis/manga-arr/pull/455) and
+[#456](https://github.com/Kha-kis/manga-arr/pull/456). This preparation changes
+only VERSION and four release documents; no further application, schema,
+provider, dependency, API or Compose behavior changes.
+
+No RC8 tag, image or GitHub release is published by this preparation. Source
+gate results belong to the preparation PR; they are not installed-artifact
+qualification. A separately reviewed exact merge and fresh publication/runtime
+evidence are required. RC7's interrupted full-day run supplies no passing
+elapsed or daily-repeat credit and must not be resumed or relabeled.
+Production remains the owner-controlled RC5 trial; qualified stable and stable
+aliases remain 1.3.2. See
+[RC8 qualification](release-qualification.md#133-rc8-qualification).
+
 ## 1.3.3-rc.7 Candidate Status
 
 Preparation began on 2026-10-14 from exact documentation [PR #442](https://github.com/Kha-kis/manga-arr/pull/442)
@@ -43,6 +64,10 @@ independent core and linkage audits are GO. A fresh real-provider automatic-matc
 workflow downloaded eight chapters and imported a 254-page volume, with ComicInfo,
 source/merged content hashes, history/provenance and protected-state rescan checks
 passing. Time/environment/platform gates are still required.
+The October 14-15 full-day observation subsequently failed: an unattended
+Docker package upgrade interrupted the observer before the required elapsed
+window and second daily refresh. Failed-run cleanup and protected-state
+checks passed, not qualification. The failed receipts remain immutable.
 Older receipts supply no RC7 runtime credit. See
 [RC7 qualification](release-qualification.md#133-rc7-qualification).
 Production remains RC5; qualified stable and stable aliases remain 1.3.2.

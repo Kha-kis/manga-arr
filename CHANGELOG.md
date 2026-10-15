@@ -5,6 +5,17 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.3.3-rc.8 - 2026-10-15
+
+Source preparation only; no RC8 image is published or qualified. Includes the
+reviewed Suwayomi chapter-provenance foundation and download-client URL fixes
+merged in [#443](https://github.com/Kha-kis/manga-arr/pull/443),
+[#455](https://github.com/Kha-kis/manga-arr/pull/455), and
+[#456](https://github.com/Kha-kis/manga-arr/pull/456). No earlier artifact's
+runtime receipts qualify this candidate. Production remains RC5; qualified
+stable and stable aliases remain 1.3.2. See
+[RC8 qualification](docs/release-qualification.md#133-rc8-qualification).
+
 ### Added
 
 - Suwayomi chapter imports record provenance for library copies they create
@@ -31,6 +42,11 @@ All notable changes to this project. Format roughly follows
   encoding without changing append payloads or result handling (#454).
 
 ## 1.3.3-rc.7 - 2026-10-14
+
+The October 14-15 full-day observation failed after an unattended Docker package
+upgrade interrupted its observer. Cleanup and protected-state checks passed,
+but the required elapsed window and second daily metadata refresh did not.
+This run must not be resumed or relabeled passing; its receipts remain unchanged.
 
 Replacement candidate published from exact reviewed PR #448 merge, but remains
 unqualified and not approved for stable promotion or deployment. Includes merged rescan corrections

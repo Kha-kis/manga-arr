@@ -27,6 +27,13 @@ compressed-RAR decoding. See the
 [qualification evidence and platform limits](docs/release-qualification.md#132-stable-qualification)
 before upgrading.
 
+**1.3.3-rc.8 is in source preparation, not published or qualified.** It adds the
+reviewed Suwayomi chapter-provenance foundation and IPv6/NZBGet URL corrections.
+Provenance does not enable automatic file cleanup. Fresh publication and
+artifact qualification remain required; production remains RC5 and stable
+aliases remain 1.3.2. See
+[RC8 qualification](docs/release-qualification.md#133-rc8-qualification).
+
 **1.3.3-rc.7 is published as a prerelease, but remains unqualified.** It includes the
 merged missing-loose-chapter and recorded custom-volume rescan corrections
 ([#445](https://github.com/Kha-kis/manga-arr/pull/445),
@@ -36,8 +43,10 @@ identity/attestation/security audit passed. Fresh core/cache/file/linkage and
 automatic-match controls passed, alongside ten installed-image rescan regressions;
 independent scoped audits are GO. A fresh real-provider automatic-match workflow
 also downloaded eight chapters, imported a 254-page volume and passed ComicInfo,
-content-hash and protected-state rescan checks. Time/environment/platform gates
-remain pending.
+content-hash and protected-state rescan checks. Its October 14-15 full-day
+observation failed when an unattended Docker upgrade interrupted the observer.
+Cleanup and protected-state checks passed, not the full-day gate. Remaining
+environment/platform gates are also unqualified.
 No earlier candidate's results qualify this replacement. Production
 remains RC5 and stable aliases remain 1.3.2. See
 [RC7 qualification](docs/release-qualification.md#133-rc7-qualification).

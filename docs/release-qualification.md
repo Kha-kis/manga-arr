@@ -3,11 +3,46 @@
 This document defines the evidence required before a Mangarr release candidate
 can become a stable release. Passing unit tests alone is not sufficient.
 
+## 1.3.3-rc.8 Qualification
+
+Status: **SOURCE PREPARATION ONLY; NOT PUBLISHED OR QUALIFIED; NO STABLE
+PROMOTION OR PRODUCTION CUTOVER APPROVAL** (2026-10-15).
+
+Baseline is reviewed [PR #443](https://github.com/Kha-kis/manga-arr/pull/443)
+merge `f7cf47b0bebc35e6d42a69c1abacccd641838b71`, tree
+`5711265474d2d283a2abf8e1928a99326e67fb1c`, including merged
+[#455](https://github.com/Kha-kis/manga-arr/pull/455) and
+[#456](https://github.com/Kha-kis/manga-arr/pull/456). The provenance foundation
+records only newly created, identified and verified Suwayomi chapter copies.
+One live attempt retains file, parent and pending-intent ownership through
+settlement; uncertain copies cannot be reused or adopted. Unavailable series
+do not stop later full-scan work. This is not automatic cleanup, replay or
+historical ownership backfill; [#422](https://github.com/Kha-kis/manga-arr/issues/422)
+remains open. Download-client corrections preserve IPv6 brackets and use the
+same NZBGet RPC destination for tests and downloads.
+
+This preparation changes VERSION and four release documents only. Exact-source
+release-local results are recorded on its PR, not claimed as published-image
+tests here. No prior candidate's runtime receipts qualify RC8.
+
+Before stable approval, publish only the separately reviewed exact merge and
+collect fresh identity/attestation/security, install/upgrade/recovery, cached
+metadata failure, file/linkage, new provenance safety and real download/import
+evidence. A new uninterrupted natural metadata-repeat observation is required;
+use a maintenance-aware window without disabling unattended host updates.
+Representative NAS, literal public Compose startup, native ARM runtime and
+independent final artifact-evidence review remain unqualified; no waiver is
+implied by contributor NAS testing or another candidate's scoped results.
+
+Production remains the exact published RC5 owner trial. Qualified stable and
+stable aliases remain 1.3.2. Tags, images and failed RC7 receipts are unchanged;
+neither source preparation nor publication authorizes deployment or promotion.
+
 ## 1.3.3-rc.7 Qualification
 
 Status: **IMAGE PUBLISHED; PUBLICATION, CORE/CACHE/FILE, LINKAGE/AUTOMATIC-MATCH
-AND TEN INSTALLED RESCAN CONTROL SCOPED AUDITS GO; UNQUALIFIED; NOT CLEARED FOR
-STABLE PROMOTION OR DEPLOYMENT** (2026-10-14). Production remains RC5;
+AND TEN INSTALLED RESCAN CONTROL SCOPED AUDITS GO; FULL-DAY OBSERVATION FAILED;
+UNQUALIFIED; NOT CLEARED FOR STABLE PROMOTION OR DEPLOYMENT** (2026-10-15). Production remains RC5;
 1.3.2 remains qualified stable and owns stable aliases.
 
 ### Source And Preparation Boundary
@@ -199,6 +234,28 @@ archive is hash-bound. The complete 102-file runtime manifest verified with exit
 its SHA256 is
 `5369d279342e1c7c6cf422f8e877a745201548527b1950b11389b0972d995107`.
 Production remained the same healthy RC5 container; stable aliases remain 1.3.2.
+
+### Failed Full-Day Observation
+
+The fresh October 14-15 network-none, unmonitored-fixture observation failed
+at 2026-10-15 16:09:23 UTC when an unattended Docker 29.9.0 to 29.9.1 package
+upgrade restarted the daemon and interrupted the attach observer. Its last
+sample covered 84,302 seconds, below the required 87,600-second window. Only
+one native daily metadata refresh completed; the second was due after the
+candidate had stopped. No full-day or daily-repeat credit follows. This is a
+verified host-maintenance interruption, not evidence of an application crash
+or OOM; automatic updates were left enabled.
+
+The observer exited 2. Failed-run cleanup exited 0, and original deadline
+cleanup completed at 17:06:52 UTC. The candidate and scratch mount were absent;
+the observer had no running process and its timer had no future trigger.
+Independent stopped-archive checksum/gzip, database integrity/foreign keys,
+protected tables/schema/files/cache/linkages and established exception checks
+passed. Production remained the same healthy RC5 container with zero restarts.
+These are failed-run preservation/cleanup results, not passing qualification.
+Original failed receipts remain unchanged: do not restart, resume or relabel
+this run, and do not transfer its elapsed time to RC8. This fixture never
+claimed provider-positive refresh or monitored acquisition coverage.
 
 ### Remaining Fresh Qualification
 
