@@ -21,7 +21,7 @@ import stat
 import tempfile
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -43,6 +43,27 @@ class FileEvidence:
     size: int
     mtime_ns: int
     sha256: str
+
+
+@dataclass
+class _OwnedCopy:
+    """Live allocation authority, never reconstructed from file evidence."""
+
+    _descriptor: int | None = None
+
+    def matches(self, expected: tuple[int, ...]) -> bool:
+        if self._descriptor is None:
+            return False
+        try:
+            held = os.fstat(self._descriptor)
+        except OSError:
+            return False
+        return stat.S_ISREG(held.st_mode) and _identity(held)[:2] == expected[:2]
+
+    def close(self) -> None:
+        descriptor, self._descriptor = self._descriptor, None
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 @dataclass(frozen=True)
@@ -72,6 +93,11 @@ class ChapterImport:
     created: FileEvidence | None = None
     verified: bool = False
     identified: bool = False
+    _owner: _OwnedCopy | None = field(default=None, compare=False, repr=False)
+
+    def close(self) -> None:
+        if self._owner is not None:
+            self._owner.close()
 
 
 def _identity(st: os.stat_result) -> tuple[int, int, int, int]:
@@ -126,14 +152,18 @@ def same_file(path: str, evidence: FileEvidence) -> bool:
     )
 
 
-def remove_if_unchanged(path: str, evidence: FileEvidence) -> bool:
+def remove_if_unchanged(
+    path: str, evidence: FileEvidence, *, _owner: _OwnedCopy | None = None,
+) -> bool:
     """Roll back a copy this import created, only if it is still that file."""
     return _remove_captured(
-        path, (evidence.dev, evidence.inode, evidence.size, evidence.mtime_ns)
+        path, (evidence.dev, evidence.inode, evidence.size, evidence.mtime_ns), _owner
     )
 
 
-def copy_new_file(src: str, dst: str) -> tuple[FileEvidence, bool]:
+def copy_new_file(
+    src: str, dst: str, *, _owner: _OwnedCopy | None = None,
+) -> tuple[FileEvidence, bool]:
     """Create ``dst`` exclusively from ``src`` and verify the copy.
 
     Returns ``(evidence, verified)``. ``evidence`` always identifies the file
@@ -147,8 +177,15 @@ def copy_new_file(src: str, dst: str) -> tuple[FileEvidence, bool]:
     back only the captured created file or retain a pending receipt that
     blocks reuse until explicit review.
     """
-    with _pending_copy(dst) as release:
-        return _copy_new_file(src, dst, release)
+    if _owner is not None and _owner._descriptor is not None:
+        raise ProvenanceError("copy owner already holds an inode")
+    try:
+        with _pending_copy(dst) as release:
+            return _copy_new_file(src, dst, release, _owner)
+    except BaseException:
+        if _owner is not None:
+            _owner.close()
+        raise
 
 
 def _pending_path(path: str) -> str:
@@ -226,20 +263,27 @@ def _pending_copy(path: str) -> Generator[Callable[[], None], None, None]:
 
 
 def _copy_new_file(
-    src: str, dst: str, release: Callable[[], None],
+    src: str, dst: str, release: Callable[[], None], owner: _OwnedCopy | None,
 ) -> tuple[FileEvidence, bool]:
+    owned = owner if owner is not None else _OwnedCopy()
+    source_fd: int | None = None
+    created: os.stat_result | None = None
+    output_created = False
+    succeeded = False
     try:
-        verify = os.path.getsize(src) <= FINGERPRINT_MAX_BYTES
-        fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    except BaseException:
-        release()
-        raise
-    created = os.fstat(fd)
-    try:
+        source_fd = os.open(src, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
         digest = hashlib.sha256()
         size = 0
-        with open(src, "rb") as source:
+        with os.fdopen(source_fd, "rb") as source:
+            source_fd = None
             source_before = os.fstat(source.fileno())
+            if not stat.S_ISREG(source_before.st_mode):
+                raise ProvenanceError(f"source is not a regular file: {src}")
+            verify = source_before.st_size <= FINGERPRINT_MAX_BYTES
+            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o644)
+            owned._descriptor = fd
+            output_created = True
+            created = os.fstat(fd)
             while chunk := source.read(_HASH_CHUNK_SIZE):
                 size += len(chunk)
                 if size > source_before.st_size:
@@ -254,30 +298,31 @@ def _copy_new_file(
         os.utime(fd, ns=(source_after.st_atime_ns, source_after.st_mtime_ns))
         os.fsync(fd)
         written = os.fstat(fd)
-    except BaseException:
-        os.close(fd)
-        if _unlink_created(dst, created):
-            release()
-        raise
-    os.close(fd)
-    try:
         current = os.lstat(dst)
         if stat.S_ISLNK(current.st_mode) or _identity(current) != _identity(written):
             raise ProvenanceError(f"copy was replaced while copying: {dst}")
-        if not verify:
-            release()
-            return FileEvidence(*_identity(written), ""), False
-        evidence = fingerprint(dst)
-        if (evidence.dev, evidence.inode) != _identity(created)[:2]:
-            raise ProvenanceError(f"copy was replaced while verifying: {dst}")
-        if evidence.size != size or evidence.sha256 != digest.hexdigest():
-            raise ProvenanceError(f"copy does not match source bytes: {dst}")
+        if verify:
+            evidence = fingerprint(dst)
+            if (evidence.dev, evidence.inode) != _identity(created)[:2]:
+                raise ProvenanceError(f"copy was replaced while verifying: {dst}")
+            if evidence.size != size or evidence.sha256 != digest.hexdigest():
+                raise ProvenanceError(f"copy does not match source bytes: {dst}")
+        else:
+            evidence = FileEvidence(*_identity(written), "")
+        release()
+        succeeded = True
+        return evidence, verify
     except BaseException:
-        if _unlink_created(dst, created):
+        if not output_created or (created is not None and _unlink_created(dst, created, owned)):
             release()
         raise
-    release()
-    return evidence, True
+    finally:
+        try:
+            if source_fd is not None:
+                os.close(source_fd)
+        finally:
+            if not succeeded or owner is None:
+                owned.close()
 
 
 def _write_all(fd: int, chunk: bytes) -> None:
@@ -287,11 +332,11 @@ def _write_all(fd: int, chunk: bytes) -> None:
         view = view[written:]
 
 
-def _unlink_created(path: str, created: os.stat_result) -> bool:
-    return _remove_captured(path, _identity(created)[:2])
+def _unlink_created(path: str, created: os.stat_result, owner: _OwnedCopy) -> bool:
+    return _remove_captured(path, _identity(created)[:2], owner)
 
 
-def _remove_captured(path: str, expected: tuple[int, ...]) -> bool:
+def _remove_captured(path: str, expected: tuple[int, ...], owner: _OwnedCopy | None = None) -> bool:
     """Capture before checking; never unlink the shared/public entry.
 
     Unlike durable application claims, rollback must also work after the DB
@@ -301,6 +346,8 @@ def _remove_captured(path: str, expected: tuple[int, ...]) -> bool:
     """
     from import_publication import _rename_noreplace
 
+    if owner is None or not owner.matches(expected):
+        return False
     path = os.path.abspath(path)
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     parent_fd: int | None = None
@@ -342,7 +389,11 @@ def _remove_captured(path: str, expected: tuple[int, ...]) -> bool:
         os.fsync(carrier_fd)
         os.fsync(parent_fd)
         current = os.stat("artifact", dir_fd=carrier_fd, follow_symlinks=False)
-        if stat.S_ISREG(current.st_mode) and _identity(current)[:len(expected)] == expected:
+        if (
+            stat.S_ISREG(current.st_mode)
+            and _identity(current)[:len(expected)] == expected
+            and owner.matches(expected)
+        ):
             os.unlink("artifact", dir_fd=carrier_fd)
             captured = False
             os.fsync(carrier_fd)

@@ -52,6 +52,17 @@ def _sha(path):
 
 
 @pytest.fixture
+def owned_copy():
+    import chapter_provenance
+
+    owner = chapter_provenance._OwnedCopy()
+    try:
+        yield owner
+    finally:
+        owner.close()
+
+
+@pytest.fixture
 def env(tmp_path, monkeypatch):
     import main
     import security
@@ -431,16 +442,16 @@ def test_copy_new_file_refuses_existing_destination(tmp_path):
     assert _sha(dst) == before
 
 
-def test_remove_if_unchanged_keeps_a_replaced_file(tmp_path):
+def test_remove_if_unchanged_keeps_a_replaced_file(tmp_path, owned_copy):
     import chapter_provenance
 
     src = _make_cbz(tmp_path / "src.cbz")
     dst = str(tmp_path / "dst.cbz")
-    evidence, verified = chapter_provenance.copy_new_file(src, dst)
+    evidence, verified = chapter_provenance.copy_new_file(src, dst, _owner=owned_copy)
     assert verified
     os.unlink(dst)
     _make_cbz(dst, page_count=9)
-    assert chapter_provenance.remove_if_unchanged(dst, evidence) is False
+    assert chapter_provenance.remove_if_unchanged(dst, evidence, _owner=owned_copy) is False
     assert os.path.exists(dst)
 
 
@@ -553,7 +564,7 @@ def test_empty_placeholder_overwrite_records_nothing(env):
 def test_destination_created_by_another_writer_is_reused(env, monkeypatch):
     import chapter_provenance
 
-    def _race(src, dst):
+    def _race(src, dst, **_kwargs):
         _make_cbz(dst, page_count=6)
         raise FileExistsError(dst)
 
@@ -774,7 +785,7 @@ def test_db_replaced_during_ownership_evidence_never_receives_settlement(env, mo
 @pytest.mark.parametrize("replacement", ["regular", "symlink"])
 @pytest.mark.parametrize("limit", [10, 10_000_000])
 def test_rollback_preserves_entry_replaced_at_capture_boundary(
-    tmp_path, monkeypatch, cleanup, replacement, limit,
+    tmp_path, monkeypatch, cleanup, replacement, limit, owned_copy,
 ):
     import chapter_provenance as provenance
 
@@ -787,7 +798,7 @@ def test_rollback_preserves_entry_replaced_at_capture_boundary(
     monkeypatch.setattr(provenance, "FINGERPRINT_MAX_BYTES", limit)
     evidence = None
     if cleanup == "settlement_failure":
-        evidence, _verified = provenance.copy_new_file(src, dst)
+        evidence, _verified = provenance.copy_new_file(src, dst, _owner=owned_copy)
     else:
         real_write = provenance._write_all
 
@@ -827,7 +838,7 @@ def test_rollback_preserves_entry_replaced_at_capture_boundary(
             provenance.copy_new_file(src, dst)
     else:
         assert evidence is not None
-        assert provenance.remove_if_unchanged(dst, evidence) is False
+        assert provenance.remove_if_unchanged(dst, evidence, _owner=owned_copy) is False
     assert swapped == [True]
     assert os.path.lexists(dst)
     if replacement == "symlink":
@@ -842,7 +853,7 @@ def test_rollback_preserves_entry_replaced_at_capture_boundary(
 @pytest.mark.parametrize("replacement", ["regular", "symlink"])
 @pytest.mark.parametrize("refusal", ["collision", "unsupported"])
 def test_rollback_retains_captured_foreign_entry_when_restore_refused(
-    tmp_path, monkeypatch, caplog, replacement, refusal,
+    tmp_path, monkeypatch, caplog, replacement, refusal, owned_copy,
 ):
     import errno
     import chapter_provenance as provenance
@@ -850,7 +861,7 @@ def test_rollback_retains_captured_foreign_entry_when_restore_refused(
 
     src = _make_cbz(tmp_path / "source.cbz")
     dst = tmp_path / "copy.cbz"
-    evidence, _verified = provenance.copy_new_file(src, str(dst))
+    evidence, _verified = provenance.copy_new_file(src, str(dst), _owner=owned_copy)
     foreign = tmp_path / "foreign.cbz"
     foreign.write_bytes(b"captured foreign bytes")
     displaced = tmp_path / "displaced-owned.cbz"
@@ -882,7 +893,7 @@ def test_rollback_retains_captured_foreign_entry_when_restore_refused(
             raise OSError(errno.EOPNOTSUPP, "no atomic restore")
 
         monkeypatch.setattr(import_publication, "_rename_noreplace", unsupported)
-    assert provenance.remove_if_unchanged(str(dst), evidence) is False
+    assert provenance.remove_if_unchanged(str(dst), evidence, _owner=owned_copy) is False
     assert captured == [True]
     if refusal == "collision":
         assert dst.read_bytes() == b"new public occupant"
@@ -948,7 +959,7 @@ def test_partial_copy_with_refused_rollback_is_never_reused_on_retry(env, monkey
 @pytest.mark.parametrize("helper", ["pending", "rollback"])
 @pytest.mark.parametrize("failure", ["existing_receipt", "chmod_refusal", "nonprivate_mode"])
 def test_initialization_refusal_preserves_unknown_receipt_and_directory(
-    tmp_path, monkeypatch, helper, failure,
+    tmp_path, monkeypatch, helper, failure, owned_copy,
 ):
     import errno
     import chapter_provenance as provenance
@@ -962,8 +973,9 @@ def test_initialization_refusal_preserves_unknown_receipt_and_directory(
     (foreign / "receipt.json").write_bytes(receipt_bytes)
     (foreign / "keep.bin").write_bytes(b"unrelated existing content")
     destination = tmp_path / "copy.cbz"
-    destination.write_bytes(b"owned copy remains untouched")
-    evidence = provenance.fingerprint(str(destination))
+    source = tmp_path / "original-source.cbz"
+    source.write_bytes(b"owned copy remains untouched")
+    evidence, _verified = provenance.copy_new_file(str(source), str(destination), _owner=owned_copy)
     displaced = tmp_path / "displaced-fresh-directory"
     prefix = f".mangarr-claim-chapter-{helper}-"
     real_open, real_chmod = os.open, os.fchmod
@@ -990,7 +1002,7 @@ def test_initialization_refusal_preserves_unknown_receipt_and_directory(
             with provenance._pending_copy(str(destination)):
                 pytest.fail("initialization unexpectedly accepted foreign receipt")
         else:
-            assert provenance.remove_if_unchanged(str(destination), evidence) is False
+            assert provenance.remove_if_unchanged(str(destination), evidence, _owner=owned_copy) is False
     except (OSError, provenance.ProvenanceError) as exc:
         error = exc
     assert len(opened) == 1
@@ -1011,14 +1023,15 @@ def test_initialization_refusal_preserves_unknown_receipt_and_directory(
 
 @pytest.mark.parametrize("error_name", ["EIO", "EROFS"])
 def test_rollback_closes_directory_fds_when_owned_receipt_cleanup_fails(
-    tmp_path, monkeypatch, error_name,
+    tmp_path, monkeypatch, error_name, owned_copy,
 ):
     import errno
     import chapter_provenance as provenance
 
     destination = tmp_path / "owned-copy.cbz"
-    destination.write_bytes(b"owned copy bytes")
-    evidence = provenance.fingerprint(str(destination))
+    source = tmp_path / "source.cbz"
+    source.write_bytes(b"owned copy bytes")
+    evidence, _verified = provenance.copy_new_file(str(source), str(destination), _owner=owned_copy)
     real_open, real_unlink = os.open, os.unlink
     opened = []
     error_number = getattr(errno, error_name)
@@ -1038,7 +1051,7 @@ def test_rollback_closes_directory_fds_when_owned_receipt_cleanup_fails(
     monkeypatch.setattr(provenance.os, "unlink", refuse_receipt_cleanup)
     try:
         with pytest.raises(OSError) as error:
-            provenance.remove_if_unchanged(str(destination), evidence)
+            provenance.remove_if_unchanged(str(destination), evidence, _owner=owned_copy)
         assert error.value.errno == error_number
         assert len(opened) == 2
         still_open = []
@@ -1061,3 +1074,223 @@ def test_rollback_closes_directory_fds_when_owned_receipt_cleanup_fails(
                 os.close(fd)
             except OSError:
                 pass
+
+
+@pytest.mark.parametrize("failure,limit", [("stream", 10), ("stream", 10_000_000), ("verification", 10_000_000)])
+def test_created_inode_stays_pinned_through_failure_capture(tmp_path, monkeypatch, failure, limit):
+    import errno
+    import chapter_provenance as provenance
+
+    source = _make_cbz(tmp_path / "source.cbz")
+    destination = str(tmp_path / "copy.cbz")
+    monkeypatch.setattr(provenance, "FINGERPRINT_MAX_BYTES", limit)
+    real_open, real_capture = os.open, provenance._remove_captured
+    created = []
+    observed = []
+
+    def open_file(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if os.fspath(path) == destination and flags & os.O_CREAT:
+            created.append((fd, os.fstat(fd)))
+        return fd
+
+    def capture(*args, **kwargs):
+        fd, original = created[0]
+        try:
+            held = os.fstat(fd)
+            observed.append((held.st_dev, held.st_ino) == (original.st_dev, original.st_ino))
+        except OSError:
+            observed.append(False)
+        return real_capture(*args, **kwargs)
+
+    def fail(*args):
+        raise provenance.ProvenanceError("injected copy boundary failure")
+
+    monkeypatch.setattr(provenance.os, "open", open_file)
+    monkeypatch.setattr(provenance, "_remove_captured", capture)
+    monkeypatch.setattr(provenance, "_write_all" if failure == "stream" else "fingerprint", fail)
+    with pytest.raises(provenance.ProvenanceError, match="copy boundary failure"):
+        provenance.copy_new_file(source, destination)
+    assert observed == [True], "created inode was unpinned before rollback capture"
+    assert not os.path.lexists(destination)
+    with pytest.raises(OSError) as closed:
+        os.fstat(created[0][0])
+    assert closed.value.errno == errno.EBADF
+
+
+def test_unpinned_file_evidence_never_authorizes_deletion(tmp_path):
+    import chapter_provenance as provenance
+
+    source = _make_cbz(tmp_path / "source.cbz")
+    destination = str(tmp_path / "copy.cbz")
+    evidence, _verified = provenance.copy_new_file(source, destination)
+    before = _sha(destination)
+    assert provenance.remove_if_unchanged(destination, evidence) is False
+    assert _sha(destination) == before
+
+
+@pytest.mark.parametrize("settlement_failure", [False, True])
+@pytest.mark.parametrize("limit", [10, 10_000_000])
+def test_route_pins_created_inode_until_settlement_then_closes(env, monkeypatch, settlement_failure, limit):
+    import errno
+    import chapter_provenance as provenance
+    import routers.suwayomi_ as swy
+
+    destination = _library_copy(env)
+    monkeypatch.setattr(provenance, "FINGERPRINT_MAX_BYTES", limit)
+    real_open, real_evidence, real_record = os.open, swy._chapter_ownership_evidence, provenance.record
+    created = []
+    observed = []
+
+    def open_file(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if os.fspath(path) == destination and flags & os.O_CREAT:
+            created.append((fd, os.fstat(fd)))
+        return fd
+
+    def observe():
+        fd, original = created[-1]
+        try:
+            held = os.fstat(fd)
+            observed.append((held.st_dev, held.st_ino) == (original.st_dev, original.st_ino))
+        except OSError:
+            observed.append(False)
+
+    def evidence(*args):
+        observe()
+        return real_evidence(*args)
+
+    def record(*args, **kwargs):
+        observe()
+        return real_record(*args, **kwargs)
+
+    monkeypatch.setattr(provenance.os, "open", open_file)
+    monkeypatch.setattr(swy, "_chapter_ownership_evidence", evidence)
+    monkeypatch.setattr(provenance, "record", record)
+    if settlement_failure:
+        _fail_settlement(monkeypatch, observe)
+    _queue(env)
+    _run(env)
+    assert observed and all(observed), "settlement used tuple evidence after the owned FD closed"
+    for fd, _original in created:
+        with pytest.raises(OSError) as closed:
+            os.fstat(fd)
+        assert closed.value.errno == errno.EBADF
+    _prov, chapter, jobs = _rows(env)
+    assert chapter is not None
+    assert jobs[0]["status"] == ("error" if settlement_failure else "completed")
+    assert chapter["status"] == ("wanted" if settlement_failure else "downloaded")
+    assert _source_untouched(env)
+
+
+def test_copy_refuses_a_symlink_source_before_any_public_creation(tmp_path):
+    import chapter_provenance as provenance
+
+    foreign = _make_cbz(tmp_path / "foreign.cbz")
+    source = tmp_path / "selected.cbz"
+    source.symlink_to(foreign)
+    destination = str(tmp_path / "copy.cbz")
+    before = _sha(foreign)
+    with pytest.raises((OSError, provenance.ProvenanceError)):
+        provenance.copy_new_file(str(source), destination)
+    assert not os.path.lexists(destination)
+    assert _sha(foreign) == before
+
+
+def test_source_symlink_swap_after_selection_never_records_foreign_bytes(env, monkeypatch):
+    from pathlib import Path
+    import routers.suwayomi_ as swy
+
+    source = Path(env["source"])
+    held_original = source.with_name("held-original.cbz")
+    foreign = source.with_name("foreign.cbz")
+    _make_cbz(foreign, page_count=8)
+    foreign_sha = _sha(foreign)
+    real = swy._source_chapter_cbz
+    swapped = []
+
+    def select_then_swap(*args, **kwargs):
+        selected = real(*args, **kwargs)
+        if selected and not swapped:
+            source.rename(held_original)
+            source.symlink_to(foreign)
+            swapped.append(True)
+        return selected
+
+    monkeypatch.setattr(swy, "_source_chapter_cbz", select_then_swap)
+    _queue(env)
+    _run(env)
+    provenance, chapter, jobs = _rows(env)
+    assert swapped == [True]
+    assert jobs[0]["status"] == "error"
+    assert chapter is not None and chapter["status"] == "wanted"
+    assert provenance == [] and not os.path.lexists(_library_copy(env))
+    assert _sha(held_original) == env["source_sha"]
+    assert _sha(foreign) == foreign_sha
+
+
+def test_copy_size_bound_uses_the_open_source_descriptor(tmp_path, monkeypatch):
+    import chapter_provenance as provenance
+
+    source = _make_cbz(tmp_path / "source.cbz")
+    destination = str(tmp_path / "copy.cbz")
+    real = os.path.getsize
+    monkeypatch.setattr(provenance, "FINGERPRINT_MAX_BYTES", 10)
+    monkeypatch.setattr(provenance.os.path, "getsize", lambda path: 0 if path == source else real(path))
+    evidence, verified = provenance.copy_new_file(source, destination)
+    assert verified is False and evidence.sha256 == ""
+    assert _sha(destination) == _sha(source)
+
+
+@pytest.mark.parametrize("kind", ["fifo", "directory"])
+def test_nonregular_source_is_refused_without_blocking(tmp_path, kind):
+    import subprocess
+
+    source = tmp_path / "selected.cbz"
+    destination = tmp_path / "copy.cbz"
+    if kind == "fifo":
+        os.mkfifo(source)
+    else:
+        source.mkdir()
+    script = """
+import sys
+import chapter_provenance as provenance
+try:
+    provenance.copy_new_file(sys.argv[1], sys.argv[2])
+except (OSError, provenance.ProvenanceError):
+    pass
+else:
+    raise AssertionError('nonregular source was accepted')
+"""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", script, str(source), str(destination)],
+            capture_output=True, text=True, timeout=3,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("source open blocked before regular-file validation")
+    assert result.returncode == 0, result.stderr
+    assert not os.path.lexists(destination)
+    assert source.exists()
+
+
+def test_live_pin_prevents_recreated_entry_from_becoming_owned(tmp_path, owned_copy):
+    import chapter_provenance as provenance
+
+    source = _make_cbz(tmp_path / "source.cbz")
+    destination = str(tmp_path / "copy.cbz")
+    evidence, _verified = provenance.copy_new_file(source, destination, _owner=owned_copy)
+    assert provenance.fingerprint(destination) == evidence
+    os.unlink(destination)
+    foreign_bytes = b"f" * evidence.size
+    with open(destination, "wb") as foreign:
+        foreign.write(foreign_bytes)
+    os.utime(destination, ns=(evidence.mtime_ns, evidence.mtime_ns))
+    # The original allocation remains live after unlink; it cannot be reused
+    # by the native recreated entry while that descriptor is still held.
+    assert owned_copy.matches((evidence.dev, evidence.inode))
+    assert os.stat(destination).st_ino != evidence.inode
+    assert provenance.remove_if_unchanged(destination, evidence, _owner=owned_copy) is False
+    with open(destination, "rb") as foreign:
+        assert foreign.read() == foreign_bytes
+    assert _sha(source) == evidence.sha256

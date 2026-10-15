@@ -16,7 +16,7 @@ from test_import_publication_journal import _seed_queue, journal_env as journal_
 @pytest.mark.parametrize("kind", ["pending", "rollback"])
 def test_chapter_private_directories_are_not_inventory_evidence(
     rescan_env: dict[str, Any], tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch, kind: str,
+    monkeypatch: pytest.MonkeyPatch, kind: str, request: pytest.FixtureRequest,
 ) -> None:
     import errno
     import os
@@ -34,7 +34,9 @@ def test_chapter_private_directories_are_not_inventory_evidence(
             artifact = private / "Private Manga v08.cbz"
             artifact.write_bytes(b"unexpected pending private bytes")
     else:
-        evidence, _verified = provenance.copy_new_file(str(source), str(destination))
+        owner = provenance._OwnedCopy()
+        request.addfinalizer(owner.close)
+        evidence, _verified = provenance.copy_new_file(str(source), str(destination), _owner=owner)
         foreign = tmp_path / "foreign-directory"
         foreign.mkdir()
         (foreign / "Private Manga v08.cbz").write_bytes(b"foreign private bytes")
@@ -58,7 +60,7 @@ def test_chapter_private_directories_are_not_inventory_evidence(
 
         monkeypatch.setattr(provenance.os, "rename", swap_directory)
         monkeypatch.setattr(import_publication, "_rename_noreplace", unsupported_restore)
-        assert provenance.remove_if_unchanged(str(destination), evidence) is False
+        assert provenance.remove_if_unchanged(str(destination), evidence, _owner=owner) is False
         assert captured == [True]
         artifacts = list(series_dir.glob("*/artifact/Private Manga v08.cbz"))
         assert len(artifacts) == 1
@@ -68,13 +70,173 @@ def test_chapter_private_directories_are_not_inventory_evidence(
     receipt = (private / "receipt.json").read_bytes()
     snapshot = rescan.SeriesRescanSnapshot({}, str(series_dir), (), (), (), {})
 
-    inventory = rescan.build_filesystem_inventory(snapshot)
-
-    assert inventory.on_disk == frozenset(), "chapter private bytes became volume evidence"
-    assert not inventory.any_library_files
+    if kind == "pending":
+        with pytest.raises(OSError):
+            rescan.build_filesystem_inventory(snapshot)
+    else:
+        inventory = rescan.build_filesystem_inventory(snapshot)
+        assert inventory.on_disk == frozenset(), "chapter private bytes became volume evidence"
+        assert not inventory.any_library_files
     assert artifact.read_bytes() == before
     assert (private / "receipt.json").read_bytes() == receipt
     assert source.read_bytes() == b"owned source bytes"
+
+
+def _failed_pending_public_copy(
+    tmp_path: Path, destination: Path, monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path, bytes]:
+    import os
+    import chapter_provenance as provenance
+
+    source = tmp_path / "complete-source.cbz"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("001.jpg", b"complete original page bytes")
+    source_bytes = source.read_bytes()
+    real_write, real_fsync = provenance._write_all, os.fsync
+    written = False
+
+    def partial_write(fd, chunk):
+        nonlocal written
+        real_write(fd, chunk[:1])
+        written = True
+        raise OSError("injected partial-copy failure")
+
+    def refuse_rollback(fd):
+        if written:
+            raise OSError("injected rollback barrier refusal")
+        real_fsync(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(provenance, "_write_all", partial_write)
+        patch.setattr(provenance.os, "fsync", refuse_rollback)
+        with pytest.raises(OSError, match="partial-copy failure"):
+            provenance.copy_new_file(str(source), str(destination))
+    pending = Path(provenance._pending_path(str(destination)))
+    assert destination.read_bytes() == source_bytes[:1]
+    assert (pending / "receipt.json").is_file()
+    with pytest.raises(provenance.ProvenanceError):
+        provenance.assert_not_pending(str(destination))
+    return source, pending, source_bytes
+
+
+def _library_state(db_path: str) -> dict[str, list[tuple[Any, ...]]]:
+    with sqlite3.connect(db_path) as db:
+        return {
+            table: db.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()
+            for table in ("series", "volumes", "chapters", "events", "history")
+        }
+
+
+@pytest.mark.parametrize("kind", ["chapter", "volume"])
+def test_failed_pending_public_copy_refuses_rescan_without_positive_credit(
+    rescan_env: dict[str, Any], tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, kind: str,
+) -> None:
+    import rescan
+
+    root = cast(Path, rescan_env["series_dir"])
+    path = root / ("Race Manga Ch001.cbz" if kind == "chapter" else "Race Manga v08.cbz")
+    source, pending, source_bytes = _failed_pending_public_copy(tmp_path, path, monkeypatch)
+    receipt = (pending / "receipt.json").read_bytes()
+    with sqlite3.connect(str(rescan_env["db_path"])) as db:
+        db.execute("INSERT INTO chapters(series_id,chapter_num,status) VALUES(7,1,'wanted')")
+    before = _library_state(str(rescan_env["db_path"]))
+    enriched = []
+    monkeypatch.setattr(rescan, "enrich_reconciled_files", enriched.append)
+
+    with pytest.raises(OSError):
+        rescan.rescan_series_folder(7)
+
+    assert _library_state(str(rescan_env["db_path"])) == before
+    assert enriched == []
+    assert path.read_bytes() == source_bytes[:1]
+    assert (pending / "receipt.json").read_bytes() == receipt
+    assert source.read_bytes() == source_bytes
+
+
+@pytest.mark.parametrize("present", [True, False])
+@pytest.mark.parametrize(
+    ("count_source", "marker"),
+    [("local", "intent"), ("anilist", "symlink"), ("manual", "opaque"), ("local", "unreadable")],
+)
+def test_pending_uncertainty_preserves_downloaded_cache_totals_and_floors(
+    rescan_env: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    present: bool, count_source: str, marker: str,
+) -> None:
+    import rescan
+
+    root = cast(Path, rescan_env["series_dir"])
+    path = root / "Race Manga Ch001.cbz"
+    source, pending, source_bytes = _failed_pending_public_copy(tmp_path, path, monkeypatch)
+    receipt_path = pending / "receipt.json"
+    receipt = receipt_path.read_bytes()
+    if not present:
+        path.unlink()
+    if marker in ("symlink", "opaque"):
+        retained = tmp_path / "retained-intent"
+        pending.rename(retained)
+        receipt_path = retained / "receipt.json"
+        if marker == "symlink":
+            pending.symlink_to(tmp_path / "missing-intent-target", target_is_directory=True)
+        else:
+            pending.write_bytes(b"unknown pending authority")
+    elif marker == "unreadable":
+        pending.chmod(0)
+    with sqlite3.connect(str(rescan_env["db_path"])) as db:
+        db.execute(
+            "UPDATE series SET total_volumes=9,total_chapters=17,vol_count_source=?,"
+            "chapter_count_source=? WHERE id=7", (count_source, count_source),
+        )
+        db.execute(
+            "INSERT INTO volumes(series_id,volume_num,status,import_path,size_bytes,quality)"
+            " VALUES(7,3,'downloaded',?,700,'cbz')", (str(root / "Race Manga v03.cbz"),),
+        )
+        db.execute(
+            "INSERT INTO chapters(series_id,chapter_num,status,import_path,size_bytes,quality,imported_at)"
+            " VALUES(7,1,'downloaded',?,900,'cbz','2025-01-01')", (str(path),),
+        )
+    before = _library_state(str(rescan_env["db_path"]))
+    enriched = []
+    monkeypatch.setattr(rescan, "enrich_reconciled_files", enriched.append)
+    try:
+        with pytest.raises(OSError):
+            rescan.rescan_series_folder(7)
+        if marker == "unreadable":
+            assert pending.stat().st_mode & 0o777 == 0
+    finally:
+        if marker == "unreadable":
+            pending.chmod(0o700)
+    assert _library_state(str(rescan_env["db_path"])) == before
+    assert enriched == []
+    assert path.exists() is present
+    if present:
+        assert path.read_bytes() == source_bytes[:1]
+    assert receipt_path.read_bytes() == receipt
+    assert source.read_bytes() == source_bytes
+
+
+def test_failed_pending_public_copy_refuses_adoption_before_series_creation(
+    rescan_env: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import library_scan
+
+    target = cast(Path, rescan_env["library_root"]) / "Adopt Me"
+    target.mkdir()
+    path = target / "Adopt Me v08.cbz"
+    source, pending, source_bytes = _failed_pending_public_copy(tmp_path, path, monkeypatch)
+    receipt = (pending / "receipt.json").read_bytes()
+    before = _library_state(str(rescan_env["db_path"]))
+    enriched = []
+    monkeypatch.setattr(library_scan, "enrich_reconciled_files", enriched.append)
+
+    with pytest.raises(OSError):
+        library_scan.adopt_unmapped_folder(1, str(target))
+
+    assert _library_state(str(rescan_env["db_path"])) == before
+    assert enriched == []
+    assert path.read_bytes() == source_bytes[:1]
+    assert (pending / "receipt.json").read_bytes() == receipt
+    assert source.read_bytes() == source_bytes
 
 
 @pytest.mark.parametrize(

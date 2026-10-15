@@ -252,9 +252,15 @@ infers ownership from names or chapter numbers.
 
 The copy is also refused when the source file's identity or size changes
 while it is read, so a chapter Suwayomi is still writing never gets evidence.
+The source is opened once without following a symlink, checked as regular,
+and sized and read through that same descriptor; nonregular sources are refused
+without blocking on a FIFO.
 Every write and metadata change goes through the exclusively created
 descriptor, so a file or symlink swapped in at the destination is never
-written to or treated as this import's copy. Files above the 4 GiB fingerprint
+written to or treated as this import's copy. Its inode stays pinned by a live
+internal ownership handle through verification, settlement and any rollback;
+the handle closes on success and failure. Fingerprint metadata alone never
+authorizes rollback deletion. Files above the 4 GiB fingerprint
 bound import without evidence, and fingerprinting stops reading once a file
 grows past that bound.
 
@@ -277,6 +283,10 @@ never adopted or silently cleared. A failure to build optional provenance
 evidence alone still does not fail an otherwise successful import.
 Both directory names use the existing reserved private namespace, so inventory,
 rescan and library adoption do not treat their contents as library evidence.
+While pending-copy intent exists, shared inventory refuses the series rather
+than accepting a public partial CBZ or treating it as verified absence.
+Rescan and folder adoption therefore leave existing downloaded state, metadata
+and count floors unchanged until that intent is explicitly resolved.
 
 Retained rollback entries and pending markers need explicit operator review;
 there is no automatic recovery or garbage collection. Pause imports before
@@ -287,6 +297,8 @@ operation; preserve both entries if another file occupies that path. Clear a
 pending marker only after resolving the original destination and verifying
 that no incomplete copy can be reused. Do not delete these private directories
 as a blanket cleanup step.
+Resolve pending intent before downgrading to a version without this guard;
+older versions do not honor the pending-copy inventory refusal.
 
 Provenance is evidence for later validation. It does not authorize cleanup,
 and no code reads it to move or delete files. Rows are not removed when their

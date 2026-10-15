@@ -1320,7 +1320,10 @@ def _import_suwayomi_chapter_files(
         source_chapters=source_chapters,
         source_display_name=source_display_name,
     )
-    return result.path, result.size
+    try:
+        return result.path, result.size
+    finally:
+        result.close()
 
 
 def _import_suwayomi_chapter_copy(
@@ -1386,18 +1389,23 @@ def _import_suwayomi_chapter_copy(
         # Legacy behaviour overwrites an empty placeholder; it is not a new copy.
         shutil.copy2(src, out_path)
         return chapter_provenance.ChapterImport(out_path, os.path.getsize(out_path))
+    owner = chapter_provenance._OwnedCopy()
     try:
-        created, verified = chapter_provenance.copy_new_file(src, out_path)
+        created, verified = chapter_provenance.copy_new_file(src, out_path, _owner=owner)
+        return chapter_provenance.ChapterImport(
+            out_path, created.size, created, verified, identified, _owner=owner,
+        )
     except FileExistsError:
+        owner.close()
         # Appeared after the check above: another writer owns it.
         chapter_provenance.assert_not_pending(out_path)
         try:
             return chapter_provenance.ChapterImport(out_path, os.path.getsize(out_path))
         except FileNotFoundError:
             return no_import
-    return chapter_provenance.ChapterImport(
-        out_path, created.size, created, verified, identified
-    )
+    except BaseException:
+        owner.close()
+        raise
 
 
 def _source_chapter_identified(
@@ -1678,6 +1686,7 @@ def _complete_suwayomi_job_files(
         )
         import_path, file_bytes = chapter_import.path, chapter_import.size
         if not import_path:
+            chapter_import.close()
             err_msg = "Import failed — chapter CBZ not found in library path"
             with get_db() as db:
                 db.execute(
@@ -1690,11 +1699,11 @@ def _complete_suwayomi_job_files(
                 job["chapter_num"],
             )
             return None, 0
-        quality = _m.quality_from_filename(import_path)
-        guard.verify()
         provenance_id: int | None = None
         evidence: chapter_provenance.FileEvidence | None = None
         try:
+            quality = _m.quality_from_filename(import_path)
+            guard.verify()
             evidence, identity = _chapter_ownership_evidence(
                 c, job, chapter_ids, chapter_import, source_id
             )
@@ -1736,8 +1745,12 @@ def _complete_suwayomi_job_files(
         except BaseException:
             # Nothing was settled: roll back only the copy this import created.
             if chapter_import.created is not None:
-                chapter_provenance.remove_if_unchanged(import_path, chapter_import.created)
+                chapter_provenance.remove_if_unchanged(
+                    import_path, chapter_import.created, _owner=chapter_import._owner,
+                )
             raise
+        finally:
+            chapter_import.close()
         if (
             provenance_id is not None
             and evidence is not None
