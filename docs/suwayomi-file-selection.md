@@ -227,3 +227,107 @@ content equivalence. They do not authorize cleanup. Existing loose library
 copies remain untouched, as do Suwayomi's source downloads. Optional redundant
 library-file cleanup is a separate, opt-in proposal in
 [#422](https://github.com/Kha-kis/manga-arr/issues/422).
+
+## Chapter Copy Provenance
+
+A chapter job records provenance in `chapter_file_provenance` only when its
+import created the managed library copy itself (exclusive create), verified the
+copy's SHA-256 and size against the bytes read from the source file, and
+selected that source file through the queued chapter's own name and scanlator
+identity. The record holds the resolved Suwayomi client and normalized server
+URL (no credentials), manga, source and chapter IDs, the library path, and the
+copy's device, inode, size, mtime and SHA-256. Device and inode are stored as
+decimal text because NFS file IDs are unsigned 64-bit values that can exceed
+SQLite's signed INTEGER range.
+
+The copy is fingerprinted again before the settlement transaction, outside any
+SQLite writer; the transaction records it only if the chapter row settles to
+that exact path. Fingerprint opens reject nonregular files without blocking on
+a FIFO. The filesystem mutation guard is revalidated after hashing and before
+opening either the settlement writer or a later provenance-invalidation writer.
+While that guard is valid, changed-file evidence is discarded after commit.
+An invalid guard refuses fresh writes instead of touching a replacement DB;
+a committed copy is not rolled back and any retained row still requires later
+hash validation. Online database replacement remains unsupported, not a restore
+workflow. Nothing is recorded for a reused destination, the
+original Suwayomi file kept when no managed library directory is configured,
+legacy filename matches, an unknown source ID or historical files; no backfill
+infers ownership from names or chapter numbers.
+
+The copy is also refused when the source file's identity or size changes
+while it is read, so a chapter Suwayomi is still writing never gets evidence.
+The source is opened once without following a symlink, checked as regular,
+and sized and read through that same descriptor; nonregular sources are refused
+without blocking on a FIFO.
+Every write and metadata change goes through the exclusively created
+descriptor, so a file or symlink swapped in at the destination is never
+written to or treated as this import's copy. Its inode stays pinned by a live
+internal ownership handle through verification, settlement and any rollback;
+the handle closes on success and failure. Fingerprint metadata alone never
+authorizes rollback deletion. Files above the 4 GiB fingerprint
+bound import without evidence, and fingerprinting stops reading once a file
+grows past that bound.
+
+When a copy, its verification or the settlement transaction fails, rollback
+first captures the destination entry into a fresh private directory, then
+checks the captured identity. Only the captured copy this import created can
+be deleted; rollback never unlinks a public pathname after checking it.
+A different regular file or symlink is restored without overwriting another
+entry. If no-clobber restore is unsupported or the public path is occupied,
+the captured entry and its origin/expected-identity receipt are retained under
+`.mangarr-claim-chapter-rollback-*`, and the recovery location is logged. No unsafe
+rename fallback is used on NAS filesystems. This private-directory boundary
+does not protect against hostile same-UID tampering inside the private carrier.
+
+New copies persist a `0600` JSON `.mangarr-claim-chapter-pending-*` marker before
+creating the public file. Its original inode stays pinned until retirement,
+which uses the same private capture/identity check as copy rollback. A replaced
+or unknown marker is preserved and refuses retirement, not removed by pathname.
+The same live attempt holds the destination inode, parent directory and marker
+through settlement. Creation, verification and rollback use that pinned parent;
+a renamed or replaced public parent refuses settlement rather than creating
+output in a different directory. Before settlement, data and its parent are
+synchronized with intent still present. Successful settlement or confirmed
+owned rollback retires only the owned marker and synchronizes its parent again.
+Refused or exceptional rollback retains uncertainty before releasing handles.
+A marker-retirement failure after database commit does not roll back a committed
+copy or demote its completed job: the pending barrier remains for explicit
+review, a warning is logged, and guarded evidence validation still runs.
+Failed barriers retain or exclusively re-establish pending intent; repair
+failures are logged, not claimed repaired. Existing or unknown pending entries
+are never adopted or silently cleared. A failure to build optional provenance evidence alone still
+does not fail an otherwise successful import. Compatibility helpers without
+database settlement retire their owned intent before returning.
+Only a missing-marker result permits reuse; lookup errors refuse it. Existing
+markers of any type, including old directories, remain blocking without migration.
+Both marker and capture names use the existing reserved private namespace, so
+inventory, rescan and library adoption do not treat their contents as library evidence.
+While pending-copy intent exists, shared inventory refuses the series rather
+than accepting a public partial CBZ or treating it as verified absence.
+Rescan and folder adoption therefore leave existing downloaded state, metadata
+and count floors unchanged until that intent is explicitly resolved.
+Full and scheduled library rescans log and skip that unavailable series while
+continuing with the remaining series; direct inventory and adoption still refuse
+it. A destination appearing during exclusive creation is reusable only when it
+is a nonempty regular, non-symlink file without pending intent. Empty or
+nonregular race winners are preserved and do not become downloaded chapters.
+
+Retained rollback entries and pending markers need explicit operator review;
+there is no automatic recovery or garbage collection. Pause imports before
+recovery and preserve marker files and complete capture directories with
+receipts. Inspect the recorded origin and compare the current library file
+with the source contents.
+Restore a captured entry only to an absent destination using a no-clobber
+operation; preserve both entries if another file occupies that path. Clear a
+pending marker only after resolving the original destination and verifying
+that no incomplete copy can be reused. Do not delete this private state
+as a blanket cleanup step.
+Resolve pending intent before downgrading to a version without this guard;
+older versions do not honor the pending-copy inventory refusal.
+
+Provenance is evidence for later validation. It does not authorize cleanup,
+and no code reads it to move or delete files. Rows are not removed when their
+file is later deleted or replaced, and a later import that reuses the path
+leaves an earlier row as it was; anything that relies on a row must re-check
+the file's SHA-256 and size first. `file_dev` is not stable across NFS
+remounts or container restarts and must not be treated as identity on its own.

@@ -1,6 +1,7 @@
 """Series library — index, detail, add, edit, volume/chapter actions."""
 
 import asyncio
+import errno
 import json
 import math
 import os
@@ -210,7 +211,14 @@ async def _rescan_all_impl() -> None:
     for sid in series_ids:
         from rescan_file_recovery import rescan_series_in_thread
 
-        result = await rescan_series_in_thread(sid, _m.rescan_series_folder)
+        try:
+            result = await rescan_series_in_thread(sid, _m.rescan_series_folder)
+        except OSError as exc:
+            if exc.errno != errno.EBUSY:
+                raise
+            import logging as _logging
+            _logging.getLogger(__name__).warning("Full rescan deferred series %s: %s", sid, exc)
+            continue
         total["found"] += result["found"]
         total["recovered"] += result["recovered"]
         total["missing"] += result["missing"]

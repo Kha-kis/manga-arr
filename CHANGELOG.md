@@ -5,6 +5,22 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+### Added
+
+- Suwayomi chapter imports record provenance for library copies they create
+  and verify: the resolved Suwayomi client, manga, source and chapter IDs, the
+  library path, size and a SHA-256 fingerprint
+  ([#422](https://github.com/Kha-kis/manga-arr/issues/422)). Evidence only:
+  nothing reads it to clean up files. Reused destinations, source-only paths,
+  legacy filename matches and historical files record nothing. Failed imports
+  roll back only an identity-verified private capture of their own copy;
+  uncertain entries are retained for review, and pending-copy markers prevent
+  partial-file reuse or rescan/adoption while a copy is unsettled. Other series
+  continue scanning. Settlement retains the pinned parent and pending intent,
+  rechecks database ownership after hashing, and refuses empty or nonregular
+  destination race winners.
+  Additive table, no schema-version change.
+
 ### Fixed
 
 - Preserve IPv6 address brackets when adding a separately configured

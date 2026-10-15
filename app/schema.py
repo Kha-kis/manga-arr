@@ -771,6 +771,35 @@ def init_db() -> None:
         # chapter behaviour. Mirrors the volumes.vol_range_start/end pattern.
         add_col('chapters',           'chapter_range_end','REAL')
 
+        # Evidence that a managed library chapter file is a copy Mangarr itself
+        # created and verified from one identified Suwayomi chapter. Recorded
+        # only; nothing reads it to clean up files (issue #422). Additive, so
+        # no schema-version bump: older binaries simply ignore the table.
+        _execute_script_in_transaction(db, """
+            CREATE TABLE IF NOT EXISTS chapter_file_provenance (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                chapter_id          INTEGER NOT NULL
+                                            REFERENCES chapters(id) ON DELETE CASCADE,
+                series_id           INTEGER NOT NULL
+                                            REFERENCES series(id) ON DELETE CASCADE,
+                library_path        TEXT    NOT NULL UNIQUE,
+                file_dev            TEXT    NOT NULL,
+                file_inode          TEXT    NOT NULL,
+                size_bytes          INTEGER NOT NULL CHECK(size_bytes > 0),
+                mtime_ns            INTEGER NOT NULL,
+                sha256              TEXT    NOT NULL CHECK(length(sha256) = 64),
+                suwayomi_client_id  INTEGER NOT NULL,
+                suwayomi_server     TEXT    NOT NULL,
+                suwayomi_manga_id   INTEGER NOT NULL,
+                suwayomi_source_id  TEXT    NOT NULL,
+                suwayomi_chapter_id INTEGER NOT NULL,
+                suwayomi_job_id     INTEGER,
+                recorded_at         TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_chapter_file_provenance_chapter
+                ON chapter_file_provenance(chapter_id);
+        """)
+
         # Backfill download_id from seen → volumes for existing grabbed items
         db.execute("""
             UPDATE volumes SET download_id = (

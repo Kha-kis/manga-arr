@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import sqlite3
+import stat
 from typing import Any
 import unicodedata
 
@@ -25,6 +26,7 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+import chapter_provenance
 from shared import get_cfg, get_db, timed_block
 import shared
 from file_mutation_lock import FileMutationGuard, FileMutationLockError, file_mutation_guard
@@ -1310,20 +1312,45 @@ def _import_suwayomi_chapter_files(
     Individual chapters are always kept as individual files (merge doesn't apply).
     Returns (import_path, size_bytes).
     """
+    result = _import_suwayomi_chapter_copy(
+        c,
+        series_id,
+        chapter_num,
+        swy_title=swy_title,
+        chapter_ids=chapter_ids,
+        source_chapters=source_chapters,
+        source_display_name=source_display_name,
+    )
+    try:
+        if result._owner is not None:
+            result._owner.retire_pending()
+        return result.path, result.size
+    finally:
+        result.close()
+
+
+def _import_suwayomi_chapter_copy(
+    c: dict[str, Any], series_id: int, chapter_num: float, *, swy_title: str = "",
+    chapter_ids: Sequence[int] = (),
+    source_chapters: Mapping[int, Mapping[str, Any]] | None = None,
+    source_display_name: str | None = None,
+) -> chapter_provenance.ChapterImport:
+    """Import one chapter and report whether this call created the library copy."""
     import main as _m
 
     with get_db() as db:
         s_row = db.execute("SELECT * FROM series WHERE id=?", (series_id,)).fetchone()
         series_dir = _m._series_library_dir(db, series_id) if s_row else None
 
+    no_import = chapter_provenance.ChapterImport(None, 0)
     if not s_row:
-        return None, 0
+        return no_import
 
     manga_dir = _find_suwayomi_manga_dir(
         c, swy_title, s_row["title"], source_display_name=source_display_name
     )
     if not manga_dir:
-        return None, 0
+        return no_import
 
     src = (
         _chapter_cbz(manga_dir, chapter_num)
@@ -1337,12 +1364,12 @@ def _import_suwayomi_chapter_files(
             chapter_num,
             manga_dir,
         )
-        return None, 0
+        return no_import
+    identified = _source_chapter_identified(chapter_ids, source_chapters)
 
     if not series_dir:
-        return src, os.path.getsize(
-            src
-        )  # keep in Suwayomi dir if no library configured
+        # keep in Suwayomi dir if no library configured; never a managed copy
+        return chapter_provenance.ChapterImport(src, os.path.getsize(src))
 
     safe_title = _m.sanitize_filename(s_row["title"])
     ch_str = (
@@ -1353,14 +1380,52 @@ def _import_suwayomi_chapter_files(
     out_name = f"{safe_title} Ch{ch_str}.cbz"
     out_path = os.path.join(series_dir, out_name)
 
+    chapter_provenance.assert_not_pending(out_path)
     if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-        return out_path, os.path.getsize(out_path)
+        # Reused destination: not created here, so it never gains ownership.
+        return chapter_provenance.ChapterImport(out_path, os.path.getsize(out_path))
 
     import shutil
 
     os.makedirs(series_dir, exist_ok=True)
-    shutil.copy2(src, out_path)
-    return out_path, os.path.getsize(out_path)
+    if os.path.lexists(out_path):
+        # Legacy behaviour overwrites an empty placeholder; it is not a new copy.
+        shutil.copy2(src, out_path)
+        return chapter_provenance.ChapterImport(out_path, os.path.getsize(out_path))
+    owner = chapter_provenance._OwnedCopy()
+    try:
+        created, verified = chapter_provenance.copy_new_file(
+            src, out_path, _owner=owner, _defer_retirement=True,
+        )
+        return chapter_provenance.ChapterImport(
+            out_path, created.size, created, verified, identified, _owner=owner,
+        )
+    except FileExistsError:
+        owner.close()
+        # Appeared after the check above: another writer owns it.
+        chapter_provenance.assert_not_pending(out_path)
+        try:
+            current = os.lstat(out_path)
+            if stat.S_ISREG(current.st_mode) and current.st_size > 0:
+                return chapter_provenance.ChapterImport(out_path, current.st_size)
+        except FileNotFoundError:
+            pass
+        return no_import
+    except BaseException:
+        owner.close()
+        raise
+
+
+def _source_chapter_identified(
+    chapter_ids: Sequence[int],
+    source_chapters: Mapping[int, Mapping[str, Any]] | None,
+) -> bool:
+    """True when _source_chapter_cbz resolved the file by the queued chapter's
+    own name/scanlator identity rather than its legacy filename fallback."""
+    if source_chapters is None or len(chapter_ids) != 1:
+        return False
+    chapter = source_chapters.get(chapter_ids[0])
+    return chapter is not None and "name" in chapter and "scanlator" in chapter
 
 
 # ── Background job checker ────────────────────────────────────────────────────
@@ -1488,7 +1553,7 @@ async def _process_suwayomi_job(
         query($mid: Int!) {
             manga(id: $mid) {
                 title
-                source { displayName }
+                source { id displayName }
                 chapters { nodes { id isDownloaded chapterNumber name scanlator } }
             }
         }
@@ -1500,6 +1565,7 @@ async def _process_suwayomi_job(
     display_name = source.get("displayName") if isinstance(source, dict) else None
     # An empty string refuses lookup; None is reserved for legacy helper calls.
     source_display_name = display_name if isinstance(display_name, str) else ""
+    source_id = source.get("id") if isinstance(source, dict) else None
 
     ch_map: dict[int, dict[str, Any]] = {
         int(ch["id"]): ch
@@ -1554,8 +1620,51 @@ async def _process_suwayomi_job(
         lambda guard: _complete_suwayomi_job_files(
             c, job, chapter_ids, ch_map, swy_title, guard,
             source_display_name=source_display_name,
+            source_id=source_id,
         ),
     )
+
+
+def _chapter_ownership_evidence(
+    c: dict[str, Any],
+    job: Mapping[str, Any] | sqlite3.Row,
+    chapter_ids: Sequence[int],
+    chapter_import: chapter_provenance.ChapterImport,
+    source_id: object,
+) -> tuple[chapter_provenance.FileEvidence | None, chapter_provenance.SourceIdentity | None]:
+    """Revalidate a created copy before its import transaction (no DB held).
+
+    Returns (None, None) unless this import created and verified the copy,
+    selected its source by the queued chapter's identity, and the full
+    Suwayomi context is known.
+    """
+    created = chapter_import.created
+    if (
+        created is None
+        or not chapter_import.verified
+        or not chapter_import.identified
+        or len(chapter_ids) != 1
+        or chapter_import.path is None
+    ):
+        return None, None
+    try:
+        identity = chapter_provenance.source_identity(
+            c, job["suwayomi_manga_id"], source_id, chapter_ids[0]
+        )
+        if identity is None:
+            return None, None
+        current = chapter_provenance.fingerprint(chapter_import.path)
+    except Exception as exc:
+        # Evidence is optional: never let it fail an import that succeeded.
+        log.warning("Chapter provenance not recorded for %s: %s", chapter_import.path, exc)
+        return None, None
+    if current != created:
+        log.warning(
+            "Chapter file changed after copy; provenance not recorded: %s",
+            chapter_import.path,
+        )
+        return None, None
+    return current, identity
 
 
 def _complete_suwayomi_job_files(
@@ -1567,13 +1676,14 @@ def _complete_suwayomi_job_files(
     guard: FileMutationGuard,
     *,
     source_display_name: str = "",
+    source_id: object = None,
 ) -> tuple[str | None, int]:
     """Settle physical import and its domain audit under one synchronous owner."""
     import main as _m
 
     if job["chapter_num"] is not None:
         # ── Chapter-level job ─────────────────────────────────────
-        import_path, file_bytes = _import_suwayomi_chapter_files(
+        chapter_import = _import_suwayomi_chapter_copy(
             c,
             job["series_id"],
             float(job["chapter_num"]),
@@ -1582,7 +1692,9 @@ def _complete_suwayomi_job_files(
             source_chapters=ch_map,
             source_display_name=source_display_name,
         )
+        import_path, file_bytes = chapter_import.path, chapter_import.size
         if not import_path:
+            chapter_import.close()
             err_msg = "Import failed — chapter CBZ not found in library path"
             with get_db() as db:
                 db.execute(
@@ -1595,32 +1707,104 @@ def _complete_suwayomi_job_files(
                 job["chapter_num"],
             )
             return None, 0
-        quality = _m.quality_from_filename(import_path)
+        provenance_id: int | None = None
+        evidence: chapter_provenance.FileEvidence | None = None
+        settled = False
+        try:
+            quality = _m.quality_from_filename(import_path)
+            guard.verify()
+            evidence, identity = _chapter_ownership_evidence(
+                c, job, chapter_ids, chapter_import, source_id
+            )
+            guard.verify()
+            if chapter_import._owner is not None:
+                chapter_import._owner.verify_parent()
+            with get_db() as db:
+                assert_library_file_mutation_available(db, job["series_id"])
+                db.execute(
+                    "UPDATE suwayomi_downloads SET status='completed', error=NULL WHERE id=?",
+                    (job["id"],),
+                )
+                db.execute(
+                    "UPDATE chapters SET status='downloaded',"
+                    " imported_at=CURRENT_TIMESTAMP, client='suwayomi',"
+                    " import_path=?, quality=COALESCE(quality,?),"
+                    " size_bytes=COALESCE(NULLIF(size_bytes,0),?),"
+                    " indexer='Suwayomi', protocol='ddl', torrent_name=COALESCE(torrent_name,?),"
+                    " torrent_url=NULL, download_id=NULL, release_group=NULL"
+                    " WHERE series_id=? AND chapter_num=?"
+                    " AND status IN ('grabbed','wanted','downloaded')",
+                    (
+                        import_path,
+                        quality,
+                        file_bytes or None,
+                        f"Suwayomi DDL: ch {float(job['chapter_num']):g}",
+                        job["series_id"],
+                        job["chapter_num"],
+                    ),
+                )
+                if evidence is not None and identity is not None:
+                    provenance_id = chapter_provenance.record(
+                        db,
+                        series_id=job["series_id"],
+                        chapter_num=float(job["chapter_num"]),
+                        path=import_path,
+                        evidence=evidence,
+                        source=identity,
+                        job_id=job["id"],
+                    )
+            settled = True
+        except BaseException:
+            # Nothing was settled: roll back only the copy this import created.
+            if chapter_import.created is not None:
+                try:
+                    removed = chapter_provenance.remove_if_unchanged(
+                        import_path, chapter_import.created, _owner=chapter_import._owner,
+                    )
+                except (OSError, chapter_provenance.ProvenanceError) as exc:
+                    log.error("Chapter settlement rollback refused for %s: %s", import_path, exc)
+                    removed = False
+                if chapter_import._owner is not None:
+                    if removed:
+                        chapter_import._owner.retire_pending()
+                    else:
+                        chapter_import._owner.retain_pending()
+            raise
+        finally:
+            try:
+                if settled and chapter_import._owner is not None:
+                    try:
+                        chapter_import._owner.retire_pending()
+                    except (OSError, chapter_provenance.ProvenanceError) as exc:
+                        log.warning("Committed chapter cleanup pending for %s: %s", import_path, exc)
+            finally:
+                try:
+                    chapter_import.close()
+                except OSError as exc:
+                    if not settled:
+                        raise
+                    log.warning("Committed chapter handle close refused for %s: %s", import_path, exc)
         guard.verify()
-        with get_db() as db:
-            assert_library_file_mutation_available(db, job["series_id"])
-            db.execute(
-                "UPDATE suwayomi_downloads SET status='completed', error=NULL WHERE id=?",
-                (job["id"],),
-            )
-            db.execute(
-                "UPDATE chapters SET status='downloaded',"
-                " imported_at=CURRENT_TIMESTAMP, client='suwayomi',"
-                " import_path=?, quality=COALESCE(quality,?),"
-                " size_bytes=COALESCE(NULLIF(size_bytes,0),?),"
-                " indexer='Suwayomi', protocol='ddl', torrent_name=COALESCE(torrent_name,?),"
-                " torrent_url=NULL, download_id=NULL, release_group=NULL"
-                " WHERE series_id=? AND chapter_num=?"
-                " AND status IN ('grabbed','wanted','downloaded')",
-                (
+        if (
+            provenance_id is not None
+            and evidence is not None
+            and not chapter_provenance.same_file(import_path, evidence)
+        ):
+            # Changed between verification and commit: the evidence is void.
+            guard.verify()
+            try:
+                with get_db() as db:
+                    db.execute(
+                        "DELETE FROM chapter_file_provenance WHERE id=?", (provenance_id,)
+                    )
+                log.warning(
+                    "Chapter file changed during import; provenance not kept: %s",
                     import_path,
-                    quality,
-                    file_bytes or None,
-                    f"Suwayomi DDL: ch {float(job['chapter_num']):g}",
-                    job["series_id"],
-                    job["chapter_num"],
-                ),
-            )
+                )
+            except Exception as exc:
+                log.error(
+                    "Could not void provenance %d for %s: %s", provenance_id, import_path, exc
+                )
         _m.log_event(
             "download_complete",
             f"DDL imported: series {job['series_id']} ch {job['chapter_num']}"

@@ -759,6 +759,13 @@ def _volume_filesystem_inventory(
         series_dir = None
     if series_dir and os.path.isdir(series_dir):
         for root, dirs, files in os.walk(series_dir):
+            for name in (*dirs, *files):
+                if name.startswith(".mangarr-claim-chapter-pending-"):
+                    # Pending intent is uncertainty, even without a public file.
+                    raise OSError(
+                        errno.EBUSY, "chapter copy pending; inventory unavailable",
+                        os.path.join(root, name),
+                    )
             dirs[:] = [
                 name for name in dirs if not _is_private_inventory_directory(name)
             ]
