@@ -251,15 +251,32 @@ def _pending_copy(path: str) -> Generator[Callable[[], None], None, None]:
                 try:
                     if retire and receipt_created:
                         try:
-                            os.unlink("receipt.json", dir_fd=pending_fd)
-                        except FileNotFoundError:
-                            pass
+                            # Prove the public name/absence before retiring intent.
+                            os.fsync(parent_fd)
+                            try:
+                                os.unlink("receipt.json", dir_fd=pending_fd)
+                            except FileNotFoundError:
+                                pass
+                            os.rmdir(os.path.basename(pending), dir_fd=parent_fd)
+                            os.fsync(parent_fd)
+                        except BaseException:
+                            try:
+                                os.mkdir(os.path.basename(pending), 0o700, dir_fd=parent_fd)
+                            except FileExistsError:
+                                pass  # Unknown intent is already a blocking barrier.
+                            except OSError as exc:
+                                log.error("Could not re-establish pending barrier at %s: %s", pending, exc)
+                            else:
+                                try:
+                                    os.fsync(parent_fd)
+                                except OSError as exc:
+                                    log.error("Pending barrier sync refused at %s: %s", pending, exc)
+                            log.error("Chapter copy pending explicit review at %s", pending)
+                            raise
                     elif not retire:
                         log.error("Chapter copy pending explicit review at %s", pending)
                 finally:
                     os.close(pending_fd)
-                if retire and receipt_created:
-                    os.rmdir(os.path.basename(pending), dir_fd=parent_fd)
         finally:
             os.close(parent_fd)
 

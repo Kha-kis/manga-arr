@@ -1394,3 +1394,146 @@ def test_db_replaced_before_postcommit_void_writer_is_preserved(env, monkeypatch
             assert db.execute("SELECT status FROM chapters").fetchone()[0] == "downloaded"
             assert db.execute("SELECT status FROM suwayomi_downloads").fetchone()[0] == "completed"
     assert _source_untouched(env)
+
+
+@pytest.mark.parametrize("limit", [10, 10_000_000])
+def test_completed_copy_syncs_parent_before_and_after_pending_retirement(
+    tmp_path, monkeypatch, limit,
+):
+    import chapter_provenance as provenance
+
+    source = _make_cbz(tmp_path / "source.cbz")
+    destination = str(tmp_path / "copy.cbz")
+    pending = provenance._pending_path(destination)
+    parent_identity = (tmp_path.stat().st_dev, tmp_path.stat().st_ino)
+    real_fsync, real_rmdir = os.fsync, os.rmdir
+    events = []
+
+    def sync(fd):
+        held = os.fstat(fd)
+        if (held.st_dev, held.st_ino) == parent_identity:
+            events.append(("parent_sync", os.path.exists(destination), os.path.lexists(pending)))
+        elif os.path.exists(destination):
+            copied = os.stat(destination)
+            if (held.st_dev, held.st_ino) == (copied.st_dev, copied.st_ino):
+                events.append(("data_sync", True, True))
+        real_fsync(fd)
+
+    def retire(path, *args, **kwargs):
+        if path == os.path.basename(pending):
+            events.append(("retire", True, True))
+        return real_rmdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(provenance, "FINGERPRINT_MAX_BYTES", limit)
+    monkeypatch.setattr(provenance.os, "fsync", sync)
+    monkeypatch.setattr(provenance.os, "rmdir", retire)
+    evidence, verified = provenance.copy_new_file(source, destination)
+    events.append(("returned", True, False))
+    assert events == [
+        ("parent_sync", False, True),
+        ("data_sync", True, True),
+        ("parent_sync", True, True),
+        ("retire", True, True),
+        ("parent_sync", True, False),
+        ("returned", True, False),
+    ]
+    assert verified is (limit > evidence.size)
+    assert _sha(source) == _sha(destination)
+    assert not os.path.lexists(pending)
+
+
+@pytest.mark.parametrize("barrier", ["before_retire", "after_retire"])
+@pytest.mark.parametrize("error_name", ["EIO", "EROFS"])
+def test_pending_retirement_sync_failure_refuses_settlement_and_retry(
+    env, monkeypatch, barrier, error_name,
+):
+    import errno
+    import chapter_provenance as provenance
+    import rescan
+
+    destination = _library_copy(env)
+    pending = provenance._pending_path(destination)
+    real_fsync = os.fsync
+    real_open = os.open
+    failures = []
+    directory_fds = []
+
+    def track_open(path, flags, *args, **kwargs):
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if flags & os.O_DIRECTORY:
+            directory_fds.append(descriptor)
+        return descriptor
+
+    def refuse_barrier(fd):
+        held = os.fstat(fd)
+        if os.path.exists(destination):
+            parent = os.stat(os.path.dirname(destination))
+            is_parent = (held.st_dev, held.st_ino) == (parent.st_dev, parent.st_ino)
+            pending_present = os.path.lexists(pending)
+            if is_parent and pending_present == (barrier == "before_retire"):
+                failures.append(True)
+                raise OSError(getattr(errno, error_name), "injected parent durability refusal")
+        real_fsync(fd)
+
+    monkeypatch.setattr(provenance.os, "fsync", refuse_barrier)
+    monkeypatch.setattr(provenance.os, "open", track_open)
+    _queue(env)
+    _run(env)
+    prov, chapter, jobs = _rows(env)
+    assert failures
+    assert chapter is not None and chapter["status"] == "wanted"
+    assert chapter["import_path"] is None and prov == []
+    assert jobs[0]["status"] == "error"
+    assert os.path.lexists(pending)
+    assert _sha(destination) == env["source_sha"]
+    assert directory_fds
+    for descriptor in directory_fds:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+    snapshot = rescan.SeriesRescanSnapshot({}, str(env["lib"]), (), (), (), {})
+    with pytest.raises(OSError):
+        rescan.build_filesystem_inventory(snapshot)
+
+    monkeypatch.setattr(provenance.os, "fsync", real_fsync)
+    _queue(env)
+    _run(env)
+    prov, chapter, jobs = _rows(env)
+    assert chapter is not None and chapter["status"] == "wanted"
+    assert chapter["import_path"] is None and prov == []
+    assert [job["status"] for job in jobs] == ["error", "error"]
+    assert os.path.lexists(pending)
+    assert _sha(destination) == env["source_sha"] and _source_untouched(env)
+
+
+def test_retirement_barrier_refusal_preserves_unknown_pending_entry(tmp_path, monkeypatch):
+    import chapter_provenance as provenance
+
+    source = _make_cbz(tmp_path / "source.cbz")
+    destination = str(tmp_path / "copy.cbz")
+    pending = provenance._pending_path(destination)
+    parent_identity = (tmp_path.stat().st_dev, tmp_path.stat().st_ino)
+    real_fsync = os.fsync
+    unknown_bytes = b"unknown pending authority must not be adopted or overwritten"
+    replaced = []
+
+    def fail_after_retirement(fd):
+        held = os.fstat(fd)
+        if (
+            (held.st_dev, held.st_ino) == parent_identity
+            and os.path.exists(destination) and not os.path.lexists(pending)
+        ):
+            with open(pending, "xb") as unknown:
+                unknown.write(unknown_bytes)
+            replaced.append(True)
+            raise OSError("injected retirement barrier refusal")
+        real_fsync(fd)
+
+    monkeypatch.setattr(provenance.os, "fsync", fail_after_retirement)
+    with pytest.raises(OSError, match="retirement barrier refusal"):
+        provenance.copy_new_file(source, destination)
+    assert replaced == [True]
+    with open(pending, "rb") as unknown:
+        assert unknown.read() == unknown_bytes
+    with pytest.raises(provenance.ProvenanceError, match="pending explicit review"):
+        provenance.assert_not_pending(destination)
+    assert _sha(source) == _sha(destination)

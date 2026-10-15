@@ -281,7 +281,11 @@ does not protect against hostile same-UID tampering inside the private carrier.
 
 New copies persist a `.mangarr-claim-chapter-pending-*` marker before creating the
 public file. Successful copies and confirmed rollback retire that marker.
-If copy rollback cannot safely finish, it remains and prevents retries from
+Before returning for settlement, the copy's parent is synchronized with intent
+still present, then synchronized again after owned intent is retired. A failed
+barrier fails the operation and retains or exclusively re-establishes pending
+intent; repair failures are logged for explicit review. If copying, rollback
+or retirement cannot safely finish, pending intent prevents retries from
 reusing a partial or unsettled file. Existing or unknown pending markers are
 never adopted or silently cleared. A failure to build optional provenance
 evidence alone still does not fail an otherwise successful import.
