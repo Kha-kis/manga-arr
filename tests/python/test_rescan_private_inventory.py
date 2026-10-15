@@ -13,7 +13,7 @@ from test_rescan_transactions import rescan_env as rescan_env
 from test_import_publication_journal import _seed_queue, journal_env as journal_env
 
 
-@pytest.mark.parametrize("kind", ["pending", "rollback"])
+@pytest.mark.parametrize("kind", ["pending", "legacy_pending", "rollback"])
 def test_chapter_private_directories_are_not_inventory_evidence(
     rescan_env: dict[str, Any], tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch, kind: str, request: pytest.FixtureRequest,
@@ -31,8 +31,14 @@ def test_chapter_private_directories_are_not_inventory_evidence(
     if kind == "pending":
         with provenance._pending_copy(str(destination)):
             private = Path(provenance._pending_path(str(destination)))
-            artifact = private / "Private Manga v08.cbz"
-            artifact.write_bytes(b"unexpected pending private bytes")
+            artifact = private
+            assert artifact.is_file()
+    elif kind == "legacy_pending":
+        private = Path(provenance._pending_path(str(destination)))
+        private.mkdir(mode=0o700)
+        artifact = private / "Private Manga v08.cbz"
+        artifact.write_bytes(b"retained legacy private bytes")
+        (private / "receipt.json").write_bytes(b"unknown legacy receipt")
     else:
         owner = provenance._OwnedCopy()
         request.addfinalizer(owner.close)
@@ -67,10 +73,11 @@ def test_chapter_private_directories_are_not_inventory_evidence(
         artifact = artifacts[0]
         private = artifact.parent.parent
     before = artifact.read_bytes()
-    receipt = (private / "receipt.json").read_bytes()
+    receipt_path = private if kind == "pending" else private / "receipt.json"
+    receipt = receipt_path.read_bytes()
     snapshot = rescan.SeriesRescanSnapshot({}, str(series_dir), (), (), (), {})
 
-    if kind == "pending":
+    if kind in ("pending", "legacy_pending"):
         with pytest.raises(OSError):
             rescan.build_filesystem_inventory(snapshot)
     else:
@@ -78,7 +85,7 @@ def test_chapter_private_directories_are_not_inventory_evidence(
         assert inventory.on_disk == frozenset(), "chapter private bytes became volume evidence"
         assert not inventory.any_library_files
     assert artifact.read_bytes() == before
-    assert (private / "receipt.json").read_bytes() == receipt
+    assert receipt_path.read_bytes() == receipt
     assert source.read_bytes() == b"owned source bytes"
 
 
@@ -113,7 +120,7 @@ def _failed_pending_public_copy(
             provenance.copy_new_file(str(source), str(destination))
     pending = Path(provenance._pending_path(str(destination)))
     assert destination.read_bytes() == source_bytes[:1]
-    assert (pending / "receipt.json").is_file()
+    assert pending.is_file()
     with pytest.raises(provenance.ProvenanceError):
         provenance.assert_not_pending(str(destination))
     return source, pending, source_bytes
@@ -137,7 +144,7 @@ def test_failed_pending_public_copy_refuses_rescan_without_positive_credit(
     root = cast(Path, rescan_env["series_dir"])
     path = root / ("Race Manga Ch001.cbz" if kind == "chapter" else "Race Manga v08.cbz")
     source, pending, source_bytes = _failed_pending_public_copy(tmp_path, path, monkeypatch)
-    receipt = (pending / "receipt.json").read_bytes()
+    receipt = pending.read_bytes()
     with sqlite3.connect(str(rescan_env["db_path"])) as db:
         db.execute("INSERT INTO chapters(series_id,chapter_num,status) VALUES(7,1,'wanted')")
     before = _library_state(str(rescan_env["db_path"]))
@@ -150,7 +157,7 @@ def test_failed_pending_public_copy_refuses_rescan_without_positive_credit(
     assert _library_state(str(rescan_env["db_path"])) == before
     assert enriched == []
     assert path.read_bytes() == source_bytes[:1]
-    assert (pending / "receipt.json").read_bytes() == receipt
+    assert pending.read_bytes() == receipt
     assert source.read_bytes() == source_bytes
 
 
@@ -168,14 +175,14 @@ def test_pending_uncertainty_preserves_downloaded_cache_totals_and_floors(
     root = cast(Path, rescan_env["series_dir"])
     path = root / "Race Manga Ch001.cbz"
     source, pending, source_bytes = _failed_pending_public_copy(tmp_path, path, monkeypatch)
-    receipt_path = pending / "receipt.json"
+    receipt_path = pending
     receipt = receipt_path.read_bytes()
     if not present:
         path.unlink()
     if marker in ("symlink", "opaque"):
         retained = tmp_path / "retained-intent"
         pending.rename(retained)
-        receipt_path = retained / "receipt.json"
+        receipt_path = retained
         if marker == "symlink":
             pending.symlink_to(tmp_path / "missing-intent-target", target_is_directory=True)
         else:
@@ -205,7 +212,7 @@ def test_pending_uncertainty_preserves_downloaded_cache_totals_and_floors(
             assert pending.stat().st_mode & 0o777 == 0
     finally:
         if marker == "unreadable":
-            pending.chmod(0o700)
+            pending.chmod(0o600)
     assert _library_state(str(rescan_env["db_path"])) == before
     assert enriched == []
     assert path.exists() is present
@@ -224,7 +231,7 @@ def test_failed_pending_public_copy_refuses_adoption_before_series_creation(
     target.mkdir()
     path = target / "Adopt Me v08.cbz"
     source, pending, source_bytes = _failed_pending_public_copy(tmp_path, path, monkeypatch)
-    receipt = (pending / "receipt.json").read_bytes()
+    receipt = pending.read_bytes()
     before = _library_state(str(rescan_env["db_path"]))
     enriched = []
     monkeypatch.setattr(library_scan, "enrich_reconciled_files", enriched.append)
@@ -235,7 +242,7 @@ def test_failed_pending_public_copy_refuses_adoption_before_series_creation(
     assert _library_state(str(rescan_env["db_path"])) == before
     assert enriched == []
     assert path.read_bytes() == source_bytes[:1]
-    assert (pending / "receipt.json").read_bytes() == receipt
+    assert pending.read_bytes() == receipt
     assert source.read_bytes() == source_bytes
 
 

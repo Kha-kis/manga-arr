@@ -279,8 +279,11 @@ the captured entry and its origin/expected-identity receipt are retained under
 rename fallback is used on NAS filesystems. This private-directory boundary
 does not protect against hostile same-UID tampering inside the private carrier.
 
-New copies persist a `.mangarr-claim-chapter-pending-*` marker before creating the
-public file. Successful copies and confirmed rollback retire that marker.
+New copies persist a `0600` JSON `.mangarr-claim-chapter-pending-*` marker before
+creating the public file. Its original inode stays pinned until retirement,
+which uses the same private capture/identity check as copy rollback. A replaced
+or unknown marker is preserved and refuses success, not removed by pathname.
+Successful copies and confirmed rollback retire only their owned marker.
 Before returning for settlement, the copy's parent is synchronized with intent
 still present, then synchronized again after owned intent is retired. A failed
 barrier fails the operation and retains or exclusively re-establishes pending
@@ -289,8 +292,10 @@ or retirement cannot safely finish, pending intent prevents retries from
 reusing a partial or unsettled file. Existing or unknown pending markers are
 never adopted or silently cleared. A failure to build optional provenance
 evidence alone still does not fail an otherwise successful import.
-Both directory names use the existing reserved private namespace, so inventory,
-rescan and library adoption do not treat their contents as library evidence.
+Only a missing-marker result permits reuse; lookup errors refuse it. Existing
+markers of any type, including old directories, remain blocking without migration.
+Both marker and capture names use the existing reserved private namespace, so
+inventory, rescan and library adoption do not treat their contents as library evidence.
 While pending-copy intent exists, shared inventory refuses the series rather
 than accepting a public partial CBZ or treating it as verified absence.
 Rescan and folder adoption therefore leave existing downloaded state, metadata
@@ -298,12 +303,13 @@ and count floors unchanged until that intent is explicitly resolved.
 
 Retained rollback entries and pending markers need explicit operator review;
 there is no automatic recovery or garbage collection. Pause imports before
-recovery and preserve the complete private directory and receipt. Inspect its
-recorded origin and compare the current library file with the source contents.
+recovery and preserve marker files and complete capture directories with
+receipts. Inspect the recorded origin and compare the current library file
+with the source contents.
 Restore a captured entry only to an absent destination using a no-clobber
 operation; preserve both entries if another file occupies that path. Clear a
 pending marker only after resolving the original destination and verifying
-that no incomplete copy can be reused. Do not delete these private directories
+that no incomplete copy can be reused. Do not delete this private state
 as a blanket cleanup step.
 Resolve pending intent before downgrading to a version without this guard;
 older versions do not honor the pending-copy inventory refusal.

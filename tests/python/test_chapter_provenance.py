@@ -980,11 +980,15 @@ def test_initialization_refusal_preserves_unknown_receipt_and_directory(
     prefix = f".mangarr-claim-chapter-{helper}-"
     real_open, real_chmod = os.open, os.fchmod
     opened = []
+    if helper == "pending":
+        displaced.mkdir()
 
     def replace_before_open(path, flags, *args, **kwargs):
-        if isinstance(path, str) and path.startswith(prefix) and flags & os.O_DIRECTORY and not opened:
+        candidate = flags & (os.O_CREAT if helper == "pending" else os.O_DIRECTORY)
+        if isinstance(path, str) and path.startswith(prefix) and candidate and not opened:
             public = tmp_path / path
-            os.rename(public, displaced)
+            if helper != "pending":
+                os.rename(public, displaced)
             os.rename(foreign, public)
             opened.append(public)
         return real_open(path, flags, *args, **kwargs)
@@ -1013,10 +1017,10 @@ def test_initialization_refusal_preserves_unknown_receipt_and_directory(
     assert list(displaced.iterdir()) == []
     assert destination.read_bytes() == b"owned copy remains untouched"
     if helper == "pending":
-        # The created-directory snapshot now permits refusal before chmod or
-        # exclusive receipt creation; cleanup must preserve that root error.
+        # Exclusive regular-marker creation refuses every existing directory
+        # before receipt adoption, chmod or retirement authority is possible.
         assert isinstance(error, provenance.ProvenanceError)
-        assert "private directory identity/permissions changed" in str(error)
+        assert "pending explicit review" in str(error)
     else:
         assert error is None
 
@@ -1095,6 +1099,8 @@ def test_created_inode_stays_pinned_through_failure_capture(tmp_path, monkeypatc
         return fd
 
     def capture(*args, **kwargs):
+        if os.fspath(args[0]) != destination:
+            return real_capture(*args, **kwargs)
         fd, original = created[0]
         try:
             held = os.fstat(fd)
@@ -1401,13 +1407,27 @@ def test_completed_copy_syncs_parent_before_and_after_pending_retirement(
     tmp_path, monkeypatch, limit,
 ):
     import chapter_provenance as provenance
+    import stat
 
     source = _make_cbz(tmp_path / "source.cbz")
     destination = str(tmp_path / "copy.cbz")
     pending = provenance._pending_path(destination)
     parent_identity = (tmp_path.stat().st_dev, tmp_path.stat().st_ino)
-    real_fsync, real_rmdir = os.fsync, os.rmdir
+    real_fsync, real_rename = os.fsync, os.rename
+    real_capture = provenance._remove_captured
     events = []
+    marker_pins = []
+
+    def capture(path, expected, owner):
+        if path == pending:
+            assert owner is not None and owner._descriptor is not None
+            held = os.fstat(owner._descriptor)
+            assert stat.S_ISREG(held.st_mode) and stat.S_IMODE(held.st_mode) == 0o600
+            assert owner.matches(expected)
+            with open(pending, encoding="ascii") as marker:
+                assert json.load(marker) == {"version": 1, "origin": destination}
+            marker_pins.append(owner._descriptor)
+        return real_capture(path, expected, owner)
 
     def sync(fd):
         held = os.fstat(fd)
@@ -1419,27 +1439,30 @@ def test_completed_copy_syncs_parent_before_and_after_pending_retirement(
                 events.append(("data_sync", True, True))
         real_fsync(fd)
 
-    def retire(path, *args, **kwargs):
-        if path == os.path.basename(pending):
+    def retire(path, target, *args, **kwargs):
+        if path == os.path.basename(pending) and target == "artifact":
             events.append(("retire", True, True))
-        return real_rmdir(path, *args, **kwargs)
+        return real_rename(path, target, *args, **kwargs)
 
     monkeypatch.setattr(provenance, "FINGERPRINT_MAX_BYTES", limit)
     monkeypatch.setattr(provenance.os, "fsync", sync)
-    monkeypatch.setattr(provenance.os, "rmdir", retire)
+    monkeypatch.setattr(provenance.os, "rename", retire)
+    monkeypatch.setattr(provenance, "_remove_captured", capture)
     evidence, verified = provenance.copy_new_file(source, destination)
     events.append(("returned", True, False))
-    assert events == [
-        ("parent_sync", False, True),
-        ("data_sync", True, True),
-        ("parent_sync", True, True),
-        ("retire", True, True),
-        ("parent_sync", True, False),
-        ("returned", True, False),
-    ]
+    initialized = events.index(("parent_sync", False, True))
+    data_synced = events.index(("data_sync", True, True))
+    before_retire = events.index(("parent_sync", True, True))
+    retired = events.index(("retire", True, True))
+    after_retire = events.index(("parent_sync", True, False))
+    returned = events.index(("returned", True, False))
+    assert initialized < data_synced < before_retire < retired < after_retire < returned
     assert verified is (limit > evidence.size)
     assert _sha(source) == _sha(destination)
     assert not os.path.lexists(pending)
+    assert len(marker_pins) == 1
+    with pytest.raises(OSError):
+        os.fstat(marker_pins[0])
 
 
 @pytest.mark.parametrize("barrier", ["before_retire", "after_retire"])
@@ -1460,7 +1483,7 @@ def test_pending_retirement_sync_failure_refuses_settlement_and_retry(
 
     def track_open(path, flags, *args, **kwargs):
         descriptor = real_open(path, flags, *args, **kwargs)
-        if flags & os.O_DIRECTORY:
+        if flags & os.O_DIRECTORY or os.path.basename(os.fspath(path)).startswith(".mangarr-claim-chapter-pending-"):
             directory_fds.append(descriptor)
         return descriptor
 
@@ -1529,7 +1552,7 @@ def test_retirement_barrier_refusal_preserves_unknown_pending_entry(tmp_path, mo
         real_fsync(fd)
 
     monkeypatch.setattr(provenance.os, "fsync", fail_after_retirement)
-    with pytest.raises(OSError, match="retirement barrier refusal"):
+    with pytest.raises(provenance.ProvenanceError, match="pending retirement refused"):
         provenance.copy_new_file(source, destination)
     assert replaced == [True]
     with open(pending, "rb") as unknown:
@@ -1537,3 +1560,90 @@ def test_retirement_barrier_refusal_preserves_unknown_pending_entry(tmp_path, mo
     with pytest.raises(provenance.ProvenanceError, match="pending explicit review"):
         provenance.assert_not_pending(destination)
     assert _sha(source) == _sha(destination)
+
+
+@pytest.mark.parametrize("replacement", ["directory", "regular", "symlink"])
+def test_pending_retirement_preserves_substituted_public_barrier(env, monkeypatch, replacement):
+    from pathlib import Path
+    import chapter_provenance as provenance
+
+    destination = _library_copy(env)
+    pending = Path(provenance._pending_path(destination))
+    displaced = pending.with_name("displaced-original-intent")
+    foreign = pending.with_name("foreign-marker-target")
+    real_fsync = os.fsync
+    swapped = []
+    receipt = []
+
+    def swap_at_retirement(fd):
+        held = os.fstat(fd)
+        if os.path.exists(destination) and not swapped:
+            parent = os.stat(pending.parent)
+            if (held.st_dev, held.st_ino) == (parent.st_dev, parent.st_ino):
+                receipt.append((pending / "receipt.json" if pending.is_dir() else pending).read_bytes())
+                pending.rename(displaced)
+                if replacement == "directory":
+                    pending.mkdir(mode=0o700)
+                elif replacement == "regular":
+                    pending.write_bytes(b"foreign pending authority")
+                else:
+                    foreign.write_bytes(b"foreign symlink target")
+                    pending.symlink_to(foreign)
+                swapped.append(True)
+        real_fsync(fd)
+
+    monkeypatch.setattr(provenance.os, "fsync", swap_at_retirement)
+    _queue(env)
+    _run(env)
+    provenance_rows, chapter, jobs = _rows(env)
+    assert swapped == [True]
+    assert chapter is not None and chapter["status"] == "wanted"
+    assert chapter["import_path"] is None and provenance_rows == []
+    assert jobs[0]["status"] == "error"
+    if replacement == "directory":
+        assert pending.is_dir() and list(pending.iterdir()) == []
+    elif replacement == "regular":
+        assert pending.read_bytes() == b"foreign pending authority"
+    else:
+        assert pending.is_symlink() and os.readlink(pending) == str(foreign)
+        assert foreign.read_bytes() == b"foreign symlink target"
+    old_receipt = displaced / "receipt.json" if displaced.is_dir() else displaced
+    assert old_receipt.read_bytes() == receipt[0]
+    assert _sha(destination) == env["source_sha"] and _source_untouched(env)
+
+
+@pytest.mark.parametrize("error_name", ["EIO", "ESTALE", "EACCES"])
+def test_pending_lookup_error_never_reuses_retained_partial(env, monkeypatch, error_name):
+    import errno
+    from pathlib import Path
+    import chapter_provenance as provenance
+
+    destination = _library_copy(env)
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    with open(destination, "wb") as partial:
+        partial.write(b"x")
+    pending = Path(provenance._pending_path(destination))
+    pending.mkdir(mode=0o700)
+    receipt = pending / "receipt.json"
+    receipt.write_bytes(b"preexisting pending intent")
+    real_lstat = os.lstat
+    observed = []
+
+    def refuse_lookup(path, *args, **kwargs):
+        if os.fspath(path) == str(pending):
+            observed.append(True)
+            raise OSError(getattr(errno, error_name), "injected pending lookup refusal")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(provenance.os, "lstat", refuse_lookup)
+    _queue(env)
+    _run(env)
+    provenance_rows, chapter, jobs = _rows(env)
+    assert observed
+    assert chapter is not None and chapter["status"] == "wanted"
+    assert chapter["import_path"] is None and provenance_rows == []
+    assert jobs[0]["status"] == "error"
+    with open(destination, "rb") as partial:
+        assert partial.read() == b"x"
+    assert receipt.read_bytes() == b"preexisting pending intent"
+    assert _source_untouched(env)

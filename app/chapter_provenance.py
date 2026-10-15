@@ -199,8 +199,11 @@ def _pending_path(path: str) -> str:
 def assert_not_pending(path: str) -> None:
     """Unknown/pending creation intent is never authority to reuse a file."""
     pending = _pending_path(path)
-    if os.path.lexists(pending):
-        raise ProvenanceError(f"chapter copy pending explicit review: {pending}")
+    try:
+        os.lstat(pending)
+    except FileNotFoundError:
+        return
+    raise ProvenanceError(f"chapter copy pending explicit review: {pending}")
 
 
 @contextmanager
@@ -209,8 +212,9 @@ def _pending_copy(path: str) -> Generator[Callable[[], None], None, None]:
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     pending = _pending_path(path)
     parent_fd = os.open(os.path.dirname(pending), flags)
-    pending_fd: int | None = None
-    receipt_created = False
+    pending_owner = _OwnedCopy()
+    accepted: os.stat_result | None = None
+    marker_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
     retire = True
 
     def release() -> None:
@@ -219,66 +223,63 @@ def _pending_copy(path: str) -> Generator[Callable[[], None], None, None]:
 
     try:
         try:
-            os.mkdir(os.path.basename(pending), 0o700, dir_fd=parent_fd)
+            pending_owner._descriptor = os.open(
+                os.path.basename(pending), marker_flags, 0o600, dir_fd=parent_fd,
+            )
         except FileExistsError as exc:
             raise ProvenanceError(f"chapter copy pending explicit review: {pending}") from exc
-        created = os.stat(os.path.basename(pending), dir_fd=parent_fd, follow_symlinks=False)
-        pending_fd = os.open(os.path.basename(pending), flags, dir_fd=parent_fd)
-        held = os.fstat(pending_fd)
+        held = os.fstat(pending_owner._descriptor)
         if (
-            (held.st_dev, held.st_ino) != (created.st_dev, created.st_ino)
+            not stat.S_ISREG(held.st_mode)
             or held.st_uid != os.geteuid()
-            or stat.S_IMODE(held.st_mode) not in (0o700, 0o2700)
+            or stat.S_IMODE(held.st_mode) != 0o600
         ):
-            raise ProvenanceError("chapter pending private directory identity/permissions changed")
-        os.fchmod(pending_fd, 0o700)
-        marker_fd = os.open(
-            "receipt.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-            0o600, dir_fd=pending_fd,
-        )
-        receipt_created = True
-        with os.fdopen(marker_fd, "w", encoding="ascii") as marker:
+            raise ProvenanceError("chapter pending marker identity/permissions changed")
+        accepted = held
+        with os.fdopen(os.dup(pending_owner._descriptor), "w", encoding="ascii") as marker:
             json.dump({"version": 1, "origin": os.path.abspath(path)}, marker)
             marker.flush()
             os.fsync(marker.fileno())
-        os.fsync(pending_fd)
         os.fsync(parent_fd)
         retire = False
         yield release
     finally:
         try:
-            if pending_fd is not None:
-                try:
-                    if retire and receipt_created:
+            if accepted is not None:
+                if retire:
+                    try:
+                        # Prove the public name/absence before retiring intent.
+                        os.fsync(parent_fd)
+                        if not _remove_captured(pending, _identity(accepted)[:2], pending_owner):
+                            raise ProvenanceError(f"chapter pending retirement refused: {pending}")
+                        os.fsync(parent_fd)
+                    except BaseException:
                         try:
-                            # Prove the public name/absence before retiring intent.
-                            os.fsync(parent_fd)
+                            repair_fd = os.open(
+                                os.path.basename(pending), marker_flags, 0o600, dir_fd=parent_fd,
+                            )
+                        except FileExistsError:
+                            pass  # Unknown intent already blocks reuse/inventory.
+                        except OSError as exc:
+                            log.error("Could not re-establish pending barrier at %s: %s", pending, exc)
+                        else:
                             try:
-                                os.unlink("receipt.json", dir_fd=pending_fd)
-                            except FileNotFoundError:
-                                pass
-                            os.rmdir(os.path.basename(pending), dir_fd=parent_fd)
-                            os.fsync(parent_fd)
-                        except BaseException:
-                            try:
-                                os.mkdir(os.path.basename(pending), 0o700, dir_fd=parent_fd)
-                            except FileExistsError:
-                                pass  # Unknown intent is already a blocking barrier.
+                                with os.fdopen(repair_fd, "w", encoding="ascii") as marker:
+                                    json.dump({"version": 1, "origin": os.path.abspath(path)}, marker)
+                                    marker.flush()
+                                    os.fsync(marker.fileno())
+                                os.fsync(parent_fd)
                             except OSError as exc:
-                                log.error("Could not re-establish pending barrier at %s: %s", pending, exc)
-                            else:
-                                try:
-                                    os.fsync(parent_fd)
-                                except OSError as exc:
-                                    log.error("Pending barrier sync refused at %s: %s", pending, exc)
-                            log.error("Chapter copy pending explicit review at %s", pending)
-                            raise
-                    elif not retire:
+                                log.error("Pending barrier sync refused at %s: %s", pending, exc)
                         log.error("Chapter copy pending explicit review at %s", pending)
-                finally:
-                    os.close(pending_fd)
+                        raise
+                else:
+                    log.error("Chapter copy pending explicit review at %s", pending)
         finally:
-            os.close(parent_fd)
+            try:
+                pending_owner.close()
+            finally:
+                os.close(parent_fd)
 
 
 def _copy_new_file(
