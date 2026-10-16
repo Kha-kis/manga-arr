@@ -13,6 +13,15 @@ make test-browser-isolated   # Pre-release. Spins up isolated container, ~3min.
 make test-release-safe       # Both of the above.
 ```
 
+The filesystem fixtures expect the runtime's default `umask 0022`. Docker is
+required for the real other-UID filesystem regression as well as browser tests.
+The actor's session setup reuses the official Python base pinned by digest in
+`Dockerfile`, or pulls that exact public reference once if it is not cached.
+Missing Docker, pull failures and invalid pins fail setup rather than skipping
+the test. The actor itself still runs without network access, with a read-only
+root filesystem and restricted capabilities. No private workstation image or
+ambient `PYTHONPATH` is required for these tests.
+
 If you're an operator and want to inspect DB residue without changing anything:
 
 ```bash
