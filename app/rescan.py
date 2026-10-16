@@ -1800,7 +1800,7 @@ def reconcile_series_inventory(
                 data={"download_client_id": volume["download_client_id"]},
             )
             owned_changes(1)
-            # Suwayomi parent absence does not prove independent chapter absence.
+            # Parent absence does not prove independent chapter absence.
             cascaded = _cascade_chapter_snapshot(
                 db,
                 {
@@ -1809,8 +1809,7 @@ def reconcile_series_inventory(
                         for ch in chapters
                         if ch["id"] not in inventory.files_by_chapter
                         and (
-                            volume["client"] != "suwayomi"
-                            or not ch["import_path"]
+                            not ch["import_path"]
                             or ch["import_path"] == volume["import_path"]
                         )
                     )
