@@ -1566,7 +1566,6 @@ def reconcile_series_inventory(
         proof = recorded_volumes.get(volume["id"])
         if (
             volume["status"] == "downloaded"
-            and volume["client"] != "suwayomi"
             and volume["import_path"]
             and float(volume["volume_num"]) not in inventory.on_disk
             and proof is not None
@@ -1786,7 +1785,7 @@ def reconcile_series_inventory(
                 ):
                     vetoed_volume_ids.add(volume["id"])
                     continue
-            if volume["client"] == "suwayomi":
+            if volume["client"] == "suwayomi" and not volume["import_path"]:
                 continue
             if not _reset_missing_volume(db, volume):
                 continue
@@ -1801,6 +1800,7 @@ def reconcile_series_inventory(
                 data={"download_client_id": volume["download_client_id"]},
             )
             owned_changes(1)
+            # Suwayomi parent absence does not prove independent chapter absence.
             cascaded = _cascade_chapter_snapshot(
                 db,
                 {
@@ -1808,6 +1808,11 @@ def reconcile_series_inventory(
                         ch
                         for ch in chapters
                         if ch["id"] not in inventory.files_by_chapter
+                        and (
+                            volume["client"] != "suwayomi"
+                            or not ch["import_path"]
+                            or ch["import_path"] == volume["import_path"]
+                        )
                     )
                     for vid, chapters in snapshot.chapters_by_volume.items()
                 },

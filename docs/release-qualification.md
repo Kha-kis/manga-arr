@@ -77,6 +77,12 @@ native ARM execution or broader platform/runtime credit follows.
 
 ### Remaining Qualification
 
+Issue [#459](https://github.com/Kha-kis/manga-arr/issues/459) is a release blocker:
+RC8 can retain downloaded state for a missing managed Suwayomi volume and its
+chapters. The source correction is not present in the immutable RC8 image. A
+replacement candidate must include and qualify the fix; completing RC8's
+observation window cannot qualify that replacement or waive this defect.
+
 Before stable approval, collect fresh install/upgrade/recovery, cached metadata
 failure, file/linkage, new provenance safety and real download/import evidence.
 A new uninterrupted natural metadata-repeat observation is required;
