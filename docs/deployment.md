@@ -268,14 +268,17 @@ treating a missing inventory match as proof. Unavailable directories, permission
 errors, symlinks, ambiguous alternatives and changed observations leave the
 chapter untouched.
 
-A missing Suwayomi-assembled volume is reconciled only after its recorded
-managed-library absence and ownership are verified. Monitored chapters pointing
-at that volume, or with no independent recorded path, follow the existing
-missing-volume reset. A separate chapter path is not proved missing by the
-parent's disappearance: verified loose files remain available, and uncertain
-independent observations remain untouched. If a canonical loose file and its
-backing volume disappear together, a subsequent rescan can reconcile the loose
-file after the parent has been reset. No source download is removed.
+A volume's recorded managed-library path is reconciled as missing only after
+its absence and ownership are verified, including Suwayomi-assembled volumes.
+For every download client, monitored chapters pointing at that volume, or with
+no independent recorded path, follow the existing guarded missing-volume reset.
+A separate chapter path is not proved missing by the parent's disappearance:
+verified loose files remain available, and uncertain independent observations
+retain their availability and acquisition fields. This includes external,
+ambiguous and inaccessible paths, even for already-wanted chapters. If a
+canonical loose file and its backing volume disappear together, a subsequent
+rescan can reconcile the loose file after the parent has been reset. No source
+download is removed.
 
 A chapter-range archive is ambiguous only for chapters within its range. A
 recorded, mapped backing volume is verified separately even when its filename

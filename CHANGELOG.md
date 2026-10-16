@@ -7,6 +7,13 @@ All notable changes to this project. Format roughly follows
 
 ### Fixed
 
+- A missing volume no longer clears an independent chapter's availability or
+  acquisition fields solely because rescan did not match its file. This safety
+  rule now applies to every download client, including qBittorrent and SABnzbd;
+  external, ambiguous and unavailable chapter paths remain untouched until
+  their own absence is verified. Volume-backed children still follow the
+  guarded parent reset. No files are removed (#461).
+
 - Rescan reconciles a missing Suwayomi-assembled volume when its recorded
   managed-library path is verified absent. Surviving independent loose chapters
   remain downloaded; monitored chapters relying on that volume become wanted.

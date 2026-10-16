@@ -83,6 +83,13 @@ chapters. The source correction is not present in the immutable RC8 image. A
 replacement candidate must include and qualify the fix; completing RC8's
 observation window cannot qualify that replacement or waive this defect.
 
+Issue [#461](https://github.com/Kha-kis/manga-arr/issues/461) separately affects
+missing non-Suwayomi parents: their reset can clear independent chapters'
+availability and acquisition fields without verified child absence. The
+replacement candidate must also include and qualify the client-independent
+chapter safeguard. Source regression tests do not establish that an immutable
+published image contains the fix or supply new runtime qualification.
+
 Before stable approval, collect fresh install/upgrade/recovery, cached metadata
 failure, file/linkage, new provenance safety and real download/import evidence.
 A new uninterrupted natural metadata-repeat observation is required;
