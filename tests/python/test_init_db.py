@@ -43,6 +43,8 @@ EXPECTED_TABLES = {
     "pending_releases",
     "chapters",
     "chapter_file_provenance",
+    "volume_assembly",
+    "volume_assembly_chapters",
     "quality_profiles",
     "custom_formats",
     "release_profiles",
