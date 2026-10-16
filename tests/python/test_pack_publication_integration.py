@@ -18,12 +18,18 @@ from contextlib import AbstractContextManager
 
 from file_mutation_lock import FileMutationGuard, file_mutation_guard
 import private_file_claim as claims
+from other_uid_actor import ensure_python_base_image
 from test_import_pack_cleanup_durability import (
     _PackEnv,
     _pack_paths,
     pack_env as pack_env,
 )
 from test_publication_nfs_file_claims_391 import _unsupported_renameat2
+
+
+@pytest.fixture(scope="session")
+def other_uid_python_image() -> str:
+    return ensure_python_base_image(Path(__file__).resolve().parents[2] / "Dockerfile")
 
 
 @pytest.mark.parametrize("placement", ["private", "native"])
@@ -184,7 +190,7 @@ def test_generated_pack_publication_has_no_nested_namespace_or_operation_residue
 
 
 def test_other_uid_replaced_queued_private_namespace_cannot_rebind_source(
-    pack_env: _PackEnv, monkeypatch: pytest.MonkeyPatch
+    other_uid_python_image: str, pack_env: _PackEnv, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import import_download
     import import_execute
@@ -265,7 +271,7 @@ def test_other_uid_replaced_queued_private_namespace_cannot_rebind_source(
             "--mount",
             f"type=bind,src={root},dst=/attack",
             "--entrypoint=python",
-            "sha256:0b133d75d4e1cef74740f7ba87d227ec269e0e2cdde4f6392539a136eb7b9412",
+            other_uid_python_image,
             "-c",
             "import os,sys,zipfile; from pathlib import Path; "
             "root=Path('/attack'); print(os.geteuid(),flush=True); "

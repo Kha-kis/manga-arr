@@ -15,8 +15,8 @@ import pytest
 from test_loose_chapter_state import archive, rows, state_env as state_env
 
 
-@pytest.fixture
-def recorded_env(state_env, monkeypatch) -> dict[str, Any]:
+@pytest.fixture(params=("qbittorrent", "suwayomi"))
+def recorded_env(state_env, monkeypatch, request: pytest.FixtureRequest) -> dict[str, Any]:
     import main
     import shared
 
@@ -27,11 +27,11 @@ def recorded_env(state_env, monkeypatch) -> dict[str, Any]:
     with sqlite3.connect(state_env["db_path"]) as db:
         db.execute("DELETE FROM chapters")
         db.execute(
-            "UPDATE volumes SET status='downloaded',import_path=?,client='qbittorrent',"
+            "UPDATE volumes SET status='downloaded',import_path=?,client=?,"
             "quality='cbz',size_bytes=123,imported_at='2026-10-10',"
             "download_id='original-job',torrent_name='Original release',"
             "indexer='Original indexer',protocol='torrent' WHERE id=11",
-            (str(path),),
+            (str(path), request.param),
         )
     return {**state_env, "recorded": path}
 
@@ -394,7 +394,49 @@ def test_no_recorded_path_retains_existing_missing_behavior(recorded_env):
     recorded_env["recorded"].unlink()
     with sqlite3.connect(recorded_env["db_path"]) as db:
         db.execute("UPDATE volumes SET import_path=NULL WHERE id=11")
-    assert rescan.rescan_series_folder(1)["missing"] == 1
+    before = state(recorded_env)
+    if rows(recorded_env, "volumes")[0]["client"] == "suwayomi":
+        assert_deferred(recorded_env, before)
+    else:
+        assert rescan.rescan_series_folder(1)["missing"] == 1
+
+
+@pytest.mark.parametrize("location", ["external", "nested"])
+def test_missing_unmanaged_recorded_path_is_not_managed_absence(recorded_env, location):
+    recorded_env["recorded"].unlink()
+    parent = (
+        recorded_env["tmp"]
+        if location == "external"
+        else recorded_env["library"] / "nested"
+    )
+    parent.mkdir(exist_ok=True)
+    path = parent / recorded_env["recorded"].name
+    with sqlite3.connect(recorded_env["db_path"]) as db:
+        db.execute("UPDATE volumes SET import_path=? WHERE id=11", (str(path),))
+    assert_deferred(recorded_env, state(recorded_env))
+
+
+@pytest.mark.parametrize("owner", ["volume", "chapter"])
+def test_other_series_recorded_owner_vetoes_missing_reset(recorded_env, owner):
+    recorded_env["recorded"].unlink()
+    with sqlite3.connect(recorded_env["db_path"]) as db:
+        db.execute(
+            "INSERT INTO series(id,title,search_pattern)"
+            " VALUES(2,'Other Series','Other Series')"
+        )
+        if owner == "volume":
+            db.execute(
+                "INSERT INTO volumes(id,series_id,volume_num,status,import_path)"
+                " VALUES(21,2,1,'downloaded',?)",
+                (str(recorded_env["recorded"]),),
+            )
+        else:
+            db.execute(
+                "INSERT INTO chapters(id,series_id,chapter_num,status,import_path)"
+                " VALUES(21,2,1,'downloaded',?)",
+                (str(recorded_env["recorded"]),),
+            )
+    assert_deferred(recorded_env, state(recorded_env))
 
 
 def test_missing_historical_path_with_current_template_candidate_defers(recorded_env):

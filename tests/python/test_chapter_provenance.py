@@ -19,6 +19,7 @@ import sqlite3
 import sys
 import tempfile
 import zipfile
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -49,6 +50,39 @@ def _make_cbz(path, page_count=3):
 def _sha(path):
     with open(path, "rb") as fh:
         return hashlib.sha256(fh.read()).hexdigest()
+
+
+def _provenance_subprocess_env() -> dict[str, str]:
+    import chapter_provenance
+
+    environment = dict(os.environ)
+    app_dir = str(Path(chapter_provenance.__file__).resolve().parent)
+    existing = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = app_dir + (os.pathsep + existing if existing else "")
+    return environment
+
+
+@pytest.mark.parametrize(
+    "existing", [None, "/existing/first" + os.pathsep + "/existing/second"]
+)
+def test_provenance_subprocess_environment_preserves_parent(
+    monkeypatch: pytest.MonkeyPatch, existing: str | None
+) -> None:
+    import chapter_provenance
+
+    monkeypatch.setenv("PORTABILITY_TEST_MARKER", "preserved")
+    if existing is None:
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+    else:
+        monkeypatch.setenv("PYTHONPATH", existing)
+    before = dict(os.environ)
+    environment = _provenance_subprocess_env()
+    assert dict(os.environ) == before
+    assert {key: value for key, value in environment.items() if key != "PYTHONPATH"} == {
+        key: value for key, value in before.items() if key != "PYTHONPATH"
+    }
+    expected = str(Path(chapter_provenance.__file__).resolve().parent)
+    assert environment["PYTHONPATH"] == expected + (os.pathsep + existing if existing else "")
 
 
 @pytest.fixture
@@ -1256,9 +1290,12 @@ def test_copy_size_bound_uses_the_open_source_descriptor(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("kind", ["fifo", "directory"])
-def test_nonregular_source_is_refused_without_blocking(tmp_path, kind):
+def test_nonregular_source_is_refused_without_blocking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
     import subprocess
 
+    monkeypatch.delenv("PYTHONPATH", raising=False)
     source = tmp_path / "selected.cbz"
     destination = tmp_path / "copy.cbz"
     if kind == "fifo":
@@ -1279,6 +1316,7 @@ else:
         result = subprocess.run(
             [sys.executable, "-B", "-c", script, str(source), str(destination)],
             capture_output=True, text=True, timeout=3,
+            env=_provenance_subprocess_env(),
         )
     except subprocess.TimeoutExpired:
         pytest.fail("source open blocked before regular-file validation")
@@ -1310,9 +1348,12 @@ def test_live_pin_prevents_recreated_entry_from_becoming_owned(tmp_path, owned_c
 
 
 @pytest.mark.parametrize("boundary", ["copy_verification", "job_revalidation"])
-def test_fingerprint_fifo_substitution_is_refused_without_blocking(tmp_path, boundary):
+def test_fingerprint_fifo_substitution_is_refused_without_blocking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
     import subprocess
 
+    monkeypatch.delenv("PYTHONPATH", raising=False)
     source = _make_cbz(tmp_path / "source.cbz")
     destination = str(tmp_path / "copy.cbz")
     script = """
@@ -1355,6 +1396,7 @@ assert real_fingerprint(source) == source_evidence
         result = subprocess.run(
             [sys.executable, "-B", "-c", script, source, destination, boundary],
             capture_output=True, text=True, timeout=3,
+            env=_provenance_subprocess_env(),
         )
     except subprocess.TimeoutExpired:
         pytest.fail(f"{boundary} blocked opening a substituted FIFO")

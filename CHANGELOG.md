@@ -22,6 +22,15 @@ All notable changes to this project. Format roughly follows
   empty volume file is now preserved and the job errors for review, instead of
   being overwritten.
 
+### Fixed
+
+- Rescan reconciles a missing Suwayomi-assembled volume when its recorded
+  managed-library path is verified absent. Surviving independent loose chapters
+  remain downloaded; monitored chapters relying on that volume become wanted.
+  Independent chapter paths with unknown availability remain untouched rather
+  than inheriting the parent's disappearance. External, unrecorded, ambiguous or
+  unavailable paths retain the existing safeguards. No files are removed (#459).
+
 ## 1.3.3-rc.8 - 2026-10-15
 
 Replacement candidate published from exact reviewed
