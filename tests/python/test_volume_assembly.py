@@ -10,6 +10,10 @@ Nothing here cleans anything up. Coverage:
   - reused volume, non-merge mode, legacy matching, missing context,
     oversized, changing or empty sources record nothing
   - pages that differ after finishing record nothing
+  - a final volume above the evidence bound, unknown context or pages that
+    cannot be verified still import, without evidence; a stage that changed
+    after finishing is still never published
+  - page verification reads bounded chunks, never a whole chapter
   - an existing final name is never replaced; failures leave no stage
   - the link fallback publishes one name; a change after commit voids
 """
@@ -208,8 +212,8 @@ def test_new_volume_records_fingerprint_and_ordered_page_ranges(env):
             assert c["source_sha256"] == _sha(env["sources"][cid])
             assert c["source_size_bytes"] == os.path.getsize(env["sources"][cid])
             assert c["pages_sha256"] == volume_assembly.page_digest(pages)
-            assert volume_assembly.page_digest(
-                volume_assembly.read_pages(archive, c["first_page"], c["last_page"])
+            assert volume_assembly.range_digest(
+                archive, c["first_page"], c["last_page"]
             ) == c["pages_sha256"]
 
 
@@ -290,9 +294,9 @@ def test_legacy_filename_selection_carries_no_evidence(env):
 
 
 def test_oversized_source_records_nothing(env, monkeypatch):
-    import volume_assembly
+    import chapter_provenance
 
-    monkeypatch.setattr(volume_assembly, "FINGERPRINT_MAX_BYTES", 10)
+    monkeypatch.setattr(chapter_provenance, "FINGERPRINT_MAX_BYTES", 10)
     _queue(env)
     _run(env)
     asm, _chs, vol, _jobs = _rows(env)
@@ -344,6 +348,112 @@ def test_pages_changed_while_finishing_record_nothing(env, monkeypatch):
     asm, _chs, vol, _jobs = _rows(env)
     assert vol["status"] == "downloaded"
     assert asm == []
+
+
+@pytest.mark.parametrize("source_id", [SOURCE_ID, None], ids=["known", "unknown"])
+def test_volume_above_evidence_bound_still_imports(env, monkeypatch, source_id):
+    """Small compressed chapters expand past the bound in the stored volume."""
+    import chapter_provenance
+
+    for cid, *_ in CHAPTERS:
+        with zipfile.ZipFile(env["sources"][cid], "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("0001.png", bytes([cid % 256]) * 200)
+    monkeypatch.setattr(chapter_provenance, "FINGERPRINT_MAX_BYTES", 500)
+    assert all(os.path.getsize(p) <= 500 for p in env["sources"].values())
+    _queue(env)
+    _run(env, source_id=source_id)
+    asm, _chs, vol, jobs = _rows(env)
+    assert jobs == [{"status": "completed", "error": None}]
+    assert vol["status"] == "downloaded" and vol["import_path"] == _volume(env)
+    assert os.path.getsize(_volume(env)) > 500
+    with zipfile.ZipFile(_volume(env)) as archive:
+        assert sorted(n for n in archive.namelist() if n.endswith(".png")) == [
+            "0001.png", "0002.png"]
+    assert _no_stage(env)
+    assert asm == []
+
+
+def test_unknown_context_never_hashes_the_volume(env, monkeypatch):
+    import volume_assembly
+
+    def _refuse(path, **_k):
+        raise AssertionError(f"evidence hash without context: {path}")
+
+    monkeypatch.setattr(volume_assembly, "fingerprint", _refuse)
+    _queue(env)
+    _run(env, source_id=None)
+    asm, _chs, vol, _jobs = _rows(env)
+    assert vol["status"] == "downloaded" and os.path.isfile(_volume(env))
+    assert asm == []
+
+
+def test_unverifiable_pages_still_import(env, monkeypatch):
+    import main
+
+    def _cover(stage, *_a, **_k):
+        with zipfile.ZipFile(stage, "a") as zf:
+            zf.writestr("cover.jpg", b"not a numbered page")
+
+    monkeypatch.setattr(main, "_try_inject_comicinfo", _cover)
+    _queue(env)
+    _run(env)
+    asm, _chs, vol, jobs = _rows(env)
+    assert jobs == [{"status": "completed", "error": None}]
+    assert vol["status"] == "downloaded" and os.path.isfile(_volume(env))
+    assert asm == []
+
+
+@pytest.mark.parametrize("source_id", [SOURCE_ID, None], ids=["known", "unknown"])
+def test_stage_changed_after_finishing_is_never_published(env, monkeypatch, source_id):
+    import volume_assembly
+
+    real = volume_assembly._file_identity
+    calls = []
+
+    def _identity_then_touch(path):
+        found = real(path)
+        if not calls:
+            os.utime(path, ns=(1, 1))
+        calls.append(path)
+        return found
+
+    monkeypatch.setattr(volume_assembly, "_file_identity", _identity_then_touch)
+    _queue(env)
+    _run(env, source_id=source_id)
+    asm, _chs, vol, jobs = _rows(env)
+    assert not os.path.exists(_volume(env))
+    assert _no_stage(env)
+    assert asm == [] and vol["status"] == "wanted"
+    assert jobs[0]["status"] == "error"
+
+
+def test_page_verification_holds_one_bounded_chunk(tmp_path):
+    import gc
+    import tracemalloc
+
+    import chapter_provenance
+    import volume_assembly
+
+    page_size = 1024 * 1024
+    path = str(tmp_path / "volume.cbz")
+    pages = [os.urandom(page_size) for _ in range(16)]
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as zf:
+        for number, data in enumerate(pages, 1):
+            zf.writestr(f"{number:04d}.png", data)
+    ident = chapter_provenance.SourceIdentity(1, "http://swy.local:4567", 99, SOURCE_ID, 501)
+    chapters = (volume_assembly.ChapterPages(
+        0, ident, "0" * 64, 1, 1, 16, volume_assembly.page_digest(pages)),)
+    del pages
+    gc.collect()
+    tracemalloc.start()
+    try:
+        verified = volume_assembly._verify_pages(path, chapters)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert verified
+    # The chapter is 16 MiB decoded; verification keeps about one chunk.
+    assert peak < 4 * page_size
 
 
 def test_change_after_commit_voids_the_record(env, monkeypatch):

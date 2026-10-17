@@ -12,8 +12,9 @@ All notable changes to this project. Format roughly follows
   range it produced with a SHA-256 over those pages, plus the published
   volume's fingerprint ([#422](https://github.com/Kha-kis/manga-arr/issues/422)).
   Evidence only: nothing reads it to clean up files. Reused volumes, non-merge
-  mode, legacy filename matches, unknown source context and historical volumes
-  record nothing. Additive tables, no schema-version change.
+  mode, legacy filename matches, unknown source context, volumes above the
+  fingerprint bound and historical volumes record nothing, and still import.
+  Additive tables, no schema-version change.
 
 ### Changed
 

@@ -336,9 +336,10 @@ remounts or container restarts and must not be treated as identity on its own.
 
 A merged volume is written into a fresh private `0700`
 `.mangarr-claim-volume-*` directory beside its final name, ComicInfo is added
-there, and the result is synchronized and fingerprinted before it is published
-to the absent final name with the publication primitive (`renameat2`
-no-replace, or `link` where the filesystem reports no-replace as unsupported).
+there, and the result is synchronized and published to the absent final name
+with the publication primitive (`renameat2` no-replace, or `link` where the
+filesystem reports no-replace as unsupported), provided the finished file's
+device, inode, size and mtime are unchanged since finishing.
 An existing final name is never replaced; that includes an empty file left by
 an older interrupted merge, which now leaves the job errored for review instead
 of being overwritten. The private directory is removed after publication or
@@ -356,14 +357,17 @@ position, the SHA-256 and size of the source file read, the first and last
 volume page it produced, and a SHA-256 over those pages. Page `N` is the image
 member whose stem is the decimal `N`; the page digest is SHA-256 over each page
 in order as an 8-byte big-endian length followed by its bytes. Before
-publication the page ranges are re-read from the finished file and must match,
-and must account for every page in it.
+publication the finished file is hashed and its page ranges are re-read in
+bounded chunks, never holding a whole chapter, and must match and account for
+every page in it.
 
 Nothing is recorded for a reused volume, non-merge mode, legacy filename
-selection, a missing source ID, a source above the fingerprint bound or one
-whose identity changed while it was read, a chapter with no pages, pages that
-changed while the volume was finished, or historical volumes; there is no
-backfill. The record is written in the settlement transaction only if the
+selection, a missing source ID, a source or finished volume above the
+fingerprint bound, a source whose identity changed while it was read, a chapter
+with no pages, pages that changed while the volume was finished or cannot be
+verified, or historical volumes; there is no backfill. Evidence is optional:
+none of these stops the volume importing, and without full context the
+finished volume is not hashed at all. The record is written in the settlement transaction only if the
 volume row settles to that exact path, inside a savepoint, so a refused
 evidence insert never fails the import. While the filesystem guard is valid, a
 file that changed between verification and commit has its evidence discarded.

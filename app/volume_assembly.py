@@ -12,9 +12,10 @@ The record is evidence for a later, separately reviewed opt-in cleanup
 stage this import created.
 
 Never recorded for: a volume that already existed (reused), non-merge mode,
-chapters resolved by legacy filename matching, a source above the fingerprint
-bound, a source that changed while it was read, a chapter that produced no
-pages, or historical volumes.
+chapters resolved by legacy filename matching, a source or final volume above
+the fingerprint bound, a source that changed while it was read, a chapter that
+produced no pages, pages that cannot be verified, or historical volumes. None
+of these prevents the import itself.
 
 Page ``N`` of a volume is the image member whose stem is the decimal ``N``
 (``0001.jpg``, ..., ``10000.png``). A chapter's page digest is SHA-256 over,
@@ -33,13 +34,12 @@ import zipfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+import chapter_provenance
 from chapter_provenance import (
-    FINGERPRINT_MAX_BYTES,
     FileEvidence,
     ProvenanceError,
     SourceIdentity,
     fingerprint,
-    same_file,
 )
 
 log = logging.getLogger(__name__)
@@ -122,15 +122,35 @@ def volume_pages(archive: zipfile.ZipFile) -> dict[int, str]:
     return pages
 
 
-def read_pages(archive: zipfile.ZipFile, first: int, last: int) -> list[bytes]:
-    pages = volume_pages(archive)
-    out = []
+def _range_members(pages: dict[int, str], first: int, last: int) -> list[str]:
+    names = []
     for number in range(first, last + 1):
         name = pages.get(number)
         if name is None:
             raise ProvenanceError(f"volume page {number} is missing")
-        out.append(archive.read(name))
-    return out
+        names.append(name)
+    return names
+
+
+def _members_digest(archive: zipfile.ZipFile, names: Sequence[str]) -> str:
+    """``page_digest`` of these members, read in bounded chunks."""
+    digest = hashlib.sha256()
+    for name in names:
+        info = archive.getinfo(name)
+        digest.update(info.file_size.to_bytes(8, "big"))
+        consumed = 0
+        with archive.open(info) as member:
+            while chunk := member.read(_HASH_CHUNK_SIZE):
+                consumed += len(chunk)
+                digest.update(chunk)
+        if consumed != info.file_size:
+            raise ProvenanceError(f"volume member size mismatch: {name}")
+    return digest.hexdigest()
+
+
+def range_digest(archive: zipfile.ZipFile, first: int, last: int) -> str:
+    """Page digest of volume pages ``first``..``last``, one chunk at a time."""
+    return _members_digest(archive, _range_members(volume_pages(archive), first, last))
 
 
 def _identity(st: os.stat_result) -> tuple[int, int, int, int]:
@@ -162,7 +182,7 @@ def _merge_into(
             if not stat.S_ISREG(before.st_mode):
                 raise ProvenanceError(f"source is not a regular file: {source.path}")
             source_sha = None
-            if provable and before.st_size <= FINGERPRINT_MAX_BYTES:
+            if provable and before.st_size <= chapter_provenance.FINGERPRINT_MAX_BYTES:
                 source_sha = _hash_open_file(fh)
             first = page
             digest = hashlib.sha256()
@@ -197,13 +217,29 @@ def _merge_into(
 
 
 def _verify_pages(path: str, chapters: Sequence[ChapterPages]) -> bool:
-    with zipfile.ZipFile(path, "r") as archive:
-        for chapter in chapters:
-            pages = read_pages(archive, chapter.first_page, chapter.last_page)
-            if page_digest(pages) != chapter.pages_sha256:
-                return False
-        last = chapters[-1].last_page if chapters else 0
-        return max(volume_pages(archive), default=0) == last
+    """Whether the finished file holds exactly the recorded pages.
+
+    Any failure here only withholds evidence; it never fails the import.
+    """
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            pages = volume_pages(archive)
+            for chapter in chapters:
+                names = _range_members(pages, chapter.first_page, chapter.last_page)
+                if _members_digest(archive, names) != chapter.pages_sha256:
+                    return False
+    except (OSError, zipfile.BadZipFile, ProvenanceError) as exc:
+        log.info("Volume pages not verified: %s: %s", path, exc)
+        return False
+    last = chapters[-1].last_page if chapters else 0
+    return max(pages, default=0) == last
+
+
+def _file_identity(path: str) -> tuple[int, int, int, int]:
+    current = os.lstat(path)
+    if not stat.S_ISREG(current.st_mode):
+        raise ProvenanceError(f"not a regular file: {path}")
+    return _identity(current)
 
 
 def _open_carrier(parent: str) -> tuple[str, int]:
@@ -248,9 +284,12 @@ def assemble(
     """Merge ``sources`` into a new volume at the absent ``out_path``.
 
     The volume is written and finished (``finish``, e.g. ComicInfo) inside a
-    private directory beside ``out_path``, fingerprinted, then published
-    without replacing anything. Returns ``AssembledVolume(None, 0)`` when
-    nothing was published; an existing ``out_path`` is never replaced.
+    private directory beside ``out_path``, then published without replacing
+    anything, provided the finished file is still the same file. Content
+    evidence (SHA-256 and verified page ranges) is optional: when it cannot be
+    produced the volume still imports, with no ``assembly``. Returns
+    ``AssembledVolume(None, 0)`` when nothing was published; an existing
+    ``out_path`` is never replaced.
     """
     from import_publication import _fsync_directory, _publish_absent_stage
 
@@ -263,6 +302,7 @@ def assemble(
         return AssembledVolume(None, 0)
     stage = os.path.join(carrier, _STAGE_NAME)
     published = False
+    finished: tuple[int, int, int, int] | None = None
     try:
         descriptor = os.open(
             _STAGE_NAME,
@@ -276,11 +316,19 @@ def assemble(
             fh.flush()
             os.fsync(fh.fileno())
         finish(stage)
-        evidence = fingerprint(stage)
-        if chapters is not None and not _verify_pages(stage, chapters):
-            log.warning("Volume pages differ from their sources; no evidence: %s", out_path)
+        finished = _file_identity(stage)
+        evidence: FileEvidence | None = None
+        if chapters is not None and finished[2] > chapter_provenance.FINGERPRINT_MAX_BYTES:
+            log.info("Volume above the fingerprint bound; no evidence: %s", out_path)
             chapters = None
-        if not same_file(stage, evidence):
+        if chapters is not None:
+            evidence = fingerprint(stage)
+            if (evidence.dev, evidence.inode, evidence.size, evidence.mtime_ns) != finished:
+                raise ProvenanceError(f"volume stage changed while hashing: {stage}")
+            if not _verify_pages(stage, chapters):
+                log.warning("Volume pages differ from their sources; no evidence: %s", out_path)
+                chapters = None
+        if _file_identity(stage) != finished:
             raise ProvenanceError(f"volume stage changed before publication: {stage}")
         _publish_absent_stage(stage, out_path)
         published = True
@@ -296,12 +344,18 @@ def assemble(
         chapters = None
     finally:
         _dispose_carrier(carrier, carrier_fd)
-    if not same_file(out_path, evidence):
+    try:
+        unchanged = _file_identity(out_path) == finished
+    except (OSError, ProvenanceError):
+        unchanged = False
+    if not unchanged:
         log.warning("Volume changed after publication; no evidence: %s", out_path)
         chapters = None
     size = os.path.getsize(out_path)
     return AssembledVolume(
-        out_path, size, VolumeEvidence(evidence, chapters) if chapters else None
+        out_path,
+        size,
+        VolumeEvidence(evidence, chapters) if chapters and evidence else None,
     )
 
 
@@ -435,7 +489,7 @@ __all__ = [
     "assemble",
     "image_members",
     "page_digest",
-    "read_pages",
+    "range_digest",
     "record",
     "void",
     "volume_pages",
