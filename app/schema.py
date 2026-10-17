@@ -800,6 +800,46 @@ def init_db() -> None:
                 ON chapter_file_provenance(chapter_id);
         """)
 
+        # Evidence of which identified Suwayomi chapters a merged volume this
+        # import created holds, and the page range each produced. Recorded
+        # only; nothing reads it to clean up files (issue #422). Additive.
+        _execute_script_in_transaction(db, """
+            CREATE TABLE IF NOT EXISTS volume_assembly (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                volume_id           INTEGER NOT NULL
+                                            REFERENCES volumes(id) ON DELETE CASCADE,
+                series_id           INTEGER NOT NULL
+                                            REFERENCES series(id) ON DELETE CASCADE,
+                library_path        TEXT    NOT NULL UNIQUE,
+                file_dev            TEXT    NOT NULL,
+                file_inode          TEXT    NOT NULL,
+                size_bytes          INTEGER NOT NULL CHECK(size_bytes > 0),
+                mtime_ns            INTEGER NOT NULL,
+                sha256              TEXT    NOT NULL CHECK(length(sha256) = 64),
+                suwayomi_client_id  INTEGER NOT NULL,
+                suwayomi_server     TEXT    NOT NULL,
+                suwayomi_manga_id   INTEGER NOT NULL,
+                suwayomi_source_id  TEXT    NOT NULL,
+                suwayomi_job_id     INTEGER,
+                recorded_at         TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_volume_assembly_volume
+                ON volume_assembly(volume_id);
+            CREATE TABLE IF NOT EXISTS volume_assembly_chapters (
+                assembly_id         INTEGER NOT NULL
+                                            REFERENCES volume_assembly(id) ON DELETE CASCADE,
+                position            INTEGER NOT NULL CHECK(position >= 0),
+                suwayomi_chapter_id INTEGER NOT NULL,
+                source_sha256       TEXT    NOT NULL CHECK(length(source_sha256) = 64),
+                source_size_bytes   INTEGER NOT NULL CHECK(source_size_bytes > 0),
+                first_page          INTEGER NOT NULL CHECK(first_page >= 1),
+                last_page           INTEGER NOT NULL CHECK(last_page >= first_page),
+                pages_sha256        TEXT    NOT NULL CHECK(length(pages_sha256) = 64),
+                PRIMARY KEY(assembly_id, position),
+                UNIQUE(assembly_id, suwayomi_chapter_id)
+            );
+        """)
+
         # Backfill download_id from seen → volumes for existing grabbed items
         db.execute("""
             UPDATE volumes SET download_id = (

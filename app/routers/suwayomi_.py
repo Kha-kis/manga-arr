@@ -27,6 +27,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 import chapter_provenance
+import volume_assembly
 from shared import get_cfg, get_db, timed_block
 import shared
 from file_mutation_lock import FileMutationGuard, FileMutationLockError, file_mutation_guard
@@ -749,39 +750,14 @@ def _source_chapter_cbz(
 
 
 def _merge_cbzs(chapter_paths: list[str], output_path: str) -> int:
-    """Merge ordered chapter CBZ files into a single volume CBZ.
-    Returns total byte size of the output file, or 0 on failure.
+    """Merge ordered chapter CBZ files into a new volume CBZ.
+    Returns total byte size of the output file, or 0 on failure. An existing
+    output is never replaced.
     """
-    import zipfile as _zf
-
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    page = 1
-    try:
-        with _zf.ZipFile(output_path, "w", _zf.ZIP_STORED) as out:
-            for ch_path in chapter_paths:
-                with _zf.ZipFile(ch_path, "r") as ch:
-                    images = sorted(
-                        [
-                            n
-                            for n in ch.namelist()
-                            if os.path.splitext(n)[1].lower()
-                            in (".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif")
-                            and not os.path.basename(n).startswith(".")
-                        ]
-                    )
-                    for img in images:
-                        ext = os.path.splitext(img)[1]
-                        with ch.open(img) as f:
-                            out.writestr(f"{page:04d}{ext}", f.read())
-                        page += 1
-        return os.path.getsize(output_path)
-    except Exception as e:
-        log.error("_merge_cbzs → %s: %s", output_path, e)
-        try:
-            os.remove(output_path)
-        except OSError:
-            pass
-        return 0
+    result = volume_assembly.assemble(
+        [volume_assembly.AssemblySource(path) for path in chapter_paths], output_path
+    )
+    return result.size if result.path else 0
 
 
 # ── Main grab entry point ─────────────────────────────────────────────────────
@@ -1147,6 +1123,22 @@ def _source_volume_cbzs(
     chapter_nums: Sequence[float | Decimal] | None = None,
 ) -> list[str]:
     """Validate every queued source file before deduplicating logical numbers."""
+    return [
+        path
+        for _cid, path in _source_volume_selection(
+            manga_dir, chapter_ids, chapters, chapter_nums=chapter_nums
+        )
+    ]
+
+
+def _source_volume_selection(
+    manga_dir: str,
+    chapter_ids: Sequence[int],
+    chapters: Mapping[int, Mapping[str, Any]],
+    *,
+    chapter_nums: Sequence[float | Decimal] | None = None,
+) -> list[tuple[int, str]]:
+    """Like ``_source_volume_cbzs``, keeping each file's Suwayomi chapter ID."""
     if not chapter_ids or (
         chapter_nums is not None and len(chapter_nums) != len(chapter_ids)
     ):
@@ -1157,7 +1149,7 @@ def _source_volume_cbzs(
         if basename is not None:
             counts[basename] = counts.get(basename, 0) + 1
     names = set(_chapter_files(manga_dir))
-    matches: dict[Decimal, set[str]] = {}
+    matches: dict[Decimal, dict[str, int]] = {}
     for index, cid in enumerate(chapter_ids):
         if isinstance(cid, bool) or not isinstance(cid, int) or cid <= 0:
             return []
@@ -1182,15 +1174,13 @@ def _source_volume_cbzs(
         basename = basenames.get(cid)
         if basename is None or counts[basename] != 1 or basename not in names:
             return []
-        matches.setdefault(number, set()).add(basename)
+        matches.setdefault(number, {})[basename] = cid
     # This tie-break is deterministic, not a scanlator quality preference.
-    return [
-        os.path.join(
-            manga_dir,
-            min(matches[number], key=lambda name: (len(name), name.casefold(), name)),
-        )
-        for number in sorted(matches)
-    ]
+    selected = []
+    for number in sorted(matches):
+        name = min(matches[number], key=lambda name: (len(name), name.casefold(), name))
+        selected.append((matches[number][name], os.path.join(manga_dir, name)))
+    return selected
 
 
 def _import_suwayomi_volume_files(
@@ -1209,15 +1199,47 @@ def _import_suwayomi_volume_files(
     If disabled: copies individual chapter CBZs to a volume subdirectory.
     Returns (import_path, size_bytes).
     """
+    result = _import_suwayomi_volume_result(
+        c,
+        series_id,
+        volume_num,
+        swy_title=swy_title,
+        chapter_nums=chapter_nums,
+        chapter_ids=chapter_ids,
+        source_chapters=source_chapters,
+        source_display_name=source_display_name,
+    )
+    return result.path, result.size
+
+
+def _import_suwayomi_volume_result(
+    c: dict[str, Any],
+    series_id: int,
+    volume_num: float,
+    *,
+    swy_title: str = "",
+    chapter_nums: Sequence[float | Decimal] | None = None,
+    chapter_ids: Sequence[int] = (),
+    source_chapters: Mapping[int, Mapping[str, Any]] | None = None,
+    source_display_name: str | None = None,
+    source_identity: Callable[[int], chapter_provenance.SourceIdentity | None] | None = None,
+) -> volume_assembly.AssembledVolume:
+    """Import a volume; carry assembly evidence only for a volume created here.
+
+    ``source_identity`` resolves a queued chapter ID to its full Suwayomi
+    context. Evidence needs it for every source chapter, and only applies to
+    chapters selected by their own identity (``source_chapters``).
+    """
     import main as _m
 
+    no_import = volume_assembly.AssembledVolume(None, 0)
     with get_db() as db:
         series_row = db.execute("SELECT * FROM series WHERE id=?", (series_id,)).fetchone()
         s_row = dict(series_row) if series_row else None
         series_dir = _m._series_library_dir(db, series_id) if s_row else None
 
     if not s_row:
-        return None, 0
+        return no_import
 
     manga_dir = _find_suwayomi_manga_dir(
         c, swy_title, s_row["title"], source_display_name=source_display_name
@@ -1228,15 +1250,18 @@ def _import_suwayomi_volume_files(
             series_id,
             volume_num,
         )
-        return None, 0
+        return no_import
 
-    chapter_paths = (
-        _vol_chapter_cbzs(manga_dir, volume_num, chapter_nums=chapter_nums)
-        if source_chapters is None
-        else _source_volume_cbzs(
+    if source_chapters is None:
+        selection = [
+            (None, path)
+            for path in _vol_chapter_cbzs(manga_dir, volume_num, chapter_nums=chapter_nums)
+        ]
+    else:
+        selection = _source_volume_selection(
             manga_dir, chapter_ids, source_chapters, chapter_nums=chapter_nums
         )
-    )
+    chapter_paths = [path for _cid, path in selection]
     if not chapter_paths:
         log.warning(
             "No chapter CBZs found for series %d vol %s in %s",
@@ -1244,7 +1269,7 @@ def _import_suwayomi_volume_files(
             volume_num,
             manga_dir,
         )
-        return None, 0
+        return no_import
 
     safe_title = _m.sanitize_filename(s_row["title"])
     vol_str = (
@@ -1258,20 +1283,31 @@ def _import_suwayomi_volume_files(
         out_name = f"{safe_title} v{vol_str}.cbz"
         out_path = os.path.join(series_dir, out_name) if series_dir else None
         if not out_path:
-            return None, 0
+            return no_import
         if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-            return out_path, os.path.getsize(out_path)
+            # Reused: this import did not create it, so it carries no evidence.
+            return volume_assembly.AssembledVolume(out_path, os.path.getsize(out_path))
+        sources = []
+        for cid, path in selection:
+            identity = None
+            if cid is not None and source_identity is not None:
+                try:
+                    identity = source_identity(cid)
+                except Exception as exc:
+                    # Evidence is optional: never let it fail an import.
+                    log.warning("Suwayomi context unknown for chapter %s: %s", cid, exc)
+            sources.append(volume_assembly.AssemblySource(path, identity))
         log.info("Merging %d chapter(s) → %s", len(chapter_paths), out_path)
-        size = _merge_cbzs(chapter_paths, out_path)
-        if not size:
-            return None, 0
-        _m._try_inject_comicinfo(out_path, s_row, volume_num=volume_num)
-        return out_path, os.path.getsize(out_path)
+        return volume_assembly.assemble(
+            sources,
+            out_path,
+            lambda stage: _m._try_inject_comicinfo(stage, s_row, volume_num=volume_num),
+        )
     else:
         # ── Copy individual chapter CBZs to a volume subdirectory ─────────────
         vol_dir = os.path.join(series_dir, f"v{vol_str}") if series_dir else None
         if not vol_dir:
-            return None, 0
+            return no_import
         os.makedirs(vol_dir, exist_ok=True)
         total_size = 0
         import shutil
@@ -1282,7 +1318,7 @@ def _import_suwayomi_volume_files(
                 shutil.copy2(src, dst)
             total_size += os.path.getsize(dst)
         # Return the directory path as import_path when not merging
-        return (vol_dir, total_size) if total_size else (None, 0)
+        return volume_assembly.AssembledVolume(vol_dir, total_size) if total_size else no_import
 
 
 async def _import_suwayomi_chapter(
@@ -1844,7 +1880,7 @@ def _complete_suwayomi_job_files(
                 job_chapter_nums = []
                 break
             job_chapter_nums.append(number)
-        import_path, file_bytes = _import_suwayomi_volume_files(
+        volume_import = _import_suwayomi_volume_result(
             c,
             job["series_id"],
             job["volume_num"],
@@ -1853,7 +1889,11 @@ def _complete_suwayomi_job_files(
             chapter_ids=chapter_ids,
             source_chapters=ch_map,
             source_display_name=source_display_name,
+            source_identity=lambda cid: chapter_provenance.source_identity(
+                c, job["suwayomi_manga_id"], source_id, cid
+            ),
         )
+        import_path, file_bytes = volume_import.path, volume_import.size
         if not import_path:
             err_msg = "Import failed — CBZ files not found in library path"
             with get_db() as db:
@@ -1868,6 +1908,7 @@ def _complete_suwayomi_job_files(
             )
             return None, 0
         quality = _m.quality_from_filename(import_path)
+        assembly_id: int | None = None
         guard.verify()
         with get_db() as db:
             assert_library_file_mutation_available(db, job["series_id"])
@@ -1894,6 +1935,31 @@ def _complete_suwayomi_job_files(
                     job["volume_num"],
                 ),
             )
+            if volume_import.assembly is not None:
+                assembly_id = volume_assembly.record(
+                    db,
+                    series_id=job["series_id"],
+                    volume_num=job["volume_num"],
+                    path=import_path,
+                    assembly=volume_import.assembly,
+                    job_id=job["id"],
+                )
+        if assembly_id is not None and not chapter_provenance.same_file(
+            import_path, volume_import.assembly.evidence
+        ):
+            # Changed between verification and commit: the evidence is void.
+            guard.verify()
+            try:
+                with get_db() as db:
+                    volume_assembly.void(db, assembly_id)
+                log.warning(
+                    "Volume file changed during import; assembly evidence not kept: %s",
+                    import_path,
+                )
+            except Exception as exc:
+                log.error(
+                    "Could not void assembly %d for %s: %s", assembly_id, import_path, exc
+                )
         _m.log_event(
             "download_complete",
             f"DDL imported: series {job['series_id']} vol {job['volume_num']}"

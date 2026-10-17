@@ -5,6 +5,23 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+### Added
+
+- Merged Suwayomi volumes record which identified chapters they were assembled
+  from: per chapter, in order, the source file's SHA-256 and the volume page
+  range it produced with a SHA-256 over those pages, plus the published
+  volume's fingerprint ([#422](https://github.com/Kha-kis/manga-arr/issues/422)).
+  Evidence only: nothing reads it to clean up files. Reused volumes, non-merge
+  mode, legacy filename matches, unknown source context and historical volumes
+  record nothing. Additive tables, no schema-version change.
+
+### Changed
+
+- Merged Suwayomi volumes are assembled and given ComicInfo in a private
+  directory, then published without replacing an existing file. An existing
+  empty volume file is now preserved and the job errors for review, instead of
+  being overwritten.
+
 ## 1.3.3-rc.9 - 2026-10-16
 
 Replacement candidate preparation from reviewed [PR #464](https://github.com/Kha-kis/manga-arr/pull/464)
