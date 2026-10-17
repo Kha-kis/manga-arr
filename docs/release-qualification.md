@@ -3,6 +3,60 @@
 This document defines the evidence required before a Mangarr release candidate
 can become a stable release. Passing unit tests alone is not sufficient.
 
+## 1.3.3-rc.9 Qualification
+
+Status: **PREPARATION ONLY; NOT PUBLISHED; UNQUALIFIED; NO STABLE PROMOTION
+OR PRODUCTION CUTOVER APPROVAL** (2026-10-16).
+
+### Source And Preparation Boundary
+
+Baseline is reviewed [PR #464](https://github.com/Kha-kis/manga-arr/pull/464)
+merge `42f8c9d617f0922ca753e9421b57d9cfd8acb210`, tree
+`8b5d2da21dbdf346890b7284a04c2f419dbea1f2`. It contains the managed Suwayomi
+volume correction in [#463](https://github.com/Kha-kis/manga-arr/pull/463), the
+client-independent chapter safeguard in #464, and the isolated test portability
+fix in [#462](https://github.com/Kha-kis/manga-arr/pull/462).
+
+A missing managed parent can be reconciled only with the existing absence,
+ownership and current-row safeguards. Its disappearance is not proof that a
+chapter with an independent path is missing, regardless of client. Uncertain
+chapter observations keep their availability and acquisition fields; verified
+loose survivors remain available, while monitored volume-backed children still
+follow the guarded reset. Independently missing canonical files use separate
+absence proof, possibly on the next scan. No files are deleted and no automatic
+cleanup or historical provenance backfill is introduced.
+
+Preparation changes VERSION and four release documents only. Its exact revision
+requires the local release gate and independent source/evidence review. Source
+test results do not establish publication or installed-artifact qualification.
+Any publication must bind the immutable tag to the exact reviewed merge, prove
+tree equality to the tested preparation, and record the published multiarch
+digest. No tag, digest, workflow completion or runtime pass is claimed here.
+
+### Required Fresh Qualification
+
+- Verify both platform manifests, embedded version/revision, non-root runtime,
+  image contents, provenance/SBOM and configured fixed HIGH/CRITICAL scans.
+- Exercise the exact installed artifact's fresh setup, upgrade, recovery and
+  rollback, cached metadata during provider failure, file/linkage/provenance
+  safeguards, and real download/import/rescan workflow.
+- Reproduce #459 and #461 against the installed RC9 artifact, including surviving
+  loose chapters, uncertain independent paths, no-path/volume-backed children,
+  repeat scans and separately verified child absence. Source overlays do not
+  substitute for this installed-artifact evidence.
+- Complete a new uninterrupted full-day natural metadata-repeat observation in
+  a maintenance-aware window without disabling host updates. Do not reuse RC8's
+  seed as passing RC9 runtime evidence or transfer its elapsed observation.
+- Obtain representative NAS, literal public Compose startup, native ARM runtime
+  and independent final artifact-evidence review. Unavailable targets remain
+  explicit gaps; source tests or contributor reports do not waive them.
+
+Only the full RC9 tag may be published as a non-latest prerelease. Stable aliases
+and qualified stable remain 1.3.2; production remains the RC5 owner trial.
+RC8 cannot be promoted because it lacks #459 and #461. Its ongoing observation
+and all earlier candidate receipts remain historical, not RC9 qualification.
+Preparation or publication alone does not authorize production deployment.
+
 ## 1.3.3-rc.8 Qualification
 
 Status: **IMAGE PUBLISHED; PUBLICATION IDENTITY/ATTESTATION/SECURITY SCOPED
@@ -82,6 +136,13 @@ RC8 can retain downloaded state for a missing managed Suwayomi volume and its
 chapters. The source correction is not present in the immutable RC8 image. A
 replacement candidate must include and qualify the fix; completing RC8's
 observation window cannot qualify that replacement or waive this defect.
+
+Issue [#461](https://github.com/Kha-kis/manga-arr/issues/461) separately affects
+missing non-Suwayomi parents: their reset can clear independent chapters'
+availability and acquisition fields without verified child absence. The
+replacement candidate must also include and qualify the client-independent
+chapter safeguard. Source regression tests do not establish that an immutable
+published image contains the fix or supply new runtime qualification.
 
 Before stable approval, collect fresh install/upgrade/recovery, cached metadata
 failure, file/linkage, new provenance safety and real download/import evidence.

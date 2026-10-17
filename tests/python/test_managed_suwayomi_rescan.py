@@ -1,4 +1,4 @@
-"""Managed assembled Suwayomi files use recorded absence, not client identity."""
+"""Managed parent absence never proves independent chapter absence (#461)."""
 
 from __future__ import annotations
 
@@ -19,11 +19,36 @@ from test_loose_chapter_state import (
 
 
 @pytest.fixture
-def assembled_env(state_env: dict[str, Any]) -> dict[str, Any]:
-    merged = complete_merge(state_env)
-    # Model the completed Suwayomi row explicitly, not a client-less import.
+def assembled_env(
+    state_env: dict[str, Any], request: pytest.FixtureRequest
+) -> dict[str, Any]:
+    client: str | None = getattr(request, "param", "suwayomi")
+    if client == "suwayomi":
+        merged = complete_merge(state_env)
+    else:
+        # Ordinary clients have no Suwayomi job or chapter-copy provenance.
+        merged = state_env["library"] / "State Series v01.cbz"
+        archive(merged, b"ordinary volume")
+        for number in range(1, 5):
+            archive(state_env["library"] / f"State Series Ch{number:03d}.cbz")
     with sqlite3.connect(state_env["db_path"]) as db:
-        db.execute("UPDATE volumes SET client='suwayomi' WHERE id=11")
+        protocol = "torrent" if client == "qbittorrent" else "usenet"
+        if client == "suwayomi":
+            db.execute("UPDATE volumes SET client='suwayomi' WHERE id=11")
+        else:
+            for table in ("volumes", "chapters"):
+                db.execute(
+                    f"UPDATE {table} SET status='downloaded',import_path=?,client=?,"
+                    "protocol=?,download_id='ordinary-job',download_client_id=101,"
+                    "grabbed_at='2026-10-10',torrent_name='Ordinary release',"
+                    "indexer='Test indexer',"
+                    "release_group='Test group',quality='cbz',imported_at='2026-10-11',"
+                    "size_bytes=123",
+                    (str(merged), client, protocol),
+                )
+            db.execute(
+                "UPDATE chapters SET torrent_url='https://example.invalid/release'"
+            )
     return {**state_env, "merged": merged}
 
 
@@ -32,12 +57,16 @@ def file_bytes(env: dict[str, Any]) -> dict[Path, bytes]:
 
 
 @pytest.mark.parametrize("surviving", [(), (1,), (1, 2, 3, 4)])
+@pytest.mark.parametrize(
+    "assembled_env", ["suwayomi", "qbittorrent", "sabnzbd"], indirect=True
+)
 def test_missing_assembled_volume_resets_only_children_without_loose_files(
     assembled_env: dict[str, Any], surviving: tuple[int, ...]
 ) -> None:
     import rescan
 
     env = assembled_env
+    client = rows(env, "chapters")[0]["client"]
     env["merged"].unlink()
     for number in range(1, 5):
         if number not in surviving:
@@ -70,7 +99,7 @@ def test_missing_assembled_volume_resets_only_children_without_loose_files(
             assert chapter["import_path"] == str(
                 env["library"] / f"State Series Ch{number:03d}.cbz"
             )
-            assert chapter["client"] == "suwayomi"
+            assert chapter["client"] == client
         else:
             assert chapter["status"] == "wanted"
             assert chapter["client"] is None
@@ -100,6 +129,7 @@ def test_missing_assembled_volume_resets_only_children_without_loose_files(
     assert file_bytes(env) == content
 
 
+@pytest.mark.parametrize("assembled_env", ["suwayomi", "sabnzbd"], indirect=True)
 def test_missing_assembled_volume_preserves_unmonitored_child(
     assembled_env: dict[str, Any],
 ) -> None:
@@ -117,6 +147,7 @@ def test_missing_assembled_volume_preserves_unmonitored_child(
     assert rows(env, "chapters")[1] == before
 
 
+@pytest.mark.parametrize("assembled_env", ["suwayomi", "nzbget"], indirect=True)
 def test_missing_loose_child_with_missing_parent_defers_until_absence_is_proven(
     assembled_env: dict[str, Any],
 ) -> None:
@@ -156,13 +187,16 @@ def test_missing_loose_child_with_missing_parent_defers_until_absence_is_proven(
 
 
 @pytest.mark.parametrize("observation", ["external", "ambiguous", "inaccessible"])
-@pytest.mark.parametrize("client", ["suwayomi", "qbittorrent"])
+@pytest.mark.parametrize(
+    "assembled_env",
+    ["suwayomi", "qbittorrent", "sabnzbd", "nzbget", None],
+    indirect=True,
+)
 @pytest.mark.parametrize("status", ["downloaded", "wanted"])
 def test_missing_parent_preserves_unknown_independent_child_observation(
     assembled_env: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
     observation: str,
-    client: str,
     status: str,
 ) -> None:
     import rescan
@@ -189,25 +223,7 @@ def test_missing_parent_preserves_unknown_independent_child_observation(
             "release_group='Independent group' WHERE id=2",
             (str(independent), status),
         )
-        db.execute("UPDATE volumes SET client=? WHERE id=11", (client,))
     before = rows(env, "chapters")[1]
-    expected = (
-        before
-        if client == "suwayomi"
-        else {
-            **before,
-            "status": "wanted",
-            "grabbed_at": None,
-            "torrent_name": None,
-            "torrent_url": None,
-            "indexer": None,
-            "protocol": None,
-            "client": None,
-            "download_id": None,
-            "download_client_id": None,
-            "release_group": None,
-        }
-    )
     content = file_bytes(env)
     if observation == "inaccessible":
         real_lstat = os.lstat
@@ -227,20 +243,25 @@ def test_missing_parent_preserves_unknown_independent_child_observation(
         "created": 0,
     }
     assert rows(env, "volumes")[0]["status"] == "wanted"
-    assert rows(env, "chapters")[1] == expected
+    assert rows(env, "chapters")[1] == before
     assert [chapter["status"] for chapter in rows(env, "chapters")] == [
         "wanted",
-        expected["status"],
+        status,
         "wanted",
         "wanted",
     ]
     assert rescan.rescan_series_folder(1)["missing"] == 0
-    assert rows(env, "chapters")[1] == expected
+    assert rows(env, "chapters")[1] == before
     assert {path: path.read_bytes() for path in content} == content
 
 
+@pytest.mark.parametrize(
+    "assembled_env", ["suwayomi", "qbittorrent", None], indirect=True
+)
+@pytest.mark.parametrize("status", ["downloaded", "wanted", "grabbed"])
 def test_missing_managed_parent_resets_child_without_recorded_path(
     assembled_env: dict[str, Any],
+    status: str,
 ) -> None:
     import rescan
 
@@ -248,7 +269,9 @@ def test_missing_managed_parent_resets_child_without_recorded_path(
     for path in env["library"].glob("*.cbz"):
         path.unlink()
     with sqlite3.connect(env["db_path"]) as db:
-        db.execute("UPDATE chapters SET import_path=NULL WHERE id=2")
+        db.execute(
+            "UPDATE chapters SET import_path=NULL,status=? WHERE id=2", (status,)
+        )
 
     assert rescan.rescan_series_folder(1)["missing"] == 1
     chapter = rows(env, "chapters")[1]

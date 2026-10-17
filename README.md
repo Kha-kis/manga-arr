@@ -27,12 +27,19 @@ compressed-RAR decoding. See the
 [qualification evidence and platform limits](docs/release-qualification.md#132-stable-qualification)
 before upgrading.
 
-**1.3.3-rc.8 is published as a prerelease, but remains unqualified.** It adds the
-reviewed Suwayomi chapter-provenance foundation and IPv6/NZBGet URL corrections.
-Provenance does not enable automatic file cleanup. Source release gates and a
-fresh publication identity/attestation/security audit passed. Runtime and
-platform qualification remain incomplete; no earlier candidate's runtime
-receipts qualify RC8. Production remains RC5 and stable aliases remain 1.3.2. See
+**1.3.3-rc.9 is in preparation, not published or qualified.** It includes the
+managed Suwayomi-volume rescan correction and protects independent chapter
+observations across download clients. No files are automatically removed.
+Publication and fresh artifact/runtime qualification are required; RC8's ongoing
+observation cannot qualify RC9. Production remains RC5 and qualified stable
+remains 1.3.2. See
+[RC9 qualification](docs/release-qualification.md#133-rc9-qualification).
+
+**1.3.3-rc.8 is published but blocked from stable promotion.** It lacks the
+missing-volume and independent-chapter corrections above. Its reviewed Suwayomi
+chapter-provenance foundation does not enable automatic file cleanup. The
+publication identity/attestation/security audit passed, but that does not waive
+these defects or qualify a replacement. See
 [RC8 qualification](docs/release-qualification.md#133-rc8-qualification).
 
 **1.3.3-rc.7 is published as a prerelease, but remains unqualified.** It includes the
