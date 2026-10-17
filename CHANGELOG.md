@@ -5,6 +5,18 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.3.3-rc.9 - 2026-10-16
+
+Replacement candidate preparation from reviewed [PR #464](https://github.com/Kha-kis/manga-arr/pull/464)
+merge `42f8c9d617f0922ca753e9421b57d9cfd8acb210`. Includes the missing managed
+Suwayomi-volume correction in [#463](https://github.com/Kha-kis/manga-arr/pull/463)
+and the client-independent chapter safeguard in #464, carrying forward RC8's
+provenance and download-client URL fixes. This preparation changes VERSION and
+release documentation only. It is not publication, stable promotion or deployment
+approval. No older candidate's runtime results qualify RC9. Production remains
+RC5; qualified stable remains 1.3.2. See
+[RC9 qualification](docs/release-qualification.md#133-rc9-qualification).
+
 ### Fixed
 
 - A missing volume no longer clears an independent chapter's availability or

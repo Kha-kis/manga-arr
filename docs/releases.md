@@ -15,6 +15,33 @@ Release commits must update `app/VERSION`, `CHANGELOG.md`, and the current
 release shown in `README.md` together. Automated tests enforce SemVer syntax and
 documentation consistency.
 
+## 1.3.3-rc.9 Candidate Status
+
+Preparation begins from exact reviewed [PR #464](https://github.com/Kha-kis/manga-arr/pull/464)
+merge `42f8c9d617f0922ca753e9421b57d9cfd8acb210`, tree
+`8b5d2da21dbdf346890b7284a04c2f419dbea1f2`. It includes the managed Suwayomi
+missing-volume fix in [#463](https://github.com/Kha-kis/manga-arr/pull/463) and
+the client-independent chapter safeguard in #464. Recorded parent absence does
+not prove independent child absence; acquisition fields, surviving loose files
+and uncertain observations remain protected. The portable test fixture from
+[#462](https://github.com/Kha-kis/manga-arr/pull/462) retains the real other-UID
+attack without a private local-only image dependency.
+
+This preparation changes `app/VERSION` and four release documents only. It adds
+no further application, provider, API, dependency, schema or Compose changes.
+The exact prepared revision must pass `make release-local` and independent
+review before publication from its reviewed, tree-verified merge. Only immutable
+`v1.3.3-rc.9` and the full prerelease image tag may be published; no stable aliases
+may move. The GitHub prerelease must be non-latest and explicitly unqualified.
+Preparation alone does not establish that a tag or image exists.
+
+RC8 lacks the #459 and #461 corrections and must not be promoted. Its ongoing
+observation and all older candidate receipts supply no RC9 runtime credit.
+Fresh publication identity/security and application/environment/platform gates
+are required for the exact RC9 artifact. Production remains the owner-controlled
+RC5 trial; qualified stable remains 1.3.2. See
+[RC9 qualification](release-qualification.md#133-rc9-qualification).
+
 ## 1.3.3-rc.8 Candidate Status
 
 Source preparation began on 2026-10-15 from exact reviewed
