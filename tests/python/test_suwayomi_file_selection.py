@@ -440,7 +440,10 @@ def test_queued_merge_enriches_final_path_under_file_guard_without_sqlite_writer
     observed: list[str] = []
 
     def inspect_boundary(path: str, series: dict[str, Any], *, volume_num: float) -> None:
-        assert path == str(env.library / "Selection v01.cbz")
+        # Enrichment runs on the private stage; the final name is still absent.
+        assert os.path.dirname(os.path.dirname(path)) == str(env.library)
+        assert os.path.basename(os.path.dirname(path)).startswith(".mangarr-claim-volume-")
+        assert not (env.library / "Selection v01.cbz").exists()
         assert env.row("suwayomi_downloads")["status"] == "queued"
         assert isinstance(series, dict)
         with zipfile.ZipFile(path) as archive:
@@ -457,10 +460,11 @@ def test_queued_merge_enriches_final_path_under_file_guard_without_sqlite_writer
 
     monkeypatch.setattr(main, "_try_inject_comicinfo", inspect_boundary)
     env.process()
-    assert observed == [str(env.library / "Selection v01.cbz")]
+    assert len(observed) == 1 and not os.path.exists(observed[0])
     assert env.row("suwayomi_downloads")["status"] == "completed"
     assert env.row("volumes")["status"] == "downloaded"
-    with zipfile.ZipFile(observed[0]) as archive:
+    assert sorted(os.listdir(env.library)) == ["Selection v01.cbz"]
+    with zipfile.ZipFile(env.library / "Selection v01.cbz") as archive:
         assert merged_image_names(archive) == ["0001.png"]
         assert archive.read("0001.png") == b"queued-page"
     assert source.read_bytes() == original

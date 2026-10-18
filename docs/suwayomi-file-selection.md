@@ -331,3 +331,49 @@ file is later deleted or replaced, and a later import that reuses the path
 leaves an earlier row as it was; anything that relies on a row must re-check
 the file's SHA-256 and size first. `file_dev` is not stable across NFS
 remounts or container restarts and must not be treated as identity on its own.
+
+## Volume Assembly Evidence
+
+A merged volume is written into a fresh private `0700`
+`.mangarr-claim-volume-*` directory beside its final name, ComicInfo is added
+there, and the result is synchronized and published to the absent final name
+with the publication primitive (`renameat2` no-replace, or `link` where the
+filesystem reports no-replace as unsupported), provided the finished file's
+device, inode, size and mtime are unchanged since finishing.
+An existing final name is never replaced; that includes an empty file left by
+an older interrupted merge, which now leaves the job errored for review instead
+of being overwritten. The private directory is removed after publication or
+failure; anything unexpected inside it is retained and logged for review. The
+directory name is in the reserved private namespace, so inventory, rescan and
+adoption ignore it.
+
+A volume job records `volume_assembly` and its ordered
+`volume_assembly_chapters` only when this import published the volume itself
+in merge mode from chapters selected by their own Suwayomi identity, with the
+full client, server, manga and source context known for every chapter. The
+volume record holds the library path and the published file's device, inode,
+size, mtime and SHA-256. Each chapter record holds its Suwayomi chapter ID,
+position, the SHA-256 and size of the source file read, the first and last
+volume page it produced, and a SHA-256 over those pages. Page `N` is the image
+member whose stem is the decimal `N`; the page digest is SHA-256 over each page
+in order as an 8-byte big-endian length followed by its bytes. Before
+publication the finished file is hashed and its page ranges are re-read in
+bounded chunks, never holding a whole chapter, and must match and account for
+every page in it.
+
+Nothing is recorded for a reused volume, non-merge mode, legacy filename
+selection, a missing source ID, a source or finished volume above the
+fingerprint bound, a source whose identity changed while it was read, a chapter
+with no pages, pages that changed while the volume was finished or cannot be
+verified, or historical volumes; there is no backfill. Evidence is optional:
+none of these stops the volume importing, and without full context the
+finished volume is not hashed at all. The record is written in the settlement transaction only if the
+volume row settles to that exact path, inside a savepoint, so a refused
+evidence insert never fails the import. While the filesystem guard is valid, a
+file that changed between verification and commit has its evidence discarded.
+A settlement failure after publication leaves the published volume in place
+without evidence, as before; a retry reuses it and records nothing.
+
+Like chapter provenance, assembly evidence does not authorize cleanup and no
+code reads it to move or delete files. Anything relying on it must re-check the
+volume file's SHA-256 and the page ranges first.
