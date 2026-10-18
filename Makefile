@@ -173,10 +173,7 @@ release-push: release-local
 	  (echo "Refusing to publish from a dirty worktree" >&2; exit 1)
 	@git tag --points-at HEAD | grep -Fxq "v$(VERSION)" || \
 	  (echo "HEAD must have tag v$(VERSION) before publishing" >&2; exit 1)
-	@if docker buildx imagetools inspect "$(RELEASE_IMAGE):$(VERSION)" >/dev/null 2>&1; then \
-	  echo "Refusing to replace published image tag: $(RELEASE_IMAGE):$(VERSION)" >&2; \
-	  exit 1; \
-	fi
+	$(PYTHON) scripts/release_tag_guard.py "$(RELEASE_IMAGE):$(VERSION)"
 	docker buildx build \
 	  --platform "$(RELEASE_PLATFORMS)" \
 	  --build-arg MANGARR_VERSION="$(VERSION)" \
