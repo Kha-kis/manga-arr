@@ -213,6 +213,16 @@ def test_link_fallback_moves_leave_one_name(lib, monkeypatch):
     assert _no_carrier(lib)
 
 
+def test_device_number_change_after_remount_still_quarantines(lib):
+    """A remount (NFS, btrfs subvolume) gives new st_dev; content proof still holds."""
+    with sqlite3.connect(lib["db"]) as c:
+        assert c.execute("UPDATE chapter_file_provenance SET file_dev='999999'").rowcount == 2
+        assert c.execute("UPDATE volume_assembly SET file_dev='999999'").rowcount == 1
+    summary = _cleanup(lib)
+    assert summary.quarantined == 2 and not summary.refused and not summary.skipped
+    assert {ch["import_path"] for ch in _chapters(lib).values()} == {lib["volume"]}
+
+
 # ── refused ─────────────────────────────────────────────────────────────────
 
 
