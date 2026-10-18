@@ -473,3 +473,10 @@ The confirmation must exactly match `app/VERSION`. The Docker client must
 already be logged in to `ghcr.io` with package-write permission. Local
 publishing also requires a clean worktree with `v<version>` pointing at `HEAD`;
 both publishing paths refuse to replace an existing exact-version image tag.
+Their shared preflight uses the existing authenticated Docker Buildx client with
+a 60-second timeout. Only exit status 1, empty stdout, and exactly
+`ERROR: <full-requested-image-reference>: not found` followed by one newline
+permit publication. Existing tags, authentication/network failures, and unknown
+or ambiguous Buildx output abort publication. An unfamiliar Buildx diagnostic
+format intentionally requires review, not an override or a retry that skips the
+guard.

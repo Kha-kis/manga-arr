@@ -85,11 +85,7 @@ jobs:
 
       - name: Refuse to replace an existing release tag
         run: |
-          exact_tag="${IMAGE}:${{ steps.release.outputs.version }}"
-          if docker buildx imagetools inspect "$exact_tag" >/dev/null 2>&1; then
-            echo "Refusing to replace published image tag: $exact_tag" >&2
-            exit 1
-          fi
+          python scripts/release_tag_guard.py "${IMAGE}:${{ steps.release.outputs.version }}"
 
       - name: Build and publish multi-architecture image
         id: image

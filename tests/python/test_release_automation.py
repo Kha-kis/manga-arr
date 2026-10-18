@@ -281,7 +281,7 @@ def test_local_publish_requires_clean_tagged_commit_and_refuses_replacement():
     for marker in (
         "git status --porcelain",
         'git tag --points-at HEAD | grep -Fxq "v$(VERSION)"',
-        "Refusing to replace published image tag",
+        'scripts/release_tag_guard.py "$(RELEASE_IMAGE):$(VERSION)"',
     ):
         assert marker in makefile
     assert "scripts/verify_release_image.py" in makefile
