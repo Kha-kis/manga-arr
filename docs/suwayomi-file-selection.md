@@ -377,3 +377,59 @@ without evidence, as before; a retry reuses it and records nothing.
 Like chapter provenance, assembly evidence does not authorize cleanup and no
 code reads it to move or delete files. Anything relying on it must re-check the
 volume file's SHA-256 and the page ranges first.
+
+## Loose Chapter Quarantine
+
+`cleanup_loose_chapters` (Settings → Media Management, off by default) moves
+loose chapter files that a merged volume provably contains out of the series
+folder. It runs only after a merged volume import that recorded assembly
+evidence, never for historical volumes, reused volumes or non-merge mode.
+
+A loose chapter is moved only when, at that time, its provenance row still
+names the chapter's import path and the file still matches the recorded inode,
+size, mtime and SHA-256; its chapter belongs to the volume, which is downloaded
+at the path its assembly record names and still matches that record; the
+provenance Suwayomi client, server, manga, source and chapter IDs equal one
+chapter entry of the record; and the loose archive's image members, filtered
+and ordered as the merge orders them, hash to that entry's page range read from
+the volume itself. Matching source hashes alone are not enough, since Suwayomi
+can re-download a chapter between the loose import and the merge. Identity
+checks leave out `st_dev`, which a remount can change for the same file; the
+content hashes are the proof. Anything else is skipped and logged with its
+reason.
+
+Each move is one `chapter_quarantine` row, written before each filesystem step:
+
+1. `reserved`: the row is written under the same checks, re-verified in the
+   reserving transaction.
+2. `captured`: the file is renamed into a fresh private `0700`
+   `.mangarr-claim-cleanup-*` directory beside it, so rescan cannot see or
+   readopt it, and re-hashed there.
+3. `committed`: one transaction points the chapter at the volume (as rescan
+   does for a covered chapter: size, quality and imported time cleared) under
+   a compare-and-set on the chapter row, and removes its provenance row.
+4. `quarantined`: the file is moved without replacing into
+   `<library root>/.mangarr-quarantine/<series id>/<original name>.<row id>`
+   (both directories `0700`) and the private directory is removed.
+
+Moves use `renameat2` no-replace and, where the filesystem reports that as
+unsupported, a hard link followed by removing the private or reserved source
+name once both names are the same inode; a public name is never removed. A real
+probe move from the series folder into the quarantine folder must succeed first;
+a cross-filesystem error refuses the run, and nothing is ever copied.
+
+Active rows (`reserved`, `captured`, `committed`, `restoring`) are added to
+every library mutation fence, so imports, rescan, volume deletion and purge wait
+for them. Startup and a replay loop settle interrupted rows: before `committed`
+the file goes back to its original name without replacing anything, after it the
+move only goes forward. A row that cannot settle, for example because the
+original name was taken meanwhile, keeps the file where it is, records a
+diagnostic and stays active until it can.
+
+Restore is per chapter from the series page: the quarantined file must still
+match its recorded hash, its original name must be free, and it is moved back
+without replacing anything; the chapter is pointed at it again if it still
+points at the volume. Nothing is removed from quarantine automatically, and
+purging a series leaves its quarantine folder and rows in place. Readers such as
+Komga do not carry read progress from a moved chapter to the volume, and should
+skip `.mangarr-quarantine`.

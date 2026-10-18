@@ -460,7 +460,7 @@ def _fingerprint(stat_result: os.stat_result) -> FileFingerprint:
 
 
 def _is_private_inventory_directory(name: str) -> bool:
-    return name == ".mangarr-claims" or name.startswith(
+    return name in (".mangarr-claims", ".mangarr-quarantine") or name.startswith(
         (
             ".mangarr-claim-",
             ".mangarr-rescan-",

@@ -45,6 +45,7 @@ from shared import (
     with_flash,
 )
 from volume_file_deletion import delete_volume_file as run_volume_file_deletion
+import volume_chapter_cleanup
 from qbit_auth import QbitLoginMode, classify_qbit_login
 
 router = APIRouter()
@@ -1127,6 +1128,7 @@ async def series_detail(request: Request, series_id: int):
             "swy_vol_jobs": swy_vol_jobs,
             "metadata_health": metadata_health,
             "metadata_sources": metadata_sources,
+            "quarantined_chapters": volume_chapter_cleanup.quarantined_for_series(series_id),
         },
     )
 
@@ -1900,9 +1902,13 @@ def _prepare_hard_delete_series(
         "   SELECT 1 FROM rescan_file_operations rescan_operation"
         "   WHERE rescan_operation.series_id=? AND rescan_operation.state IN"
         "     ('prepared','published','db_committed','rollback')"
+        " ) OR EXISTS ("
+        "   SELECT 1 FROM chapter_quarantine quarantine"
+        "   WHERE quarantine.series_id=? AND quarantine.state IN"
+        "     ('reserved','captured','committed','restoring')"
         " )"
         " LIMIT 1",
-        (series_id, series_id, series_id),
+        (series_id, series_id, series_id, series_id),
     ).fetchone()
     if import_active is not None:
         return {
@@ -3267,6 +3273,20 @@ async def toggle_volume_monitor(request: Request, series_id: int, volume_id: int
         ctx = await _get_volume_row_ctx(series_id, volume_id)
         return templates.TemplateResponse(request, "partials/volume_row.html", ctx)
     return RedirectResponse(f"/series/{series_id}", status_code=303)
+
+
+@router.post("/series/{series_id}/quarantine/{quarantine_id}/restore")
+async def restore_quarantined_chapter(request: Request, series_id: int, quarantine_id: int):
+    outcome, diagnostic = await asyncio.to_thread(
+        volume_chapter_cleanup.restore, quarantine_id, series_id
+    )
+    if outcome == "restored":
+        message, level = "Chapter restored to its original name", "success"
+    elif outcome == "blocked":
+        message, level = f"Restore is pending: {diagnostic}", "warning"
+    else:
+        message, level = f"Restore refused: {diagnostic or 'not a quarantined chapter'}", "warning"
+    return RedirectResponse(with_flash(f"/series/{series_id}", message, level), status_code=303)
 
 
 @router.post("/series/{series_id}/volumes/{volume_id}/delete-file")

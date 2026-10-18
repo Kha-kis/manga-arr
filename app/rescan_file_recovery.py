@@ -78,8 +78,10 @@ def competing_for_series(db: sqlite3.Connection, series_id: int) -> bool:
             "UNION ALL SELECT 1 FROM import_publications WHERE series_id=? AND state IN "
             "('staging','prepared','publishing','published','db_committed','cleaning') "
             "UNION ALL SELECT 1 FROM import_queue WHERE series_id=? AND "
-            "(status='importing' OR lease_owner IS NOT NULL) LIMIT 1",
-            (series_id,) * 3,
+            "(status='importing' OR lease_owner IS NOT NULL) "
+            "UNION ALL SELECT 1 FROM chapter_quarantine WHERE series_id=? AND state IN "
+            "('reserved','captured','committed','restoring') LIMIT 1",
+            (series_id,) * 4,
         ).fetchone()
         is not None
     )

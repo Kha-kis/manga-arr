@@ -476,6 +476,24 @@
             </div>
           </div>
           <div class="row g-3 mb-3">
+            <div class="col-12">
+              <div class="form-check form-switch">
+                <input type="hidden" name="cleanup_loose_chapters" value="false">
+                <input class="form-check-input" type="checkbox" name="cleanup_loose_chapters"
+                       id="cleanup_loose_chapters" value="1"
+                       {% if cfg.cleanup_loose_chapters == 'true' %}checked{% endif %}>
+                <label class="form-check-label settings-base-cell" for="cleanup_loose_chapters">Quarantine loose chapters covered by a merged volume</label>
+              </div>
+              <div class="form-text">
+                Off by default. After a merged Suwayomi volume imports, loose chapter files it provably contains
+                (same pages, byte for byte) are moved into <code>.mangarr-quarantine/&lt;series id&gt;/</code> in the
+                library root and the chapters point at the volume. Nothing is deleted; each chapter can be restored from
+                its series page. Readers such as Komga do not carry read progress from a moved chapter to the volume,
+                and should be set to skip the <code>.mangarr-quarantine</code> folder. Moves across filesystems are refused.
+              </div>
+            </div>
+          </div>
+          <div class="row g-3 mb-3">
             <div class="col-12 col-sm-6">
               <label class="form-label">Propers &amp; Repacks</label>
               <select name="propers_and_repacks" class="form-select">

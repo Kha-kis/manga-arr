@@ -11,6 +11,7 @@ cleanup / backoff helpers:
     pack_cleanup_recovery_loop     — retry generated-pack journals
     publication_replay_loop        — retry durable import publications
     volume_deletion_replay_loop    — retry durable volume deletions
+    chapter_quarantine_replay_loop — settle held loose-chapter quarantine rows
     refresh_ongoing_loop           — daily AniList refresh for
                                      RELEASING / HIATUS series
     _metadata_retry_loop           — retry due provider failures
@@ -284,6 +285,28 @@ async def rescan_replay_loop() -> None:
             cursor = summary["last_id"] if summary["selected"] else 0
             completed = sum(summary["outcomes"].get(key, 0) for key in ("completed", "rolled_back"))
             delay = 1.0 if completed else min(60.0, max(2.0 if summary["selected"] else 5.0, delay * 2))
+        await asyncio.sleep(delay)
+
+
+async def chapter_quarantine_replay_loop() -> None:
+    """Retry held loose-chapter quarantine rows with idle backoff."""
+    from volume_chapter_cleanup import replay_page
+
+    cursor = 0
+    delay = 1.0
+    await asyncio.sleep(delay)
+    while True:
+        try:
+            examined, settled, last = await replay_page(after_id=cursor, limit=100)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log_event("error", f"[ChapterQuarantineReplay] replay failed ({type(exc).__name__})")
+            cursor = 0
+            delay = min(60.0, max(2.0, delay * 2))
+        else:
+            cursor = last if examined else 0
+            delay = 1.0 if settled else min(60.0, max(2.0 if examined else 5.0, delay * 2))
         await asyncio.sleep(delay)
 
 

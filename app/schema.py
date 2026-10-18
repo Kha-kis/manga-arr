@@ -840,6 +840,47 @@ def init_db() -> None:
             );
         """)
 
+        # Opt-in quarantine of loose chapters a merged volume provably holds
+        # (issue #422). One journaled row per moved file. No foreign keys:
+        # rows outlive purged series so quarantined files stay accounted for.
+        _execute_script_in_transaction(db, """
+            CREATE TABLE IF NOT EXISTS chapter_quarantine (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                operation_token     TEXT    NOT NULL UNIQUE
+                                            CHECK(length(operation_token) = 32),
+                series_id           INTEGER NOT NULL,
+                volume_id           INTEGER NOT NULL,
+                chapter_id          INTEGER NOT NULL,
+                chapter_num         REAL,
+                assembly_id         INTEGER NOT NULL,
+                suwayomi_chapter_id INTEGER NOT NULL,
+                state               TEXT    NOT NULL CHECK(state IN (
+                                        'reserved','captured','committed','quarantined',
+                                        'rolled_back','restoring','restored')),
+                original_path       TEXT    NOT NULL,
+                volume_path         TEXT    NOT NULL,
+                carrier_path        TEXT,
+                quarantine_path     TEXT,
+                file_inode          TEXT    NOT NULL,
+                size_bytes          INTEGER NOT NULL CHECK(size_bytes > 0),
+                mtime_ns            INTEGER NOT NULL,
+                sha256              TEXT    NOT NULL CHECK(length(sha256) = 64),
+                chapter_guard_json  TEXT    NOT NULL,
+                diagnostic          TEXT    NOT NULL DEFAULT '',
+                created_at          TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at          TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at        TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_chapter_quarantine_active
+                ON chapter_quarantine(series_id, id)
+                WHERE state IN ('reserved','captured','committed','restoring');
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_chapter_quarantine_active_chapter
+                ON chapter_quarantine(chapter_id)
+                WHERE state IN ('reserved','captured','committed','restoring');
+            CREATE INDEX IF NOT EXISTS idx_chapter_quarantine_series
+                ON chapter_quarantine(series_id, state);
+        """)
+
         # Backfill download_id from seen → volumes for existing grabbed items
         db.execute("""
             UPDATE volumes SET download_id = (

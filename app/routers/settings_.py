@@ -185,6 +185,7 @@ _SETTINGS_FORM_COERCERS: dict[str, _SettingsFormCoercer] = {
         choices=_IMPORT_MODES,
     ),
     "remove_completed": _coerce_bool_string,
+    "cleanup_loose_chapters": _coerce_bool_string,
     "minimum_free_space_mb": lambda v: _coerce_int_range(v, 0, 0, 10000000),
     "propers_and_repacks": lambda v: _coerce_choice(
         v,

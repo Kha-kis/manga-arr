@@ -28,6 +28,7 @@ from fastapi.responses import JSONResponse
 
 import chapter_provenance
 import volume_assembly
+import volume_chapter_cleanup
 from shared import get_cfg, get_db, timed_block
 import shared
 from file_mutation_lock import FileMutationGuard, FileMutationLockError, file_mutation_guard
@@ -1984,7 +1985,25 @@ def _complete_suwayomi_job_files(
                 protocol="ddl",
                 size_bytes=file_bytes or 0,
             )
+        if assembly_id is not None and volume_chapter_cleanup.enabled():
+            _cleanup_after_volume(guard, job["series_id"], import_path)
     return import_path, file_bytes
+
+
+def _cleanup_after_volume(guard: FileMutationGuard, series_id: int, import_path: str) -> None:
+    """Opt-in loose chapter quarantine; never fails the settled import."""
+    try:
+        with get_db() as db:
+            row = db.execute(
+                "SELECT id FROM volumes WHERE series_id=? AND import_path=? AND status='downloaded'",
+                (series_id, import_path),
+            ).fetchone()
+        if row is not None:
+            volume_chapter_cleanup.cleanup_volume(guard, series_id, int(row["id"]))
+    except FileMutationLockError:
+        raise
+    except Exception as exc:
+        log.error("Loose chapter cleanup failed for %s: %s", import_path, exc)
 
 
 # ── Monitoring loop ───────────────────────────────────────────────────────────

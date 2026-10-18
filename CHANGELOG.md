@@ -15,6 +15,20 @@ All notable changes to this project. Format roughly follows
   mode, legacy filename matches, unknown source context, volumes above the
   fingerprint bound and historical volumes record nothing, and still import.
   Additive tables, no schema-version change.
+- Opt-in quarantine of loose Suwayomi chapters a merged volume holds
+  (`cleanup_loose_chapters`, off by default;
+  [#422](https://github.com/Kha-kis/manga-arr/issues/422)). After a merged
+  volume with assembly evidence imports, each loose chapter whose provenance,
+  file hash and Suwayomi context match that evidence, and whose pages hash to
+  its recorded range read from the volume itself, is moved without replacing
+  anything into `.mangarr-quarantine/<series id>/` in the library root and its
+  chapter points at the volume. Nothing is deleted; each chapter can be
+  restored from its series page, refused if its original name is taken. Every
+  move is journaled (`chapter_quarantine`) and fences the series like a volume
+  deletion until it settles; recovery rolls back before the database commit
+  and only moves forward after it. Cross-filesystem moves are refused after a
+  probe move. Readers do not carry read progress from a moved chapter to the
+  volume. Additive table, no schema-version change.
 
 ### Changed
 

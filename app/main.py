@@ -431,6 +431,7 @@ from tasks import (  # noqa: F401
     rss_loop, status_loop, pack_cleanup_recovery_loop,
     publication_replay_loop,
     volume_deletion_replay_loop, rescan_replay_loop, refresh_ongoing_loop,
+    chapter_quarantine_replay_loop,
     _metadata_retry_loop, _backfill_metadata_loop, _stuck_state_cleanup_loop,
     backlog_search_loop, backlog_search,
     import_list_sync, rescan_loop,
@@ -561,6 +562,10 @@ async def lifespan(app: FastAPI):
             f"{_deletion_replay.completed} completed, "
             f"{_deletion_replay.blocked} blocked",
         )
+    # Interrupted loose-chapter quarantine rows fence their series. Settle
+    # them (roll back before commit, forward after) before any producer.
+    import volume_chapter_cleanup as _chapter_cleanup
+    await _chapter_cleanup.drain(page_size=100)
     # Durable publication replay is recovery authority after the prepared
     # barrier. Drain active journals in bounded pages before lease recovery,
     # download-client bootstrap, worker admission, or any producer can
@@ -658,6 +663,7 @@ async def lifespan(app: FastAPI):
         create_background_task(publication_replay_loop(),          name="publication_replay_loop")
         create_background_task(volume_deletion_replay_loop(),      name="volume_deletion_replay_loop")
         create_background_task(rescan_replay_loop(),               name="rescan_replay_loop")
+        create_background_task(chapter_quarantine_replay_loop(),   name="chapter_quarantine_replay_loop")
         create_background_task(refresh_ongoing_loop(),             name="refresh_ongoing_loop")
         create_background_task(_metadata_retry_loop(),             name="metadata_retry_loop")
         create_background_task(_backfill_metadata_loop(),          name="backfill_metadata_loop")
