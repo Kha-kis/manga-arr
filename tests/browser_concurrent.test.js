@@ -234,6 +234,10 @@ function runnerProbe(t, scenario = {}) {
   const bin = path.join(root, 'bin');
   fs.mkdirSync(path.join(repo, 'tests'), { recursive: true });
   fs.mkdirSync(bin);
+  if (scenario.occupied) {
+    fs.mkdirSync(path.join(repo, '.test-config'));
+    fs.writeFileSync(path.join(repo, '.test-config', 'sentinel'), 'previous stack config');
+  }
   fs.copyFileSync(path.join(__dirname, 'run_isolated_browser.sh'), path.join(repo, 'tests/run_isolated_browser.sh'));
   fs.writeFileSync(path.join(repo, 'docker-compose.test.yml'), 'services: {}\n');
   fs.writeFileSync(path.join(repo, 'tests/seed_test_db.sh'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
@@ -257,7 +261,7 @@ else if (args[0] === 'compose' && args.includes('ps')) {
 } else if (args[0] === 'logs') {
   console.log('owned test container diagnostic');
   if (scenario.logFailure) process.exit(11);
-} else if (args[0] === 'ps' && scenario.occupied && (!scenario.stoppedOnly || args.includes('-a'))) console.log('mangarr-test');
+} else if (args[0] === 'ps' && scenario.occupied && (!scenario.stoppedOnly || args.includes('-a'))) console.log(scenario.occupied);
 `, { mode: 0o755 });
   const realNode = process.execPath;
   // The docker stub uses the real node binary; browser entrypoints use this stub.
@@ -276,7 +280,9 @@ esac
     stdio: 'pipe',
   }), error => {
     output = error.stdout.toString();
-    return error.status === (scenario.startupFailure ? 9 : scenario.healthFailure || scenario.occupied ? 1 : 7);
+    assert.equal(error.status, scenario.startupFailure ? 9 : scenario.healthFailure || scenario.occupied ? 1 : 7,
+      'isolated runner exit status');
+    return true;
   });
   const commands = fs.readFileSync(calls, 'utf8').trim().split('\n').map(JSON.parse);
   return { repo, commands, id, output };
@@ -304,11 +310,17 @@ test('isolated runner refuses diagnostics from mismatched ownership: ' + JSON.st
 });
 }
 
+for (const occupied of ['mangarr-test', 'mangarr-test-mock-qbit']) {
 for (const stoppedOnly of [false, true]) {
-test('isolated runner never tears down a pre-existing container, stoppedOnly=' + stoppedOnly, t => {
-  const { commands } = runnerProbe(t, { occupied: true, stoppedOnly });
+test('isolated runner never tears down a pre-existing container, occupied=' + occupied + ', stoppedOnly=' + stoppedOnly, t => {
+  const { repo, commands, output } = runnerProbe(t, { occupied, stoppedOnly });
+  assert.match(output, /refusing to clobber/);
   assert.ok(!commands.some(args => args[0] === 'compose'));
+  assert.equal(fs.readFileSync(path.join(repo, '.test-config', 'sentinel'), 'utf8'), 'previous stack config');
+  assert.deepEqual(fs.readdirSync(path.join(repo, '.test-config')), ['sentinel']);
+  assert.ok(!fs.existsSync(path.join(repo, '.test-artifacts')));
 });
+}
 }
 
 test('CI failure fallback never emits raw container logs or config listings', () => {

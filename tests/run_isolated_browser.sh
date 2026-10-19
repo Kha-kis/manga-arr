@@ -109,10 +109,9 @@ cleanup() {
   return "$status"
 }
 
-# Hard fail if the test container name is already in use (it shouldn't,
-# since live uses 'mangarr' and test uses 'mangarr-test', but be explicit).
-if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"; then
-  echo "[isolated-browser] '$CONTAINER' already running — refusing to clobber"
+# Hard fail if either test stack container already exists, running or stopped.
+if docker ps -a --format '{{.Names}}' | grep -Eqx "$CONTAINER|mangarr-test-mock-qbit"; then
+  echo "[isolated-browser] '$CONTAINER' or 'mangarr-test-mock-qbit' already exists - refusing to clobber"
   echo "[isolated-browser] run '$COMPOSE down' first"
   exit 1
 fi
