@@ -313,8 +313,17 @@ def _publication_claim_path(
     )
 
 
-def _rename_noreplace(source: str, destination: str) -> None:
+def _rename_noreplace(
+    source: str,
+    destination: str,
+    *,
+    src_dir_fd: int = _AT_FDCWD,
+    dst_dir_fd: int = _AT_FDCWD,
+) -> None:
     """Atomically rename without replacing via Linux ``renameat2(2)``.
+
+    With directory descriptors the names resolve relative to them, as in
+    ``os.rename(..., src_dir_fd=..., dst_dir_fd=...)``.
 
     Publication cannot safely emulate ``RENAME_NOREPLACE`` with a
     check-then-rename sequence. Fail closed on non-Linux systems, old kernels,
@@ -344,9 +353,9 @@ def _rename_noreplace(source: str, destination: str) -> None:
     )
     renameat2.restype = ctypes.c_int
     result = renameat2(
-        _AT_FDCWD,
+        src_dir_fd,
         os.fsencode(source),
-        _AT_FDCWD,
+        dst_dir_fd,
         os.fsencode(destination),
         _RENAME_NOREPLACE,
     )

@@ -401,20 +401,25 @@ reason.
 Each move is one `chapter_quarantine` row, written before each filesystem step:
 
 1. `reserved`: the row is written under the same checks, re-verified in the
-   reserving transaction.
+   reserving transaction, with its quarantine name already fixed (see step 4).
 2. `captured`: the file is renamed into a fresh private `0700`
    `.mangarr-claim-cleanup-*` directory beside it, so rescan cannot see or
    readopt it, and re-hashed there.
-3. `committed`: one transaction points the chapter at the volume (as rescan
+3. `committed`: the volume is re-hashed against its assembly record (metadata
+   alone is not enough), then one transaction points the chapter at the volume (as rescan
    does for a covered chapter: size, quality and imported time cleared) under
    a compare-and-set on the chapter row, and removes its provenance row.
 4. `quarantined`: the file is moved without replacing into
    `<library root>/.mangarr-quarantine/<series id>/<original name>.<row id>`
-   (both directories `0700`) and the private directory is removed.
+   (both directories `0700`) and the private directory is removed. A name that
+   would pass 255 bytes keeps its extension and loses the end of its stem,
+   marked `~`.
 
 Moves use `renameat2` no-replace and, where the filesystem reports that as
 unsupported, a hard link followed by removing the private or reserved source
-name once both names are the same inode; a public name is never removed. A real
+name once both names are the same inode; a public name is never removed. Both
+directories are opened without following a final symlink and names resolve
+relative to those handles, so a folder swapped mid-move cannot redirect it. A real
 probe move from the series folder into the quarantine folder must succeed first;
 a cross-filesystem error refuses the run, and nothing is ever copied.
 
@@ -422,12 +427,16 @@ Active rows (`reserved`, `captured`, `committed`, `restoring`) are added to
 every library mutation fence, so imports, rescan, volume deletion and purge wait
 for them. Startup and a replay loop settle interrupted rows: before `committed`
 the file goes back to its original name without replacing anything, after it the
-move only goes forward. A row that cannot settle, for example because the
+move only goes forward. Recovery re-hashes a file before accepting it as
+quarantined or restored; one whose content changed is kept, with both names if
+a link was interrupted, for review. A row that cannot settle, for example because the
 original name was taken meanwhile, keeps the file where it is, records a
 diagnostic and stays active until it can.
 
-Restore is per chapter from the series page: the quarantined file must still
-match its recorded hash, its original name must be free, and it is moved back
+Restore is per chapter from the series page: the original folder must be a
+plain path (no symlink below the root) inside a configured root folder, the
+quarantined file must still match its recorded hash, its original name must be
+free, and it is moved back
 without replacing anything; the chapter is pointed at it again if it still
 points at the volume. Nothing is removed from quarantine automatically, and
 purging a series leaves its quarantine folder and rows in place. Readers such as

@@ -34,8 +34,18 @@ an active volume deletion until it can.
 Moves use ``renameat2`` no-replace and, where the filesystem reports that
 unsupported, a hard link followed by removal of the private or reserved
 source name once both names are proven the same inode; a public name is
-never removed. Cross-filesystem moves are refused, never copied, and a real
-probe move into the quarantine folder must succeed before any run.
+never removed. Both directories are opened without following a final
+symlink and every name is resolved relative to those handles, so a parent
+swapped mid-move cannot redirect it. Cross-filesystem moves are refused,
+never copied, and a real probe move into the quarantine folder must succeed
+before any run. Restore also refuses a destination folder that is not a
+plain path inside a configured root folder.
+
+Metadata alone never authorizes a step: the volume is rehashed against its
+assembly record right before the commit, and recovery rehashes a file
+before accepting it as quarantined or restored. A mismatch keeps the row
+active with its diagnostic for review. The quarantine name is fixed at
+reservation and bounded to ``_NAME_MAX`` bytes.
 """
 from __future__ import annotations
 
@@ -69,6 +79,7 @@ CARRIER_PREFIX = ".mangarr-claim-cleanup-"
 ACTIVE_STATES = ("reserved", "captured", "committed", "restoring")
 ACTIVE_STATES_SQL = "('reserved','captured','committed','restoring')"
 _UNSUPPORTED = (errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS, errno.EINVAL)
+_NAME_MAX = 255
 
 Outcome = Literal["quarantined", "rolled_back", "restored", "blocked", "terminal"]
 
@@ -156,26 +167,69 @@ def _fsync_dir(path: str) -> None:
         os.close(descriptor)
 
 
+def _open_dir(path: str) -> int:
+    """A handle on the directory ``path`` names now, never through a final symlink."""
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        held, current = os.fstat(descriptor), os.lstat(path)
+        if (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino):
+            raise CleanupError(f"directory changed while it was opened: {path}")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
 def _move_noreplace(source: str, destination: str) -> None:
     """Move ``source`` (a private or reserved name) to an absent name.
 
-    Refuses an existing destination and a cross-filesystem move. With the
+    Refuses an existing destination and a cross-filesystem move. Both
+    parents are pinned first and names resolve relative to them. With the
     link fallback the source name is removed only once both names are the
     same inode, so the destination is never at risk.
     """
     from import_publication import _rename_noreplace
 
+    src_fd = _open_dir(os.path.dirname(os.path.abspath(source)))
     try:
-        _rename_noreplace(source, destination)
-    except OSError as exc:
-        if exc.errno not in _UNSUPPORTED:
-            raise
-        os.link(source, destination, follow_symlinks=False)
-        if not _same_inode(source, destination):
-            raise CleanupError(f"link fallback produced a different file: {destination}")
-        os.unlink(source)
-    _fsync_dir(os.path.dirname(destination))
-    _fsync_dir(os.path.dirname(source))
+        dst_fd = _open_dir(os.path.dirname(os.path.abspath(destination)))
+        try:
+            src, dst = os.path.basename(source), os.path.basename(destination)
+            try:
+                _rename_noreplace(src, dst, src_dir_fd=src_fd, dst_dir_fd=dst_fd)
+            except OSError as exc:
+                if exc.errno not in _UNSUPPORTED:
+                    raise
+                os.link(src, dst, src_dir_fd=src_fd, dst_dir_fd=dst_fd, follow_symlinks=False)
+                first = os.stat(src, dir_fd=src_fd, follow_symlinks=False)
+                second = os.stat(dst, dir_fd=dst_fd, follow_symlinks=False)
+                if (first.st_dev, first.st_ino) != (second.st_dev, second.st_ino):
+                    raise CleanupError(f"link fallback produced a different file: {destination}")
+                os.unlink(src, dir_fd=src_fd)
+            os.fsync(dst_fd)
+            os.fsync(src_fd)
+        finally:
+            os.close(dst_fd)
+    finally:
+        os.close(src_fd)
+
+
+def _managed_dir(path: str) -> None:
+    """Refuse a folder that is not a plain path inside a configured root folder.
+
+    The root itself may be reached through a symlink (a mount alias); nothing
+    below it may be.
+    """
+    folder = os.path.abspath(path)
+    with get_db() as db:
+        roots = [os.path.abspath(str(r["path"])) for r in db.execute("SELECT path FROM root_folders")]
+    for root in roots:
+        if folder == root or os.path.commonpath((folder, root)) != root:
+            continue
+        if os.path.realpath(folder) == os.path.join(os.path.realpath(root), os.path.relpath(folder, root)):
+            return
+        raise CleanupError(f"{folder} resolves outside the managed library (symlink in its path)")
+    raise CleanupError(f"{folder} is not inside a managed library root folder")
 
 
 def _private_dir(path: str) -> None:
@@ -186,6 +240,25 @@ def _private_dir(path: str) -> None:
         or stat.S_IMODE(st.st_mode) & 0o077
     ):
         raise CleanupError(f"not a private directory: {path}")
+
+
+def _quarantine_target(original: str, series_id: int, row_id: int) -> str:
+    """``<root>/.mangarr-quarantine/<series>/<name>.<row id>``, at most ``_NAME_MAX`` bytes.
+
+    A name that would overflow keeps its extension and loses the end of its
+    stem (marked ``~``), so the name is always valid before anything moves.
+    """
+    folder = os.path.join(os.path.dirname(os.path.dirname(original)), QUARANTINE_DIR, str(series_id))
+    base, suffix = os.path.basename(original), f".{row_id}"
+    name = base + suffix
+    if len(os.fsencode(name)) > _NAME_MAX:
+        stem, ext = os.path.splitext(base)
+        if len(os.fsencode(ext + suffix)) > _NAME_MAX // 2:
+            stem, ext = base, ""
+        while stem and len(os.fsencode(f"{stem}~{ext}{suffix}")) > _NAME_MAX:
+            stem = stem[:-1]
+        name = f"{stem}~{ext}{suffix}"
+    return os.path.join(folder, name)
 
 
 def _quarantine_dir(series_dir: str, series_id: int) -> str:
@@ -463,7 +536,12 @@ def _reserve(candidate: Candidate, series_id: int) -> int | None:
                 json.dumps(candidate.chapter, sort_keys=True, default=str),
             ),
         )
-        return int(cursor.lastrowid or 0) or None
+        row_id = int(cursor.lastrowid or 0)
+        db.execute(
+            "UPDATE chapter_quarantine SET quarantine_path=? WHERE id=?",
+            (_quarantine_target(candidate.path, series_id, row_id), row_id),
+        )
+        return row_id or None
 
 
 def _capture(row: dict[str, Any], guard: FileMutationGuard) -> None:
@@ -499,10 +577,14 @@ def _commit(row: dict[str, Any], guard: FileMutationGuard) -> bool:
             " WHERE id=? AND volume_id=? AND library_path=?",
             (row["assembly_id"], row["volume_id"], row["volume_path"]),
         ).fetchone()
-    if assembly is None or not _stat_matches(
-        row["volume_path"],
-        FileId(int(assembly["file_inode"]), int(assembly["size_bytes"]), int(assembly["mtime_ns"]), assembly["sha256"]),
-    ):
+    if assembly is None:
+        return False
+    recorded = FileId(int(assembly["file_inode"]), int(assembly["size_bytes"]), int(assembly["mtime_ns"]), assembly["sha256"])
+    # Content, not metadata: a same-stat rewrite must not authorize the commit.
+    try:
+        if _hash_id(row["volume_path"]) != recorded:
+            return False
+    except (OSError, chapter_provenance.ProvenanceError):
         return False
     guard.verify()
     with get_db() as db:
@@ -534,15 +616,18 @@ def _commit(row: dict[str, Any], guard: FileMutationGuard) -> bool:
 def _transfer(row: dict[str, Any], guard: FileMutationGuard) -> None:
     expected = _file_id(row)
     source = _carrier_file(row)
+    quarantine = _quarantine_dir(os.path.dirname(row["original_path"]), int(row["series_id"]))
     if not row["quarantine_path"]:
-        quarantine = _quarantine_dir(os.path.dirname(row["original_path"]), int(row["series_id"]))
-        name = f"{os.path.basename(row['original_path'])}.{row['id']}"
-        _advance(row, quarantine_path=os.path.join(quarantine, name))
+        _advance(row, quarantine_path=_quarantine_target(row["original_path"], int(row["series_id"]), int(row["id"])))
     destination = row["quarantine_path"]
+    if os.path.dirname(destination) != quarantine:
+        raise CleanupError(f"quarantine path is not in this series' quarantine folder: {destination}")
     present = source is not None and os.path.lexists(source)
     if os.path.lexists(destination):
         if not _stat_matches(destination, expected):
             raise CleanupError(f"quarantine name holds another file: {destination}")
+        if _hash_id(destination) != expected:
+            raise CleanupError(f"quarantined file content changed; kept for review: {destination}")
         if present:
             if not _same_inode(source, destination):
                 raise CleanupError("carrier and quarantine hold different files")
@@ -550,8 +635,10 @@ def _transfer(row: dict[str, Any], guard: FileMutationGuard) -> None:
             os.unlink(source)  # private name; the quarantine name is the same inode
             _fsync_dir(os.path.dirname(source))
     else:
-        if not present or not _stat_matches(source, expected):
-            raise CleanupError("captured file is missing or changed")
+        if not present:
+            raise CleanupError("captured file is missing")
+        if _hash_id(source) != expected:
+            raise CleanupError(f"captured file content changed; kept for review: {source}")
         guard.verify()
         _move_noreplace(source, destination)
         if not _stat_matches(destination, expected):
@@ -696,8 +783,16 @@ def _finish_restore(row: dict[str, Any], guard: FileMutationGuard) -> Outcome:
     expected = _file_id(row)
     source, destination = row["quarantine_path"], row["original_path"]
     source_present = os.path.lexists(source)
+    try:
+        _managed_dir(os.path.dirname(destination))
+    except CleanupError as exc:
+        if source_present and not os.path.lexists(destination):
+            return _refuse_restore(row, str(exc))
+        raise
     if os.path.lexists(destination) and _stat_matches(destination, expected):
         # The move already happened (or its link half did).
+        if _hash_id(destination) != expected:
+            raise CleanupError(f"restored file content changed; kept for review: {destination}")
         if source_present:
             if not _same_inode(source, destination):
                 raise CleanupError("quarantine and original hold different files")
