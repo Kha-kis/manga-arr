@@ -7,6 +7,10 @@ All notable changes to this project. Format roughly follows
 
 ### Fixed
 
+- Rescan recovery retains the original allocation failure alongside its
+  unrecorded-allocation warning, including on repeated replay. Recovery fences
+  and ownership checks remain unchanged; this does not revalidate namespaces
+  after a remount ([#474](https://github.com/Kha-kis/manga-arr/issues/474)).
 - Startup backfill preserves cleared standalone observations for chapters still
   owned by a matching committed, quarantined or restoring cleanup journal.
   Unrelated legacy backfill remains enabled. This prevents recurrence; it does
