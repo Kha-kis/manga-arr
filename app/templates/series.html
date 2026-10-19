@@ -928,6 +928,49 @@
     </div>
     {% endif %}
 
+    {% if quarantined_chapters %}
+    <div class="section-label mt-2 mb-3">
+      <i class="bi bi-archive me-1"></i>Quarantined loose chapters
+      <span class="series-section-count">{{ quarantined_chapters|length }}</span>
+    </div>
+    <div class="table-wrap mb-4">
+      <table class="table table-sm mb-0 series-quarantine-table">
+        <thead>
+          <tr>
+            <th>Chapter</th>
+            <th>File</th>
+            <th>State</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for q in quarantined_chapters %}
+          <tr>
+            <td>{{ '%g' % q['chapter_num'] if q['chapter_num'] is not none else '—' }}</td>
+            <td title="{{ q['quarantine_path'] or q['original_path'] }}">{{ q['original_path'].split('/')[-1] }}</td>
+            <td>
+              {% if q['state'] == 'quarantined' %}<span class="badge-status badge-downloaded">Quarantined</span>
+              {% else %}<span class="badge-status badge-wanted" title="{{ q['diagnostic'] }}">Pending: {{ q['state'] }}</span>{% endif %}
+              {% if q['diagnostic'] %}<div class="form-text">{{ q['diagnostic'] }}</div>{% endif %}
+            </td>
+            <td class="text-end">
+              {% if q['state'] == 'quarantined' %}
+              <form method="POST" action="/series/{{ s['id'] }}/quarantine/{{ q['id'] }}/restore"
+                    data-confirm="Move this chapter file back to its original name? It is refused if that name is taken."
+                    data-confirm-heading="Restore chapter" data-confirm-ok="Restore">
+                <button type="submit" class="btn btn-outline-ember btn-sm">
+                  <i class="bi bi-arrow-counterclockwise me-1"></i>Restore
+                </button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
     {% if specials %}
     <div class="section-label mt-2 mb-3">
       <i class="bi bi-stars text-gold me-1"></i>Specials

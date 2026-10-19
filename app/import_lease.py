@@ -123,6 +123,12 @@ def claim_import_queue_row(
                 AND rescan_operation.state IN
                     ('prepared','published','db_committed','rollback')
           )
+          AND NOT EXISTS (
+              SELECT 1 FROM chapter_quarantine quarantine
+              WHERE quarantine.series_id=import_queue.series_id
+                AND quarantine.state IN
+                    ('reserved','captured','committed','restoring')
+          )
         """,
         (
             lease_owner,

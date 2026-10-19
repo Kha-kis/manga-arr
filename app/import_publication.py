@@ -233,9 +233,11 @@ def assert_library_file_mutation_available(db: sqlite3.Connection, series_id: in
         "('prepared','published','db_committed','rollback') "
         "UNION ALL SELECT 1 FROM import_queue WHERE series_id=? AND "
         "(status='importing' OR lease_owner IS NOT NULL) "
+        "UNION ALL SELECT 1 FROM chapter_quarantine WHERE series_id=? AND state IN "
+        "('reserved','captured','committed','restoring') "
         "UNION ALL SELECT 1 FROM import_publication_files f JOIN import_publications p ON p.id=f.publication_id "
         "WHERE f.src_path=? AND p.state IN ('staging','prepared','publishing','published','db_committed','cleaning') LIMIT 1",
-        (series_id, series_id, series_id, series_id, source_path),
+        (series_id, series_id, series_id, series_id, series_id, source_path),
     ).fetchone()
     if row is not None:
         raise PublicationBlocked("library file mutation is reserved by active recovery")
@@ -311,8 +313,17 @@ def _publication_claim_path(
     )
 
 
-def _rename_noreplace(source: str, destination: str) -> None:
+def _rename_noreplace(
+    source: str,
+    destination: str,
+    *,
+    src_dir_fd: int = _AT_FDCWD,
+    dst_dir_fd: int = _AT_FDCWD,
+) -> None:
     """Atomically rename without replacing via Linux ``renameat2(2)``.
+
+    With directory descriptors the names resolve relative to them, as in
+    ``os.rename(..., src_dir_fd=..., dst_dir_fd=...)``.
 
     Publication cannot safely emulate ``RENAME_NOREPLACE`` with a
     check-then-rename sequence. Fail closed on non-Linux systems, old kernels,
@@ -342,9 +353,9 @@ def _rename_noreplace(source: str, destination: str) -> None:
     )
     renameat2.restype = ctypes.c_int
     result = renameat2(
-        _AT_FDCWD,
+        src_dir_fd,
         os.fsencode(source),
-        _AT_FDCWD,
+        dst_dir_fd,
         os.fsencode(destination),
         _RENAME_NOREPLACE,
     )
@@ -631,6 +642,13 @@ def create_publication(
                 AND rescan_operation.state IN
                     ('prepared','published','db_committed','rollback')
           )
+          AND NOT EXISTS (
+              SELECT 1 FROM chapter_quarantine quarantine
+              WHERE (quarantine.series_id=current_queue.series_id
+                     OR quarantine.series_id=?)
+                AND quarantine.state IN
+                    ('reserved','captured','committed','restoring')
+          )
         """,
         (
             queue_id,
@@ -664,6 +682,7 @@ def create_publication(
             queue.get("created_at"),
             queue_id,
             owner_token,
+            plan.series_id,
             plan.series_id,
         ),
     )

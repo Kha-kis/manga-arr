@@ -65,6 +65,8 @@ ENV_DEFAULTS = {
     'blocked_groups':      (None,               ''),
     # Post-import client management
     'remove_completed':    (None,               'false'),
+    # Opt-in: quarantine loose chapters a merged volume provably holds (#422)
+    'cleanup_loose_chapters': (None,            'false'),
     # Scheduling
     'refresh_interval':    (None,               '86400'),  # 24h metadata refresh
     # Delay profiles global fallback
@@ -177,6 +179,7 @@ SETTINGS_VALIDATORS: dict = {
     'url_base':                ('url_base',),
     'komga_scan_enabled':      ('bool',),
     'remove_completed':        ('bool',),
+    'cleanup_loose_chapters':  ('bool',),
     'ddl_grab_mode':           ('enum', frozenset({'fallback', 'prefer', 'only', 'off'})),
     'quality_cutoff':          ('enum', frozenset({'', 'pdf', 'epub', 'cbr', 'cbz', 'rar', 'zip', 'mobi'})),
 }
