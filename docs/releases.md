@@ -17,7 +17,7 @@ documentation consistency.
 
 ## 1.3.3-rc.9 Candidate Status
 
-Preparation begins from exact reviewed [PR #464](https://github.com/Kha-kis/manga-arr/pull/464)
+Preparation began from exact reviewed [PR #464](https://github.com/Kha-kis/manga-arr/pull/464)
 merge `42f8c9d617f0922ca753e9421b57d9cfd8acb210`, tree
 `8b5d2da21dbdf346890b7284a04c2f419dbea1f2`. It includes the managed Suwayomi
 missing-volume fix in [#463](https://github.com/Kha-kis/manga-arr/pull/463) and
@@ -27,19 +27,28 @@ and uncertain observations remain protected. The portable test fixture from
 [#462](https://github.com/Kha-kis/manga-arr/pull/462) retains the real other-UID
 attack without a private local-only image dependency.
 
-This preparation changes `app/VERSION` and four release documents only. It adds
-no further application, provider, API, dependency, schema or Compose changes.
-The exact prepared revision must pass `make release-local` and independent
-review before publication from its reviewed, tree-verified merge. Only immutable
-`v1.3.3-rc.9` and the full prerelease image tag may be published; no stable aliases
-may move. The GitHub prerelease must be non-latest and explicitly unqualified.
-Preparation alone does not establish that a tag or image exists.
+Reviewed [PR #465](https://github.com/Kha-kis/manga-arr/pull/465) merge
+`d52581c26911cf5e9f5965c5ff1a2036d9c022db` has the same tree as the tested
+preparation. Annotated immutable `v1.3.3-rc.9` targets that merge. Release Image
+[run 39039892066](https://github.com/Kha-kis/manga-arr/actions/runs/39039892066)
+published both architectures on 2026-10-17; the
+[GitHub prerelease](https://github.com/Kha-kis/manga-arr/releases/tag/v1.3.3-rc.9)
+is non-latest and explicitly unqualified. Its immutable index is
+`sha256:edf4c122b7b45c026bc6fc7e2134c611332e02cbf00aa23170cc99563f76fe17`.
 
-RC8 lacks the #459 and #461 corrections and must not be promoted. Its ongoing
-observation and all older candidate receipts supply no RC9 runtime credit.
-Fresh publication identity/security and application/environment/platform gates
-are required for the exact RC9 artifact. Production remains the owner-controlled
-RC5 trial; qualified stable remains 1.3.2. See
+Independent scoped audits accepted publication identity/attestation/security,
+installed core/cache/file controls, 54 installed rescan cases, an adapted public
+Compose install, a fresh eight-chapter download/import/rescan workflow, and a
+new uninterrupted 87,600-second natural observation with two daily metadata
+polls. These results belong only to that artifact, not RC8 or later `master`.
+
+Literal byte-unchanged public Compose, native ARM64 and representative NAS remain
+unqualified. The publication lookup guard was subsequently fixed in
+[#468](https://github.com/Kha-kis/manga-arr/pull/468); merged-volume evidence in
+[#460](https://github.com/Kha-kis/manga-arr/pull/460) is also later source work,
+not part of RC9. A replacement containing later runtime changes requires fresh
+artifact qualification. No immutable tag is replaced or old soak time transferred.
+Production remains the owner-controlled RC5 trial; qualified stable remains 1.3.2. See
 [RC9 qualification](release-qualification.md#133-rc9-qualification).
 
 ## 1.3.3-rc.8 Candidate Status
