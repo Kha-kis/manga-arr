@@ -5,12 +5,24 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+### Fixed
+
+- Startup backfill preserves cleared standalone observations for chapters still
+  owned by a matching committed, quarantined or restoring cleanup journal.
+  Unrelated legacy backfill remains enabled. This prevents recurrence; it does
+  not rewrite observations already populated by RC10
+  ([#475](https://github.com/Kha-kis/manga-arr/issues/475)).
+
 ## 1.3.3-rc.10 - 2026-10-19
 
-Preparation only: unpublished and unqualified. Builds on the reviewed
+Published from [PR #473](https://github.com/Kha-kis/manga-arr/pull/473) merge
+`55f3d6fcc8d8737f1d5180fe1063d863630c36f9`; unqualified and held by the startup
+observation regression in [#475](https://github.com/Kha-kis/manga-arr/issues/475).
+The correction above requires a replacement candidate; the published RC10 image
+and tag will not be replaced. Builds on the reviewed
 [PR #469](https://github.com/Kha-kis/manga-arr/pull/469) merge
 `d4ee929a2f90206b7fc18d1da06878609f32ace6`, carrying forward RC9's rescan
-safeguards. No release tag, stable alias or production deployment is changed.
+safeguards. Stable aliases and production deployment remain unchanged.
 Fresh artifact qualification is required; RC9's runtime and soak evidence does
 not transfer. See [RC10 qualification](docs/release-qualification.md#133-rc10-qualification).
 

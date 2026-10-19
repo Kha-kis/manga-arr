@@ -27,13 +27,15 @@ compressed-RAR decoding. See the
 [qualification evidence and platform limits](docs/release-qualification.md#132-stable-qualification)
 before upgrading.
 
-**1.3.3-rc.10 is in preparation, not published or qualified.** It adds verified
+**1.3.3-rc.10 is published, unqualified and held by
+[#475](https://github.com/Kha-kis/manga-arr/issues/475).** It adds verified
 merged-volume assembly evidence and opt-in loose-chapter quarantine/restore
 ([#422](https://github.com/Kha-kis/manga-arr/issues/422)). Cleanup is off by
 default, never deletes quarantined files, and does not adopt historical files.
 Readers must exclude `.mangarr-quarantine`; read progress does not transfer to
-the volume. RC10 needs fresh artifact qualification, including cleanup and
-recovery checks; RC9's completed soak does not qualify it. See
+the volume. Startup backfill can repopulate cleared chapter observations after
+quarantine; a reviewed correction needs a replacement candidate, not a replaced
+RC10 tag. RC9's completed soak does not qualify RC10 or its replacement. See
 [RC10 qualification](docs/release-qualification.md#133-rc10-qualification).
 
 **1.3.3-rc.9 is published but remains unqualified for stable promotion.** It includes the

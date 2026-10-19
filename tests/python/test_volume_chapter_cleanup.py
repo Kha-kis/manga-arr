@@ -24,6 +24,7 @@ import stat
 import sys
 import tempfile
 import zipfile
+from typing import Any
 
 import pytest
 
@@ -213,6 +214,135 @@ def test_proven_loose_chapters_are_quarantined_and_repointed(lib):
     for d in (lib["q"], lib["q"].parent):
         assert stat.S_IMODE(os.stat(d).st_mode) == 0o700
     assert {p.name for p in lib["q"].iterdir()} == {os.path.basename(r["quarantine_path"]) for r in rows}
+
+
+@pytest.fixture
+def imported_lib(lib: dict[str, Any]) -> dict[str, Any]:
+    """Use the observation/lineage fields written by Suwayomi job settlement."""
+    import metadata_provenance
+
+    with sqlite3.connect(lib["db"]) as db:
+        db.row_factory = sqlite3.Row
+        db.execute(
+            "UPDATE volumes SET indexer='Suwayomi',protocol='ddl',client='suwayomi',"
+            " quality='cbz',size_bytes=?,imported_at=CURRENT_TIMESTAMP,"
+            " torrent_name='Suwayomi DDL: Freezing vol 1',download_id=NULL WHERE id=?",
+            (os.path.getsize(lib["volume"]), lib["vid"]),
+        )
+        for chapter_num in (1, 2):
+            db.execute(
+                "UPDATE chapters SET indexer='Suwayomi',protocol='ddl',client='suwayomi',"
+                " imported_at=CURRENT_TIMESTAMP,torrent_name=?,download_id=NULL,torrent_url=NULL"
+                " WHERE series_id=7 AND chapter_num=?",
+                (f"Suwayomi DDL: ch {chapter_num}", chapter_num),
+            )
+        metadata_provenance.record_manual_metadata(7, {"title": "Freezing", "total_volumes": 12}, db=db)
+        metadata_provenance.backfill_metadata_provenance(db)
+    return lib
+
+
+@pytest.mark.parametrize("phase", ("quarantined", "committed", "restoring"))
+def test_schema_startup_preserves_quarantine_observations(
+    imported_lib: dict[str, Any], monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    import schema
+    import volume_chapter_cleanup
+
+    lib = imported_lib
+    original = _chapters(lib)
+    volume_sha = _sha(lib["volume"])
+    if phase == "committed":
+        with monkeypatch.context() as interruption:
+            _crash_at(interruption, "_transfer")
+            with pytest.raises(_Crash):
+                _cleanup(lib)
+    else:
+        assert _cleanup(lib).quarantined == 2
+        if phase == "restoring":
+            with monkeypatch.context() as interruption:
+                _crash_at(interruption, "_finish_restore")
+                with pytest.raises(_Crash):
+                    volume_chapter_cleanup.restore(_rows(lib)[0]["id"], 7)
+    before, journal = _chapters(lib), _rows(lib)
+    assert journal[0]["state"] == phase
+    assert before[1.0]["quality"] is None and before[1.0]["size_bytes"] is None
+    assert before[1.0]["imported_at"] is None
+    with sqlite3.connect(lib["db"]) as db:
+        manual = db.execute("SELECT * FROM series_metadata_fields ORDER BY series_id,field_name").fetchall()
+        candidates = db.execute("SELECT * FROM series_metadata_candidates ORDER BY series_id,field_name,source").fetchall()
+    schema.init_db()
+    assert _chapters(lib) == before
+    assert _rows(lib) == journal
+    with sqlite3.connect(lib["db"]) as db:
+        assert db.execute("SELECT * FROM series_metadata_fields ORDER BY series_id,field_name").fetchall() == manual
+        assert db.execute("SELECT * FROM series_metadata_candidates ORDER BY series_id,field_name,source").fetchall() == candidates
+    if phase != "quarantined":
+        assert _replay_all() == (["restored"] if phase == "restoring" else ["quarantined"])
+    row = _rows(lib)[0]
+    if phase != "restoring":
+        assert _sha(row["quarantine_path"]) == row["sha256"]
+        assert os.stat(row["quarantine_path"]).st_nlink == 1
+        assert volume_chapter_cleanup.restore(row["id"], 7) == ("restored", "")
+    assert _sha(row["original_path"]) == row["sha256"]
+    restored = _chapters(lib)[1.0]
+    assert {k: v for k, v in restored.items() if k != "imported_at"} == {
+        k: v for k, v in original[1.0].items() if k != "imported_at"
+    }
+    assert restored["imported_at"] and _no_carrier(lib) and not _fenced(lib)
+    assert _sha(lib["volume"]) == volume_sha
+
+
+@pytest.mark.parametrize("stale", (None, "restored", "rolled_back", "chapter_id", "volume_id", "volume_path", "series_id"))
+def test_schema_backfills_volume_chapters_without_current_quarantine(
+    imported_lib: dict[str, Any], stale: str | None
+) -> None:
+    import schema
+
+    lib = imported_lib
+    if stale is not None:
+        assert _cleanup(lib).quarantined == 2
+        with sqlite3.connect(lib["db"]) as db:
+            row_id = _rows(lib)[0]["id"]
+            if stale in ("restored", "rolled_back"):
+                db.execute("UPDATE chapter_quarantine SET state=? WHERE id=?", (stale, row_id))
+            elif stale == "volume_path":
+                db.execute("UPDATE chapter_quarantine SET volume_path=volume_path||'.old' WHERE id=?", (row_id,))
+            elif stale == "volume_id":
+                db.execute("UPDATE chapter_quarantine SET volume_id=volume_id+100 WHERE id=?", (row_id,))
+            elif stale == "chapter_id":
+                db.execute("UPDATE chapter_quarantine SET chapter_id=chapter_id+100 WHERE id=?", (row_id,))
+            else:
+                db.execute("UPDATE chapter_quarantine SET series_id=8 WHERE id=?", (row_id,))
+    with sqlite3.connect(lib["db"]) as db:
+        db.execute(
+            "UPDATE chapters SET import_path=?,quality=NULL,size_bytes=NULL,imported_at=NULL,"
+            " indexer=NULL,protocol=NULL,client=NULL,torrent_name=NULL"
+            " WHERE series_id=7 AND chapter_num=1", (lib["volume"],),
+        )
+    schema.init_db()
+    chapter = _chapters(lib)[1.0]
+    assert chapter["quality"] == "cbz" and chapter["size_bytes"] == os.path.getsize(lib["volume"])
+    assert chapter["imported_at"] and chapter["import_path"] == lib["volume"]
+    assert (chapter["indexer"], chapter["protocol"], chapter["client"]) == ("Suwayomi", "ddl", "suwayomi")
+    assert chapter["torrent_name"] == "Suwayomi DDL: Freezing vol 1"
+
+
+def test_schema_quality_backfill_for_independent_path_with_stale_quarantine(
+    imported_lib: dict[str, Any],
+) -> None:
+    import schema
+
+    lib = imported_lib
+    assert _cleanup(lib).quarantined == 2
+    replacement = _cbz(lib["dir"] / "Independent chapter.cbz", [b"independent"])
+    with sqlite3.connect(lib["db"]) as db:
+        db.execute(
+            "UPDATE chapters SET import_path=? WHERE series_id=7 AND chapter_num=1", (replacement,),
+        )
+    schema.init_db()
+    chapter = _chapters(lib)[1.0]
+    assert chapter["import_path"] == replacement and chapter["quality"] == "cbz"
+    assert chapter["size_bytes"] is None and chapter["imported_at"] is None
 
 
 def test_link_fallback_moves_leave_one_name(lib, monkeypatch):
