@@ -5,8 +5,9 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## 1.3.3-rc.9 Qualification
 
-Status: **PREPARATION ONLY; NOT PUBLISHED; UNQUALIFIED; NO STABLE PROMOTION
-OR PRODUCTION CUTOVER APPROVAL** (2026-10-16).
+Status: **PUBLISHED; SCOPED PUBLICATION, INSTALLED-IMAGE, WORKFLOW AND FULL-DAY
+AUDITS GO; REMAINING ENVIRONMENT/PLATFORM GAPS; UNQUALIFIED; NO STABLE PROMOTION
+OR PRODUCTION CUTOVER APPROVAL** (2026-10-19).
 
 ### Source And Preparation Boundary
 
@@ -26,36 +27,120 @@ follow the guarded reset. Independently missing canonical files use separate
 absence proof, possibly on the next scan. No files are deleted and no automatic
 cleanup or historical provenance backfill is introduced.
 
-Preparation changes VERSION and four release documents only. Its exact revision
-requires the local release gate and independent source/evidence review. Source
-test results do not establish publication or installed-artifact qualification.
-Any publication must bind the immutable tag to the exact reviewed merge, prove
-tree equality to the tested preparation, and record the published multiarch
-digest. No tag, digest, workflow completion or runtime pass is claimed here.
+Preparation changed VERSION and four release documents only. Reviewed preparation
+`ab6e4e19233744c5432050ffaf04eab277884883` passed the local release gate:
+4,880 Python tests /17 skips, 95 isolated browser checks, confirmations/routes,
+lint and configured security/image gates. [PR #465](https://github.com/Kha-kis/manga-arr/pull/465)
+merge `d52581c26911cf5e9f5965c5ff1a2036d9c022db` has the identical tree
+`244b025b2d71b943ecbe91181b4203913219053f`; fresh merge fast/security/image
+checks passed. This identical-tree proof is not a second full-suite run.
 
-### Required Fresh Qualification
+### Published Artifact
 
-- Verify both platform manifests, embedded version/revision, non-root runtime,
-  image contents, provenance/SBOM and configured fixed HIGH/CRITICAL scans.
-- Exercise the exact installed artifact's fresh setup, upgrade, recovery and
-  rollback, cached metadata during provider failure, file/linkage/provenance
-  safeguards, and real download/import/rescan workflow.
-- Reproduce #459 and #461 against the installed RC9 artifact, including surviving
-  loose chapters, uncertain independent paths, no-path/volume-backed children,
-  repeat scans and separately verified child absence. Source overlays do not
-  substitute for this installed-artifact evidence.
-- Complete a new uninterrupted full-day natural metadata-repeat observation in
-  a maintenance-aware window without disabling host updates. Do not reuse RC8's
-  seed as passing RC9 runtime evidence or transfer its elapsed observation.
-- Obtain representative NAS, literal public Compose startup, native ARM runtime
-  and independent final artifact-evidence review. Unavailable targets remain
-  explicit gaps; source tests or contributor reports do not waive them.
+Annotated immutable `v1.3.3-rc.9`, object
+`12b1999339886de64439f8dc910852c9681a9552`, targets that exact merge with the
+Kha-kis noreply tagger. The tag is unsigned; no signing claim. Release Image
+[run 39039892066](https://github.com/Kha-kis/manga-arr/actions/runs/39039892066)
+passed on attempt 1 and published the
+[non-latest prerelease](https://github.com/Kha-kis/manga-arr/releases/tag/v1.3.3-rc.9).
 
-Only the full RC9 tag may be published as a non-latest prerelease. Stable aliases
-and qualified stable remain 1.3.2; production remains the RC5 owner trial.
-RC8 cannot be promoted because it lacks #459 and #461. Its ongoing observation
-and all earlier candidate receipts remain historical, not RC9 qualification.
-Preparation or publication alone does not authorize production deployment.
+Immutable index:
+`sha256:edf4c122b7b45c026bc6fc7e2134c611332e02cbf00aa23170cc99563f76fe17`.
+
+- amd64: `sha256:a6be425fbecfc4e5d8657cf6145de851cd22226681ee316953b7c89fa35ef146`.
+- arm64: `sha256:abd45e680c4c20e9fb12e83f3efc4103a188d1d5d4d941a9b9ec5da765632c0d`.
+
+Independent publication audit accepted exact workflow/tag/index identity, both
+platform configs and SLSA/SPDX attestations, nonempty SBOMs, native amd64
+version/non-root/content checks, and dated fixed HIGH/CRITICAL scans on both
+platform manifests. All 36 publication checksums verified; 15 protected registry
+identities and 70 prior Git refs were unchanged. Stable/latest remained 1.3.2.
+Trivy 0.70's vendor/third-party-SBOM warnings and the configured exclusion of
+unfixed/lower-severity findings remain explicit; no universal vulnerability-free,
+native ARM execution or complete reproducibility claim follows.
+
+Publication evidence manifest SHA256:
+`23bad7fa59c05c1dcbf6cdaebd86e4e190f3b0a4cad332e4225b33cb11f4b462`.
+
+### Completed Installed-Artifact Checks
+
+Fresh setup/login/logout/recovery, upgrade from a historical stopped 1.3.2 copy,
+and rollback with its pristine matching copy passed independent scoped review.
+Protected table/column inventories, credentials/decryption, keys, observations,
+integrity and foreign keys were checked. This was not a fresh RC5 production
+backup or an in-place downgrade. Eleven loose-file controls and a separate
+network-disabled provider-failure control passed; populated cached series values,
+manual locks and candidates remained unchanged while source health degraded.
+
+The corrected installed rescan matrix passed 54 cases, eighteen each for
+synthetic Suwayomi, qBittorrent and SABnzbd ownership. It covered #459/#461,
+surviving independent chapters, uncertain paths, no-path states, separate child
+absence/restore, recorded-volume observations and repeat scans. No repository
+application overlay, real-provider, HTTP-lifespan or NAS credit is inferred.
+The original matrix failed a whole-ZIP byte assertion because intended ComicInfo
+enrichment changed its ZIP timestamp. That failed attempt and its diagnostic
+remain failed/capture-only; a separately reviewed probe correction preserved
+loose-file bytes, canonical page payloads, valid XML and protected-state checks.
+Only the fresh corrected matrix earns passing credit; no app change was needed.
+
+Public Compose with exactly two documented edits (RC9 image pin and loopback
+port 17790) passed fresh browser setup, authenticated pages, logout/relogin,
+health, same-config stop/start and SQLite integrity. Desktop/mobile empty-library
+screenshots were inspected. This is adapted Compose, not literal unchanged YAML.
+Requested SIGTERM exits 143 were accepted only with completed shutdown, no
+OOM/error/restart and stopped PID evidence; strict-zero core probes were unchanged.
+
+One fresh real automatic-source-match workflow downloaded eight chapters and
+imported a 254-page volume. Independent review verified exact job/client/source
+ownership, ordered page hashes, bounded ComicInfo, metadata/provenance snapshots,
+history and protected observations across rescan. All 149 runtime receipts
+verified. Candidate exit 0 and the narrow intentional Suwayomi shutdown policy
+passed; owned containers/networks and scratch mounts were removed. This was
+one workflow, not an exhaustive provider or filesystem compatibility matrix.
+
+Workflow runtime manifest SHA256:
+`c14dc4a6d3c9b9ca4c12484bbee1dd0be8582059d9d662fa01b87995c6af2db6`.
+
+### Natural Full-Day Observation
+
+A new RC9 run observed 87,600.013 uninterrupted natural seconds on October 17-18,
+with 5,839 samples, two metadata polls separated by 86,400.003575 seconds,
+98 RSS polls and 292 download checks. No new error events, restarts or OOMs were
+observed. Independent terminal review verified exact artifact identity, continuous
+attached logs, PID1 exit 0, protected stopped state and final hashes. This does
+not claim provider success. RC8 elapsed time or seed credit was not reused.
+
+The exact observer was removed and scratch unmounted within the fixed cleanup
+window. Its temporary authority/units were retired and the original host
+collector restored after review. Compact/private qualification evidence remains
+retained; raw credentials, database contents and traces are not published here.
+
+Natural-observation receipt SHA256:
+`402e80650f53cf2524f4b893c83ee62966458a167ed2ab2fe8c9ea8e01deb7f2`.
+
+### Remaining Qualification And Source Boundary
+
+- Literal byte-unchanged public Compose startup remains unqualified. The adapted
+  install above does not waive this requirement.
+- Native ARM64 runtime and representative NAS targets are unavailable. Manifest
+  checks, native amd64 tests and contributor reports do not fill those gaps.
+- Final release approval must review the remaining evidence and a fresh matching
+  production recovery backup before any separately authorized cutover.
+- Later `master` is not this immutable artifact. The publication lookup guard
+  correction [#468](https://github.com/Kha-kis/manga-arr/pull/468) closed #466;
+  merged-volume assembly evidence [#460](https://github.com/Kha-kis/manga-arr/pull/460)
+  changes later runtime behavior. A replacement containing later runtime changes
+  requires fresh artifact qualification; RC9's soak is not transferable.
+- Optional loose-chapter quarantine/restore remains separate contributor work in
+  [#469](https://github.com/Kha-kis/manga-arr/pull/469), under requested changes,
+  not part of RC9 or an enabled cleanup feature. The isolated browser timeout
+  investigation [#467](https://github.com/Kha-kis/manga-arr/issues/467) remains
+  open; merged diagnostics do not establish its root cause.
+
+RC9 remains a non-latest prerelease. Qualified stable and stable aliases remain
+1.3.2; production remains the RC5 owner trial. RC8 cannot be promoted because it
+lacks #459/#461. Neither these scoped passes nor this documentation update
+authorize stable promotion, release-tag replacement or production deployment.
 
 ## 1.3.3-rc.8 Qualification
 
