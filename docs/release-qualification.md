@@ -3,6 +3,62 @@
 This document defines the evidence required before a Mangarr release candidate
 can become a stable release. Passing unit tests alone is not sufficient.
 
+## 1.3.3-rc.10 Qualification
+
+Status: **PREPARATION ONLY; UNPUBLISHED; UNQUALIFIED; NO STABLE PROMOTION
+OR PRODUCTION CUTOVER APPROVAL** (2026-10-19).
+
+### Source And Preparation Boundary
+
+Baseline is reviewed [PR #469](https://github.com/Kha-kis/manga-arr/pull/469)
+merge `d4ee929a2f90206b7fc18d1da06878609f32ace6`, tree
+`ee809a364106725428e66a006460058521745563`, identical to the tested integration
+tree. That baseline passed 5,016 Python tests /17 skips and 95 isolated browser
+checks plus the remaining release-safe gate. Those are baseline source checks,
+not an RC10 preparation run or published-artifact qualification.
+
+This preparation changes VERSION and four release documents only. It includes
+the reviewed assembly evidence in [#460](https://github.com/Kha-kis/manga-arr/pull/460),
+default-off quarantine/restore in #469, publication lookup guard in
+[#468](https://github.com/Kha-kis/manga-arr/pull/468), and test/diagnostic fixes
+in [#470](https://github.com/Kha-kis/manga-arr/pull/470) and
+[#471](https://github.com/Kha-kis/manga-arr/pull/471). Issue
+[#467](https://github.com/Kha-kis/manga-arr/issues/467) remains open; diagnostics
+are not a root-cause fix.
+
+### Cleanup Boundary
+
+`cleanup_loose_chapters` is off by default. Newly imported merged volumes may
+quarantine only managed loose chapters with matching recorded provenance,
+source context, file hashes and verified ordered volume-page evidence.
+Uncertain or historical files are not adopted. Moves are journaled, no-clobber
+and same-filesystem; unsettled operations fence the series until recovery.
+Quarantine is never automatically emptied. Explicit restore from the series
+page refuses an occupied destination. Readers must exclude
+`.mangarr-quarantine` and cannot transfer loose-chapter read progress to a volume.
+
+### Fresh Qualification Required
+
+- Run the local preparation release gate and independently review its evidence.
+  Pin the reviewed merge before any separately authorized immutable RC10 tag.
+- Verify fresh publication identity, attestations, SBOMs and configured security
+  scans, followed by installed-image setup/authentication/cache controls.
+- Exercise both default-off preservation and opt-in quarantine/restore against
+  the published image: verified and refused eligibility, occupied destinations,
+  changed files/parents, rescan, interrupted move recovery and startup replay.
+  Confirm exact file hashes, database ownership and protected observations.
+- Test a matching stopped upgrade/recovery backup and rollback, public Compose,
+  and a fresh automatic download/import/rescan workflow with exact ownership.
+- Collect a fresh uninterrupted full-day natural observation with two daily
+  metadata polls. RC9's completed soak and other artifact receipts do not transfer.
+- Record native ARM64 and representative NAS gaps honestly; no suitable targets
+  are available. Contributor reports, manifest inspection and amd64/VFS checks
+  are not substitutes for those runtime environments.
+
+No RC10 image has been published or qualified. Stable/latest remain 1.3.2 and
+production remains the RC5 owner trial. Preparation does not authorize
+publication, stable promotion, old-tag replacement or production deployment.
+
 ## 1.3.3-rc.9 Qualification
 
 Status: **PUBLISHED; SCOPED PUBLICATION, INSTALLED-IMAGE, WORKFLOW AND FULL-DAY
@@ -90,6 +146,19 @@ screenshots were inspected. This is adapted Compose, not literal unchanged YAML.
 Requested SIGTERM exits 143 were accepted only with completed shutdown, no
 OOM/error/restart and stopped PID evidence; strict-zero core probes were unchanged.
 
+A separate October 19 cached-image public-template exercise passed 170 browser
+assertions across stable 1.3.2 and RC9: 44 fresh-setup and 41 same-store-restart
+checks per image. Stable Compose was byte-identical; RC9 changed only the image
+reference. Default port 6789, user/security/binds, desktop/mobile pages,
+authentication/session revocation and cold SQLite integrity passed, with zero
+browser/server/resource errors, unexpected restarts or OOMs. Exact immutable
+native amd64 images ran in a disposable network/PID/mount-isolated VFS engine;
+browser access used a checked loopback relay. Images were prefetched, not pulled
+online inside that engine. This is bounded cached-image template/startup and
+account-persistence evidence, not clean-VM/default-host-storage, native ARM64,
+NAS, real-provider workflow or later-master evidence. Owned sandboxes and raw
+scratch credentials/configs/databases were removed after independent review.
+
 One fresh real automatic-source-match workflow downloaded eight chapters and
 imported a 254-page volume. Independent review verified exact job/client/source
 ownership, ordered page hashes, bounded ComicInfo, metadata/provenance snapshots,
@@ -120,8 +189,9 @@ Natural-observation receipt SHA256:
 
 ### Remaining Qualification And Source Boundary
 
-- Literal byte-unchanged public Compose startup remains unqualified. The adapted
-  install above does not waive this requirement.
+- The cached-image public-template startup exercise above closes only that
+  bounded scope. Online image pulls and a normal default-host-storage/clean-VM
+  install remain unqualified; neither isolated Compose run fills those gaps.
 - Native ARM64 runtime and representative NAS targets are unavailable. Manifest
   checks, native amd64 tests and contributor reports do not fill those gaps.
 - Final release approval must review the remaining evidence and a fresh matching
@@ -131,9 +201,10 @@ Natural-observation receipt SHA256:
   merged-volume assembly evidence [#460](https://github.com/Kha-kis/manga-arr/pull/460)
   changes later runtime behavior. A replacement containing later runtime changes
   requires fresh artifact qualification; RC9's soak is not transferable.
-- Optional loose-chapter quarantine/restore remains separate contributor work in
-  [#469](https://github.com/Kha-kis/manga-arr/pull/469), under requested changes,
-  not part of RC9 or an enabled cleanup feature. The isolated browser timeout
+- Optional loose-chapter quarantine/restore was merged in
+  [#469](https://github.com/Kha-kis/manga-arr/pull/469), with cleanup off by default.
+  It is later source work, not part of RC9. Issue #422 is closed as implemented,
+  not as shipped. The isolated browser timeout
   investigation [#467](https://github.com/Kha-kis/manga-arr/issues/467) remains
   open; merged diagnostics do not establish its root cause.
 

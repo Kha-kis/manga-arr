@@ -15,6 +15,34 @@ Release commits must update `app/VERSION`, `CHANGELOG.md`, and the current
 release shown in `README.md` together. Automated tests enforce SemVer syntax and
 documentation consistency.
 
+## 1.3.3-rc.10 Candidate Status
+
+Preparation began on 2026-10-19 from reviewed
+[PR #469](https://github.com/Kha-kis/manga-arr/pull/469) merge
+`d4ee929a2f90206b7fc18d1da06878609f32ace6`, tree
+`ee809a364106725428e66a006460058521745563`. That merge preserves the tested
+integration tree. This preparation changes VERSION and four release documents
+only; it does not change application, schema, provider, API, dependency or
+Compose behavior.
+
+RC10 includes merged-volume assembly evidence from
+[#460](https://github.com/Kha-kis/manga-arr/pull/460), the default-off
+loose-chapter quarantine/restore in #469, the publication lookup safeguard in
+[#468](https://github.com/Kha-kis/manga-arr/pull/468), and the test/diagnostic
+changes in [#470](https://github.com/Kha-kis/manga-arr/pull/470) and
+[#471](https://github.com/Kha-kis/manga-arr/pull/471). Quarantine requires
+verified current chapter and volume evidence; it neither deletes files nor
+adopts historical files. Readers must exclude the quarantine directory and
+cannot carry loose-chapter read progress to the volume.
+
+**Unpublished and unqualified.** A reviewed preparation merge must be pinned
+before separately authorized immutable tagging and non-latest publication.
+Fresh artifact, cleanup/restore/recovery, runtime and full-day natural-repeat
+qualification are required. Native ARM64 and representative NAS evidence remain
+unavailable, not waived. No RC9 elapsed time or artifact results transfer.
+Production remains the RC5 owner trial; qualified stable and stable aliases
+remain 1.3.2. See [RC10 qualification](release-qualification.md#133-rc10-qualification).
+
 ## 1.3.3-rc.9 Candidate Status
 
 Preparation began from exact reviewed [PR #464](https://github.com/Kha-kis/manga-arr/pull/464)
@@ -42,10 +70,14 @@ Compose install, a fresh eight-chapter download/import/rescan workflow, and a
 new uninterrupted 87,600-second natural observation with two daily metadata
 polls. These results belong only to that artifact, not RC8 or later `master`.
 
-Literal byte-unchanged public Compose, native ARM64 and representative NAS remain
-unqualified. The publication lookup guard was subsequently fixed in
+An additional native amd64 cached-image exercise passed unchanged stable
+Compose and RC9 with only its image reference changed, including default port,
+first setup and same-store restart. Its isolated VFS engine/loopback relay does
+not qualify online pulls or default-host storage. Native ARM64 and representative
+NAS remain unqualified. The publication lookup guard was subsequently fixed in
 [#468](https://github.com/Kha-kis/manga-arr/pull/468); merged-volume evidence in
-[#460](https://github.com/Kha-kis/manga-arr/pull/460) is also later source work,
+[#460](https://github.com/Kha-kis/manga-arr/pull/460) and default-off cleanup in
+[#469](https://github.com/Kha-kis/manga-arr/pull/469) are also later source work,
 not part of RC9. A replacement containing later runtime changes requires fresh
 artifact qualification. No immutable tag is replaced or old soak time transferred.
 Production remains the owner-controlled RC5 trial; qualified stable remains 1.3.2. See

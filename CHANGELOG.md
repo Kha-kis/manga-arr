@@ -5,13 +5,22 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.3.3-rc.10 - 2026-10-19
+
+Preparation only: unpublished and unqualified. Builds on the reviewed
+[PR #469](https://github.com/Kha-kis/manga-arr/pull/469) merge
+`d4ee929a2f90206b7fc18d1da06878609f32ace6`, carrying forward RC9's rescan
+safeguards. No release tag, stable alias or production deployment is changed.
+Fresh artifact qualification is required; RC9's runtime and soak evidence does
+not transfer. See [RC10 qualification](docs/release-qualification.md#133-rc10-qualification).
+
 ### Added
 
 - Merged Suwayomi volumes record which identified chapters they were assembled
   from: per chapter, in order, the source file's SHA-256 and the volume page
   range it produced with a SHA-256 over those pages, plus the published
   volume's fingerprint ([#422](https://github.com/Kha-kis/manga-arr/issues/422)).
-  Evidence only: nothing reads it to clean up files. Reused volumes, non-merge
+  The opt-in cleanup below consumes this evidence. Reused volumes, non-merge
   mode, legacy filename matches, unknown source context, volumes above the
   fingerprint bound and historical volumes record nothing, and still import.
   Additive tables, no schema-version change.
@@ -29,6 +38,8 @@ All notable changes to this project. Format roughly follows
   and only moves forward after it. Cross-filesystem moves are refused after a
   probe move. Readers do not carry read progress from a moved chapter to the
   volume. Additive table, no schema-version change.
+  Quarantine is never emptied automatically. Configure readers to exclude
+  `.mangarr-quarantine`; existing historical files are not adopted for cleanup.
 
 ### Changed
 
@@ -36,6 +47,17 @@ All notable changes to this project. Format roughly follows
   directory, then published without replacing an existing file. An existing
   empty volume file is now preserved and the job errors for review, instead of
   being overwritten.
+
+### Fixed
+
+- Release publication lookup now fails closed when registry inspection cannot
+  establish that a tag is absent, rather than treating authentication, network
+  or registry errors as permission to publish
+  ([#468](https://github.com/Kha-kis/manga-arr/pull/468)).
+- Isolated rescan recovery tests no longer depend on a ZIP timestamp crossing
+  a wall-clock boundary. Concurrent-browser diagnostics capture private
+  failure evidence without weakening assertions; the intermittent timeout in
+  [#467](https://github.com/Kha-kis/manga-arr/issues/467) remains unresolved.
 
 ## 1.3.3-rc.9 - 2026-10-17
 
