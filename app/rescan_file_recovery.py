@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 
 _Result = TypeVar("_Result")
 ACTIVE_STATES = "('prepared','published','db_committed','rollback')"
+_ALLOCATION_CAUSE_LIMIT = 1024
 _rescan_cancellation: ContextVar[threading.Event | None] = ContextVar(
     "rescan_cancellation", default=None
 )
@@ -323,11 +324,23 @@ def _allocate(operation: Operation, guard: FileMutationGuard, purpose: str) -> N
         else _fingerprint(operation, "source" if purpose == "source" else "publication")
     )
     _store(operation, diagnostic=f"allocating:{purpose}")
-    with claims.ensure_namespace(guard, os.path.dirname(origin)) as namespace:
-        with claims.allocate_carrier(
-            namespace, _binding(operation, purpose), origin, expected
-        ) as carrier:
-            _save_record(operation, purpose, carrier.record)
+    try:
+        with claims.ensure_namespace(guard, os.path.dirname(origin)) as namespace:
+            with claims.allocate_carrier(
+                namespace, _binding(operation, purpose), origin, expected
+            ) as carrier:
+                _save_record(operation, purpose, carrier.record)
+    except Exception as exc:
+        try:
+            # A failed save may have changed only in-memory carrier authority.
+            durable = load_operation(operation.row["id"])
+            if durable is not None and durable.row["diagnostic"] == f"allocating:{purpose}":
+                cause = f"{type(exc).__name__}: {exc}"[:_ALLOCATION_CAUSE_LIMIT]
+                _store(durable, diagnostic=f"allocating:{purpose}; cause={cause}")
+        except Exception:
+            # Diagnostic failure must not replace the original allocation error.
+            pass
+        raise
 
 
 def _phase(
@@ -662,7 +675,11 @@ def _settle(operation: Operation, guard: FileMutationGuard) -> str:
     if diagnostic.startswith(("allocating:", "unrecorded allocation:")):
         purpose = diagnostic.split(":", 1)[1].split(";", 1)[0]
         if purpose not in operation.carriers or operation.carriers[purpose] is None:
-            raise claims.PrivateClaimError(f"unrecorded allocation:{purpose}; retained")
+            cause = diagnostic.partition("; cause=")[2][:_ALLOCATION_CAUSE_LIMIT]
+            suffix = f"; cause={cause}" if cause else ""
+            raise claims.PrivateClaimError(
+                f"unrecorded allocation:{purpose}; retained{suffix}"
+            )
     if operation.row["state"] == "db_committed":
         receipt_json = operation.row["publication_receipt_json"]
         if receipt_json is None:

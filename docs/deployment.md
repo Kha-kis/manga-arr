@@ -223,6 +223,10 @@ ambiguous ownership retain the operation and files for review. Active recovery
 fences conflicting import, deletion, adoption, and hard-purge operations;
 lease expiry alone does not remove that protection.
 
+Allocation failures retain their original cause alongside the unrecorded-allocation
+warning on subsequent replay. That diagnostic is not authority to adopt a carrier
+or release the recovery fence.
+
 Do not delete retained carriers or edit journal rows to unblock a rescan. The
 private namespace and its parent directory are persistent recovery authority.
 
