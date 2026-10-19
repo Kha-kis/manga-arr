@@ -102,6 +102,7 @@ test-verify-e2e:
 # never touch the live operator DB and ARE safe to run from CI.
 
 test-browser-isolated:
+	node --test tests/browser_concurrent.test.js
 	./tests/run_isolated_browser.sh all
 
 test-browser-isolated-smoke:
