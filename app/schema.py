@@ -1524,6 +1524,8 @@ def init_db() -> None:
         # import code paths weren't stamping them. COALESCE ensures we only fill
         # fields that are currently missing. Independent chapter acquisitions
         # must not inherit observations from an unrelated parent download.
+        # Current quarantine ownership deliberately clears file observations;
+        # neither legacy backfill below may replace them with volume metadata.
         db.execute("""
             UPDATE chapters
             SET quality        = COALESCE(quality,        (SELECT v.quality        FROM volumes v WHERE v.id = chapters.volume_id)),
@@ -1559,6 +1561,14 @@ def init_db() -> None:
                     AND (COALESCE(chapters.import_path,'') = ''
                          OR chapters.import_path = v.import_path)
               )
+              AND NOT EXISTS (
+                  SELECT 1 FROM chapter_quarantine q
+                  WHERE q.chapter_id = chapters.id
+                    AND q.series_id = chapters.series_id
+                    AND q.volume_id = chapters.volume_id
+                    AND q.volume_path = chapters.import_path
+                    AND q.state IN ('committed','quarantined','restoring')
+              )
         """)
 
         # Uncollected chapter (volume_id IS NULL) quality backfill — derive from
@@ -1578,6 +1588,14 @@ def init_db() -> None:
             WHERE status = 'downloaded'
               AND quality IS NULL
               AND import_path IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM chapter_quarantine q
+                  WHERE q.chapter_id = chapters.id
+                    AND q.series_id = chapters.series_id
+                    AND q.volume_id = chapters.volume_id
+                    AND q.volume_path = chapters.import_path
+                    AND q.state IN ('committed','quarantined','restoring')
+              )
         """)
 
         # Orphan "downloaded" volume stubs (no file, no quality, no imported_at)

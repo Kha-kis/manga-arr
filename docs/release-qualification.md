@@ -5,8 +5,28 @@ can become a stable release. Passing unit tests alone is not sufficient.
 
 ## 1.3.3-rc.10 Qualification
 
-Status: **PREPARATION ONLY; UNPUBLISHED; UNQUALIFIED; NO STABLE PROMOTION
+Status: **PUBLISHED; QUALIFICATION HELD; UNQUALIFIED; NO STABLE PROMOTION
 OR PRODUCTION CUTOVER APPROVAL** (2026-10-19).
+
+### Startup Observation Hold
+
+RC10 was published from [PR #473](https://github.com/Kha-kis/manga-arr/pull/473)
+merge `55f3d6fcc8d8737f1d5180fe1063d863630c36f9`, index
+`sha256:8c52efb27254f69a70b91a290b256c048d4c615562e832275bd014ed94e609c1`.
+Scoped publication, installed setup/authentication/cache controls and historical
+upgrade/matching rollback checks passed. These do not confer full qualification.
+
+Fresh actual application-startup replay found
+[#475](https://github.com/Kha-kis/manga-arr/issues/475): a committed quarantine
+settles safely, but legacy chapter backfill repopulates size/quality observations
+that cleanup deliberately cleared. Reserved/captured rollback and changed-parent
+refusals passed; no file loss or clobber was observed. Further RC10 runtime
+qualification, including the prepared real-provider workflow, is held.
+
+The correction must receive review and release-safe verification, followed by a
+new immutable candidate and fresh artifact qualification. Never replace the RC10
+tag/image or transfer its partial results or RC9's elapsed observation time to a
+replacement. Already populated observations are not automatically rewritten.
 
 ### Source And Preparation Boundary
 
@@ -39,10 +59,10 @@ page refuses an occupied destination. Readers must exclude
 
 ### Fresh Qualification Required
 
-- Run the local preparation release gate and independently review its evidence.
-  Pin the reviewed merge before any separately authorized immutable RC10 tag.
-- Verify fresh publication identity, attestations, SBOMs and configured security
-  scans, followed by installed-image setup/authentication/cache controls.
+- Preparation and scoped publication checks completed for RC10. A replacement
+  still requires its own reviewed merge, immutable identity, attestations, SBOMs
+  and configured security scans; RC10's result is not replacement qualification.
+- Verify fresh installed-image setup/authentication/cache controls on the replacement.
 - Exercise both default-off preservation and opt-in quarantine/restore against
   the published image: verified and refused eligibility, occupied destinations,
   changed files/parents, rescan, interrupted move recovery and startup replay.
@@ -55,9 +75,9 @@ page refuses an occupied destination. Readers must exclude
   are available. Contributor reports, manifest inspection and amd64/VFS checks
   are not substitutes for those runtime environments.
 
-No RC10 image has been published or qualified. Stable/latest remain 1.3.2 and
-production remains the RC5 owner trial. Preparation does not authorize
-publication, stable promotion, old-tag replacement or production deployment.
+RC10 is published but remains unqualified and held. Stable/latest remain 1.3.2
+and production remains the RC5 owner trial. These checks do not authorize stable
+promotion, old-tag replacement or production deployment.
 
 ## 1.3.3-rc.9 Qualification
 
