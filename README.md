@@ -27,12 +27,22 @@ compressed-RAR decoding. See the
 [qualification evidence and platform limits](docs/release-qualification.md#132-stable-qualification)
 before upgrading.
 
+**1.3.3-rc.10 is in preparation, not published or qualified.** It adds verified
+merged-volume assembly evidence and opt-in loose-chapter quarantine/restore
+([#422](https://github.com/Kha-kis/manga-arr/issues/422)). Cleanup is off by
+default, never deletes quarantined files, and does not adopt historical files.
+Readers must exclude `.mangarr-quarantine`; read progress does not transfer to
+the volume. RC10 needs fresh artifact qualification, including cleanup and
+recovery checks; RC9's completed soak does not qualify it. See
+[RC10 qualification](docs/release-qualification.md#133-rc10-qualification).
+
 **1.3.3-rc.9 is published but remains unqualified for stable promotion.** It includes the
 managed Suwayomi-volume rescan correction and protects independent chapter
 observations across download clients. No files are automatically removed.
 Publication, scoped installed-image/workflow checks and a fresh full-day natural
-metadata-repeat observation passed. Literal unchanged public Compose, native
-ARM64 and representative NAS qualification remain gaps; RC9 results do not
+metadata-repeat observation passed. Cached-image public Compose startup also
+passed on native amd64; online-pull/default-host-storage, native ARM64 and
+representative NAS qualification remain gaps. RC9 results do not
 qualify later changes on `master`. Production remains RC5 and qualified stable
 remains 1.3.2. See
 [RC9 qualification](docs/release-qualification.md#133-rc9-qualification).
