@@ -128,8 +128,17 @@ jobs:
         # on exit (safety guards covered by tests/python/test_runner_safety.py).
         run: make test-browser-isolated
 
-      - name: Capture container logs on failure
+      - name: Report sanitized concurrent-session diagnostics on failure
         if: failure() && needs.hermetic.outputs.docs_only != 'true'
         run: |
-          docker logs mangarr-test --tail 200 || true
-          ls -la .test-config/ || true
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          if (fs.existsSync('.test-artifacts')) {
+            for (const run of fs.readdirSync('.test-artifacts', { withFileTypes: true })) {
+              if (!run.isDirectory()) continue;
+              const file = path.join('.test-artifacts', run.name, 'e3-3', 'events.json');
+              if (fs.existsSync(file)) console.log(fs.readFileSync(file, 'utf8'));
+            }
+          }
+          NODE

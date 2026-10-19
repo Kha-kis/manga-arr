@@ -12,6 +12,7 @@
 const { chromium } = require('playwright');
 const { execSync } = require('child_process');
 const { authenticate } = require('./browser_auth');
+const { concurrentSessions } = require('./browser_concurrent');
 
 const BASE = process.env.MANGARR_TEST_BASE || 'http://127.0.0.1:6789';
 // Container that holds the DB the test mutates. Defaults to live `mangarr`
@@ -215,38 +216,31 @@ async function run() {
   console.log('\n=== E3.3: Concurrent browser sessions do not corrupt state ===');
   // ════════════════════════════════════════════════════════════════════
   try {
-    // Open 3 parallel contexts hitting the same series page
-    const contexts = await Promise.all([
-      browser.newContext(), browser.newContext(), browser.newContext()
-    ]);
-    const pages = await Promise.all(contexts.map(c => c.newPage()));
-    await Promise.all(pages.map(p => authenticate(p, BASE)));
-    const errs = [];
-    pages.forEach(p => p.on('pageerror', e => errs.push(e.message)));
+    await concurrentSessions(browser, BASE, async (pages, errs) => {
+      await Promise.all(pages.map(p => p.goto(BASE + '/series/40', { waitUntil: 'domcontentloaded', timeout: 30000 })));
+      ok('3 concurrent page loads succeeded');
 
-    await Promise.all(pages.map(p => p.goto(BASE + '/series/40', { waitUntil: 'domcontentloaded', timeout: 30000 })));
-    ok('3 concurrent page loads succeeded');
+      // Each concurrently opens the edit modal and switches tabs
+      await Promise.all(pages.map(async (p, i) => {
+        await p.evaluate(() => bootstrap.Modal.getOrCreateInstance(document.getElementById('editModal')).show());
+        await p.waitForSelector('#editModal.show', { timeout: 3000 });
+        const tabNames = ['Sources', 'Profiles', 'Volumes'];
+        await p.evaluate((t) => {
+          for (const b of document.querySelectorAll('#editModal .edit-tab'))
+            if (b.textContent.trim().includes(t)) { b.click(); return; }
+        }, tabNames[i]);
+      }));
+      ok('3 concurrent modals opened and tab switched without errors');
 
-    // Each concurrently opens the edit modal and switches tabs
-    await Promise.all(pages.map(async (p, i) => {
-      await p.evaluate(() => bootstrap.Modal.getOrCreateInstance(document.getElementById('editModal')).show());
-      await p.waitForSelector('#editModal.show', { timeout: 3000 });
-      const tabNames = ['Sources', 'Profiles', 'Volumes'];
-      await p.evaluate((t) => {
-        for (const b of document.querySelectorAll('#editModal .edit-tab'))
-          if (b.textContent.trim().includes(t)) { b.click(); return; }
-      }, tabNames[i]);
-    }));
-    ok('3 concurrent modals opened and tab switched without errors');
+      // Each dismisses its modal
+      await Promise.all(pages.map(p => p.evaluate(() =>
+        bootstrap.Modal.getInstance(document.getElementById('editModal'))?.hide()
+      )));
 
-    // Each dismisses its modal
-    await Promise.all(pages.map(p => p.evaluate(() =>
-      bootstrap.Modal.getInstance(document.getElementById('editModal'))?.hide()
-    )));
-
-    if (errs.length === 0) ok('No page errors across concurrent sessions');
-    else fail('concurrent errors', errs.slice(0, 3).join('; '));
-    await Promise.all(contexts.map(c => c.close()));
+      if (errs.length === 0) ok('No page errors across concurrent sessions');
+      else throw new Error('concurrent errors: ' + errs.slice(0, 3).join('; '));
+    }, { artifactRoot: CONTAINER === 'mangarr-test' && BASE === 'http://127.0.0.1:16789'
+      ? process.env.MANGARR_TEST_ARTIFACTS : undefined });
   } catch (e) {
     fail('E3.3 concurrent', e.message);
   }

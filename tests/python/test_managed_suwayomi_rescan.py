@@ -5,8 +5,12 @@ from __future__ import annotations
 import errno
 import os
 import sqlite3
+import zipfile
+from datetime import datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -314,13 +318,29 @@ def test_restored_managed_volume_and_repeat_do_not_change_source_bytes(
     assert {path: path.read_bytes() for path in source} == source
 
 
+@pytest.mark.parametrize("zip_timestamp_offset", [0, 2], ids=["same-clock", "plus-2s"])
 def test_reported_sequential_deletion_and_restore(
     assembled_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    zip_timestamp_offset: int,
 ) -> None:
     import rescan
 
     env = assembled_env
     content = file_bytes(env)
+    merged: Path = env["merged"]
+    with zipfile.ZipFile(BytesIO(content[merged])) as original_volume:
+        original_timestamp = original_volume.getinfo("ComicInfo.xml").date_time
+    recovery_timestamp = (
+        datetime(*original_timestamp) + timedelta(seconds=zip_timestamp_offset)
+    ).timetuple()
+    real_inject = rescan.inject_comicinfo
+
+    def inject_at_recovery_timestamp(path: str, xml: str) -> bool:
+        with patch("zipfile.time.localtime", return_value=recovery_timestamp):
+            return real_inject(path, xml)
+
+    monkeypatch.setattr(rescan, "inject_comicinfo", inject_at_recovery_timestamp)
     protected = {
         table: rows(env, table)
         for table in ("series", "series_metadata_fields", "series_metadata_sources")
@@ -395,7 +415,28 @@ def test_reported_sequential_deletion_and_restore(
             env["library"] / f"State Series Ch{int(chapter['chapter_num']):03d}.cbz"
         )
     assert {table: rows(env, table) for table in protected} == protected
-    assert file_bytes(env) == content
+    restored = file_bytes(env)
+    assert {path: data for path, data in restored.items() if path != merged} == {
+        path: data for path, data in content.items() if path != merged
+    }
+    # Recovery re-enriches the volume; only ComicInfo's ZIP clock may change.
+    with (
+        zipfile.ZipFile(BytesIO(content[merged])) as original_volume,
+        zipfile.ZipFile(BytesIO(restored[merged])) as recovered_volume,
+    ):
+        assert recovered_volume.namelist() == original_volume.namelist()
+        for entry in original_volume.infolist():
+            recovered_entry = recovered_volume.getinfo(entry.filename)
+            assert recovered_volume.read(recovered_entry) == original_volume.read(entry)
+            if entry.filename != "ComicInfo.xml":
+                assert recovered_entry.date_time == entry.date_time
+        recovered_timestamp = recovered_volume.getinfo("ComicInfo.xml").date_time
+        assert recovered_timestamp == recovery_timestamp[:6]
+    if zip_timestamp_offset == 0:
+        assert restored[merged] == content[merged]
+    else:
+        assert recovered_timestamp != original_timestamp
+        assert restored[merged] != content[merged]
     assert rescan.rescan_series_folder(1) == {
         "found": 1,
         "recovered": 0,

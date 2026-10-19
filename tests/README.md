@@ -76,7 +76,38 @@ full-suite jobs:
 2. **`isolated-browser`** — `make test-browser-isolated`. Boots the
    `docker-compose.test.yml` stack (mangarr-test + mock-qbit sidecar) on
    port 16789 against `./.test-config`, then runs all three browser
-   suites. ~3min. Tears down on exit. Container logs uploaded on failure.
+   suites. ~3min. Tears down on exit. Only the sanitized E3.3 event summary is
+   printed on failure; raw artifacts are not uploaded.
+
+## Concurrent-login Failure Evidence
+
+`make test-browser-isolated` runs `node --test tests/browser_concurrent.test.js` before
+the full browser suite. These include an intentional browser failure against
+a temporary loopback-only test server and offline runner tests; they do not
+use production or a shared downloader.
+
+E3.3 records bounded per-session request/response timing, allowlisted routes,
+status codes, navigation and page-error occurrence before login starts. The
+JSON summary excludes raw URLs, query strings, error messages, headers and
+bodies. A failed E3.3 isolated run retains screenshots, Playwright traces and
+the summary in `.test-artifacts/run-*/e3-3/`. Successful sessions discard traces
+and always close all three contexts. Concurrency and login timeouts are unchanged;
+there are no automatic retries.
+
+Before tearing down a failed isolated suite, the runner saves a bounded
+`container.log` from the exact test container ID, after verifying its Compose
+project and working-directory labels. It preserves the original failure status.
+The diagnostic directory is private (0700), ignored by Git and removed when
+empty on success. Failed-run evidence is kept for local investigation: remove
+that exact run directory after review.
+
+**Traces, screenshots and container logs are private, not sanitized.** They may
+contain test passwords, session cookies or API keys. They are not automatically
+uploaded. Review them locally with `npx playwright show-trace <trace.zip>`;
+share only a reviewed/redacted summary. CI prints only `events.json`, not the raw
+artifacts. Capture is enabled only for the isolated
+test target, never for the legacy live-app E2E target. These diagnostics do not
+establish or fix the cause of issue #467's intermittent login timeout.
 
 ## What intentionally does NOT run in CI
 

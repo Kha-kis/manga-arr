@@ -81,22 +81,45 @@ if echo "$COMPOSE" | grep -q -- "--remove-orphans"; then
   exit 1
 fi
 
+ARTIFACT_DIR=""
+OWNED_CONTAINER_ID=""
+START_ATTEMPTED=false
 cleanup() {
+  local status=$?
+  if [ "$status" -ne 0 ] && [ "$START_ATTEMPTED" = true ] && [ -z "$OWNED_CONTAINER_ID" ]; then
+    OWNED_CONTAINER_ID="$($COMPOSE ps --all -q mangarr-test 2>/dev/null)" || true
+  fi
+  if [ "$status" -ne 0 ] && [[ "$OWNED_CONTAINER_ID" =~ ^[a-f0-9]{64}$ ]] && [ -n "$ARTIFACT_DIR" ]; then
+    # Inspect only the exact container created by this invocation, never its replacement.
+    if [ "$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$OWNED_CONTAINER_ID" 2>/dev/null)" = "$PROJECT" ] &&
+       [ "$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$OWNED_CONTAINER_ID" 2>/dev/null)" = "$REPO_ROOT" ]; then
+      (umask 077; timeout 10s docker logs --timestamps --tail 500 "$OWNED_CONTAINER_ID" > "$ARTIFACT_DIR/container.log" 2>&1) ||
+        echo "[isolated-browser] WARN: container diagnostics incomplete"
+    fi
+    echo "[isolated-browser] private failure artifacts: $ARTIFACT_DIR"
+  fi
   echo "[isolated-browser] tearing down test container"
   # Explicitly NO --remove-orphans: never touch containers outside this project.
   # Don't swallow errors — a failed teardown leaks resources, surface it.
   $COMPOSE down || echo "[isolated-browser] WARN: 'compose down' returned non-zero"
+  if [ -n "$ARTIFACT_DIR" ]; then
+    rmdir "$ARTIFACT_DIR" 2>/dev/null || true
+  fi
   # Best-effort: leave the test config dir on disk for post-mortem inspection.
+  return "$status"
 }
-trap cleanup EXIT
 
-# Hard fail if the test container name is already in use (it shouldn't,
-# since live uses 'mangarr' and test uses 'mangarr-test', but be explicit).
-if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
-  echo "[isolated-browser] '$CONTAINER' already running — refusing to clobber"
+# Hard fail if either test stack container already exists, running or stopped.
+if docker ps -a --format '{{.Names}}' | grep -Eqx "$CONTAINER|mangarr-test-mock-qbit"; then
+  echo "[isolated-browser] '$CONTAINER' or 'mangarr-test-mock-qbit' already exists - refusing to clobber"
   echo "[isolated-browser] run '$COMPOSE down' first"
   exit 1
 fi
+trap cleanup EXIT
+
+mkdir -p "$REPO_ROOT/.test-artifacts"
+ARTIFACT_DIR="$(mktemp -d "$REPO_ROOT/.test-artifacts/run-XXXXXXXX")"
+export MANGARR_TEST_ARTIFACTS="$ARTIFACT_DIR"
 
 # Fresh /config dir every run so DB starts empty and seeds are deterministic.
 # Prior runs may have left root-owned leftovers from when the container ran
@@ -113,7 +136,9 @@ export TEST_UID="$(id -u)"
 export TEST_GID="$(id -g)"
 
 echo "[isolated-browser] starting test container on $BASE_URL"
+START_ATTEMPTED=true
 $COMPOSE up -d --build
+OWNED_CONTAINER_ID="$($COMPOSE ps --all -q mangarr-test)"
 
 echo "[isolated-browser] waiting for healthy"
 for i in {1..30}; do
@@ -124,7 +149,6 @@ for i in {1..30}; do
   fi
   if [ "$i" = "30" ]; then
     echo "[isolated-browser] container did not become healthy in 30s"
-    docker logs "$CONTAINER" --tail 50
     exit 1
   fi
   sleep 1
