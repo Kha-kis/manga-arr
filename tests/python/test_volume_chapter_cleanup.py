@@ -576,7 +576,7 @@ def test_crash_after_carrier_recorded_leaves_no_carrier(lib, monkeypatch):
     real_rename = os.rename
 
     def _die_on_capture(src, dst, *a, **k):
-        if os.path.basename(os.path.dirname(dst)).startswith(volume_chapter_cleanup.CARRIER_PREFIX):
+        if k.get("dst_dir_fd") is not None:  # capture renames into the pinned carrier
             raise _Crash("before rename")
         return real_rename(src, dst, *a, **k)
 
@@ -858,6 +858,127 @@ def test_restore_refused_outside_the_managed_library(lib):
     assert not os.path.exists(row["original_path"]) and _rows(lib)[0]["state"] == "quarantined"
 
 
+def test_replay_alias_removal_cannot_be_redirected(lib, tmp_path, monkeypatch):
+    """Quarantine folder swapped for a symlink right before the alias unlink."""
+    import volume_chapter_cleanup
+
+    _cleanup(lib)
+    row = _rows(lib)[0]
+
+    def _link_then_die(source, destination):
+        os.link(source, destination)
+        raise _Crash("after link")
+
+    monkeypatch.setattr(volume_chapter_cleanup, "_move_noreplace", _link_then_die)
+    with pytest.raises(_Crash):
+        volume_chapter_cleanup.restore(row["id"], 7)
+    monkeypatch.undo()
+    decoy_dir = tmp_path / "decoy"
+    decoy_dir.mkdir()
+    decoy = decoy_dir / os.path.basename(row["quarantine_path"])
+    decoy.write_bytes(b"unrelated")
+    real_unlink, swapped = os.unlink, []
+
+    def _swap_then_unlink(path, *a, **k):
+        if not swapped:
+            swapped.append(True)
+            os.rename(lib["q"], str(lib["q"]) + "-real")
+            os.symlink(decoy_dir, lib["q"])
+        return real_unlink(path, *a, **k)
+
+    monkeypatch.setattr(os, "unlink", _swap_then_unlink)
+    volume_chapter_cleanup.replay(row["id"])
+    monkeypatch.undo()
+    assert swapped and decoy.read_bytes() == b"unrelated"
+    assert _sha(row["original_path"]) == row["sha256"]
+
+
+def test_replay_refuses_a_symlinked_quarantine_folder(lib, tmp_path, monkeypatch):
+    import volume_chapter_cleanup
+
+    _cleanup(lib)
+    row = _rows(lib)[0]
+
+    def _link_then_die(source, destination):
+        os.link(source, destination)
+        raise _Crash("after link")
+
+    monkeypatch.setattr(volume_chapter_cleanup, "_move_noreplace", _link_then_die)
+    with pytest.raises(_Crash):
+        volume_chapter_cleanup.restore(row["id"], 7)
+    monkeypatch.undo()
+    decoy_dir = tmp_path / "decoy"
+    decoy_dir.mkdir()
+    decoy = decoy_dir / os.path.basename(row["quarantine_path"])
+    os.link(row["original_path"], decoy)  # even the same inode behind a symlink is refused
+    os.rename(lib["q"], str(lib["q"]) + "-real")
+    os.symlink(decoy_dir, lib["q"])
+    assert volume_chapter_cleanup.replay(row["id"]) == "blocked"
+    current = _rows(lib)[0]
+    assert current["state"] == "restoring" and "managed library" in current["diagnostic"]
+    assert decoy.exists() and _fenced(lib)
+
+
+def test_restore_refused_when_an_intermediate_folder_is_swapped(lib, tmp_path, monkeypatch):
+    """root/library/Freezing: swapping ``library`` after the check must not redirect restore."""
+    import volume_chapter_cleanup
+
+    _cleanup(lib)
+    row = _rows(lib)[0]
+    with sqlite3.connect(lib["db"]) as c:
+        c.execute("UPDATE root_folders SET path=? WHERE path=?", (str(tmp_path), str(lib["root"])))
+    outside = tmp_path / "outside"
+    real = volume_chapter_cleanup._managed_dir
+
+    def _check_then_swap(path):
+        real(path)
+        os.rename(lib["root"], outside)
+        os.symlink(outside, lib["root"])
+
+    monkeypatch.setattr(volume_chapter_cleanup, "_managed_dir", _check_then_swap)
+    outcome, diagnostic = volume_chapter_cleanup.restore(row["id"], 7)
+    assert outcome == "terminal" and "managed library" in diagnostic
+    assert not os.path.exists(outside / "Freezing" / os.path.basename(row["original_path"]))
+    assert _rows(lib)[0]["state"] == "quarantined"
+    moved_quarantine = outside / ".mangarr-quarantine" / "7" / os.path.basename(row["quarantine_path"])
+    assert _sha(moved_quarantine) == row["sha256"]
+
+
+def test_restore_rewritten_after_its_move_stays_held(lib, monkeypatch):
+    import volume_chapter_cleanup
+
+    _cleanup(lib)
+    row = _rows(lib)[0]
+    real = volume_chapter_cleanup._move_noreplace
+
+    def _move_then_rewrite(source, destination):
+        real(source, destination)
+        _rewrite_keep_stat(destination)
+
+    monkeypatch.setattr(volume_chapter_cleanup, "_move_noreplace", _move_then_rewrite)
+    outcome, diagnostic = volume_chapter_cleanup.restore(row["id"], 7)
+    current = _rows(lib)[0]
+    assert outcome == "blocked" and current["state"] == "restoring"
+    assert "changed" in current["diagnostic"] and _fenced(lib)
+    assert _chapters(lib)[1.0]["import_path"] == lib["volume"]
+
+
+def test_quarantine_rewritten_after_its_move_stays_held(lib, monkeypatch):
+    import volume_chapter_cleanup
+
+    real = volume_chapter_cleanup._move_noreplace
+
+    def _move_then_rewrite(source, destination):
+        real(source, destination)
+        if not os.path.basename(destination).startswith(".probe-"):
+            _rewrite_keep_stat(destination)
+
+    monkeypatch.setattr(volume_chapter_cleanup, "_move_noreplace", _move_then_rewrite)
+    assert _cleanup(lib).quarantined == 0
+    row = _rows(lib)[0]
+    assert row["state"] == "committed" and "changed" in row["diagnostic"] and _fenced(lib)
+
+
 def test_series_purge_leaves_quarantine_rows_and_files(lib):
     _cleanup(lib)
     with sqlite3.connect(lib["db"]) as c:
@@ -882,6 +1003,8 @@ def test_merged_volume_job_quarantines_its_loose_chapters(tmp_path, monkeypatch,
     env = next(env_gen)
     try:
         monkeypatch.setitem(shared.CONFIG, "cleanup_loose_chapters", "true" if enabled else "false")
+        with sqlite3.connect(env["db"]) as c:
+            c.execute("INSERT INTO root_folders(path, label) VALUES(?, 'library')", (os.path.dirname(env["lib"]),))
         tva._queue(env)
         loose = {}
         with sqlite3.connect(env["db"]) as c:

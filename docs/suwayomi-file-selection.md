@@ -417,9 +417,13 @@ Each move is one `chapter_quarantine` row, written before each filesystem step:
 
 Moves use `renameat2` no-replace and, where the filesystem reports that as
 unsupported, a hard link followed by removing the private or reserved source
-name once both names are the same inode; a public name is never removed. Both
-directories are opened without following a final symlink and names resolve
-relative to those handles, so a folder swapped mid-move cannot redirect it. A real
+name once both names are the same inode; a public name is never removed. Every
+folder is pinned by walking down from its configured root folder one component
+at a time without following a symlink (the root itself may be a mount alias),
+and every check, move, link and unlink, including removing the second name an
+interrupted link left behind, goes through those handles. A folder outside the
+root folders is refused, and a folder swapped anywhere below the root cannot
+redirect a step. A real
 probe move from the series folder into the quarantine folder must succeed first;
 a cross-filesystem error refuses the run, and nothing is ever copied.
 
@@ -427,9 +431,10 @@ Active rows (`reserved`, `captured`, `committed`, `restoring`) are added to
 every library mutation fence, so imports, rescan, volume deletion and purge wait
 for them. Startup and a replay loop settle interrupted rows: before `committed`
 the file goes back to its original name without replacing anything, after it the
-move only goes forward. Recovery re-hashes a file before accepting it as
-quarantined or restored; one whose content changed is kept, with both names if
-a link was interrupted, for review. A row that cannot settle, for example because the
+move only goes forward. A file is re-hashed through its pinned folder right
+before it is accepted as quarantined or restored, after a normal move as well as
+in recovery; one whose content changed is kept, with both names if a link was
+interrupted, and its row stays active for review. A row that cannot settle, for example because the
 original name was taken meanwhile, keeps the file where it is, records a
 diagnostic and stays active until it can.
 

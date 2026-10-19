@@ -34,17 +34,21 @@ an active volume deletion until it can.
 Moves use ``renameat2`` no-replace and, where the filesystem reports that
 unsupported, a hard link followed by removal of the private or reserved
 source name once both names are proven the same inode; a public name is
-never removed. Both directories are opened without following a final
-symlink and every name is resolved relative to those handles, so a parent
-swapped mid-move cannot redirect it. Cross-filesystem moves are refused,
-never copied, and a real probe move into the quarantine folder must succeed
-before any run. Restore also refuses a destination folder that is not a
-plain path inside a configured root folder.
+never removed. Cross-filesystem moves are refused, never copied, and a real
+probe move into the quarantine folder must succeed before any run.
+
+Every folder the module touches is pinned by walking down from its
+configured root folder one component at a time without following a
+symlink (the root itself may be a mount alias), and every check and
+mutation, including removing the second name a link left behind, goes
+through those handles. A folder that is not a plain path inside a root
+folder is refused, and a swap anywhere below the root cannot redirect a
+step.
 
 Metadata alone never authorizes a step: the volume is rehashed against its
-assembly record right before the commit, and recovery rehashes a file
-before accepting it as quarantined or restored. A mismatch keeps the row
-active with its diagnostic for review. The quarantine name is fixed at
+assembly record right before the commit, and a file is rehashed through its
+pinned folder right before it is accepted as quarantined or restored. A
+mismatch keeps the row active with its diagnostic for review. The quarantine name is fixed at
 reservation and bounded to ``_NAME_MAX`` bytes.
 """
 from __future__ import annotations
@@ -57,9 +61,10 @@ import os
 import secrets
 import sqlite3
 import stat
-import tempfile
 import zipfile
 import zlib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -159,25 +164,79 @@ def _same_inode(a: str, b: str) -> bool:
     return (first.st_dev, first.st_ino) == (second.st_dev, second.st_ino)
 
 
-def _fsync_dir(path: str) -> None:
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+
+
+def _managed_root(folder: str) -> str:
+    """The deepest configured root folder that ``folder`` sits in."""
+    with get_db() as db:
+        roots = [os.path.abspath(str(r["path"])) for r in db.execute("SELECT path FROM root_folders")]
+    inside = [root for root in roots if os.path.commonpath((folder, root)) == root]
+    if not inside:
+        raise CleanupError(f"{folder} is not inside a managed library root folder")
+    return max(inside, key=len)
+
+
+def _open_child(parent_fd: int, name: str, label: str) -> int:
+    """Open directory ``name`` relative to a pinned parent, never through a symlink."""
     try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+        return os.open(name, _DIR_FLAGS | os.O_NOFOLLOW, dir_fd=parent_fd)
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise CleanupError(f"{label} resolves outside the managed library (symlink in its path)") from exc
+        raise
 
 
 def _open_dir(path: str) -> int:
-    """A handle on the directory ``path`` names now, never through a final symlink."""
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    """Pin ``path`` by walking down from its root folder one component at a time.
+
+    The root itself may be reached through a symlink (a mount alias); each
+    component below it is opened relative to its pinned parent without
+    following a symlink, so a swap anywhere below the root is refused and
+    cannot redirect anything done through the returned handle.
+    """
+    folder = os.path.abspath(path)
+    root = _managed_root(folder)
+    descriptor = os.open(root, _DIR_FLAGS)
     try:
-        held, current = os.fstat(descriptor), os.lstat(path)
-        if (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino):
-            raise CleanupError(f"directory changed while it was opened: {path}")
+        for part in [] if folder == root else os.path.relpath(folder, root).split(os.sep):
+            child = _open_child(descriptor, part, folder)
+            os.close(descriptor)
+            descriptor = child
     except BaseException:
         os.close(descriptor)
         raise
     return descriptor
+
+
+@contextmanager
+def _pinned(path: str) -> Iterator[int]:
+    descriptor = _open_dir(path)
+    try:
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+def _managed_dir(path: str) -> None:
+    """Refuse a folder that cannot be pinned inside a configured root folder."""
+    os.close(_open_dir(path))
+
+
+def _parent(path: str) -> str:
+    return os.path.dirname(os.path.abspath(path))
+
+
+def _pinned_id(path: str, parent_fd: int) -> FileId:
+    evidence = chapter_provenance.fingerprint(path, _dir_fd=parent_fd)
+    return FileId(evidence.inode, evidence.size, evidence.mtime_ns, evidence.sha256)
+
+
+def _verify_at(path: str, expected: FileId, what: str) -> None:
+    """Content proof for ``path``, read through its pinned folder."""
+    with _pinned(_parent(path)) as descriptor:
+        if _pinned_id(path, descriptor) != expected:
+            raise CleanupError(f"{what} content changed; kept for review: {path}")
 
 
 def _move_noreplace(source: str, destination: str) -> None:
@@ -190,50 +249,48 @@ def _move_noreplace(source: str, destination: str) -> None:
     """
     from import_publication import _rename_noreplace
 
-    src_fd = _open_dir(os.path.dirname(os.path.abspath(source)))
-    try:
-        dst_fd = _open_dir(os.path.dirname(os.path.abspath(destination)))
+    with _pinned(_parent(source)) as src_fd, _pinned(_parent(destination)) as dst_fd:
+        src, dst = os.path.basename(source), os.path.basename(destination)
         try:
-            src, dst = os.path.basename(source), os.path.basename(destination)
-            try:
-                _rename_noreplace(src, dst, src_dir_fd=src_fd, dst_dir_fd=dst_fd)
-            except OSError as exc:
-                if exc.errno not in _UNSUPPORTED:
-                    raise
-                os.link(src, dst, src_dir_fd=src_fd, dst_dir_fd=dst_fd, follow_symlinks=False)
-                first = os.stat(src, dir_fd=src_fd, follow_symlinks=False)
-                second = os.stat(dst, dir_fd=dst_fd, follow_symlinks=False)
-                if (first.st_dev, first.st_ino) != (second.st_dev, second.st_ino):
-                    raise CleanupError(f"link fallback produced a different file: {destination}")
-                os.unlink(src, dir_fd=src_fd)
-            os.fsync(dst_fd)
-            os.fsync(src_fd)
-        finally:
-            os.close(dst_fd)
-    finally:
-        os.close(src_fd)
+            _rename_noreplace(src, dst, src_dir_fd=src_fd, dst_dir_fd=dst_fd)
+        except OSError as exc:
+            if exc.errno not in _UNSUPPORTED:
+                raise
+            os.link(src, dst, src_dir_fd=src_fd, dst_dir_fd=dst_fd, follow_symlinks=False)
+            first = os.stat(src, dir_fd=src_fd, follow_symlinks=False)
+            second = os.stat(dst, dir_fd=dst_fd, follow_symlinks=False)
+            if (first.st_dev, first.st_ino) != (second.st_dev, second.st_ino):
+                raise CleanupError(f"link fallback produced a different file: {destination}")
+            os.unlink(src, dir_fd=src_fd)
+        os.fsync(dst_fd)
+        os.fsync(src_fd)
 
 
-def _managed_dir(path: str) -> None:
-    """Refuse a folder that is not a plain path inside a configured root folder.
+def _drop_alias(keep: str, drop: str, expected: FileId | None) -> None:
+    """Remove ``drop``, the second name an interrupted link left for ``keep``.
 
-    The root itself may be reached through a symlink (a mount alias); nothing
-    below it may be.
+    Both folders are pinned, both names are checked through them (and the
+    kept file's content when ``expected`` is given), and ``drop`` is unlinked
+    through its pinned folder, so a folder swapped after the check cannot
+    turn this into removing some other file.
     """
-    folder = os.path.abspath(path)
-    with get_db() as db:
-        roots = [os.path.abspath(str(r["path"])) for r in db.execute("SELECT path FROM root_folders")]
-    for root in roots:
-        if folder == root or os.path.commonpath((folder, root)) != root:
-            continue
-        if os.path.realpath(folder) == os.path.join(os.path.realpath(root), os.path.relpath(folder, root)):
-            return
-        raise CleanupError(f"{folder} resolves outside the managed library (symlink in its path)")
-    raise CleanupError(f"{folder} is not inside a managed library root folder")
+    with _pinned(_parent(keep)) as keep_fd, _pinned(_parent(drop)) as drop_fd:
+        kept = os.stat(os.path.basename(keep), dir_fd=keep_fd, follow_symlinks=False)
+        dropped = os.stat(os.path.basename(drop), dir_fd=drop_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(kept.st_mode)
+            or not stat.S_ISREG(dropped.st_mode)
+            or (kept.st_dev, kept.st_ino) != (dropped.st_dev, dropped.st_ino)
+        ):
+            raise CleanupError(f"{keep} and {drop} are not the same file")
+        if expected is not None and _pinned_id(keep, keep_fd) != expected:
+            raise CleanupError(f"file content changed; kept for review: {keep}")
+        os.unlink(os.path.basename(drop), dir_fd=drop_fd)
+        os.fsync(drop_fd)
 
 
-def _private_dir(path: str) -> None:
-    st = os.lstat(path)
+def _private_dir(descriptor: int, path: str) -> None:
+    st = os.fstat(descriptor)
     if (
         not stat.S_ISDIR(st.st_mode)
         or st.st_uid != os.geteuid()
@@ -262,36 +319,55 @@ def _quarantine_target(original: str, series_id: int, row_id: int) -> str:
 
 
 def _quarantine_dir(series_dir: str, series_id: int) -> str:
-    root = os.path.join(os.path.dirname(series_dir), QUARANTINE_DIR)
-    target = os.path.join(root, str(series_id))
-    for path in (root, target):
-        try:
-            os.mkdir(path, 0o700)
-        except FileExistsError:
-            pass
-        else:
-            _fsync_dir(os.path.dirname(path))
-        _private_dir(path)
+    base = os.path.dirname(os.path.abspath(series_dir))
+    target = os.path.join(base, QUARANTINE_DIR, str(series_id))
+    descriptor = _open_dir(base)
+    try:
+        for name in (QUARANTINE_DIR, str(series_id)):
+            try:
+                os.mkdir(name, 0o700, dir_fd=descriptor)
+            except FileExistsError:
+                pass
+            else:
+                os.fsync(descriptor)
+            child = _open_child(descriptor, name, target)
+            os.close(descriptor)
+            descriptor = child
+            _private_dir(descriptor, target)
+    finally:
+        os.close(descriptor)
     return target
 
 
 def _probe(series_dir: str, quarantine: str) -> None:
     """A real move from the series folder into quarantine must work."""
-    carrier = tempfile.mkdtemp(prefix=CARRIER_PREFIX + "probe-", dir=series_dir)
-    source = os.path.join(carrier, "probe")
-    destination = os.path.join(quarantine, f".probe-{secrets.token_hex(8)}")
+    token = secrets.token_hex(8)
+    carrier_name = f"{CARRIER_PREFIX}probe-{token}"
+    carrier = os.path.join(series_dir, carrier_name)
+    destination = os.path.join(quarantine, f".probe-{token}")
+    with _pinned(series_dir) as series_fd:
+        os.mkdir(carrier_name, 0o700, dir_fd=series_fd)
     try:
-        with open(source, "xb") as fh:
-            fh.write(b"probe")
-        _move_noreplace(source, destination)
-        os.unlink(destination)
-    finally:
-        for leftover in (source,):
+        with _pinned(carrier) as carrier_fd:
+            descriptor = os.open(
+                "probe", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600,
+                dir_fd=carrier_fd,
+            )
             try:
-                os.unlink(leftover)
+                os.write(descriptor, b"probe")
+            finally:
+                os.close(descriptor)
+        _move_noreplace(os.path.join(carrier, "probe"), destination)
+        with _pinned(quarantine) as quarantine_fd:
+            os.unlink(os.path.basename(destination), dir_fd=quarantine_fd)
+    finally:
+        with _pinned(carrier) as carrier_fd:
+            try:
+                os.unlink("probe", dir_fd=carrier_fd)
             except FileNotFoundError:
                 pass
-        os.rmdir(carrier)
+        with _pinned(series_dir) as series_fd:
+            os.rmdir(carrier_name, dir_fd=series_fd)
 
 
 # ── journal ─────────────────────────────────────────────────────────────────
@@ -357,13 +433,13 @@ def _remove_carrier(row: dict[str, Any]) -> None:
     if not row["carrier_path"]:
         return
     try:
-        os.rmdir(row["carrier_path"])
+        with _pinned(_parent(row["carrier_path"])) as descriptor:
+            os.rmdir(os.path.basename(row["carrier_path"]), dir_fd=descriptor)
+            os.fsync(descriptor)
     except FileNotFoundError:
         return
-    except OSError as exc:
+    except (OSError, CleanupError) as exc:
         log.error("Cleanup carrier retained for review at %s: %s", row["carrier_path"], exc)
-        return
-    _fsync_dir(os.path.dirname(row["carrier_path"]))
 
 
 # ── eligibility ─────────────────────────────────────────────────────────────
@@ -546,24 +622,31 @@ def _reserve(candidate: Candidate, series_id: int) -> int | None:
 
 def _capture(row: dict[str, Any], guard: FileMutationGuard) -> None:
     expected = _file_id(row)
-    parent = os.path.dirname(row["original_path"])
-    carrier = os.path.join(parent, f"{CARRIER_PREFIX}{row['id']}-{row['operation_token'][:12]}")
+    parent = _parent(row["original_path"])
+    name = os.path.basename(row["original_path"])
+    carrier_name = f"{CARRIER_PREFIX}{row['id']}-{row['operation_token'][:12]}"
     # Recorded before it exists, so recovery always knows where to look.
-    _advance(row, carrier_path=carrier)
-    guard.verify()
-    os.mkdir(carrier, 0o700)
-    _fsync_dir(parent)
-    _private_dir(carrier)
-    target = _carrier_file(row)
-    assert target is not None
-    if not _stat_matches(row["original_path"], expected):
-        raise CleanupError("loose file changed before capture")
-    guard.verify()
-    os.rename(row["original_path"], target)
-    _fsync_dir(carrier)
-    _fsync_dir(parent)
-    if _hash_id(target) != expected:
-        raise CleanupError("captured file does not match the verified loose file")
+    _advance(row, carrier_path=os.path.join(parent, carrier_name))
+    with _pinned(parent) as parent_fd:
+        guard.verify()
+        os.mkdir(carrier_name, 0o700, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+        carrier_fd = _open_child(parent_fd, carrier_name, row["carrier_path"])
+        try:
+            _private_dir(carrier_fd, row["carrier_path"])
+            st = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if not stat.S_ISREG(st.st_mode) or (st.st_ino, st.st_size, st.st_mtime_ns) != (
+                expected.inode, expected.size, expected.mtime_ns,
+            ):
+                raise CleanupError("loose file changed before capture")
+            guard.verify()
+            os.rename(name, name, src_dir_fd=parent_fd, dst_dir_fd=carrier_fd)
+            os.fsync(carrier_fd)
+            os.fsync(parent_fd)
+            if _pinned_id(name, carrier_fd) != expected:
+                raise CleanupError("captured file does not match the verified loose file")
+        finally:
+            os.close(carrier_fd)
     _advance(row, state="captured")
 
 
@@ -582,9 +665,10 @@ def _commit(row: dict[str, Any], guard: FileMutationGuard) -> bool:
     recorded = FileId(int(assembly["file_inode"]), int(assembly["size_bytes"]), int(assembly["mtime_ns"]), assembly["sha256"])
     # Content, not metadata: a same-stat rewrite must not authorize the commit.
     try:
-        if _hash_id(row["volume_path"]) != recorded:
-            return False
-    except (OSError, chapter_provenance.ProvenanceError):
+        with _pinned(_parent(row["volume_path"])) as volume_fd:
+            if _pinned_id(row["volume_path"], volume_fd) != recorded:
+                return False
+    except (OSError, CleanupError, chapter_provenance.ProvenanceError):
         return False
     guard.verify()
     with get_db() as db:
@@ -626,23 +710,19 @@ def _transfer(row: dict[str, Any], guard: FileMutationGuard) -> None:
     if os.path.lexists(destination):
         if not _stat_matches(destination, expected):
             raise CleanupError(f"quarantine name holds another file: {destination}")
-        if _hash_id(destination) != expected:
-            raise CleanupError(f"quarantined file content changed; kept for review: {destination}")
         if present:
-            if not _same_inode(source, destination):
-                raise CleanupError("carrier and quarantine hold different files")
             guard.verify()
-            os.unlink(source)  # private name; the quarantine name is the same inode
-            _fsync_dir(os.path.dirname(source))
+            assert source is not None
+            _drop_alias(destination, source, expected)  # the private name of the same inode
     else:
         if not present:
             raise CleanupError("captured file is missing")
-        if _hash_id(source) != expected:
-            raise CleanupError(f"captured file content changed; kept for review: {source}")
+        assert source is not None
+        _verify_at(source, expected, "captured file")
         guard.verify()
         _move_noreplace(source, destination)
-        if not _stat_matches(destination, expected):
-            raise CleanupError("quarantined file does not match after the move")
+    # The acceptance boundary: the file the row will call quarantined.
+    _verify_at(destination, expected, "quarantined file")
     _remove_carrier(row)
     _advance(row, state="quarantined", diagnostic="", completed_at=_now())
     _note(row["series_id"], f"Moved loose chapter to quarantine (covered by its volume): "
@@ -671,8 +751,7 @@ def _rollback(row: dict[str, Any], guard: FileMutationGuard) -> None:
             if not _same_inode(source, original):
                 raise CleanupError(f"original name is taken; file kept at {source}")
             guard.verify()
-            os.unlink(source)  # link fallback interrupted: both names, one inode
-            _fsync_dir(os.path.dirname(source))
+            _drop_alias(original, source, None)  # link fallback interrupted: both names, one inode
         else:
             guard.verify()
             _move_noreplace(source, original)
@@ -791,31 +870,27 @@ def _finish_restore(row: dict[str, Any], guard: FileMutationGuard) -> Outcome:
         raise
     if os.path.lexists(destination) and _stat_matches(destination, expected):
         # The move already happened (or its link half did).
-        if _hash_id(destination) != expected:
-            raise CleanupError(f"restored file content changed; kept for review: {destination}")
         if source_present:
-            if not _same_inode(source, destination):
-                raise CleanupError("quarantine and original hold different files")
             guard.verify()
-            os.unlink(source)  # reserved name; the original is the same inode
-            _fsync_dir(os.path.dirname(source))
+            _drop_alias(destination, source, expected)  # the reserved name of the same inode
     else:
         if os.path.lexists(destination):
             return _refuse_restore(row, "original name is taken")
         if not source_present:
             return _refuse_restore(row, "quarantined file is missing")
         try:
-            if _hash_id(source) != expected:
-                return _refuse_restore(row, "quarantined file changed")
+            with _pinned(_parent(source)) as source_fd:
+                if _pinned_id(source, source_fd) != expected:
+                    return _refuse_restore(row, "quarantined file changed")
             guard.verify()
             _move_noreplace(source, destination)
         except (OSError, CleanupError, chapter_provenance.ProvenanceError) as exc:
             if os.path.lexists(destination):
                 raise  # the move started; only finishing it is safe
             return _refuse_restore(row, str(exc))
-        if not _stat_matches(destination, expected):
-            raise CleanupError("restored file does not match after the move")
     guard.verify()
+    # The acceptance boundary: the file the chapter will point at.
+    _verify_at(destination, expected, "restored file")
     with get_db() as db:
         db.execute("PRAGMA synchronous=FULL")
         db.execute("BEGIN IMMEDIATE")
