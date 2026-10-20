@@ -459,260 +459,304 @@ from volume_file_deletion import (  # noqa: F401
 @asynccontextmanager
 async def _import_worker_lifecycle() -> AsyncGenerator[None, None]:
     """Own import-worker admission and ordered producer/worker shutdown."""
-    start_import_worker_scheduling()
-    try:
-        yield
-    finally:
-        stop_import_worker_scheduling()
+    async def _drain() -> None:
         try:
             await _cancel_background_tasks()
         finally:
             await cancel_import_workers()
 
+    start_import_worker_scheduling()
+    try:
+        yield
+    finally:
+        stop_import_worker_scheduling()
+        _shutdown = asyncio.create_task(_drain())
+        try:
+            await asyncio.shield(_shutdown)
+        except asyncio.CancelledError:
+            while not _shutdown.done():
+                try:
+                    await asyncio.shield(_shutdown)
+                except asyncio.CancelledError:
+                    continue
+            _shutdown.result()
+            raise
+
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    init_db()
-    from auth import purge_expired_sessions, remove_legacy_setup_token
-    remove_legacy_setup_token()
-    purge_expired_sessions()
-    # Apply WAL journal mode once — persistent setting, so every later
-    # connection inherits it without re-running the (write-locked) PRAGMA.
-    from shared import ensure_wal_journal_mode as _ensure_wal
-    _ensure_wal()
-    # Initialise the secret-encryption cipher (H4 PR #1) BEFORE load_config
-    # so load_config can transparently decrypt enc:v1: values for the
-    # SETTINGS_SECRET_KEYS allowlist on the way into CONFIG.
-    try:
-        from security import load_or_create_secret_cipher, SecretCipherUnavailable
-        load_or_create_secret_cipher("/config")
-    except SecretCipherUnavailable as _e:
-        # Cipher unavailable. The app can still boot — load_config falls
-        # back to plaintext-only and any enc:v1: values stay opaque.
-        # api-key middleware will fail closed on a blank api_key (H2),
-        # which is the right outcome if the operator's MANGARR_SECRET_KEY
-        # is missing/wrong: refuse to expose the API rather than 200 it
-        # without auth.
-        import logging as _logging
-        _logging.getLogger(__name__).warning(
-            "secret cipher unavailable at startup: %s — encryption-at-rest disabled", _e,
-        )
-    load_config()
-    # init_db() must run before DB-backed configuration can be loaded on a
-    # fresh install. Re-run the idempotent bootstrap now that environment and
-    # settings values are available so save_path can seed the first root.
-    _bootstrap_root_folders()
-    # Defense in depth: if api_key is still blank after init_db + load_config
-    # (DB row nulled, partial migration, etc.), generate one now. The
-    # middleware fails closed on blank api_key, so the alternative is the
-    # whole API returning 401 until an operator notices.
-    ensure_api_key()
-    # H4 PR #2: encrypt any plaintext settings secrets at rest. Idempotent;
-    # no-op when cipher unavailable. Runs after ensure_api_key so the
-    # auto-seeded api_key (which is written plaintext by ensure_api_key)
-    # gets encrypted on the same boot it was created.
-    migrate_encrypt_settings_secrets()
-    # H4 PR #3: encrypt indexers.api_key and download_clients.password
-    # at rest. Idempotent; no-op when cipher unavailable. Read paths
-    # decrypt per-call via security.decrypt_secret_safe() so the
-    # caller-visible plaintext is unchanged.
-    migrate_encrypt_table_column_secrets()
-    # H4 PR #4: encrypt per-provider secret fields inside the JSON blob
-    # stored in notification_connections.settings. Per-row atomicity so
-    # one malformed JSON row doesn't block siblings.
-    migrate_encrypt_notification_connection_secrets()
-    # Re-run load_config so CONFIG reflects the just-encrypted-and-decrypted
-    # values. Without this, the in-memory CONFIG still holds whatever the
-    # first load_config produced; for the api_key auto-seed path that's
-    # already correct (ensure_api_key writes both DB and CONFIG), but
-    # other flows that read settings post-migration get the plaintext
-    # round-tripped through Fernet — same value, just paranoid consistency.
-    load_config()
-    # Recover a bounded page of expired generated-pack reservations and
-    # tombstones before any import producer starts. Filesystem work runs off
-    # the event loop and the recovery helper closes each short DB transaction
-    # before touching disk. The runtime loop drains additional pages.
-    _pack_recovery = await asyncio.to_thread(
-        recover_pack_cleanup_state,
-        max_rows=100,
-    )
-    if (
-        _pack_recovery.reservations_recovered
-        or _pack_recovery.tombstones_removed
-        or _pack_recovery.tombstones_retained
-    ):
-        log_event(
-            "pack_cleanup_replay",
-            "startup import-pack recovery: "
-            f"{_pack_recovery.reservations_recovered} reservation(s) recovered, "
-            f"{_pack_recovery.tombstones_removed} tombstone(s) removed, "
-            f"{_pack_recovery.tombstones_retained} tombstone(s) retained",
-        )
-    _rescan_replay = await drain_active_rescan_file_operations(page_size=100)
-    if _rescan_replay:
-        log_event("rescan_replay", f"startup rescan file recovery: {_rescan_replay}")
-    # Deletion reservations already reset their volume rows and fence import
-    # admission. Replay them before publication recovery or any producer can
-    # attempt work for the same series.
-    _deletion_replay = await drain_active_volume_file_deletions(page_size=100)
-    if _deletion_replay.examined:
-        log_event(
-            "delete_replay",
-            "startup volume deletion replay: "
-            f"{_deletion_replay.completed} completed, "
-            f"{_deletion_replay.blocked} blocked",
-        )
-    # Interrupted loose-chapter quarantine rows fence their series. Settle
-    # them (roll back before commit, forward after) before any producer.
-    import volume_chapter_cleanup as _chapter_cleanup
-    await _chapter_cleanup.drain(page_size=100)
-    # Durable publication replay is recovery authority after the prepared
-    # barrier. Drain active journals in bounded pages before lease recovery,
-    # download-client bootstrap, worker admission, or any producer can
-    # observe/import the same queue. Terminal pack/outbox work belongs to the
-    # cancellable runtime loop below.
-    _publication_replay = await drain_active_import_publications(page_size=100)
-    if _publication_replay.examined:
-        log_event(
-            "import_replay",
-            "startup import publication replay: "
-            f"{_publication_replay.completed} completed, "
-            f"{_publication_replay.aborted_staging} reversible staging aborted, "
-            f"{_publication_replay.deferred} deferred, "
-            f"{_publication_replay.blocked} blocked",
-        )
-    # Initialize import concurrency semaphore (max_concurrent_imports setting)
-    from import_pipeline import initialize_import_semaphore
-    initialize_import_semaphore()
-    # Recover only expired (or legacy unleased) importing rows before the
-    # startup retry snapshot. Live leases remain importing and are never retried.
-    from import_lease import recover_expired_import_leases
-    with get_db() as _lease_db:
-        _recovered_import_leases = recover_expired_import_leases(
-            _lease_db,
-            max_rows=500,
-        )
-        if _recovered_import_leases:
-            log_event(
-                "stuck_cleanup",
-                f"recovered {_recovered_import_leases} expired/legacy "
-                "import lease(s) during startup",
-                db=_lease_db,
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    from maintenance_lock import service_maintenance_guard
+
+    with service_maintenance_guard(DB_PATH, exclusive=False):
+        init_db()
+        from auth import purge_expired_sessions, remove_legacy_setup_token
+        remove_legacy_setup_token()
+        purge_expired_sessions()
+        # Apply WAL journal mode once — persistent setting, so every later
+        # connection inherits it without re-running the (write-locked) PRAGMA.
+        from shared import ensure_wal_journal_mode as _ensure_wal
+        _ensure_wal()
+        # Initialise the secret-encryption cipher (H4 PR #1) BEFORE load_config
+        # so load_config can transparently decrypt enc:v1: values for the
+        # SETTINGS_SECRET_KEYS allowlist on the way into CONFIG.
+        try:
+            from security import load_or_create_secret_cipher, SecretCipherUnavailable
+            load_or_create_secret_cipher("/config")
+        except SecretCipherUnavailable as _e:
+            # Cipher unavailable. The app can still boot — load_config falls
+            # back to plaintext-only and any enc:v1: values stay opaque.
+            # api-key middleware will fail closed on a blank api_key (H2),
+            # which is the right outcome if the operator's MANGARR_SECRET_KEY
+            # is missing/wrong: refuse to expose the API rather than 200 it
+            # without auth.
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "secret cipher unavailable at startup: %s — encryption-at-rest disabled", _e,
             )
-    backfill_pack_ranges()
-    # Create qBit manga category on startup
-    try:
-        from routers.download_clients import get_client_for_protocol
-        with get_db() as _cdb:
-            _qc = get_client_for_protocol(_cdb, 'torrent')
-        _qhost = ((_qc or {}).get('host') or '').rstrip('/')
-        _quser = ((_qc or {}).get('username') or '')
-        _qpw   = ((_qc or {}).get('password') or '')
-        _qcat  = ((_qc or {}).get('category') or get_cfg('category'))
-        if _qhost:
-            # Torrent download path is separate from the library path so the
-            # standard *arr convention holds: qBit writes to e.g.
-            # /data/torrents/manga while the library lives at /data/media/manga.
-            # When torrent_save_path is empty we fall back to save_path — the
-            # old single-directory behaviour, preserved for existing installs.
-            _qbit_save = (get_cfg('torrent_save_path', '') or '').strip() \
-                         or get_cfg('save_path')
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.post(
-                    f"{_qhost}/api/v2/auth/login",
-                    data={'username': _quser, 'password': _qpw}
+        load_config()
+        # init_db() must run before DB-backed configuration can be loaded on a
+        # fresh install. Re-run the idempotent bootstrap now that environment and
+        # settings values are available so save_path can seed the first root.
+        _bootstrap_root_folders()
+        # Defense in depth: if api_key is still blank after init_db + load_config
+        # (DB row nulled, partial migration, etc.), generate one now. The
+        # middleware fails closed on blank api_key, so the alternative is the
+        # whole API returning 401 until an operator notices.
+        ensure_api_key()
+        # H4 PR #2: encrypt any plaintext settings secrets at rest. Idempotent;
+        # no-op when cipher unavailable. Runs after ensure_api_key so the
+        # auto-seeded api_key (which is written plaintext by ensure_api_key)
+        # gets encrypted on the same boot it was created.
+        migrate_encrypt_settings_secrets()
+        # H4 PR #3: encrypt indexers.api_key and download_clients.password
+        # at rest. Idempotent; no-op when cipher unavailable. Read paths
+        # decrypt per-call via security.decrypt_secret_safe() so the
+        # caller-visible plaintext is unchanged.
+        migrate_encrypt_table_column_secrets()
+        # H4 PR #4: encrypt per-provider secret fields inside the JSON blob
+        # stored in notification_connections.settings. Per-row atomicity so
+        # one malformed JSON row doesn't block siblings.
+        migrate_encrypt_notification_connection_secrets()
+        # Re-run load_config so CONFIG reflects the just-encrypted-and-decrypted
+        # values. Without this, the in-memory CONFIG still holds whatever the
+        # first load_config produced; for the api_key auto-seed path that's
+        # already correct (ensure_api_key writes both DB and CONFIG), but
+        # other flows that read settings post-migration get the plaintext
+        # round-tripped through Fernet — same value, just paranoid consistency.
+        load_config()
+        async def _recover_startup_files() -> None:
+            # Recover a bounded page of expired generated-pack reservations and
+            # tombstones before any import producer starts. Filesystem work runs off
+            # the event loop and the recovery helper closes each short DB transaction
+            # before touching disk. The runtime loop drains additional pages.
+            _pack_recovery_task = asyncio.create_task(asyncio.to_thread(
+                recover_pack_cleanup_state,
+                max_rows=100,
+            ))
+            try:
+                _pack_recovery = await asyncio.shield(_pack_recovery_task)
+            except asyncio.CancelledError:
+                # A cancelled await cannot stop a running filesystem thread.
+                while not _pack_recovery_task.done():
+                    try:
+                        await asyncio.shield(_pack_recovery_task)
+                    except asyncio.CancelledError:
+                        continue
+                _pack_recovery_task.result()
+                raise
+            if (
+                _pack_recovery.reservations_recovered
+                or _pack_recovery.tombstones_removed
+                or _pack_recovery.tombstones_retained
+            ):
+                log_event(
+                    "pack_cleanup_replay",
+                    "startup import-pack recovery: "
+                    f"{_pack_recovery.reservations_recovered} reservation(s) recovered, "
+                    f"{_pack_recovery.tombstones_removed} tombstone(s) removed, "
+                    f"{_pack_recovery.tombstones_retained} tombstone(s) retained",
                 )
-                login_mode = classify_qbit_login(r.status_code, r.text)
-                bypass_proven = login_mode is QbitLoginMode.NORMAL_AUTH
-                if login_mode is QbitLoginMode.BYPASS_PROBE_REQUIRED:
-                    proof = await client.get(f"{_qhost}/api/v2/app/version")
-                    bypass_proven = is_valid_qbit_version_response(
-                        proof.status_code, proof.text
-                    )
-                if bypass_proven:
-                    await client.post(
-                        f"{_qhost}/api/v2/torrents/createCategory",
-                        data={'category': _qcat, 'savePath': _qbit_save}
-                    )
-    except Exception as e:
-        # Best-effort at startup: failure here (qBit offline, bad creds,
-        # wrong host) doesn't block the app, but it used to swallow
-        # silently — users then wondered why their category never
-        # appeared. Log at INFO so it's visible in normal operation
-        # without being noisy when qBit genuinely isn't configured.
-        # Do NOT include _qpw or _quser in the log message.
-        import logging as _logging
-        _logging.getLogger(__name__).info(
-            "startup: qBit category bootstrap skipped (%r)", e,
-        )
-    # All long-running background loops are registered with the tracker so
-    # they can be cancelled on shutdown and their unexpected exits logged.
-    # Previously seven of the nine were fire-and-forget tasks without a
-    # stored reference — see create_background_task() docstring.
-    # Event-loop lag watchdog — no-op unless MANGARR_DEBUG_TIMING=1.
-    # Helps diagnose issue #31 follow-up A stalls during investigation.
-    # All producer registration and the fallible reconciliation that follows
-    # are protected by ordered producer/worker cleanup.
-    async with _import_worker_lifecycle():
-        from shared import event_loop_lag_monitor as _event_loop_lag
-        create_background_task(_event_loop_lag(),                  name="event_loop_lag_monitor")
+            _rescan_replay = await drain_active_rescan_file_operations(page_size=100)
+            if _rescan_replay:
+                log_event("rescan_replay", f"startup rescan file recovery: {_rescan_replay}")
+            # Deletion reservations already reset their volume rows and fence import
+            # admission. Replay them before publication recovery or any producer can
+            # attempt work for the same series.
+            _deletion_replay = await drain_active_volume_file_deletions(page_size=100)
+            if _deletion_replay.examined:
+                log_event(
+                    "delete_replay",
+                    "startup volume deletion replay: "
+                    f"{_deletion_replay.completed} completed, "
+                    f"{_deletion_replay.blocked} blocked",
+                )
+            # Interrupted loose-chapter quarantine rows fence their series. Settle
+            # them (roll back before commit, forward after) before any producer.
+            import volume_chapter_cleanup as _chapter_cleanup
+            await _chapter_cleanup.drain(page_size=100)
+            # Durable publication replay is recovery authority after the prepared
+            # barrier. Drain active journals in bounded pages before lease recovery,
+            # download-client bootstrap, worker admission, or any producer can
+            # observe/import the same queue. Terminal pack/outbox work belongs to the
+            # cancellable runtime loop below.
+            _publication_replay = await drain_active_import_publications(page_size=100)
+            if _publication_replay.examined:
+                log_event(
+                    "import_replay",
+                    "startup import publication replay: "
+                    f"{_publication_replay.completed} completed, "
+                    f"{_publication_replay.aborted_staging} reversible staging aborted, "
+                    f"{_publication_replay.deferred} deferred, "
+                    f"{_publication_replay.blocked} blocked",
+                )
 
-        create_background_task(rss_loop(),                         name="rss_loop")
-        create_background_task(status_loop(),                      name="status_loop")
-        create_background_task(pack_cleanup_recovery_loop(),       name="pack_cleanup_recovery_loop")
-        create_background_task(publication_replay_loop(),          name="publication_replay_loop")
-        create_background_task(volume_deletion_replay_loop(),      name="volume_deletion_replay_loop")
-        create_background_task(rescan_replay_loop(),               name="rescan_replay_loop")
-        create_background_task(chapter_quarantine_replay_loop(),   name="chapter_quarantine_replay_loop")
-        create_background_task(refresh_ongoing_loop(),             name="refresh_ongoing_loop")
-        create_background_task(_metadata_retry_loop(),             name="metadata_retry_loop")
-        create_background_task(_backfill_metadata_loop(),          name="backfill_metadata_loop")
-        create_background_task(backlog_search_loop(),              name="backlog_search_loop")
-        create_background_task(_stuck_state_cleanup_loop(),        name="stuck_state_cleanup_loop")
-        create_background_task(_swy_router.suwayomi_monitor_loop(), name="suwayomi_monitor_loop")
-        create_background_task(rescan_loop(),                      name="rescan_loop")
-        create_background_task(_import_list_loop(),                name="import_list_loop")
-        create_background_task(_backup_loop(),                     name="backup_loop")
-        create_background_task(_recycle_bin_reaper_loop(),         name="recycle_bin_reaper")
-        # Poll qBit/SAB in the background so /queue renders from cached
-        # snapshots instead of making live HTTP calls on every pageview.
-        from status_cache import download_status_refresh_loop as _dl_status_loop
-        create_background_task(_dl_status_loop(),                  name="download_status_refresh_loop")
-        # Re-process safe unleased retry rows, including rows recovered above.
-        # Live importing leases are excluded by both status and owner.
-        with get_db() as _db:
-            _stuck = _db.execute(
-                "SELECT iq.id FROM import_queue iq"
-                " WHERE iq.status IN ('pending','partial')"
-                " AND iq.lease_owner IS NULL"
-                " AND NOT EXISTS ("
-                "   SELECT 1 FROM import_queue_files f"
-                "   WHERE f.queue_id=iq.id AND f.status='needs_review'"
-                ")"
-            ).fetchall()
-            _stuck_ids = [r[0] for r in _stuck]
-            # Reset grabbed volumes with no download_id that somehow persisted through shutdown
-            _db.execute(
-                "UPDATE volumes SET status='wanted', grabbed_at=NULL, source_url=NULL,"
-                " download_id=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
-                " client=NULL, release_group=NULL, imported_at=NULL"
-                " WHERE status='grabbed' AND download_id IS NULL AND volume_num IS NOT NULL"
-                " AND (client IS NULL OR client != 'suwayomi')"
+        _startup_recovery = asyncio.create_task(_recover_startup_files())
+        try:
+            await asyncio.shield(_startup_recovery)
+        except asyncio.CancelledError:
+            # Signal cancellation once; repeated outer cancellation must not
+            # interrupt a delegate while it settles its current filesystem unit.
+            _startup_recovery.cancel()
+            while not _startup_recovery.done():
+                try:
+                    await asyncio.shield(_startup_recovery)
+                except asyncio.CancelledError:
+                    continue
+            if not _startup_recovery.cancelled():
+                _startup_recovery.result()
+            raise
+        # Initialize import concurrency semaphore (max_concurrent_imports setting)
+        from import_pipeline import initialize_import_semaphore
+        initialize_import_semaphore()
+        # Recover only expired (or legacy unleased) importing rows before the
+        # startup retry snapshot. Live leases remain importing and are never retried.
+        from import_lease import recover_expired_import_leases
+        with get_db() as _lease_db:
+            _recovered_import_leases = recover_expired_import_leases(
+                _lease_db,
+                max_rows=500,
             )
-            _db.execute(
-                "DELETE FROM volumes WHERE status='grabbed' AND download_id IS NULL AND volume_num IS NULL"
+            if _recovered_import_leases:
+                log_event(
+                    "stuck_cleanup",
+                    f"recovered {_recovered_import_leases} expired/legacy "
+                    "import lease(s) during startup",
+                    db=_lease_db,
+                )
+        backfill_pack_ranges()
+        # Create qBit manga category on startup
+        try:
+            from routers.download_clients import get_client_for_protocol
+            with get_db() as _cdb:
+                _qc = get_client_for_protocol(_cdb, 'torrent')
+            _qhost = ((_qc or {}).get('host') or '').rstrip('/')
+            _quser = ((_qc or {}).get('username') or '')
+            _qpw   = ((_qc or {}).get('password') or '')
+            _qcat  = ((_qc or {}).get('category') or get_cfg('category'))
+            if _qhost:
+                # Torrent download path is separate from the library path so the
+                # standard *arr convention holds: qBit writes to e.g.
+                # /data/torrents/manga while the library lives at /data/media/manga.
+                # When torrent_save_path is empty we fall back to save_path — the
+                # old single-directory behaviour, preserved for existing installs.
+                _qbit_save = (get_cfg('torrent_save_path', '') or '').strip() \
+                             or get_cfg('save_path')
+                async with httpx.AsyncClient(timeout=10) as client:
+                    r = await client.post(
+                        f"{_qhost}/api/v2/auth/login",
+                        data={'username': _quser, 'password': _qpw}
+                    )
+                    login_mode = classify_qbit_login(r.status_code, r.text)
+                    bypass_proven = login_mode is QbitLoginMode.NORMAL_AUTH
+                    if login_mode is QbitLoginMode.BYPASS_PROBE_REQUIRED:
+                        proof = await client.get(f"{_qhost}/api/v2/app/version")
+                        bypass_proven = is_valid_qbit_version_response(
+                            proof.status_code, proof.text
+                        )
+                    if bypass_proven:
+                        await client.post(
+                            f"{_qhost}/api/v2/torrents/createCategory",
+                            data={'category': _qcat, 'savePath': _qbit_save}
+                        )
+        except Exception as e:
+            # Best-effort at startup: failure here (qBit offline, bad creds,
+            # wrong host) doesn't block the app, but it used to swallow
+            # silently — users then wondered why their category never
+            # appeared. Log at INFO so it's visible in normal operation
+            # without being noisy when qBit genuinely isn't configured.
+            # Do NOT include _qpw or _quser in the log message.
+            import logging as _logging
+            _logging.getLogger(__name__).info(
+                "startup: qBit category bootstrap skipped (%r)", e,
             )
+        # All long-running background loops are registered with the tracker so
+        # they can be cancelled on shutdown and their unexpected exits logged.
+        # Previously seven of the nine were fire-and-forget tasks without a
+        # stored reference — see create_background_task() docstring.
+        # Event-loop lag watchdog — no-op unless MANGARR_DEBUG_TIMING=1.
+        # Helps diagnose issue #31 follow-up A stalls during investigation.
+        # All producer registration and the fallible reconciliation that follows
+        # are protected by ordered producer/worker cleanup.
+        async with _import_worker_lifecycle():
+            from shared import event_loop_lag_monitor as _event_loop_lag
+            create_background_task(_event_loop_lag(),                  name="event_loop_lag_monitor")
 
-        # Defer stuck-import retries until after startup completes to avoid
-        # blocking the event loop (since _execute_import is synchronous).
-        async def _retry_stuck() -> None:
-            await asyncio.sleep(5)
-            for _qid in _stuck_ids:
-                _ = schedule_import_worker(_qid)
+            create_background_task(rss_loop(),                         name="rss_loop")
+            create_background_task(status_loop(),                      name="status_loop")
+            create_background_task(pack_cleanup_recovery_loop(),       name="pack_cleanup_recovery_loop")
+            create_background_task(publication_replay_loop(),          name="publication_replay_loop")
+            create_background_task(volume_deletion_replay_loop(),      name="volume_deletion_replay_loop")
+            create_background_task(rescan_replay_loop(),               name="rescan_replay_loop")
+            create_background_task(chapter_quarantine_replay_loop(),   name="chapter_quarantine_replay_loop")
+            create_background_task(refresh_ongoing_loop(),             name="refresh_ongoing_loop")
+            create_background_task(_metadata_retry_loop(),             name="metadata_retry_loop")
+            create_background_task(_backfill_metadata_loop(),          name="backfill_metadata_loop")
+            create_background_task(backlog_search_loop(),              name="backlog_search_loop")
+            create_background_task(_stuck_state_cleanup_loop(),        name="stuck_state_cleanup_loop")
+            create_background_task(_swy_router.suwayomi_monitor_loop(), name="suwayomi_monitor_loop")
+            create_background_task(rescan_loop(),                      name="rescan_loop")
+            create_background_task(_import_list_loop(),                name="import_list_loop")
+            create_background_task(_backup_loop(),                     name="backup_loop")
+            create_background_task(_recycle_bin_reaper_loop(),         name="recycle_bin_reaper")
+            # Poll qBit/SAB in the background so /queue renders from cached
+            # snapshots instead of making live HTTP calls on every pageview.
+            from status_cache import download_status_refresh_loop as _dl_status_loop
+            create_background_task(_dl_status_loop(),                  name="download_status_refresh_loop")
+            # Re-process safe unleased retry rows, including rows recovered above.
+            # Live importing leases are excluded by both status and owner.
+            with get_db() as _db:
+                _stuck = _db.execute(
+                    "SELECT iq.id FROM import_queue iq"
+                    " WHERE iq.status IN ('pending','partial')"
+                    " AND iq.lease_owner IS NULL"
+                    " AND NOT EXISTS ("
+                    "   SELECT 1 FROM import_queue_files f"
+                    "   WHERE f.queue_id=iq.id AND f.status='needs_review'"
+                    ")"
+                ).fetchall()
+                _stuck_ids = [r[0] for r in _stuck]
+                # Reset grabbed volumes with no download_id that somehow persisted through shutdown
+                _db.execute(
+                    "UPDATE volumes SET status='wanted', grabbed_at=NULL, source_url=NULL,"
+                    " download_id=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"
+                    " client=NULL, release_group=NULL, imported_at=NULL"
+                    " WHERE status='grabbed' AND download_id IS NULL AND volume_num IS NOT NULL"
+                    " AND (client IS NULL OR client != 'suwayomi')"
+                )
+                _db.execute(
+                    "DELETE FROM volumes WHERE status='grabbed' AND download_id IS NULL AND volume_num IS NULL"
+                )
 
-        if _stuck_ids:
-            create_background_task(_retry_stuck(), name="retry_stuck_imports")
-        yield
+            # Defer stuck-import retries until after startup completes to avoid
+            # blocking the event loop (since _execute_import is synchronous).
+            async def _retry_stuck() -> None:
+                await asyncio.sleep(5)
+                for _qid in _stuck_ids:
+                    _ = schedule_import_worker(_qid)
+
+            if _stuck_ids:
+                create_background_task(_retry_stuck(), name="retry_stuck_imports")
+            yield
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 # ── Helpers moved to helpers.py ─────────────────────────────────────────────

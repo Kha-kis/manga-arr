@@ -1008,18 +1008,42 @@ async def _import_list_loop():
             raise
 
 
-async def _backup_loop():
+async def _backup_loop() -> None:
     """Auto-backup — interval and retention controlled by settings."""
     from routers.system import BACKUP_DIR, _create_backup_file, update_task_state
+
+    async def _create_owned_backup() -> tuple[str, str]:
+        return await asyncio.to_thread(
+            _create_backup_file,
+            "mangarr_auto",
+        )
+
     await asyncio.sleep(3600)  # 1h delay after startup
     while True:
         interval_days = max(1, min(30, int(get_cfg('backup_interval_days', '1') or 1)))
         retention     = max(1, min(30, int(get_cfg('backup_retention',     '7') or 7)))
         try:
-            fname, _fpath = await asyncio.to_thread(
-                _create_backup_file,
-                "mangarr_auto",
-            )
+            operation = asyncio.create_task(_create_owned_backup())
+            try:
+                fname, _fpath = await asyncio.shield(operation)
+            except asyncio.CancelledError:
+                # Cancellation cannot stop this filesystem thread. Keep its
+                # tracked coroutine alive until the owned work has settled.
+                while not operation.done():
+                    try:
+                        await asyncio.shield(operation)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if not operation.cancelled():
+                    failure = operation.exception()
+                    if failure is not None:
+                        log_event(
+                            'error', '[BackupLoop] backup failed during shutdown '
+                            f'({type(failure).__name__})',
+                        )
+                raise
             # Keep only last N auto backups
             auto_backups = sorted(
                 [f for f in os.listdir(BACKUP_DIR)
