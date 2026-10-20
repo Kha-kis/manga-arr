@@ -24,6 +24,7 @@ COLUMNS = [
     "diagnostic",
     "created_at",
     "updated_at",
+    "recovery_event_id",
 ]
 
 
@@ -42,7 +43,9 @@ def test_fresh_journal_has_exact_columns_and_no_cascading_authority(rescan_env):
         assert [
             r[1] for r in db.execute("PRAGMA table_info(rescan_file_operations)")
         ] == COLUMNS
-        assert list(db.execute("PRAGMA foreign_key_list(rescan_file_operations)")) == []
+        assert list(db.execute("PRAGMA foreign_key_list(rescan_file_operations)")) == [
+            (0, 0, "file_identity_events", "recovery_event_id", "id", "NO ACTION", "NO ACTION", "NONE")
+        ]
         _insert(db, "first")
         db.execute("DELETE FROM series WHERE id=7")
         assert db.execute(

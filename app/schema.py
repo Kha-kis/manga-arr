@@ -9,7 +9,7 @@ creates, alters, or reshapes the SQLite schema at startup:
                                    migration
   - _migrate_schema_constraints  — add FK constraints via rebuild
                                    pattern, gated by PRAGMA user_version
-  - _SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP — current migration version
+  - _SCHEMA_VERSION_FILE_IDENTITY — current migration version
 
 Callers in main.py see `init_db()`, `_bootstrap_root_folders()`, and
 `_migrate_schema_constraints()` via a re-export.
@@ -35,7 +35,8 @@ _SCHEMA_VERSION_STATUS_CONSTRAINTS = 2
 _SCHEMA_VERSION_IMPORT_PUBLICATIONS = 3
 _SCHEMA_VERSION_DURABLE_PUBLICATION_SAFETY = 4
 _SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP = 5
-_SUPPORTED_SCHEMA_VERSION = _SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP
+_SCHEMA_VERSION_FILE_IDENTITY = 6
+_SUPPORTED_SCHEMA_VERSION = _SCHEMA_VERSION_FILE_IDENTITY
 
 
 @contextmanager
@@ -1833,7 +1834,7 @@ def _migrate_schema_constraints() -> None:
 def _migrate_schema_constraints_locked(db: sqlite3.Connection) -> None:
     """Run pending constraint migrations inside a writer transaction."""
     version = _validate_schema_version(db)
-    if version == _SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP:
+    if version >= _SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP:
         # Schema v5 existed briefly with only history ownership. Keep the v5
         # migration idempotent so those unreleased databases also receive the
         # ownership-qualified pack journal shape.
@@ -1842,6 +1843,7 @@ def _migrate_schema_constraints_locked(db: sqlite3.Connection) -> None:
         _ensure_private_file_claim_schema(db)
         _ensure_rescan_file_operations_schema(db)
         _ensure_pack_ownership_schema(db)
+        _ensure_file_identity_schema(db)
         return
 
     if version < _SCHEMA_VERSION_FK_CONSTRAINTS:
@@ -1866,7 +1868,254 @@ def _migrate_schema_constraints_locked(db: sqlite3.Connection) -> None:
     _ensure_private_file_claim_schema(db)
     _ensure_rescan_file_operations_schema(db)
     _ensure_pack_ownership_schema(db)
+    _ensure_file_identity_schema(db)
 
+
+
+def _ensure_file_identity_schema(db: sqlite3.Connection) -> None:
+    """Add immutable evidence and one-way, exact-preimage supersession fences.
+
+    JSON hashing/semantic policy belongs to the SQL-only store. These guards
+    also protect legacy writers from arbitrary recovery IDs and replacement.
+    Old binaries must be stopped before upgrading: the v6 startup refusal
+    cannot protect an old process already running against this database.
+    """
+    from file_identity_store import _PROJECTIONS
+
+    def hex_check(column: str, length: int) -> str:
+        return (
+            f"typeof({column})='text' AND length({column})={length}"
+            f" AND {column} NOT GLOB '*[^0-9a-f]*'"
+        )
+
+    domains = (
+        "'namespace','rescan','publication','deletion','pack_reservation',"
+        "'pack_tombstone','queue_source'"
+    )
+    _execute_script_in_transaction(db, f"""
+        CREATE TABLE IF NOT EXISTS file_identity_authorities (
+            authority_id TEXT PRIMARY KEY NOT NULL CHECK({hex_check('authority_id', 32)}),
+            incarnation_token TEXT NOT NULL CHECK({hex_check('incarnation_token', 32)}),
+            profile_json TEXT NOT NULL CHECK(json_valid(profile_json)),
+            declaration_json TEXT NOT NULL CHECK(json_valid(declaration_json)),
+            qualification_sha256 TEXT NOT NULL CHECK({hex_check('qualification_sha256', 64)})
+        );
+        CREATE TABLE IF NOT EXISTS file_identity_epochs (
+            epoch_id TEXT PRIMARY KEY NOT NULL CHECK({hex_check('epoch_id', 32)}),
+            authority_id TEXT NOT NULL REFERENCES file_identity_authorities(authority_id),
+            origin_path TEXT NOT NULL,
+            allocation_path TEXT NOT NULL,
+            root_path TEXT NOT NULL,
+            birth_json TEXT NOT NULL CHECK(json_valid(birth_json))
+        );
+        CREATE TABLE IF NOT EXISTS file_identity_sets (
+            set_id TEXT PRIMARY KEY NOT NULL CHECK({hex_check('set_id', 32)}),
+            owner_domain TEXT NOT NULL CHECK(owner_domain IN ({domains})),
+            owner_key_json TEXT NOT NULL CHECK(json_valid(owner_key_json)),
+            prior_set_id TEXT REFERENCES file_identity_sets(set_id),
+            snapshot_json TEXT NOT NULL CHECK(json_valid(snapshot_json)),
+            snapshot_sha256 TEXT NOT NULL CHECK({hex_check('snapshot_sha256', 64)}),
+            origin TEXT NOT NULL CHECK(origin IN ('birth','exact_legacy','recovery')),
+            epoch_id TEXT NOT NULL REFERENCES file_identity_epochs(epoch_id),
+            manifest_json TEXT NOT NULL CHECK(json_valid(manifest_json)),
+            manifest_sha256 TEXT NOT NULL CHECK({hex_check('manifest_sha256', 64)})
+        );
+        CREATE INDEX IF NOT EXISTS file_identity_sets_owner
+            ON file_identity_sets(owner_domain,owner_key_json);
+        CREATE TABLE IF NOT EXISTS file_identity_events (
+            id INTEGER PRIMARY KEY,
+            owner_domain TEXT NOT NULL CHECK(owner_domain IN ({domains})),
+            owner_key_json TEXT NOT NULL CHECK(json_valid(owner_key_json)),
+            revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision>0),
+            predecessor_event_id INTEGER REFERENCES file_identity_events(id),
+            set_id TEXT NOT NULL REFERENCES file_identity_sets(set_id),
+            kind TEXT NOT NULL CHECK(kind IN ('prepared','activated','recovery_intent',
+                'recovery_step','superseded','retained','retired')),
+            payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+            UNIQUE(owner_domain,owner_key_json,revision)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS file_identity_events_prepared
+            ON file_identity_events(set_id) WHERE kind='prepared';
+        CREATE UNIQUE INDEX IF NOT EXISTS file_identity_events_activated
+            ON file_identity_events(set_id) WHERE kind='activated';
+        CREATE UNIQUE INDEX IF NOT EXISTS file_identity_events_owner_scalar
+            ON file_identity_events(owner_domain,
+                json_extract(owner_key_json,'$.key[0]'),revision);
+    """)
+    for suffix, pk in (
+        ("authorities", "authority_id"), ("epochs", "epoch_id"),
+        ("sets", "set_id"), ("events", "id"),
+    ):
+        table = f"file_identity_{suffix}"
+        for action in ("UPDATE", "DELETE"):
+            db.execute(
+                f"CREATE TRIGGER IF NOT EXISTS {table}_no_{action.lower()}"
+                f" BEFORE {action} ON {table} BEGIN"
+                " SELECT RAISE(ABORT,'immutable file identity row'); END"
+            )
+        duplicate = f"EXISTS(SELECT 1 FROM {table} WHERE {pk}=NEW.{pk})"
+        if suffix == "events":
+            duplicate += (
+                " OR EXISTS(SELECT 1 FROM file_identity_events WHERE"
+                " owner_domain=NEW.owner_domain AND owner_key_json=NEW.owner_key_json"
+                " AND revision=NEW.revision)"
+                " OR EXISTS(SELECT 1 FROM file_identity_events WHERE"
+                " owner_domain=NEW.owner_domain AND revision=NEW.revision"
+                " AND json_extract(owner_key_json,'$.key[0]')"
+                " IS json_extract(NEW.owner_key_json,'$.key[0]'))"
+                " OR (NEW.kind IN ('prepared','activated') AND EXISTS(SELECT 1"
+                " FROM file_identity_events WHERE set_id=NEW.set_id AND kind=NEW.kind))"
+            )
+        db.execute(
+            f"CREATE TRIGGER IF NOT EXISTS {table}_no_replace BEFORE INSERT ON {table}"
+            f" WHEN {duplicate} BEGIN SELECT RAISE(ABORT,'immutable identity replacement'); END"
+        )
+
+    # Exact top-level payload keys/types and equality to the immutable set.
+    # No user-defined SQLite hashing function or imaginary commit marker.
+    standard = (
+        "(SELECT count(*) FROM json_each(NEW.payload_json))=3"
+        " AND NOT EXISTS(SELECT 1 FROM json_each(NEW.payload_json)"
+        " WHERE key NOT IN ('version','snapshot_sha256','manifest_sha256'))"
+        " AND json_extract(NEW.payload_json,'$.snapshot_sha256') IS s.snapshot_sha256"
+        " AND json_extract(NEW.payload_json,'$.manifest_sha256') IS s.manifest_sha256"
+    )
+    recovery = (
+        "(SELECT count(*) FROM json_each(NEW.payload_json))=4"
+        " AND NOT EXISTS(SELECT 1 FROM json_each(NEW.payload_json) WHERE key NOT IN"
+        " ('version','before_snapshot_json','before_snapshot_sha256','plan_sha256'))"
+        " AND json_extract(NEW.payload_json,'$.before_snapshot_json') IS s.snapshot_json"
+        " AND json_extract(NEW.payload_json,'$.before_snapshot_sha256') IS s.snapshot_sha256"
+        " AND json_type(NEW.payload_json,'$.plan_sha256')='text'"
+        " AND length(json_extract(NEW.payload_json,'$.plan_sha256'))=64"
+        " AND json_extract(NEW.payload_json,'$.plan_sha256') NOT GLOB '*[^0-9a-f]*'"
+    )
+    db.execute(f"""
+        CREATE TRIGGER IF NOT EXISTS file_identity_events_validate
+        BEFORE INSERT ON file_identity_events BEGIN
+            SELECT RAISE(ABORT,'invalid identity owner key') WHERE NOT COALESCE(
+                json_type(NEW.owner_key_json)='object'
+                AND (SELECT count(*) FROM json_each(NEW.owner_key_json))=2
+                AND json_type(NEW.owner_key_json,'$.version')='integer'
+                AND json_extract(NEW.owner_key_json,'$.version')=1
+                AND json_type(NEW.owner_key_json,'$.key')='array'
+                AND json_array_length(NEW.owner_key_json,'$.key')=1
+                AND CASE WHEN NEW.owner_domain IN ('rescan','publication','deletion','queue_source')
+                    THEN json_type(NEW.owner_key_json,'$.key[0]')='integer'
+                         AND json_extract(NEW.owner_key_json,'$.key[0]')>0
+                    ELSE json_type(NEW.owner_key_json,'$.key[0]')='text'
+                         AND length(json_extract(NEW.owner_key_json,'$.key[0]'))>0 END,0);
+            SELECT RAISE(ABORT,'stale identity predecessor') WHERE
+                NEW.predecessor_event_id IS NOT (SELECT id FROM file_identity_events
+                    WHERE owner_domain=NEW.owner_domain AND owner_key_json=NEW.owner_key_json
+                    ORDER BY revision DESC LIMIT 1)
+                OR NEW.revision != COALESCE((SELECT revision+1 FROM file_identity_events
+                    WHERE owner_domain=NEW.owner_domain AND owner_key_json=NEW.owner_key_json
+                    ORDER BY revision DESC LIMIT 1),1);
+            SELECT RAISE(ABORT,'invalid identity event set/payload') WHERE NOT EXISTS(
+                SELECT 1 FROM file_identity_sets s WHERE s.set_id=NEW.set_id
+                AND s.owner_domain=NEW.owner_domain AND s.owner_key_json=NEW.owner_key_json
+                AND json_type(NEW.payload_json)='object'
+                AND json_type(NEW.payload_json,'$.version')='integer'
+                AND json_extract(NEW.payload_json,'$.version')=1
+                AND CASE WHEN NEW.kind IN ('prepared','activated') THEN ({standard})
+                    ELSE ({recovery}) END
+            );
+            SELECT RAISE(ABORT,'invalid identity preparation predecessor')
+                WHERE NEW.kind='prepared' AND NOT EXISTS(
+                    SELECT 1 FROM file_identity_sets s WHERE s.set_id=NEW.set_id
+                    AND s.prior_set_id IS (SELECT set_id FROM file_identity_events
+                        WHERE id=NEW.predecessor_event_id));
+            SELECT RAISE(ABORT,'invalid identity activation predecessor')
+                WHERE NEW.kind='activated' AND NOT EXISTS(
+                    SELECT 1 FROM file_identity_events p WHERE p.id=NEW.predecessor_event_id
+                    AND p.kind='prepared' AND p.set_id=NEW.set_id);
+        END
+    """)
+
+    for table, domain in (("rescan_file_operations", "rescan"), ("volume_file_deletions", "deletion")):
+        columns = {str(row[1]) for row in db.execute(f"PRAGMA table_info({table})")}
+        if "recovery_event_id" not in columns:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN recovery_event_id INTEGER REFERENCES file_identity_events(id)")
+            columns.add("recovery_event_id")
+        unchanged = " AND ".join(f"NEW.{column} IS OLD.{column}" for column in sorted(columns - {"recovery_event_id"}))
+        projected = sorted(_PROJECTIONS[table])
+        replacement_key = "id=NEW.id"
+        if table == "rescan_file_operations":
+            replacement_key += " OR operation_token=NEW.operation_token"
+        matches = " AND ".join(
+            f"json_type(s.snapshot_json,'$.root.row.{column}') IS"
+            f" CASE typeof(OLD.{column}) WHEN 'null' THEN 'null'"
+            " WHEN 'integer' THEN 'integer' WHEN 'real' THEN 'real' ELSE 'text' END"
+            f" AND json_extract(s.snapshot_json,'$.root.row.{column}') IS OLD.{column}"
+            for column in projected
+        )
+        db.execute(f"""
+            CREATE TRIGGER IF NOT EXISTS file_identity_{table}_insert
+            BEFORE INSERT ON {table} BEGIN
+                SELECT RAISE(ABORT,'recovery enrollment requires journal update')
+                WHERE NEW.recovery_event_id IS NOT NULL OR EXISTS(
+                    SELECT 1 FROM {table} WHERE ({replacement_key})
+                    AND recovery_event_id IS NOT NULL);
+            END
+        """)
+        db.execute(f"""
+            CREATE TRIGGER IF NOT EXISTS file_identity_{table}_update
+            BEFORE UPDATE ON {table} BEGIN
+                SELECT RAISE(ABORT,'superseded journal is immutable')
+                    WHERE OLD.recovery_event_id IS NOT NULL;
+                SELECT RAISE(ABORT,'recovery preimage changed during update')
+                    WHERE NEW.recovery_event_id IS NOT NULL AND NOT ({unchanged});
+                SELECT RAISE(ABORT,'invalid recovery supersession preimage')
+                WHERE NEW.recovery_event_id IS NOT NULL AND NOT EXISTS(
+                    SELECT 1 FROM file_identity_events e JOIN file_identity_sets s USING(set_id)
+                    WHERE e.id=NEW.recovery_event_id AND e.kind='superseded'
+                    AND e.owner_domain='{domain}' AND s.owner_domain=e.owner_domain
+                    AND e.owner_key_json=json_object('key',json_array(OLD.id),'version',1)
+                    AND s.owner_key_json=e.owner_key_json
+                    AND e.id=(SELECT id FROM file_identity_events WHERE
+                        owner_domain=e.owner_domain AND owner_key_json=e.owner_key_json
+                        ORDER BY revision DESC LIMIT 1)
+                    AND json_extract(e.payload_json,'$.before_snapshot_json') IS s.snapshot_json
+                    AND json_extract(e.payload_json,'$.before_snapshot_sha256') IS s.snapshot_sha256
+                    AND json_type(s.snapshot_json,'$.version')='integer'
+                    AND json_extract(s.snapshot_json,'$.version')=1
+                    AND json_extract(s.snapshot_json,'$.owner.domain') IS '{domain}'
+                    AND json_array_length(s.snapshot_json,'$.owner.key')=1
+                    AND json_type(s.snapshot_json,'$.owner.key[0]')='integer'
+                    AND json_extract(s.snapshot_json,'$.owner.key[0]') IS OLD.id
+                    AND json_extract(s.snapshot_json,'$.root.table') IS '{table}'
+                    AND json_array_length(s.snapshot_json,'$.root.key')=1
+                    AND json_type(s.snapshot_json,'$.root.key[0]')='integer'
+                    AND json_extract(s.snapshot_json,'$.root.key[0]') IS OLD.id
+                    AND (SELECT count(*) FROM json_each(s.snapshot_json,'$.root.row'))={len(projected)}
+                    AND {matches}
+                );
+            END
+        """)
+        db.execute(f"""
+            CREATE TRIGGER IF NOT EXISTS file_identity_{table}_delete
+            BEFORE DELETE ON {table} WHEN OLD.recovery_event_id IS NOT NULL BEGIN
+                SELECT RAISE(ABORT,'superseded journal is immutable');
+            END
+        """)
+
+    indexes = (
+        ("rescan_file_operations_active_volume", "rescan_file_operations", "volume_id", True,
+         "state IN ('prepared','published','db_committed','rollback')"),
+        ("rescan_file_operations_active_series", "rescan_file_operations", "series_id,id", False,
+         "state IN ('prepared','published','db_committed','rollback')"),
+        ("rescan_file_operations_active_keyset", "rescan_file_operations", "id", False,
+         "state IN ('prepared','published','db_committed','rollback')"),
+        ("idx_volume_file_deletions_active_volume", "volume_file_deletions", "volume_id", True, "state='active'"),
+        ("idx_volume_file_deletions_active_series", "volume_file_deletions", "series_id,id", False, "state='active'"),
+    )
+    for name, table, indexed, unique, predicate in indexes:
+        existing = db.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (name,)).fetchone()
+        if existing is not None and "recovery_event_id IS NULL" not in existing[0]:
+            db.execute(f"DROP INDEX {name}")
+        db.execute(f"CREATE {'UNIQUE ' if unique else ''}INDEX IF NOT EXISTS {name} ON {table}({indexed}) WHERE {predicate} AND recovery_event_id IS NULL")
+    db.execute(f"PRAGMA user_version={_SCHEMA_VERSION_FILE_IDENTITY}")
 
 
 def _ensure_rescan_file_operations_schema(db: sqlite3.Connection) -> None:
@@ -2074,9 +2323,10 @@ def _migrate_history_download_ownership(db: sqlite3.Connection) -> None:
         """)
         changed = True
 
-    db.execute(
-        f"PRAGMA user_version = {_SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP}"
-    )
+    if starting_version < _SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP:
+        db.execute(
+            f"PRAGMA user_version = {_SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP}"
+        )
     if changed or starting_version < _SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP:
         retained_note = (
             f"; retained {retained_publications} legacy pack cleanup "

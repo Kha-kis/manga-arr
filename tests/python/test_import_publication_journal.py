@@ -2469,7 +2469,7 @@ def test_fresh_schema_has_per_connection_notification_delivery_state(
     } <= columns
     assert "settings" not in columns
     assert "idx_import_publication_notification_deliveries_due" in indexes
-    assert version == 5
+    assert version == 6
 
 
 def test_v3_notification_migration_snapshots_ids_and_display_metadata_only(
@@ -2534,7 +2534,7 @@ def test_v3_notification_migration_snapshots_ids_and_display_metadata_only(
     assert delivery["state"] == "pending"
     assert "settings" not in delivery
     assert secret_canary not in repr(delivery)
-    assert version == 5
+    assert version == 6
 
 
 def test_startup_drain_ignores_terminal_work_and_pages_past_blocked_ids(
