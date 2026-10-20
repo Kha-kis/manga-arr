@@ -10,6 +10,7 @@ import sqlite3
 import tempfile
 import threading
 import zipfile
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -66,8 +67,8 @@ def _snapshot_database(db_path: str, snapshot_path: str) -> int:
     if not os.path.isfile(db_path):
         raise FileNotFoundError(f"Mangarr database not found: {db_path}")
 
-    with sqlite3.connect(db_path, timeout=30) as source:
-        with sqlite3.connect(snapshot_path) as destination:
+    with closing(sqlite3.connect(db_path, timeout=30)) as source, source:
+        with closing(sqlite3.connect(snapshot_path)) as destination, destination:
             source.backup(destination)
             quick_check = destination.execute("PRAGMA quick_check").fetchone()
             if not quick_check or quick_check[0] != "ok":
