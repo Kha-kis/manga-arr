@@ -7,6 +7,12 @@ All notable changes to this project. Format roughly follows
 
 ### Fixed
 
+- Chapter-copy rollback releases its owned file handle after verified unlink,
+  before attempting to remove that attempt's temporary directory. Pending-marker
+  retirement uses the same ordering without releasing the chapter's parent
+  intent. Foreign/uncertain entries and recovery fences remain protected; this
+  does not remove historical directories or revalidate remounted namespaces
+  ([#474](https://github.com/Kha-kis/manga-arr/issues/474)).
 - Rescan recovery retains the original allocation failure alongside its
   unrecorded-allocation warning, including on repeated replay. Recovery fences
   and ownership checks remain unchanged; this does not revalidate namespaces
