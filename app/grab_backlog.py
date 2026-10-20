@@ -124,10 +124,10 @@ def _select_covering_packs(
             continue
         item_complete = is_complete_pack(item["title"], total_volumes)
         rng = extract_volume_range(item["title"])
-        if item_complete:
-            covered = set(missing_vols)
-        elif rng:
+        if rng:
             covered = {v for v in missing_vols if rng[0] <= v <= rng[1]}
+        elif item_complete:
+            covered = set(missing_vols)
         else:
             continue
         if not covered:
@@ -262,12 +262,11 @@ async def search_complete_pack(
 
     claimed_by_packs: set[float] = set()
     for item in packs_to_grab:
-        if is_complete_pack(item["title"], total_volumes):
+        rng = extract_volume_range(item["title"])
+        if rng:
+            claimed_by_packs |= {v for v in missing_vols if rng[0] <= v <= rng[1]}
+        elif is_complete_pack(item["title"], total_volumes):
             claimed_by_packs |= missing_vols
-        else:
-            rng = extract_volume_range(item["title"])
-            if rng:
-                claimed_by_packs |= {v for v in missing_vols if rng[0] <= v <= rng[1]}
     gaps = missing_vols - claimed_by_packs
 
     gap_grabbed = 0

@@ -175,9 +175,9 @@ def chapters_to_volume_set(
 def _coverage_already_grabbed(
     series_id: int,
     pack_type: str,
-    vol_rng: tuple | None,
-    ch_range: tuple | None,
-    ch_map: dict,
+    vol_rng: tuple[float, float] | None,
+    ch_range: tuple[float, float] | None,
+    ch_map: dict[str, float],
     total_chs: int | None,
     total_vols: int | None,
 ) -> bool:
@@ -196,25 +196,30 @@ def _coverage_already_grabbed(
         cascaded into interior stubs.
     """
     with get_db() as db:
-        # A non-special complete pack supersedes any narrower new pack.
+        # Only an unbounded complete pack supersedes every narrower new pack.
         has_complete = db.execute(
             "SELECT 1 FROM volumes WHERE series_id=? AND pack_type='complete'"
             " AND status IN ('grabbed','downloaded')"
+            " AND vol_range_start IS NULL AND vol_range_end IS NULL"
             " AND COALESCE(is_special, 0) = 0",
             (series_id,),
         ).fetchone()
         if has_complete and pack_type != "complete":
             return True
 
-        # For a new complete pack, only skip if no mainline wanted+monitored
-        # stubs remain (specials don't block a mainline complete grab).
+        # Complete packs still use wanted+monitored stubs, but an explicit
+        # range cannot borrow wanted work outside the payload.
         if pack_type == "complete":
-            wanted = db.execute(
+            wanted_sql = (
                 "SELECT 1 FROM volumes WHERE series_id=? AND volume_num IS NOT NULL"
                 " AND status='wanted' AND monitored=1"
-                " AND COALESCE(is_special, 0) = 0",
-                (series_id,),
-            ).fetchone()
+                " AND COALESCE(is_special, 0) = 0"
+            )
+            wanted_args: list[int | float] = [series_id]
+            if vol_rng:
+                wanted_sql += " AND volume_num >= ? AND volume_num <= ?"
+                wanted_args.extend(vol_rng)
+            wanted = db.execute(wanted_sql, wanted_args).fetchone()
             return wanted is None
 
         # Determine target volumes. Keep them as floats so fractional
