@@ -1,10 +1,14 @@
+import errno
 import json
 import os
 import sqlite3
 import zipfile
+from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from cryptography.fernet import Fernet
 import pytest
@@ -14,6 +18,7 @@ from backups import (
     DATABASE_ENTRY,
     MANIFEST_ENTRY,
     SECRET_KEY_ENTRY,
+    _snapshot_database,
     create_backup_archive,
     restore_backup_archive,
     validate_backup_archive,
@@ -34,6 +39,181 @@ def _create_database(path, value="current"):
 def _read_value(path):
     with sqlite3.connect(path) as connection:
         return connection.execute("SELECT value FROM state").fetchone()[0]
+
+
+@contextmanager
+def _track_snapshot_connections(
+    monkeypatch: pytest.MonkeyPatch, *, failure: str | None = None
+) -> Generator[list[sqlite3.Connection], None, None]:
+    connections: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+
+    class SnapshotConnection(sqlite3.Connection):
+        def backup(
+            self,
+            target: sqlite3.Connection,
+            *,
+            pages: int = -1,
+            progress: Callable[[int, int, int], object] | None = None,
+            name: str = "main",
+            sleep: float = 0.250,
+        ) -> None:
+            if failure == "backup":
+                raise sqlite3.DatabaseError("injected backup failure")
+            super().backup(
+                target, pages=pages, progress=progress, name=name, sleep=sleep
+            )
+
+        def execute(
+            self,
+            sql: str,
+            parameters: Any = (),
+            /,
+        ) -> sqlite3.Cursor:
+            if sql == "PRAGMA quick_check" and failure == "quick-check":
+                return super().execute("SELECT 'injected quick_check failure'")
+            if sql == "PRAGMA user_version" and failure == "schema-read":
+                raise sqlite3.DatabaseError("injected schema read failure")
+            return super().execute(sql, parameters)
+
+    def connect(database: str, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        if failure == "destination-open" and len(connections) == 1:
+            raise sqlite3.OperationalError("injected destination open failure")
+        connection = real_connect(database, *args, factory=SnapshotConnection, **kwargs)
+        connections.append(connection)
+        return connection
+
+    with monkeypatch.context() as patch:
+        patch.setattr(sqlite3, "connect", connect)
+        try:
+            yield connections
+        finally:
+            # Retain references for observation, but never leak handles on RED.
+            for connection in connections:
+                connection.close()
+
+
+def _assert_connections_closed(connections: list[sqlite3.Connection]) -> None:
+    for connection in connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            connection.execute("SELECT 1")
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "destination-open", "backup", "quick-check", "schema-read"]
+)
+def test_snapshot_closes_connections_on_success_and_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str | None
+) -> None:
+    db_path = tmp_path / "source.db"
+    writer = _create_database(db_path)
+    try:
+        with _track_snapshot_connections(monkeypatch, failure=failure) as connections:
+            if failure is None:
+                assert (
+                    _snapshot_database(str(db_path), str(tmp_path / "snapshot.db")) == 7
+                )
+            else:
+                message = {
+                    "destination-open": "injected destination open failure",
+                    "backup": "injected backup failure",
+                    "quick-check": "SQLite snapshot failed PRAGMA quick_check",
+                    "schema-read": "injected schema read failure",
+                }[failure]
+                with pytest.raises(sqlite3.DatabaseError, match=message):
+                    _snapshot_database(str(db_path), str(tmp_path / "snapshot.db"))
+            assert len(connections) == (1 if failure == "destination-open" else 2)
+            _assert_connections_closed(connections)
+    finally:
+        writer.close()
+
+
+@pytest.mark.parametrize("boundary", ["zip-read", "cleanup"])
+def test_archive_snapshot_connections_closed_at_boundaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    db_path = tmp_path / DATABASE_ENTRY
+    writer = _create_database(db_path)
+    real_write = zipfile.ZipFile.write
+    real_rmdir = os.rmdir
+    observed: list[str] = []
+
+    def write_snapshot(
+        archive: zipfile.ZipFile,
+        filename: str,
+        arcname: str | None = None,
+        compress_type: int | None = None,
+        compresslevel: int | None = None,
+    ) -> None:
+        if arcname == DATABASE_ENTRY and boundary == "zip-read":
+            assert len(connections) == 2
+            _assert_connections_closed(connections)
+            observed.append("zip-read")
+        real_write(archive, filename, arcname, compress_type, compresslevel)
+
+    def remove_snapshot(path: str, *, dir_fd: int | None = None) -> None:
+        if Path(path).name.startswith(".mangarr-backup-") and boundary == "cleanup":
+            assert len(connections) == 2
+            _assert_connections_closed(connections)
+            observed.append("cleanup")
+        real_rmdir(path, dir_fd=dir_fd)
+
+    try:
+        with _track_snapshot_connections(monkeypatch) as connections:
+            with monkeypatch.context() as patch:
+                patch.setattr(zipfile.ZipFile, "write", write_snapshot)
+                patch.setattr(os, "rmdir", remove_snapshot)
+                filename, archive_path = create_backup_archive(
+                    db_path=str(db_path), backup_dir=str(tmp_path / "backups")
+                )
+            assert observed == [boundary]
+            assert Path(archive_path).name == filename
+            assert not list((tmp_path / "backups").glob(".mangarr-backup-*"))
+        with zipfile.ZipFile(archive_path) as archive:
+            assert archive.testzip() is None
+            extracted_db = tmp_path / "extracted.db"
+            extracted_db.write_bytes(archive.read(DATABASE_ENTRY))
+        connection = sqlite3.connect(extracted_db)
+        try:
+            assert connection.execute("SELECT value FROM state").fetchone() == (
+                "current",
+            )
+        finally:
+            connection.close()
+    finally:
+        writer.close()
+
+
+def test_archive_cleanup_obstruction_still_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / DATABASE_ENTRY
+    writer = _create_database(db_path)
+    backup_dir = tmp_path / "backups"
+    real_rmdir = os.rmdir
+    obstruction = OSError(errno.ENOTEMPTY, "injected snapshot cleanup obstruction")
+
+    def obstruct_snapshot(path: str, *, dir_fd: int | None = None) -> None:
+        if Path(path).name.startswith(".mangarr-backup-"):
+            raise obstruction
+        real_rmdir(path, dir_fd=dir_fd)
+
+    try:
+        with _track_snapshot_connections(monkeypatch) as connections:
+            with monkeypatch.context() as patch:
+                patch.setattr(os, "rmdir", obstruct_snapshot)
+                with pytest.raises(OSError) as raised:
+                    create_backup_archive(
+                        db_path=str(db_path), backup_dir=str(backup_dir)
+                    )
+            assert raised.value is obstruction
+            assert raised.value.errno == errno.ENOTEMPTY
+            assert len(list(backup_dir.glob("*.zip"))) == 1
+            assert len(list(backup_dir.glob(".mangarr-backup-*"))) == 1
+            assert len(connections) == 2
+            _assert_connections_closed(connections)
+    finally:
+        writer.close()
 
 
 def test_create_backup_is_wal_safe_self_contained_and_versioned(tmp_path):
