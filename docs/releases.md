@@ -35,11 +35,20 @@ verified current chapter and volume evidence; it neither deletes files nor
 adopts historical files. Readers must exclude the quarantine directory and
 cannot carry loose-chapter read progress to the volume.
 
-**Unpublished and unqualified.** A reviewed preparation merge must be pinned
-before separately authorized immutable tagging and non-latest publication.
-Fresh artifact, cleanup/restore/recovery, runtime and full-day natural-repeat
-qualification are required. Native ARM64 and representative NAS evidence remain
-unavailable, not waived. No RC9 elapsed time or artifact results transfer.
+**Published, unqualified and held.** [PR #473](https://github.com/Kha-kis/manga-arr/pull/473)
+merge `55f3d6fcc8d8737f1d5180fe1063d863630c36f9` was published as the
+[RC10 prerelease](https://github.com/Kha-kis/manga-arr/releases/tag/v1.3.3-rc.10).
+Startup replay reproduced [#475](https://github.com/Kha-kis/manga-arr/issues/475).
+Its correction is merged in [#476](https://github.com/Kha-kis/manga-arr/pull/476),
+but is not present in the immutable RC10 image. The diagnostic-only correction
+in [#477](https://github.com/Kha-kis/manga-arr/pull/477) also remains unshipped;
+remount ownership and rollback-directory cleanup in
+[#474](https://github.com/Kha-kis/manga-arr/issues/474) remain unresolved.
+
+A replacement requires a reviewed preparation merge, a new immutable candidate,
+and fresh artifact, cleanup/restore/recovery, runtime and full-day natural-repeat
+qualification. Native ARM64 and representative NAS evidence remain unavailable,
+not waived. No RC10 partial results or RC9 elapsed time transfer.
 Production remains the RC5 owner trial; qualified stable and stable aliases
 remain 1.3.2. See [RC10 qualification](release-qualification.md#133-rc10-qualification).
 

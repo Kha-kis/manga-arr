@@ -28,6 +28,14 @@ new immutable candidate and fresh artifact qualification. Never replace the RC10
 tag/image or transfer its partial results or RC9's elapsed observation time to a
 replacement. Already populated observations are not automatically rewritten.
 
+The startup correction is now merged in
+[PR #476](https://github.com/Kha-kis/manga-arr/pull/476), but RC10 remains unchanged
+and held. [PR #477](https://github.com/Kha-kis/manga-arr/pull/477) preserves future
+allocation diagnostics only; it does not resolve the remount ownership or
+rollback-directory lifecycle problems in
+[#474](https://github.com/Kha-kis/manga-arr/issues/474). Neither source merge
+supplies replacement-candidate artifact or runtime qualification.
+
 ### Source And Preparation Boundary
 
 Baseline is reviewed [PR #469](https://github.com/Kha-kis/manga-arr/pull/469)
