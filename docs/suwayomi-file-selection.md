@@ -279,6 +279,13 @@ the captured entry and its origin/expected-identity receipt are retained under
 rename fallback is used on NAS filesystems. This private-directory boundary
 does not protect against hostile same-UID tampering inside the private carrier.
 
+After successful unlink of the verified owned entry, rollback closes only that
+entry's file handle before attempting to remove its fresh temporary carrier.
+The parent intent remains available for pending-marker retirement or repair.
+A refusal before successful unlink keeps its pin; no historical directories are
+scanned or retried.
+Other open handles or filesystem errors can still prevent carrier removal.
+
 New copies persist a `0600` JSON `.mangarr-claim-chapter-pending-*` marker before
 creating the public file. Its original inode stays pinned until retirement,
 which uses the same private capture/identity check as copy rollback. A replaced

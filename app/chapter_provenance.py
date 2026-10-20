@@ -520,6 +520,7 @@ def _remove_captured(
         ):
             os.unlink("artifact", dir_fd=carrier_fd)
             captured = False
+            owner._close_file()
             os.fsync(carrier_fd)
             return True
     except FileNotFoundError:
