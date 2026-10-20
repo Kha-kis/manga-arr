@@ -1,7 +1,8 @@
 # Remount-Safe Ownership Proofs And Legacy Recovery
 
-Status: **proposed design; awaiting maintainer review**. This document authorizes
-no implementation, migration, recovery operation, release or deployment.
+Status: **maintainer-approved for implementation planning on 2026-10-20**.
+Approval authorizes the implementation plan, not implementation, migration,
+recovery operations, release or deployment.
 
 Source reviewed: `c4d6b039656b3051b4b76725d2aa2138a4d50ed4` (PR #479).
 Issue: [#474](https://github.com/Kha-kis/manga-arr/issues/474).
@@ -344,13 +345,14 @@ These are design boundaries, not an approved execution plan. The implementation
 plan must size them honestly; if a boundary cannot remain reviewable, split it
 without shipping partially supported authorization as a complete #474 fix.
 
-## Approval Requested
+## Approval Boundary
 
-Review the automatic-continuity trust contract, append-only enrollment model,
-full consumer coverage and explicit legacy recovery dispositions above. Approval
-permits writing a detailed implementation plan, not product implementation or
-use of the recovery workflow. Storage-profile qualification and the concrete
-reporter's operation plan remain separately evidenced decisions.
+The maintainer approved this written specification on 2026-10-20, including the
+automatic-continuity trust contract, append-only enrollment model, full consumer
+coverage and explicit legacy recovery dispositions. This permits writing the
+detailed implementation plan, not product implementation or use of the recovery
+workflow. Storage-profile qualification and the concrete reporter's operation
+plan remain separately evidenced decisions.
 
 ## Primary References
 
