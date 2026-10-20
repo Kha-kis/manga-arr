@@ -227,7 +227,7 @@ async def grab_item(
             " AND COALESCE(is_special, 0)=0"
         )
         monitoring_args: list[int | float] = [series_id]
-        if vol_rng and not complete:
+        if vol_rng:
             monitoring_sql += " AND volume_num >= ? AND volume_num <= ?"
             monitoring_args.extend(vol_rng)
         with get_db() as db:
@@ -267,10 +267,16 @@ async def grab_item(
             # The complete coverage helper uses monitoring to find wanted work.
             # Explicitly selected releases override that, but not satisfied coverage.
             with get_db() as db:
-                coverage_satisfied = not db.execute(
+                coverage_sql = (
                     "SELECT 1 FROM volumes WHERE series_id=? AND status='wanted'"
-                    " AND volume_num IS NOT NULL AND COALESCE(is_special, 0)=0 LIMIT 1",
-                    (series_id,),
+                    " AND volume_num IS NOT NULL AND COALESCE(is_special, 0)=0"
+                )
+                coverage_args: list[int | float] = [series_id]
+                if vol_rng:
+                    coverage_sql += " AND volume_num >= ? AND volume_num <= ?"
+                    coverage_args.extend(vol_rng)
+                coverage_satisfied = not db.execute(
+                    coverage_sql + " LIMIT 1", coverage_args
                 ).fetchone()
         else:
             coverage_satisfied = _coverage_already_grabbed(
@@ -732,12 +738,18 @@ async def grab_item(
                 else ""
             )
             if complete:
+                # A complete label does not expand the payload's concrete range.
+                complete_filter = monitored_filter
+                complete_args: list[int | float] = [series_id]
+                if vol_rng:
+                    complete_filter += " AND volume_num >= ? AND volume_num <= ?"
+                    complete_args.extend(vol_rng)
                 complete_vol_ids = [
                     row["id"]
                     for row in db.execute(
                         "SELECT id FROM volumes WHERE series_id=? AND status='wanted'"
-                        " AND volume_num IS NOT NULL" + monitored_filter,
-                        (series_id,),
+                        " AND volume_num IS NOT NULL" + complete_filter,
+                        complete_args,
                     ).fetchall()
                 ]
                 db.execute(
@@ -745,7 +757,7 @@ async def grab_item(
                     " download_id=?, torrent_name=?, client=?, indexer=?, protocol=?,"
                     " release_group=?, size_bytes=?, edition_type=?, language=?"
                     " WHERE series_id=? AND status='wanted' AND volume_num IS NOT NULL"
-                    + monitored_filter,
+                    + complete_filter,
                     (
                         now,
                         item["url"],
@@ -758,7 +770,7 @@ async def grab_item(
                         size,
                         edition,
                         lang,
-                        series_id,
+                        *complete_args,
                     ),
                 )
                 _cascade_chapters(
