@@ -15,6 +15,7 @@ import pytest
 import grab_backlog
 import grab_core
 import grab_dedup
+import main
 import metadata_enrichment
 import schema
 import shared
@@ -292,3 +293,183 @@ def test_finished_complete_first_leaves_outside_gap_for_later_candidate(
                 ).fetchone()[0]
                 == release("Vol 10")["url"]
             )
+
+
+@pytest.mark.parametrize(
+    "label,stored,bounds",
+    [
+        ("v01-v09", (None, None), (1, 9)),
+        ("v01-v08 Complete Series", (1, 9), (1, 8)),
+        ("Complete Series", (1, 9), (1, 9)),
+        ("v03.01-v03.5 Complete Series", (None, None), (3.01, 3.5)),
+        ("Complete Series", (3.01, 3.5), (3.01, 3.5)),
+    ],
+)
+def test_startup_retains_complete_bounds_and_only_claims_inside(
+    label: str,
+    stored: tuple[float | None, float | None],
+    bounds: tuple[float, float],
+) -> None:
+    with shared.get_db() as db:
+        _ = db.execute("UPDATE volumes SET status='wanted',monitored=0 WHERE id=2")
+        for number, special in ((0.5, 0), (3.25, 0), (3.5, 0), (3.01, 1)):
+            _ = db.execute(
+                "INSERT INTO volumes(series_id,volume_num,status,monitored,is_special)"
+                + " VALUES(1,?,'wanted',1,?)",
+                (number, special),
+            )
+        _ = db.execute(
+            "INSERT INTO volumes(series_id,status,torrent_name,pack_type,vol_range_start,vol_range_end)"
+            + " VALUES(1,'grabbed',?,'complete',?,?)",
+            (release(label)["title"], *stored),
+        )
+    expected_claims = 3 if bounds[0] == 1 else 2
+    assert main.backfill_pack_ranges() == expected_claims
+    state = statuses("volumes", "volume_num")
+    assert state[2] == ("grabbed" if bounds[0] == 1 else "wanted")
+    assert state[3.25] == state[3.5] == "grabbed"
+    assert state[3.01] == state[0.5] == state[10] == "wanted"
+    assert state[3] == "downloaded"
+    with shared.get_db() as db:
+        pack = cast(
+            Row,
+            db.execute(
+                "SELECT pack_type,vol_range_start,vol_range_end FROM volumes WHERE volume_num IS NULL"
+            ).fetchone(),
+        )
+        assert tuple(cast(Iterable[object], pack)) == ("complete", *bounds)
+    after_first = observations()
+    assert main.backfill_pack_ranges() == 0
+    assert observations() == after_first
+
+
+@pytest.mark.parametrize("label", ["v01-v09", "v01-v08 Complete Series"])
+def test_grabbed_complete_range_survives_two_startup_backfills(label: str) -> None:
+    with shared.get_db() as db:
+        _ = db.execute("UPDATE volumes SET status='wanted' WHERE id=2")
+    assert asyncio.run(grab_core.grab_item(release(label), 1))
+    before = observations()
+    assert main.backfill_pack_ranges() == 0
+    assert main.backfill_pack_ranges() == 0
+    assert observations() == before
+    assert statuses("volumes", "volume_num")[10] == "wanted"
+    assert not metadata_enrichment._coverage_already_grabbed(
+        1, "volume", (9, 10), None, {}, 100, 10
+    )
+
+
+def test_startup_unbounded_complete_keeps_legacy_claim_semantics() -> None:
+    with shared.get_db() as db:
+        _ = db.execute("UPDATE volumes SET monitored=0 WHERE id=10")
+        _ = db.execute(
+            "INSERT INTO volumes(series_id,status,torrent_name)"
+            + " VALUES(1,'grabbed','Test Series Complete Series')"
+        )
+    assert main.backfill_pack_ranges() == 1
+    assert statuses("volumes", "volume_num")[10] == "grabbed"
+    before = observations()
+    assert main.backfill_pack_ranges() == 0
+    assert observations() == before
+    assert metadata_enrichment._coverage_already_grabbed(
+        1, "volume", (11, 12), None, {}, 100, 10
+    )
+
+
+def test_startup_chapter_pack_clears_false_volume_bounds() -> None:
+    with shared.get_db() as db:
+        _ = db.execute("UPDATE volumes SET status='wanted' WHERE id=3")
+        _ = db.execute(
+            "UPDATE series SET chapter_vol_map=?",
+            (json.dumps({"10": 3, "20": 3, "30": 3}),),
+        )
+        _ = db.execute(
+            "INSERT INTO volumes(series_id,status,torrent_name,vol_range_start,vol_range_end)"
+            + " VALUES(1,'grabbed','Test Series 010-030',10,30)"
+        )
+    assert main.backfill_pack_ranges() == 1
+    assert statuses("volumes", "volume_num")[3] == "grabbed"
+    assert statuses("volumes", "volume_num")[10] == "wanted"
+    with shared.get_db() as db:
+        pack = cast(
+            Row,
+            db.execute(
+                "SELECT pack_type,vol_range_start,vol_range_end FROM volumes WHERE volume_num IS NULL"
+            ).fetchone(),
+        )
+        assert tuple(cast(Iterable[object], pack)) == ("chapter", None, None)
+    before = observations()
+    assert main.backfill_pack_ranges() == 0
+    assert observations() == before
+
+
+@pytest.mark.parametrize("number", [2, 3.5])
+def test_numbered_complete_import_only_covers_its_own_volume(number: float) -> None:
+    from import_commit import _process_volume_import
+    from import_plan import _FilePlan, _ImportPlan
+
+    file = _FilePlan(
+        file_id=1,
+        src_path="/fixture/source.cbz",
+        filename="Test Series Vol 2.cbz",
+        dst_path="/fixture/imported.cbz",
+        import_kind="volume",
+        file_type="volume",
+        proposed_vol=number,
+        proposed_chap=None,
+        chap_range_end=None,
+        vol_range_start=None,
+        vol_range_end=None,
+        pack_type="complete",
+        is_special=0,
+        special_title=None,
+        has_volume_range=False,
+        is_legacy_chapter_stub=False,
+        is_legacy_chapter_recheck=False,
+        plan_status="ready",
+        plan_failure_reason="",
+    )
+    plan = _ImportPlan(
+        queue={
+            "download_id": "fixture",
+            "torrent_url": "https://indexer.invalid/import",
+        },
+        series=None,
+        series_tags=[],
+        dst_dir="/fixture",
+        import_mode="copy",
+        now_ts=None,
+        files=[file],
+        series_id=1,
+    )
+    with shared.get_db() as db:
+        _ = db.execute("DELETE FROM chapters WHERE volume_id=2")
+        _ = db.execute("DELETE FROM volumes WHERE id=2")
+        _process_volume_import(db, file, file.dst_path, plan, plan.queue, 1, set())
+        imported = cast(
+            Row,
+            db.execute(
+                "SELECT volume_num,status,pack_type,vol_range_start,vol_range_end"
+                + " FROM volumes WHERE volume_num=?",
+                (number,),
+            ).fetchone(),
+        )
+        assert tuple(cast(Iterable[object], imported)) == (
+            number,
+            "downloaded",
+            "complete",
+            None,
+            None,
+        )
+    before = observations()
+    assert metadata_enrichment._coverage_already_grabbed(
+        1, "volume", (number, number), None, {}, 100, 10
+    )
+    assert not metadata_enrichment._coverage_already_grabbed(
+        1, "volume", (9, 10), None, {}, 100, 10
+    )
+    assert not metadata_enrichment._coverage_already_grabbed(
+        1, "chapter", None, (90, 100), {"90": 9, "95": 10, "100": 10}, 100, 10
+    )
+    assert observations() == before
+    assert asyncio.run(grab_core.grab_item(release("v09-v10"), 1))
+    assert statuses("volumes", "volume_num")[10] == "grabbed"

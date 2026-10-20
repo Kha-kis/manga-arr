@@ -910,8 +910,10 @@ async def queue_events(request: Request):
                                       "X-Accel-Buffering": "no"})
 
 
-def backfill_pack_ranges():
+def backfill_pack_ranges() -> int:
     """Retroactively parse ranges/complete from existing pack volumes and mark stubs."""
+    from typing import cast
+
     with get_db() as db:
         # Process all packs — re-evaluate pack_type even if range was set
         packs = db.execute(
@@ -941,8 +943,10 @@ def backfill_pack_ranges():
             # For chapter packs: clear stored vol_range (those were chapter numbers, not volumes)
             if pack_type == 'chapter':
                 rng_start, rng_end = None, None
-            elif vol_rng and pack_type == 'volume':
+            elif vol_rng and pack_type in ('volume', 'complete'):
                 rng_start, rng_end = vol_rng
+            elif complete and p['vol_range_start'] is not None and p['vol_range_end'] is not None:
+                rng_start, rng_end = cast(tuple[float, float], (p['vol_range_start'], p['vol_range_end']))
             else:
                 rng_start, rng_end = None, None
 
@@ -952,11 +956,18 @@ def backfill_pack_ranges():
             )
 
             if complete:
-                cur = db.execute(
+                claim_sql = (
                     "UPDATE volumes SET status='grabbed', grabbed_at=?, torrent_name=? "
-                    "WHERE series_id=? AND status='wanted' AND volume_num IS NOT NULL",
-                    (now, name, p['series_id'])
+                    "WHERE series_id=? AND status='wanted' AND volume_num IS NOT NULL"
                 )
+                claim_args: list[str | int | float] = [now, name, p['series_id']]
+                if rng_start is not None and rng_end is not None:
+                    claim_sql += (
+                        " AND volume_num >= ? AND volume_num <= ?"
+                        " AND COALESCE(is_special, 0) = 0"
+                    )
+                    claim_args.extend((rng_start, rng_end))
+                cur = db.execute(claim_sql, claim_args)
                 total_marked += cur.rowcount
             elif pack_type == 'volume' and vol_rng:
                 cur = db.execute(

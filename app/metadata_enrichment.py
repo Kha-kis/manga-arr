@@ -200,6 +200,7 @@ def _coverage_already_grabbed(
         has_complete = db.execute(
             "SELECT 1 FROM volumes WHERE series_id=? AND pack_type='complete'"
             " AND status IN ('grabbed','downloaded')"
+            " AND volume_num IS NULL"
             " AND vol_range_start IS NULL AND vol_range_end IS NULL"
             " AND COALESCE(is_special, 0) = 0",
             (series_id,),
