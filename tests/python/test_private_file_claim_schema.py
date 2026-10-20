@@ -46,6 +46,11 @@ def test_v5_migration_adds_metadata_without_rewriting_legacy_journal(
         before = db.execute(
             "SELECT state,target_path,claim_path,target_sha256 FROM volume_file_deletions"
         ).fetchone()
+        # Reconstruct v5 before dropping columns referenced by v6-only guards.
+        for action in ("insert", "update", "delete"):
+            db.execute(
+                f"DROP TRIGGER IF EXISTS file_identity_volume_file_deletions_{action}"
+            )
         for table, column in (
             ("import_publication_files", "final_claim_carrier_json"),
             ("import_publication_files", "source_claim_carrier_json"),

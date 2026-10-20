@@ -330,7 +330,7 @@ def test_fresh_install_sets_user_version(env):
     empty tables."""
     with sqlite3.connect(env) as c:
         ver = c.execute("PRAGMA user_version").fetchone()[0]
-    assert ver == 5
+    assert ver == 6
 
 
 def test_volumes_status_has_check_constraint(env):
