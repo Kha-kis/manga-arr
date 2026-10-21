@@ -672,17 +672,23 @@ def _swap_destination_on_first_write(monkeypatch, dst, replace):
 
 
 @pytest.mark.parametrize("limit", [10, 4 * 1024 * 1024 * 1024])
-def test_copy_never_writes_a_regular_file_swapped_in(tmp_path, monkeypatch, limit):
+def test_copy_never_writes_a_regular_file_swapped_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limit: int,
+) -> None:
     import chapter_provenance
 
     monkeypatch.setattr(chapter_provenance, "FINGERPRINT_MAX_BYTES", limit)
     src = _make_cbz(tmp_path / "src.cbz")
     dst = str(tmp_path / "dst.cbz")
-    _swap_destination_on_first_write(
-        monkeypatch, dst, lambda p: _make_cbz(p, page_count=6))
+    foreign: dict[str, str] = {}
+
+    def _replace(path: str) -> None:
+        foreign["sha"] = _sha(_make_cbz(path, page_count=6))
+
+    _swap_destination_on_first_write(monkeypatch, dst, _replace)
     with pytest.raises(chapter_provenance.ProvenanceError):
         chapter_provenance.copy_new_file(src, dst)
-    assert _sha(dst) == _sha(_make_cbz(tmp_path / "ref.cbz", page_count=6))
+    assert _sha(dst) == foreign["sha"]
 
 
 @pytest.mark.parametrize("limit", [10, 4 * 1024 * 1024 * 1024])
