@@ -203,7 +203,7 @@ def _validate_database_entry(zf: zipfile.ZipFile) -> tuple[int, int]:
             shutil.copyfileobj(source, tmp)
 
     try:
-        with sqlite3.connect(temp_path) as connection:
+        with closing(sqlite3.connect(temp_path)) as connection, connection:
             quick_check = connection.execute("PRAGMA quick_check").fetchone()
             if not quick_check or quick_check[0] != "ok":
                 raise BackupArchiveError(
@@ -334,7 +334,7 @@ def restore_backup_archive(
                     target.write(archived_key + b"\n")
 
         try:
-            with sqlite3.connect(staged_db) as connection:
+            with closing(sqlite3.connect(staged_db)) as connection, connection:
                 quick_check = connection.execute("PRAGMA quick_check").fetchone()
                 if not quick_check or quick_check[0] != "ok":
                     raise BackupArchiveError(
