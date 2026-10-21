@@ -1793,18 +1793,22 @@ def _scan(db: sqlite3.Connection, counter: _Counter) -> dict[str, list[RawRow]]:
                 last or (),
             )
             names = tuple(c[0] for c in cursor.description)
-            batch = cursor.fetchmany(64)
-            counter.charge(rows=len(batch))
-            for values in batch:
-                row = dict(zip(names, values, strict=True))
-                raw = RawRow(
-                    table,
-                    tuple(cast(str | int, row[c]) for c in columns),
-                    tuple(sorted(row.items())),
-                )
-                result[table].append(raw)
-                counter.charge(hash_bytes=len(_encode(raw.values).encode("utf-8")))
-            if len(batch) < 64:
+            count = 0
+            try:
+                for values in cursor:
+                    counter.charge(rows=1)
+                    row = dict(zip(names, values, strict=True))
+                    raw = RawRow(
+                        table,
+                        tuple(cast(str | int, row[c]) for c in columns),
+                        tuple(sorted(row.items())),
+                    )
+                    counter.charge(hash_bytes=len(_encode(raw.values).encode("utf-8")))
+                    result[table].append(raw)
+                    count += 1
+            finally:
+                cursor.close()
+            if count < 64:
                 break
             last = tuple(dict(result[table][-1].values)[c] for c in columns)
     return result

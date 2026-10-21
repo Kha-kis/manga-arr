@@ -196,6 +196,12 @@ Provide a local administrative workflow, not an automatic web/startup repair:
    Include exact journal/registry bytes and revisions, phases, diagnostics,
    canonical paths, marker/artifact presence, current identities and full
    content evidence. Never expose private paths or tokens in public issue logs.
+   Read-only inspection preserves application rows, database bytes and committed
+   WAL content while allowing SQLite-managed coordination bookkeeping through
+   its normal read-only connection. It must not manually repair sidecars, issue
+   checkpoints, change persistent journal/config settings or weaken ownership
+   checks. Close all inspector SQL connections before media I/O, then recapture
+   the complete SQL closure through a fresh connection before reporting success.
 2. **Review:** produce an immutable plan bound to that inventory digest and
    storage declaration. Identify each retained object, proposed disposition,
    affected series and remaining uncertainty. The operator must identify the
