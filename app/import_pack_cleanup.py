@@ -518,6 +518,8 @@ def _retained_skipped_pack_uses_source(
     ).fetchall():
         if (
             row["pack_path"] != canonical
+            or row["normalized_download_id"]
+            != normalize_download_id(identity.download_id, identity.protocol)
             or download_identity_key(
                 DownloadIdentity(
                     coerce_download_client_id(row["download_client_id"]),
@@ -531,10 +533,25 @@ def _retained_skipped_pack_uses_source(
             continue
         claim = PackDirectoryClaim.from_json(str(row["carrier_json"]))
         if (
-            claim.artifact_owner_token is not None
-            and claim.artifact_owner_token == claim.carrier.binding.operation_key
-            and claim.source_directory.path == canonical
+            row["tombstone_path"]
+            != os.path.join(claim.carrier.carrier_path, "artifact")
+            or not (
+                claim.source_directory.path == canonical
+                or (
+                    claim.artifact_owner_token is None
+                    and _valid_tombstone_path(canonical, claim.source_directory.path)
+                )
+            )
+            or (
+                claim.artifact_owner_token is not None
+                and claim.artifact_owner_token != claim.carrier.binding.operation_key
+            )
         ):
+            continue
+        # Legacy cleanup renamed the canonical source before private capture.
+        # Keep its logical consumer as well as the proven capture-origin name.
+        inventories.append((canonical, claim.inventory))
+        if claim.source_directory.path != canonical:
             inventories.append((claim.source_directory.path, claim.inventory))
     return any(
         os.path.join(base, relative) in sources
