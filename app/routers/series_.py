@@ -344,17 +344,19 @@ async def _grab_volume_task(
         alias_rows = db.execute(
             "SELECT alias FROM series_aliases WHERE series_id=?", (series_id,)
         ).fetchall()
+        available = [
+            item
+            for item in all_items
+            if item["url"] not in seen_urls
+            and not is_blocked(
+                db, url=item["url"], identity=identity_for(item, series_id)
+            )
+        ]
     all_patterns = list(
         {s["search_pattern"], s["title"]} | {a["alias"] for a in alias_rows}
     )
     target_vol = current_volume["volume_num"]
-    for item in all_items:
-        with get_db() as db:
-            blocked = is_blocked(
-                db, url=item["url"], identity=identity_for(item, series_id)
-            )
-        if item["url"] in seen_urls or blocked:
-            continue
+    for item in available:
         if any(_m.matches(p, item["title"]) for p in all_patterns):
             item_vol = _m.extract_volume_num(item["title"])
             item_rng = _m.extract_volume_range(item["title"])
@@ -446,17 +448,19 @@ async def _grab_volume_task_sync(
         alias_rows = db.execute(
             "SELECT alias FROM series_aliases WHERE series_id=?", (series_id,)
         ).fetchall()
+        available = [
+            item
+            for item in all_items
+            if item["url"] not in seen_urls
+            and not is_blocked(
+                db, url=item["url"], identity=identity_for(item, series_id)
+            )
+        ]
     all_patterns = list(
         {s["search_pattern"], s["title"]} | {a["alias"] for a in alias_rows}
     )
     target_vol = current_volume["volume_num"]
-    for item in all_items:
-        with get_db() as db:
-            blocked = is_blocked(
-                db, url=item["url"], identity=identity_for(item, series_id)
-            )
-        if item["url"] in seen_urls or blocked:
-            continue
+    for item in available:
         if any(_m.matches(p, item["title"]) for p in all_patterns):
             item_vol = _m.extract_volume_num(item["title"])
             item_rng = _m.extract_volume_range(item["title"])
@@ -523,11 +527,13 @@ async def _grab_chapter_task(sid: int, s: dict, ch: dict):
             r["torrent_url"]
             for r in db.execute("SELECT torrent_url FROM seen").fetchall()
         }
-    for item in all_items:
-        with get_db() as db:
-            blocked = is_blocked(db, url=item["url"], identity=identity_for(item, sid))
-        if item["url"] in seen_urls or blocked:
-            continue
+        available = [
+            item
+            for item in all_items
+            if item["url"] not in seen_urls
+            and not is_blocked(db, url=item["url"], identity=identity_for(item, sid))
+        ]
+    for item in available:
         if not _m.matches(s["search_pattern"], item["title"]):
             continue
         item_ch = _m.extract_chapter_num(item["title"])
