@@ -320,6 +320,14 @@ def _plan_import(
     ).fetchall()
 
     if not files:
+        # Retry may retain only completed skip decisions after preparation failed.
+        retained = db.execute(
+            "SELECT * FROM import_queue_files WHERE queue_id=?", (queue_id,)
+        ).fetchall()
+        if retained and all(f["status"] == "skipped" for f in retained):
+            files = retained
+
+    if not files:
         _release_import_queue_lease(db, queue_id, lease_owner)
         return None
 
@@ -390,7 +398,7 @@ def _plan_import(
     plans = []
 
     for f in files:
-        if f["id"] in skip_ids:
+        if f["id"] in skip_ids or f["status"] == "skipped":
             db.execute(
                 "UPDATE import_queue_files SET status='skipped' WHERE id=?", (f["id"],)
             )
