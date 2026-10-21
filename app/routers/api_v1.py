@@ -4191,6 +4191,7 @@ async def api_v1_indexer(indexer_id: int):
 
 @router.post("/api/v1/indexer")
 async def api_v1_create_indexer(request: Request):
+    from release_sources import bind_indexer_scope
     try:
         payload = await request.json()
     except Exception:
@@ -4295,6 +4296,9 @@ async def api_v1_create_indexer(request: Request):
             ),
         )
         indexer_id = cur.lastrowid
+        if indexer_id is None:
+            raise RuntimeError("indexer creation did not allocate an ID")
+        bind_indexer_scope(db, indexer_id=indexer_id, previous=None)
         _replace_indexer_tags(db, indexer_id, tags)
         indexer = _indexer_by_id(db, indexer_id)
     return JSONResponse({"ok": True, "status": "created", "indexer": indexer})
@@ -4303,6 +4307,7 @@ async def api_v1_create_indexer(request: Request):
 @router.put("/api/v1/indexer/{indexer_id}")
 @router.patch("/api/v1/indexer/{indexer_id}")
 async def api_v1_update_indexer(request: Request, indexer_id: int):
+    from release_sources import bind_indexer_scope
     try:
         payload = await request.json()
     except Exception:
@@ -4398,8 +4403,9 @@ async def api_v1_update_indexer(request: Request, indexer_id: int):
         return JSONResponse({"error": str(exc)}, status_code=400)
 
     with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
         existing = db.execute(
-            "SELECT 1 FROM indexers WHERE id=?",
+            "SELECT * FROM indexers WHERE id=?",
             (indexer_id,),
         ).fetchone()
         if not existing:
@@ -4425,6 +4431,7 @@ async def api_v1_update_indexer(request: Request, indexer_id: int):
             )
         if tags is not None:
             _replace_indexer_tags(db, indexer_id, tags)
+        bind_indexer_scope(db, indexer_id=indexer_id, previous=dict(existing))
         indexer = _indexer_by_id(db, indexer_id)
     return JSONResponse({"ok": True, "indexer": indexer})
 

@@ -1393,7 +1393,9 @@ def _sql_paths(guard: FileMutationGuard) -> str:
 
 
 def _sql_schema(db: _ReadConnection) -> None:
-    if db.execute("PRAGMA user_version").fetchone()[0] != 6:
+    # Revision 7 adds release evidence only; every ownership projection below
+    # remains required. Keep this standalone adapter exact, not forward-open.
+    if db.execute("PRAGMA user_version").fetchone()[0] != 7:
         raise _SQLFailure("reference_uncertain")
     for table, columns in _SQL_COLUMNS.items():
         kind = db.execute(

@@ -267,8 +267,10 @@ def test_sync_is_idempotent_on_resync(env):
     assert n == 2, f"re-sync must not duplicate; expected 2 rows total, got {n}"
 
 
-def test_sync_uses_live_protocol_for_insert_and_corrective_resync(env):
-    """Usenet children use newznab, and re-sync repairs only a stale type."""
+@pytest.mark.parametrize("matching_endpoint", [True, False])
+def test_sync_uses_live_protocol_for_insert_and_corrective_resync(env, matching_endpoint):
+    """Re-sync corrects a verified facade, never an independently edited URL."""
+    endpoint = 'http://prowlarr.test/1' if matching_endpoint else 'http://custom.test'
     live_subs = [
         {
             'id': 1, 'name': 'ExistingUsenet', 'enable': True,
@@ -291,8 +293,9 @@ def test_sync_uses_live_protocol_for_insert_and_corrective_resync(env):
             "INSERT INTO indexers(name, type, url, api_key, priority, enabled,"
             " categories, min_seeders, seed_ratio, use_rss, use_auto_search,"
             " use_interactive_search, parent_prowlarr_id, prowlarr_indexer_id)"
-            " VALUES('Custom Name', 'torznab', 'http://custom.test', 'custom-key',"
-            " 49, 0, '[9999]', 17, 2.5, 0, 0, 0, 101, 1)"
+            " VALUES('Custom Name', 'torznab', ?, 'custom-key',"
+            " 49, 0, '[9999]', 17, 2.5, 0, 0, 0, 101, 1)",
+            (endpoint,),
         )
 
     client = _client()
@@ -315,13 +318,19 @@ def test_sync_uses_live_protocol_for_insert_and_corrective_resync(env):
             "SELECT * FROM indexers WHERE parent_prowlarr_id=101"
             " ORDER BY prowlarr_indexer_id"
         ).fetchall()
+        parent_scope = c.execute("SELECT release_source_scope FROM indexers WHERE id=101").fetchone()[0]
 
     existing, new_nzb, new_torrent = rows
-    assert existing['type'] == 'newznab'
+    assert existing['type'] == ('newznab' if matching_endpoint else 'torznab')
+    if matching_endpoint:
+        assert existing['release_source_scope'] == f'{parent_scope}:1'
+    else:
+        assert existing['release_source_scope'] is None
+        assert 'configuration_mismatch=1' in response.headers['location']
     assert new_nzb['type'] == 'newznab'
     assert new_torrent['type'] == 'torznab'
     assert existing['name'] == 'Custom Name'
-    assert existing['url'] == 'http://custom.test'
+    assert existing['url'] == endpoint
     assert existing['api_key'] == 'custom-key'
     assert existing['priority'] == 49
     assert existing['enabled'] == 0

@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 from collections.abc import Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from typing import Any, cast
 
 import pytest
@@ -69,6 +69,26 @@ def inspect(
         guard.verify()
     assert observation.OwnershipInventory.from_json(result.to_json()) == result
     return result
+
+
+def test_sql_genuinely_created_blocklist_revision_is_supported(
+    ledger_path: Path,
+    namespace: Path,
+) -> None:
+    with closing(sqlite3.connect(ledger_path)) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert db.execute("SELECT * FROM blocklist_release_identities").fetchall() == []
+        projected = {
+            table: {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+            for table in observation._SQL_COLUMNS
+        }
+    assert all(
+        set(columns.split()) <= projected[table]
+        for table, columns in observation._SQL_COLUMNS.items()
+    )
+    result = inspect(ledger_path, namespace)
+    assert result.unresolved == ()
+    assert len(result.observed) == 3
 
 
 def rows(path: Path) -> object:
@@ -503,7 +523,8 @@ def test_sql_db_hardlink_and_symlinked_config_ancestry_refuse(
     "change",
     [
         "PRAGMA user_version=5",
-        "PRAGMA user_version=7",
+        "PRAGMA user_version=6",
+        "PRAGMA user_version=8",
         "DROP TABLE file_claim_namespaces",
         "ALTER TABLE import_queue DROP COLUMN lease_owner",
         "ALTER TABLE series DROP COLUMN root_folder_id",
@@ -965,7 +986,7 @@ def test_sql_snapshot_envelope_exhaustion_is_incomplete_not_malformed(
 @pytest.mark.parametrize("seam", ["after_schema", "after_capture"])
 @pytest.mark.parametrize(
     "change",
-    ["PRAGMA user_version=7", "ALTER TABLE import_queue DROP COLUMN lease_owner"],
+    ["PRAGMA user_version=8", "ALTER TABLE import_queue DROP COLUMN lease_owner"],
     ids=["version", "required_column"],
 )
 def test_sql_schema_freshness_spans_validation_and_capture(
@@ -1030,7 +1051,7 @@ def test_sql_schema_freshness_spans_validation_and_capture(
     db = sqlite3.connect(ledger_path)
     try:
         if change.startswith("PRAGMA"):
-            assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+            assert db.execute("PRAGMA user_version").fetchone()[0] == 8
         else:
             assert "lease_owner" not in {
                 row[1] for row in db.execute("PRAGMA table_info(import_queue)")

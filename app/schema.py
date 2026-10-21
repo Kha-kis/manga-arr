@@ -36,7 +36,8 @@ _SCHEMA_VERSION_IMPORT_PUBLICATIONS = 3
 _SCHEMA_VERSION_DURABLE_PUBLICATION_SAFETY = 4
 _SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP = 5
 _SCHEMA_VERSION_FILE_IDENTITY = 6
-_SUPPORTED_SCHEMA_VERSION = _SCHEMA_VERSION_FILE_IDENTITY
+_SCHEMA_VERSION_BLOCKLIST_SOURCES = 7
+_SUPPORTED_SCHEMA_VERSION = _SCHEMA_VERSION_BLOCKLIST_SOURCES
 
 
 @contextmanager
@@ -1178,6 +1179,11 @@ def init_db() -> None:
         # is the natural key) and the UI can group them visually.
         add_col('indexers', 'parent_prowlarr_id',  'INTEGER')
         add_col('indexers', 'prowlarr_indexer_id', 'INTEGER')
+        add_col('indexers', 'release_source_scope', 'TEXT')
+        add_col('seen', 'release_source_scope', 'TEXT')
+        add_col('pending_releases', 'release_source_scope', 'TEXT')
+        add_col('pending_releases', 'release_guid', 'TEXT')
+        add_col('pending_releases', 'release_context', 'TEXT')
         # Per-purpose indexer toggles (PR #119) — Sonarr/Radarr-style
         # independent control over which flows use this indexer:
         #   use_rss                — included in the RSS poll (`fetch_all_rss`)
@@ -1844,6 +1850,7 @@ def _migrate_schema_constraints_locked(db: sqlite3.Connection) -> None:
         _ensure_rescan_file_operations_schema(db)
         _ensure_pack_ownership_schema(db)
         _ensure_file_identity_schema(db)
+        _ensure_blocklist_source_schema(db)
         return
 
     if version < _SCHEMA_VERSION_FK_CONSTRAINTS:
@@ -1869,7 +1876,106 @@ def _migrate_schema_constraints_locked(db: sqlite3.Connection) -> None:
     _ensure_rescan_file_operations_schema(db)
     _ensure_pack_ownership_schema(db)
     _ensure_file_identity_schema(db)
+    _ensure_blocklist_source_schema(db)
 
+
+def _ensure_blocklist_source_schema(db: sqlite3.Connection) -> None:
+    """Create durable evidence after rebuilds; initialize configurations only."""
+    from release_sources import bind_indexer_scope, facade_matches
+
+    # The standalone constraint entry point also supports older additive shapes.
+    for table, column in (
+        ("indexers", "release_source_scope"),
+        ("seen", "release_source_scope"),
+        ("pending_releases", "release_source_scope"),
+        ("pending_releases", "release_guid"),
+        ("pending_releases", "release_context"),
+    ):
+        columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+        if columns and column not in columns:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+    _execute_script_in_transaction(
+        db,
+        """
+        CREATE TABLE IF NOT EXISTS blocklist_release_identities (
+            blocklist_id INTEGER NOT NULL REFERENCES blocklist(id) ON DELETE CASCADE,
+            series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE
+                CHECK(typeof(series_id)='integer' AND series_id>0),
+            source_scope TEXT COLLATE BINARY NOT NULL CHECK(
+                substr(source_scope,7,64) NOT GLOB '*[^0-9a-f]*'
+                AND ((length(source_scope)=70 AND substr(source_scope,1,6)='bs1:d:')
+                  OR (length(source_scope) BETWEEN 72 AND 90
+                      AND substr(source_scope,1,6)='bs1:p:'
+                      AND substr(source_scope,71,1)=':'
+                      AND CAST(substr(source_scope,72) AS INTEGER)>0
+                      AND CAST(CAST(substr(source_scope,72) AS INTEGER) AS TEXT)=substr(source_scope,72)))
+            ),
+            protocol TEXT NOT NULL CHECK(protocol IN ('torrent','nzb')),
+            release_guid TEXT COLLATE BINARY NOT NULL
+                CHECK(length(CAST(release_guid AS BLOB)) BETWEEN 1 AND 4096),
+            UNIQUE(blocklist_id,series_id,source_scope,protocol,release_guid)
+        );
+        CREATE INDEX IF NOT EXISTS idx_blocklist_release_identity
+            ON blocklist_release_identities(series_id,source_scope,protocol,release_guid);
+        CREATE TABLE IF NOT EXISTS release_selection_evidence (
+            handle_digest TEXT PRIMARY KEY NOT NULL
+                CHECK(length(handle_digest)=64 AND handle_digest NOT GLOB '*[^0-9a-f]*'),
+            issuer_kind TEXT NOT NULL CHECK(issuer_kind IN ('browser','api')),
+            session_digest TEXT REFERENCES auth_sessions(token_hash) ON DELETE CASCADE,
+            issued_at INTEGER NOT NULL CHECK(typeof(issued_at)='integer' AND issued_at>=0),
+            expires_at INTEGER NOT NULL CHECK(typeof(expires_at)='integer' AND expires_at=issued_at+900),
+            series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE
+                CHECK(typeof(series_id)='integer' AND series_id>0),
+            volume_id INTEGER NOT NULL REFERENCES volumes(id) ON DELETE CASCADE
+                CHECK(typeof(volume_id)='integer' AND volume_id>0),
+            snapshot_json TEXT NOT NULL CHECK(length(CAST(snapshot_json AS BLOB)) BETWEEN 1 AND 16384),
+            CHECK((issuer_kind='api' AND session_digest IS NULL)
+               OR (issuer_kind='browser' AND session_digest IS NOT NULL))
+        );
+        CREATE INDEX IF NOT EXISTS idx_release_selection_expiry
+            ON release_selection_evidence(expires_at);
+        CREATE INDEX IF NOT EXISTS idx_release_selection_issuer
+            ON release_selection_evidence(issuer_kind,session_digest,issued_at,handle_digest);
+        CREATE INDEX IF NOT EXISTS idx_release_selection_oldest
+            ON release_selection_evidence(issued_at,handle_digest);
+    """,
+    )
+    has_indexers = db.execute(
+        "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='indexers'"
+    ).fetchone()
+    rows = (
+        [dict(row) for row in db.execute("SELECT * FROM indexers ORDER BY id")]
+        if has_indexers
+        else []
+    )
+    # Bind parents first so verified facades can capture their root, not a FK.
+    for row in rows:
+        if row["type"] == "prowlarr" and row["release_source_scope"] is None:
+            bind_indexer_scope(db, indexer_id=row["id"], previous=None)
+    parents = (
+        {
+            row["id"]: dict(row)
+            for row in db.execute("SELECT * FROM indexers WHERE type='prowlarr'")
+        }
+        if has_indexers
+        else {}
+    )
+    for row in rows:
+        if row["type"] == "prowlarr" or row["release_source_scope"] is not None:
+            continue
+        parent = parents.get(row.get("parent_prowlarr_id"))
+        sub = row.get("prowlarr_indexer_id")
+        verified = (
+            parent if parent is not None and facade_matches(row, parent, sub) else None
+        )
+        bind_indexer_scope(
+            db,
+            indexer_id=row["id"],
+            previous=None,
+            verified_parent=verified,
+            sub_id=sub if verified else None,
+        )
+    db.execute(f"PRAGMA user_version={_SCHEMA_VERSION_BLOCKLIST_SOURCES}")
 
 
 def _ensure_file_identity_schema(db: sqlite3.Connection) -> None:
@@ -2875,6 +2981,7 @@ def _migrate_series_fk_constraints(db) -> None:
                 release_group TEXT,
                 size_bytes    INTEGER,
                 release_guid  TEXT,
+                release_source_scope TEXT,
                 respect_grab_claims INTEGER CHECK(respect_grab_claims IN (0,1))
             )
         """),
@@ -2887,6 +2994,9 @@ def _migrate_series_fk_constraints(db) -> None:
                 indexer    TEXT,
                 protocol   TEXT,
                 size_bytes INTEGER DEFAULT 0,
+                release_source_scope TEXT,
+                release_guid TEXT,
+                release_context TEXT,
                 first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(series_id, url)
             )

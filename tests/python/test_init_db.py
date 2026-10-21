@@ -704,7 +704,7 @@ def test_v4_history_ownership_migration_rebuilds_queue_with_protocol_check(
     assert "download_client_id" in reservation_columns
     assert "protocol" in reservation_columns
     assert queue_row == ("Legacy Queue", None)
-    assert version == 6
+    assert version == 7
 
 
 def test_v4_invalid_download_protocol_blocks_migration_and_rolls_back(
@@ -768,7 +768,7 @@ def test_existing_history_only_v5_gets_qualified_pack_journals(
         "protocol",
     } <= columns
     assert queue_row == ("Keep V5 Queue", None)
-    assert version == 6
+    assert version == 7
 
 
 @pytest.mark.parametrize("journal", ("reservation", "tombstone"))
@@ -924,7 +924,7 @@ def test_init_db_migrates_true_historical_v2_database(fresh_db: str) -> None:
         _assert_download_protocol_check(conn)
     assert {"lease_owner", "lease_expires_at", "download_client_id"} <= columns
     assert row == ("Keep Me", None, None)
-    assert version == 6
+    assert version == 7
 
 
 def test_init_db_creates_durable_publication_precondition_columns(fresh_db):
@@ -991,7 +991,7 @@ def test_init_db_creates_replayable_volume_deletion_journal(fresh_db):
     } <= columns.keys()
     assert "idx_volume_file_deletions_active_volume" in indexes
     assert "idx_volume_file_deletions_active_series" in indexes
-    assert version == 6
+    assert version == 7
 
 
 @pytest.mark.parametrize("terminal_state", (None, "finalized", "deleted"))
@@ -1035,7 +1035,7 @@ def test_v3_terminal_or_empty_database_migrates_publication_safety_and_outbox(
     assert "queue_download_client_id" in publication_columns
     assert outbox == (1,)
     assert deletion_journal == (1,)
-    assert version == 6
+    assert version == 7
 
 
 @pytest.mark.parametrize(
