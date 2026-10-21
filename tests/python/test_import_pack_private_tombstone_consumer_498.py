@@ -307,8 +307,11 @@ def test_null_token_veto_requires_exact_identity_target_carrier_and_inventory(
                 "INSERT INTO import_queue_files(queue_id,filename,src_path,status) VALUES(?,'other',?,'failed')",
                 (case.queue_id, str(case.source)),
             )
-        if boundary == "malformed_claim":
-            with pytest.raises(PackProofError):
+        if boundary in ("malformed_claim", "row_normalized"):
+            with pytest.raises(
+                PackProofError,
+                match="normalized" if boundary == "row_normalized" else None,
+            ):
                 cleanup._retained_skipped_pack_uses_source(
                     db, queue_id=case.queue_id, identity=case.identity
                 )

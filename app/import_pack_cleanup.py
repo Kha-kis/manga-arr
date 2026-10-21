@@ -518,8 +518,6 @@ def _retained_skipped_pack_uses_source(
     ).fetchall():
         if (
             row["pack_path"] != canonical
-            or row["normalized_download_id"]
-            != normalize_download_id(identity.download_id, identity.protocol)
             or download_identity_key(
                 DownloadIdentity(
                     coerce_download_client_id(row["download_client_id"]),
@@ -531,6 +529,10 @@ def _retained_skipped_pack_uses_source(
             or row["carrier_json"] is None
         ):
             continue
+        if row["normalized_download_id"] != normalize_download_id(
+            identity.download_id, identity.protocol
+        ):
+            raise PackProofError("retained skipped source normalized identity mismatch")
         claim = PackDirectoryClaim.from_json(str(row["carrier_json"]))
         if (
             row["tombstone_path"]

@@ -430,6 +430,124 @@ def test_later_cleanup_recovery_retains_exact_skipped_consumer(
     assert _rows(case) == before
 
 
+def test_contradictory_normalized_journal_refuses_owned_consumer_cleanup(
+    pack: Pack, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import import_pack_cleanup as cleanup
+    import shared
+    from download_identity import download_identity_key
+    from file_mutation_lock import file_mutation_guard
+    from private_pack_claim import PackDirectoryClaim
+
+    case = _retained_managed_case(pack, monkeypatch)
+    identity = DownloadIdentity(7, pack.protocol, pack.download_id)
+    with shared.get_db() as db:
+        db.execute(
+            "UPDATE import_queue_files SET status='failed' WHERE id=?", (case.file_id,)
+        )
+    with file_mutation_guard(shared.DB_PATH) as guard:
+        assert (
+            cleanup._acquire_cleanup_reservation(
+                queue_id=case.queue_id,
+                download_id=pack.download_id,
+                download_client_id=7,
+                protocol=pack.protocol,
+                publication_id=None,
+                lease_seconds=300,
+            )
+            is not None
+        )
+        reservation = cleanup._read_reservation(download_identity_key(identity))
+        assert reservation is not None
+        assert cleanup._detach_terminal_cleanup(reservation, _guard=guard) == "tracked"
+    with shared.get_db() as db:
+        db.execute(
+            "UPDATE import_queue_files SET status='skipped' WHERE id=?", (case.file_id,)
+        )
+        row = db.execute(
+            "SELECT * FROM import_pack_cleanup_tombstones WHERE queue_id=?",
+            (case.queue_id,),
+        ).fetchone()
+        assert row is not None
+        journal = dict(row)
+        claim = PackDirectoryClaim.from_json(journal["carrier_json"])
+        assert claim.artifact_owner_token == claim.carrier.binding.operation_key
+        assert claim.artifact_owner_token is not None
+        assert claim.source_directory.marker_fingerprint is not None
+        assert (
+            claim.source_directory.path
+            == journal["pack_path"]
+            == str(case.source.parent)
+        )
+        artifact = Path(journal["tombstone_path"]) / case.source.name
+        assert artifact.read_bytes() == case.source_bytes
+        assert not case.source.exists()
+        assert (
+            db.execute(
+                "UPDATE import_pack_cleanup_tombstones SET normalized_download_id=?"
+                " WHERE tombstone_path=?",
+                ("contradictory-normalized-id", journal["tombstone_path"]),
+            ).rowcount
+            == 1
+        )
+        changed = dict(
+            db.execute(
+                "SELECT * FROM import_pack_cleanup_tombstones WHERE queue_id=?",
+                (case.queue_id,),
+            ).fetchone()
+        )
+        assert changed.pop("normalized_download_id") != journal.pop(
+            "normalized_download_id"
+        )
+        assert changed == journal
+
+    tables = (
+        "import_queue",
+        "import_queue_files",
+        "import_pack_cleanup_reservations",
+        "import_pack_cleanup_tombstones",
+        "import_publications",
+        "import_publication_files",
+        "history",
+        "seen",
+        "series",
+        "volumes",
+        "chapters",
+        "events",
+    )
+
+    def rows() -> dict[str, list[dict[str, Any]]]:
+        with shared.get_db() as db:
+            return {
+                table: [
+                    dict(row)
+                    for row in db.execute(f"SELECT * FROM {table} ORDER BY rowid")
+                ]
+                for table in tables
+            }
+
+    before = rows()
+    result = cleanup.recover_pack_cleanup_state()
+    assert result.tombstones_removed == 0 and result.tombstones_retained == 1
+    assert artifact.read_bytes() == case.source_bytes
+    assert not case.source.exists(), "refusal does not restore a moved source name"
+    assert rows() == before
+    assert _snapshot() == case.before
+    assert before["seen"] == case.seen
+    assert pack.original.read_bytes() == case.original_bytes
+
+    # Model terminal dismissal, not a router call or a repair of the journal ID.
+    with shared.get_db() as db:
+        db.execute(
+            "UPDATE import_queue SET status='skipped' WHERE id=?", (case.queue_id,)
+        )
+    settled = cleanup.recover_pack_cleanup_state()
+    assert settled.tombstones_removed == 1 and settled.tombstones_retained == 0
+    assert not artifact.parent.exists()
+    assert _snapshot() == case.before
+    assert pack.original.read_bytes() == case.original_bytes
+
+
 @pytest.mark.parametrize(
     "boundary",
     [
