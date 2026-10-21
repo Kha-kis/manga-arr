@@ -328,7 +328,13 @@ def _commit_import(
         fp.plan_status == "ready" and not outcomes_by_id[fp.file_id].ok
         for fp in plan.files
     )
-    any_error = has_pre_failed or has_stage_fail
+    all_skipped_preparation_failed = (
+        not fs_committed
+        and bool(commit_failure_reason)
+        and bool(plan.files)
+        and all(fp.plan_status == "skip" for fp in plan.files)
+    )
+    any_error = has_pre_failed or has_stage_fail or all_skipped_preparation_failed
     would_be_imported = sum(
         1
         for fp in plan.files
@@ -384,6 +390,13 @@ def _commit_import(
         fs_committed = True
         commit_failure_reason = ""
     else:
+        if all_skipped_preparation_failed:
+            log_event(
+                "error",
+                f"Import commit failure: {commit_failure_reason}",
+                series_id,
+                db=db,
+            )
         if would_be_imported > 0:
             if commit_failure_reason:
                 any_error = True
@@ -505,7 +518,13 @@ def _commit_import(
     )
     queue_owner_id = coerce_download_client_id(queue.get("download_client_id"))
     queue_protocol = _queue_download_protocol(db, queue, series_id)
-    if new_status == "failed" and queue["download_id"] and not reset_is_shared:
+    # Preparation failure changes the outcome, not ownership of skipped claims.
+    if (
+        new_status == "failed"
+        and queue["download_id"]
+        and not reset_is_shared
+        and not all_skipped_preparation_failed
+    ):
         db.execute(
             "UPDATE volumes SET status='wanted', grabbed_at=NULL, download_id=NULL,"
             " source_url=NULL, torrent_name=NULL, indexer=NULL, protocol=NULL,"

@@ -939,13 +939,14 @@ def test_conflicting_current_seen_does_not_authorize_claim_reset(
         )
 
 
-def test_preparation_failure_and_success_share_nominal_terminal_receipts(
+def test_preparation_failure_and_success_persist_distinct_prospective_outcomes(
     pack: Pack, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import import_commit
     import import_execute
     import import_queue
     import shared
+    from test_import_skip_settlement_482 import TITLE
 
     transitions: list[tuple[str, tuple[str, ...]]] = []
     real_transition = import_commit.transition_import_queue_row
@@ -982,6 +983,10 @@ def test_preparation_failure_and_success_share_nominal_terminal_receipts(
     before = _snapshot()
     original_bytes = pack.original.read_bytes()
     candidate_bytes = pack.candidate.read_bytes()
+    with shared.get_db() as db:
+        seen_before = [
+            dict(row) for row in db.execute("SELECT * FROM seen ORDER BY torrent_url")
+        ]
     _commit_skip(pack)
     with shared.get_db() as db:
         success = dict(
@@ -989,6 +994,23 @@ def test_preparation_failure_and_success_share_nominal_terminal_receipts(
                 "SELECT * FROM history WHERE event_type='import_skipped'"
             ).fetchone()
         )
+        assert json.loads(success["data"]) == {
+            "count": 0,
+            "skipped_count": 1,
+            "reason": "all_files_skipped",
+        }
+        assert db.execute("SELECT 1 FROM import_queue").fetchone() is None
+        assert db.execute("SELECT 1 FROM import_queue_files").fetchone() is None
+        assert db.execute("SELECT 1 FROM import_publications").fetchone() is None
+        assert import_queue._has_terminal_download_receipt(
+            db,
+            series_id=1,
+            torrent_url=SOURCE,
+            identity=DownloadIdentity(7, pack.protocol, pack.download_id),
+        )
+        assert [
+            dict(row) for row in db.execute("SELECT * FROM seen ORDER BY torrent_url")
+        ] == seen_before
         db.execute("DELETE FROM history")
         # Restore the original acquisition to compare the two real paths.
         for table in ("volumes", "chapters"):
@@ -1019,38 +1041,67 @@ def test_preparation_failure_and_success_share_nominal_terminal_receipts(
     monkeypatch.setattr(httpx, "AsyncClient", client)
     assert asyncio.run(import_execute._execute_import(queue_id)) is False
     with shared.get_db() as db:
-        failure = dict(
-            db.execute(
-                "SELECT * FROM history WHERE event_type='import_skipped'"
-            ).fetchone()
+        history = [dict(row) for row in db.execute("SELECT * FROM history ORDER BY id")]
+        assert [row["event_type"] for row in history] == ["import_failed"]
+        failure = history[0]
+        assert failure["series_id"] == 1
+        assert failure["torrent_url"] == SOURCE
+        assert failure["source_title"] == TITLE
+        assert failure["download_client_id"] == 7
+        assert failure["protocol"] == pack.protocol
+        expected_id = (
+            pack.download_id.lower() if pack.protocol == "torrent" else pack.download_id
         )
-        assert {
-            key: value
-            for key, value in success.items()
-            if key not in ("id", "created_at")
-        } == {
-            key: value
-            for key, value in failure.items()
-            if key not in ("id", "created_at")
-        }
-        assert json.loads(failure["data"]) == {
-            "count": 0,
-            "skipped_count": 1,
-            "reason": "all_files_skipped",
-        }
-        assert db.execute("SELECT 1 FROM import_queue").fetchone() is None
-        assert db.execute("SELECT 1 FROM import_queue_files").fetchone() is None
+        assert failure["download_id"] == expected_id
+        parent = db.execute(
+            "SELECT * FROM import_queue WHERE id=?", (queue_id,)
+        ).fetchone()
+        assert parent is not None
+        assert parent["status"] == "failed"
+        assert parent["failed_at"]
+        assert parent["lease_owner"] is None
+        assert parent["lease_expires_at"] is None
+        assert parent["torrent_url"] == SOURCE
+        assert parent["download_client_id"] == 7
+        assert parent["download_protocol"] == pack.protocol
+        assert parent["download_id"] == expected_id
+        children = [
+            dict(row)
+            for row in db.execute(
+                "SELECT * FROM import_queue_files WHERE queue_id=? ORDER BY id",
+                (queue_id,),
+            )
+        ]
+        assert len(children) == 1
+        assert children[0]["status"] == "skipped"
+        assert children[0]["src_path"] == str(pack.candidate)
+        # Observe the existing best-effort event API on a healthy fixture DB.
+        cause = (
+            f"Import commit failure: Import: cannot create {pack.original.parent}: "
+            "fixture destination preparation denied"
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM events WHERE event_type='error' AND series_id=1 AND message=?",
+                (cause,),
+            ).fetchone()
+            is not None
+        )
         assert db.execute("SELECT 1 FROM import_publications").fetchone() is None
-        assert import_queue._has_terminal_download_receipt(
+        assert not import_queue._has_terminal_download_receipt(
             db,
             series_id=1,
             torrent_url=SOURCE,
             identity=DownloadIdentity(7, pack.protocol, pack.download_id),
         )
-    assert transitions == [("imported", ("skipped",)), ("imported", ("skipped",))]
+        assert [
+            dict(row) for row in db.execute("SELECT * FROM seen ORDER BY torrent_url")
+        ] == seen_before
+    assert transitions == [("imported", ("skipped",)), ("failed", ("skipped",))]
     assert _snapshot() == failed_before
     assert pack.original.read_bytes() == original_bytes
     assert pack.candidate.read_bytes() == candidate_bytes
+    _assert_guid_dedup(pack)
 
 
 @pytest.mark.parametrize(
