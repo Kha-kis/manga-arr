@@ -7,6 +7,10 @@ All notable changes to this project. Format roughly follows
 
 ### Fixed
 
+- Observed indexer releases remain blocklisted after download-URL rotation and
+  seen cleanup, using captured source and GUID evidence. Legacy entries and
+  manual submissions without that evidence retain URL-only matching
+  ([#482](https://github.com/Kha-kis/manga-arr/issues/482)).
 - Chapter-copy rollback releases its owned file handle after verified unlink,
   before attempting to remove that attempt's temporary directory. Pending-marker
   retirement uses the same ordering without releasing the chapter's parent
@@ -22,6 +26,12 @@ All notable changes to this project. Format roughly follows
   Unrelated legacy backfill remains enabled. This prevents recurrence; it does
   not rewrite observations already populated by RC10
   ([#475](https://github.com/Kha-kis/manga-arr/issues/475)).
+
+### Changed
+
+- Source-scoped blocklists use database schema 7. Rollback to an older binary
+  requires a compatible pre-upgrade database backup. Restarts and restores
+  invalidate one-use interactive selections; refresh search to select again.
 
 ## 1.3.3-rc.10 - 2026-10-19
 
