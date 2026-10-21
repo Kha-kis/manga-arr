@@ -39,4 +39,4 @@ jobs:
           mangarr --version
 
       - name: Run fast gate
-        run: make test-fast
+        run: MANGARR_INSTALLED_CLI="$(command -v mangarr)" make test-fast
