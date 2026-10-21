@@ -619,6 +619,7 @@ def _commit_import(
         if (
             plan.files
             and all(fp.plan_status == "skip" for fp in plan.files)
+            and not commit_failure_reason
             and not reset_is_shared
         ):
             _settle_skipped_grab_claims(db, plan)

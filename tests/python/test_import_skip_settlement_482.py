@@ -373,6 +373,126 @@ def test_terminal_skip_releases_only_still_owned_unresolved_claims(
         )
 
 
+@pytest.mark.parametrize("reason", ["quality", "operator", "lost_claim"])
+@pytest.mark.parametrize(
+    "failure_reason",
+    ["destination preparation failed", "minimum free space check failed"],
+)
+def test_nonempty_commit_failure_reason_does_not_authorize_skip_settlement(
+    pack: Pack, reason: str, failure_reason: str
+) -> None:
+    import import_commit
+    import shared
+
+    plan = _plan_skip(pack, reason)
+    before = _snapshot()
+    original_bytes = pack.original.read_bytes()
+    candidate_bytes = pack.candidate.read_bytes()
+    with shared.get_db() as db:
+        seen_before = [dict(row) for row in db.execute("SELECT * FROM seen")]
+        intents: list[DownloadNotificationIntent] = []
+        import_commit._commit_import(
+            db,
+            plan,
+            [],
+            False,
+            failure_reason,
+            lease_owner="fixture-owner",
+            lease_seconds=300,
+            post_commit_intents=intents,
+        )
+        assert intents == []
+        assert [dict(row) for row in db.execute("SELECT * FROM seen")] == seen_before
+    assert _snapshot() == before
+    assert pack.original.read_bytes() == original_bytes
+    assert pack.candidate.read_bytes() == candidate_bytes
+
+
+def test_executor_destination_preparation_failure_preserves_skipped_claims(
+    pack: Pack, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import import_execute
+    import shared
+
+    queue_id = _queue(pack)
+    before = _snapshot()
+    original_bytes = pack.original.read_bytes()
+    candidate_bytes = pack.candidate.read_bytes()
+    with shared.get_db() as db:
+        seen_before = [dict(row) for row in db.execute("SELECT * FROM seen")]
+    prepared: list[str] = []
+    requests: list[str] = []
+    real_client = httpx.AsyncClient
+
+    def deny_directory(path: str) -> None:
+        prepared.append(path)
+        raise PermissionError("fixture destination permission denied")
+
+    def reject_http(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        raise AssertionError("failed preparation must not contact a client")
+
+    def client(**kwargs: Any) -> httpx.AsyncClient:
+        return real_client(transport=httpx.MockTransport(reject_http), **kwargs)
+
+    monkeypatch.setattr(import_execute, "ensure_durable_directory", deny_directory)
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    assert asyncio.run(import_execute._execute_import(queue_id)) is False
+    assert prepared == [str(pack.original.parent)]
+    assert requests == []
+    with shared.get_db() as db:
+        assert [dict(row) for row in db.execute("SELECT * FROM seen")] == seen_before
+        assert db.execute("SELECT 1 FROM import_publications").fetchone() is None
+        assert (
+            db.execute("SELECT 1 FROM history WHERE event_type='imported'").fetchone()
+            is None
+        )
+    assert _snapshot() == before
+    assert pack.original.read_bytes() == original_bytes
+    assert pack.candidate.read_bytes() == candidate_bytes
+
+
+def test_published_skip_commit_clears_stale_failure_reason_before_settlement(
+    pack: Pack,
+) -> None:
+    import import_commit
+    import import_publication
+    import shared
+
+    plan = _plan_skip(pack)
+    with shared.get_db() as db:
+        publication_id = import_publication.create_publication(
+            db, plan, "fixture-owner", str(pack.root / "staging"), {}
+        )
+        db.execute(
+            "UPDATE import_publications SET state='published' WHERE id=?",
+            (publication_id,),
+        )
+        assert import_commit._commit_import(
+            db,
+            plan,
+            [],
+            True,
+            "stale preparation failure superseded by committed filesystem",
+            lease_owner="fixture-owner",
+            lease_seconds=300,
+            publication_id=publication_id,
+        ) == (True, 0, "imported")
+        assert (
+            db.execute(
+                "SELECT state FROM import_publications WHERE id=?", (publication_id,)
+            ).fetchone()[0]
+            == "db_committed"
+        )
+    state = _snapshot()
+    assert [r["status"] for r in state["volumes"] if r["id"] in (2, 3)] == [
+        "wanted"
+    ] * 2
+    assert [r["status"] for r in state["chapters"] if r["id"] in (20, 24, 30)] == [
+        "wanted"
+    ] * 3
+
+
 @pytest.mark.parametrize("purge_history", [False, True])
 def test_prospective_terminal_skip_client_removal_retains_seen_guid_dedup(
     prospective_pack: Pack,
