@@ -355,25 +355,28 @@ def _cleanup_missing_downloads(
 ) -> None:
     """Retry only independently proven pathless claims; never infer success."""
     with get_db() as db:
-        candidates = db.execute(
-            "SELECT series_id,download_id,download_client_id,protocol,source_url,"
-            " torrent_name FROM volumes WHERE status='grabbed' AND client=?"
-            " AND download_id IS NOT NULL"
-            " AND (download_client_id=? OR (?=1 AND download_client_id IS NULL))"
-            " UNION ALL SELECT series_id,download_id,download_client_id,protocol,"
-            " torrent_url AS source_url,torrent_name FROM chapters"
-            " WHERE status='grabbed' AND download_id IS NOT NULL"
-            " AND (client IS NULL OR client='' OR client=?)"
-            " AND (download_client_id=? OR (?=1 AND download_client_id IS NULL))",
-            (
-                client_type,
-                download_client_id,
-                int(include_legacy_ownerless),
-                client_type,
-                download_client_id,
-                int(include_legacy_ownerless),
-            ),
-        ).fetchall()
+        candidates = [
+            dict(row)
+            for row in db.execute(
+                "SELECT series_id,download_id,download_client_id,protocol,source_url,"
+                " torrent_name FROM volumes WHERE status='grabbed' AND client=?"
+                " AND download_id IS NOT NULL"
+                " AND (download_client_id=? OR (?=1 AND download_client_id IS NULL))"
+                " UNION ALL SELECT series_id,download_id,download_client_id,protocol,"
+                " torrent_url AS source_url,torrent_name FROM chapters"
+                " WHERE status='grabbed' AND download_id IS NOT NULL"
+                " AND (client IS NULL OR client='' OR client=?)"
+                " AND (download_client_id=? OR (?=1 AND download_client_id IS NULL))",
+                (
+                    client_type,
+                    download_client_id,
+                    int(include_legacy_ownerless),
+                    client_type,
+                    download_client_id,
+                    int(include_legacy_ownerless),
+                ),
+            ).fetchall()
+        ]
     handled: set[tuple[int, int, str, str]] = set()
     for candidate in candidates:
         owner_id = coerce_download_client_id(candidate["download_client_id"])

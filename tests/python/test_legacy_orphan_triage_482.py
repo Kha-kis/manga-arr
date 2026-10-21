@@ -51,6 +51,95 @@ def _binding_evidence_snapshot() -> dict[str, list[dict[str, Any]]]:
         }
 
 
+@pytest.mark.parametrize("conflicting", [False, True], ids=["retry", "refusal"])
+def test_cleanup_snapshots_enumeration_rows_before_scope_exit(
+    pack: Pack, monkeypatch: pytest.MonkeyPatch, conflicting: bool
+) -> None:
+    """Enforce the project's Row ownership contract, not SQLite object expiry."""
+    import import_discovery
+    import shared
+    from test_sab_discovery_transaction_scope import _ExpiringRow
+
+    with shared.get_db() as db:
+        db.execute("DELETE FROM volumes WHERE id NOT IN (1,2)")
+        db.execute("DELETE FROM chapters WHERE id != 30")
+        db.execute(
+            "UPDATE chapters SET download_id='independent-id',torrent_url=? WHERE id=30",
+            (SOURCE if conflicting else "https://independent.invalid",),
+        )
+    claims_before = _snapshot()
+    evidence_before = _binding_evidence_snapshot()
+    real_get_db = import_discovery.get_db
+    escaped_accesses: list[str] = []
+    tracked_rows: list[_ExpiringRow] = []
+    entries = 0
+
+    def expiring_row(cursor: sqlite3.Cursor, values: tuple[Any, ...]) -> _ExpiringRow:
+        row = _ExpiringRow(sqlite3.Row(cursor, values), escaped_accesses)
+        tracked_rows.append(row)
+        return row
+
+    @contextmanager
+    def scoped_get_db() -> Generator[sqlite3.Connection, None, None]:
+        nonlocal entries
+        entries += 1
+        enumeration = entries == 1
+        with real_get_db() as db:
+            if enumeration:
+                db.row_factory = expiring_row
+            try:
+                yield db
+            finally:
+                if enumeration:
+                    for row in tracked_rows:
+                        row.expire()
+
+    monkeypatch.setattr(import_discovery, "get_db", scoped_get_db)
+    import_discovery._cleanup_missing_downloads(
+        set(),
+        download_client_id=7,
+        protocol=pack.protocol,
+        client_type=pack.client_type,
+        include_legacy_ownerless=False,
+    )
+    assert len(tracked_rows) == 2
+    assert all(not row._alive for row in tracked_rows)
+    assert escaped_accesses == []
+    if conflicting:
+        assert _snapshot() == claims_before
+        assert _binding_evidence_snapshot() == evidence_before
+    else:
+        with shared.get_db() as db:
+            assert tuple(
+                db.execute(
+                    "SELECT status,download_id FROM volumes WHERE id=2"
+                ).fetchone()
+            ) == ("wanted", None)
+            assert tuple(
+                db.execute(
+                    "SELECT status,download_id FROM chapters WHERE id=30"
+                ).fetchone()
+            ) == ("wanted", None)
+            assert db.execute("SELECT 1 FROM seen").fetchone() is None
+            history = [
+                tuple(row)
+                for row in db.execute(
+                    "SELECT torrent_url,download_id,download_client_id,protocol"
+                    " FROM history WHERE event_type='grab_failed'"
+                )
+            ]
+        assert len(history) == 2
+        assert set(history) == {
+            (
+                SOURCE,
+                "pack-hash" if pack.protocol == "torrent" else "NZO-Pack",
+                7,
+                pack.protocol,
+            ),
+            ("https://independent.invalid", "independent-id", 7, pack.protocol),
+        }
+
+
 def test_different_id_claim_keeps_same_poll_source_refusal(
     pack: Pack, monkeypatch: pytest.MonkeyPatch
 ) -> None:
