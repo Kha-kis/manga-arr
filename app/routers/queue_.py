@@ -1882,11 +1882,15 @@ async def set_torrent_category(
 @router.post("/queue/pending/{pending_id}/force-grab")
 async def force_grab_pending(request: Request, pending_id: int):
     """Immediately grab a pending release, bypassing its delay profile."""
+    from release_sources import item_source_is_current, restore_pending_source
+
     row = None
     item = None
+    refused = False
     with get_db() as db:
         pending_row = db.execute(
-            "SELECT id, series_id, url, title, indexer, protocol, size_bytes"
+            "SELECT id, series_id, url, title, indexer, protocol, size_bytes,"
+            " release_source_scope, release_guid, release_context"
             " FROM pending_releases WHERE id=?",
             (pending_id,),
         ).fetchone()
@@ -1899,7 +1903,18 @@ async def force_grab_pending(request: Request, pending_id: int):
                 "protocol": row["protocol"] or "torrent",
                 "size_bytes": row["size_bytes"] or 0,
             }
-            db.execute("DELETE FROM pending_releases WHERE id=?", (pending_id,))
+            try:
+                restore_pending_source(row, item)
+                refused = not item_source_is_current(db, item)
+            except ValueError:
+                refused = True
+            if not refused:
+                db.execute("DELETE FROM pending_releases WHERE id=?", (pending_id,))
+    if refused:
+        return await _queue_partial_response(
+            request,
+            message="Release source changed or evidence unavailable; refresh required.",
+        )
     if row is None or item is None:
         return await _queue_partial_response(request)
     import main as _m
