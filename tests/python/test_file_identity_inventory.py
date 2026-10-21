@@ -222,6 +222,12 @@ def publication(db: sqlite3.Connection, *, queue_id: int = 1, series: int = 1) -
         queue_download_client_id=1,
         queue_src_dir=q["src_dir"],
         queue_lease_owner=TOKEN,
+        queue_torrent_name=q["torrent_name"],
+        queue_torrent_url=q["torrent_url"],
+        queue_volume_num=q["volume_num"],
+        queue_failed_at=q["failed_at"],
+        queue_lease_expires_at=q["lease_expires_at"],
+        queue_created_at=q["created_at"],
     )
     source = next(
         r for r in rows(db, "import_queue_files") if r["queue_id"] == queue_id
@@ -551,6 +557,8 @@ def test_dangling_queue_and_cross_series_context(ledger_db: sqlite3.Connection) 
     db.commit()
     result = collect(db, "/library")
     assert {r.key for r in result.raw_rows if r.table == "series"} == {(1,), (2,)}
+    # Missing live queues remain invalid for active, not historical, owners.
+    db.execute("UPDATE import_publications SET state='publishing'")
     db.execute("DELETE FROM import_queue_files")
     db.execute("DELETE FROM import_queue")
     db.commit()

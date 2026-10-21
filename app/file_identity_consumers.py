@@ -63,6 +63,9 @@ _VOLUME_FIELDS = frozenset(
     "id series_id volume_num status import_path download_id download_client_id torrent_name indexer protocol client grabbed_at imported_at source_url release_group size_bytes quality".split()
 )
 _TERMINAL = frozenset({"imported", "failed", "skipped"})
+_TERMINAL_PUBLICATIONS = frozenset({"finalized", "deleted"})
+_INACTIVE_QUARANTINE = frozenset({"quarantined", "rolled_back", "restored"})
+_ACTIVE_QUARANTINE = frozenset({"reserved", "captured", "committed", "restoring"})
 _PUBLICATION_STATES = frozenset(
     {
         "staging",
@@ -1238,8 +1241,8 @@ def _admission_roles(
             },
         )
     files = _mapping(admission["files"])
-    if set(files) - file_ids:
-        raise IdentityMismatch("admission references an unknown publication file")
+    if set(files) != file_ids:
+        raise IdentityMismatch("admission ready publication file set differs")
     for file_id, raw in files.items():
         record = _mapping(
             raw,
@@ -1311,6 +1314,23 @@ def _publication_roles(
     queue = _mapping(roles.evidence.load(row["queue_snapshot_json"]))
     if type(queue.get("id")) is not int or queue["id"] != queue_id:
         raise IdentityMismatch("publication frozen queue binding differs")
+    # These columns are copies made by create_publication, not live queue CAS.
+    for field in (
+        "status",
+        "download_id",
+        "download_client_id",
+        "torrent_name",
+        "torrent_url",
+        "volume_num",
+        "src_dir",
+        "failed_at",
+        "lease_owner",
+        "lease_expires_at",
+        "created_at",
+    ):
+        frozen, mirrored = queue.get(field), row["queue_" + field]
+        if type(frozen) is not type(mirrored) or frozen != mirrored:
+            raise IdentityMismatch("publication frozen queue mirror differs")
     if row["series_snapshot_json"] is not None:
         series = _mapping(roles.evidence.load(row["series_snapshot_json"]))
         if type(series.get("id")) is not int or series["id"] != row["series_id"]:
@@ -1354,7 +1374,10 @@ def _publication_roles(
     if len(by_id) != len(files) or set(artifacts) - set(by_id):
         raise InvalidIdentity("publication artifact refers to unknown file")
     _admission_roles(
-        roles, protocol.get("admission"), set(by_id), _text(row["queue_snapshot_json"])
+        roles,
+        protocol.get("admission"),
+        {key for key, file in by_id.items() if file["plan_status"] == "ready"},
+        _text(row["queue_snapshot_json"]),
     )
     allocating = protocol.get("allocating")
     if allocating is not None:
@@ -1472,10 +1495,47 @@ def _publication_roles(
             if first != second:
                 raise IdentityMismatch("duplicate publication carrier proofs disagree")
             if second is not None:
-                if purpose == "publication" and second.artifact_fingerprint is not None:
-                    raise IdentityMismatch(
-                        "publication destination carrier has capture fingerprint"
+                if purpose == "publication":
+                    staged = _columns_fingerprint(file, "staged_")
+                    ready = (
+                        _fingerprint(entry["publication_ready"])
+                        if "publication_ready" in entry
+                        else None
                     )
+                    # Disposal preserves either both acknowledgements or neither.
+                    acknowledgement = (
+                        LinkReceipt.from_value(entry["publication_receipt"])
+                        if "publication_receipt" in entry
+                        else None
+                    )
+                    if (
+                        staged is None
+                        or second.artifact_fingerprint != staged
+                        or (ready is not None and ready != staged)
+                        or (
+                            ready is None
+                            and second.phase
+                            not in {"allocated", "claiming", "discarding", "discarded"}
+                        )
+                        or (
+                            ready is not None
+                            and second.phase in {"allocated", "claiming"}
+                        )
+                        or (
+                            second.restore_receipt is not None
+                            and second.restore_receipt.fingerprint != ready
+                        )
+                        or second.restore_receipt != acknowledgement
+                        or (second.phase == "restored" and acknowledgement is None)
+                        or (
+                            second.phase
+                            in {"allocated", "claiming", "claimed", "restoring"}
+                            and second.restore_receipt is not None
+                        )
+                    ):
+                        raise IdentityMismatch(
+                            "publication staged carrier fingerprint/phase differs"
+                        )
                 expected = (
                     _columns_fingerprint(file, "source_")
                     if purpose == "source"
@@ -1613,7 +1673,7 @@ def _inventory(
         elif domain in {"pack_reservation", "pack_tombstone"}:
             _pack_row_roles(roles, root)
         elif domain == "publication":
-            if not any(
+            if root["state"] not in _TERMINAL_PUBLICATIONS and not any(
                 r["table"] == "import_queue"
                 and _mapping(r["row"])["id"] == root["queue_id"]
                 for r in related
@@ -1779,6 +1839,16 @@ def _context_series(snapshot: OwnerSnapshot, evidence: _Evidence) -> set[int]:
     return result
 
 
+def _historical_context(domain: str, row: dict[str, object]) -> bool:
+    if domain == "publication":
+        return row["state"] in _TERMINAL_PUBLICATIONS
+    if domain == "rescan":
+        return row["state"] in {"completed", "rolled_back"}
+    if domain == "deletion":
+        return row["state"] == "completed"
+    return False
+
+
 def _version(db: sqlite3.Connection) -> int:
     return cast(int, db.execute("PRAGMA data_version").fetchone()[0])
 
@@ -1839,9 +1909,43 @@ def collect_references(
             if owner.domain in {"publication", "pack_reservation", "pack_tombstone"}:
                 if row["queue_id"] is not None:
                     target = OwnerRef("queue_source", (_integer(row["queue_id"], 1),))
-                    link(owner, target, "queue")
+                    if target in snapshots:
+                        link(owner, target, "queue")
+                    else:
+                        if owner.domain == "publication":
+                            publication = row
+                        elif row["publication_id"] is not None:
+                            publication = roots.get(
+                                OwnerRef(
+                                    "publication", (_integer(row["publication_id"], 1),)
+                                )
+                            )
+                        else:
+                            publication = None
+                        if (
+                            publication is None
+                            or publication["state"] not in _TERMINAL_PUBLICATIONS
+                            or publication["queue_id"] != row["queue_id"]
+                        ):
+                            raise IdentityMismatch(
+                                "persisted reference has a dangling queue"
+                            )
+                        if owner.domain != "publication":
+                            frozen = _mapping(
+                                evidence.load(publication["queue_snapshot_json"])
+                            )
+                            if (
+                                download_identity_key(
+                                    _identity(frozen, "download_protocol")
+                                )
+                                != row["download_identity_key"]
+                            ):
+                                raise IdentityMismatch(
+                                    "historical pack queue identity differs"
+                                )
                     if (
                         owner.domain in {"pack_reservation", "pack_tombstone"}
+                        and target in roots
                         and download_identity_key(
                             _identity(roots[target], "download_protocol")
                         )
@@ -1922,10 +2026,8 @@ def collect_references(
                     origin_queue = roots.get(
                         OwnerRef("queue_source", (_integer(origin["queue_id"], 1),))
                     )
-                    historical = (
-                        publication["state"] in {"finalized", "deleted"}
-                        and origin_queue is not None
-                        and origin_queue["status"] in _TERMINAL
+                    historical = publication["state"] in _TERMINAL_PUBLICATIONS and (
+                        origin_queue is None or origin_queue["status"] in _TERMINAL
                     )
                     if not historical:
                         current_row = roots.get(reservation)
@@ -1955,6 +2057,8 @@ def collect_references(
                             != admitted.canonical_directory
                             or current.inventory != admitted.inventory
                             or current.placement_carrier != admitted.placement_carrier
+                            or current.queue_receipt_sha256
+                            != admitted.queue_receipt_sha256
                         ):
                             raise IdentityMismatch(
                                 "active pack origin generation differs"
@@ -2029,22 +2133,37 @@ def collect_references(
                     selected.add(owner)
             if selected == before:
                 break
-        if series_ids - {cast(int, r.key[0]) for r in raw["series"]}:
-            raise IdentityMismatch("referenced series context is dangling")
+        live_series = {cast(int, r.key[0]) for r in raw["series"]}
+        volumes = {r.key[0]: dict(r.values) for r in raw["volumes"]}
         for owner in selected:
             row = roots[owner]
-            if (
-                "series_id" in row
-                and row["series_id"] is not None
-                and not any(r.key == (row["series_id"],) for r in raw["series"])
-            ):
+            historical = _historical_context(owner.domain, row)
+            if not historical and context_series[owner] - live_series:
                 raise IdentityMismatch("reference series context is dangling")
-            if owner.domain in {"rescan", "deletion"} and not any(
-                r.key == (row["volume_id"],)
-                and dict(r.values)["series_id"] == row["series_id"]
-                for r in raw["volumes"]
-            ):
-                raise IdentityMismatch("reference volume context is dangling")
+            if owner.domain in {"rescan", "deletion"}:
+                volume = volumes.get(cast(int, row["volume_id"]))
+                if (volume is None and not historical) or (
+                    volume is not None and volume["series_id"] != row["series_id"]
+                ):
+                    raise IdentityMismatch("reference volume context is dangling")
+        for table in ("volumes", "chapters", "chapter_quarantine"):
+            for record in raw[table]:
+                row = dict(record.values)
+                if row["series_id"] not in series_ids:
+                    continue
+                historical = False
+                if table == "chapter_quarantine":
+                    if row["state"] not in _ACTIVE_QUARANTINE | _INACTIVE_QUARANTINE:
+                        raise InvalidIdentity("unknown quarantine phase")
+                    historical = row["state"] in _INACTIVE_QUARANTINE
+                if not historical and row["series_id"] not in live_series:
+                    raise IdentityMismatch("live media series context is dangling")
+                if table == "chapter_quarantine":
+                    volume = volumes.get(cast(int, row["volume_id"]))
+                    if (volume is None and not historical) or (
+                        volume is not None and volume["series_id"] != row["series_id"]
+                    ):
+                        raise IdentityMismatch("quarantine volume context is dangling")
         selected_raw: set[RawRow] = set()
         for owner in selected:
             snapshot = snapshots[owner]
