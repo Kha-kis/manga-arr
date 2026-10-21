@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Coroutine, Generator
+from collections.abc import Awaitable, Callable, Coroutine, Generator
 from contextlib import contextmanager
 import fcntl
 import json
@@ -563,9 +563,13 @@ def test_actual_backup_loop_settles_thread_before_lifespan_releases(
     import tasks
 
     entered, release, settled = threading.Event(), threading.Event(), threading.Event()
-    exit_service = asyncio.Event()
+    exit_service, service_ready = asyncio.Event(), asyncio.Event()
+    worker_settling: asyncio.Queue[None] = asyncio.Queue()
+    service_settling: asyncio.Queue[None] = asyncio.Queue()
+    service_task: asyncio.Task[None] | None = None
     registered: list[asyncio.Task[None]] = []
     real_sleep = asyncio.sleep
+    real_shield = asyncio.shield
     calls: list[str] = []
     monkeypatch.setattr(auth, "remove_legacy_setup_token", lambda: None)
     monkeypatch.setattr(security, "load_or_create_secret_cipher", lambda path: None)
@@ -574,6 +578,17 @@ def test_actual_backup_loop_settles_thread_before_lifespan_releases(
         await real_sleep(0 if delay == 3600 else delay)
 
     monkeypatch.setattr(tasks.asyncio, "sleep", skip_initial_delay)
+
+    def observed_shield(awaitable: Awaitable[Any]) -> asyncio.Future[Any]:
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            if task in registered:
+                worker_settling.put_nowait(None)
+            elif task is service_task:
+                service_settling.put_nowait(None)
+        return real_shield(awaitable)
+
+    monkeypatch.setattr(tasks.asyncio, "shield", observed_shield)
 
     def backup(prefix: str) -> tuple[str, str]:
         calls.append(prefix)
@@ -600,24 +615,23 @@ def test_actual_backup_loop_settles_thread_before_lifespan_releases(
     async def service() -> None:
         async with main.lifespan(main.app):
             assert await asyncio.to_thread(entered.wait, 10)
+            service_ready.set()
             await exit_service.wait()
 
     async def exercise() -> None:
+        nonlocal service_task
         task = asyncio.create_task(service())
+        service_task = task
         try:
             assert await asyncio.to_thread(entered.wait, 10)
+            await asyncio.wait_for(service_ready.wait(), 10)
             assert len(registered) == 1
             worker = registered[0]
             exit_service.set()
-            for _ in range(20):
-                await real_sleep(0)
-                if worker.cancelling():
-                    break
+            await asyncio.wait_for(worker_settling.get(), 10)
             assert worker.cancelling(), (
                 "normal shutdown must cancel the actual backup loop"
             )
-            await real_sleep(0)
-            await real_sleep(0)
             assert not settled.is_set()
             assert not worker.done(), "backup coroutine abandoned its filesystem thread"
             assert not task.done()
@@ -626,8 +640,8 @@ def test_actual_backup_loop_settles_thread_before_lifespan_releases(
                 for _ in range(2):
                     worker.cancel()
                     task.cancel()
-                    await real_sleep(0)
-                    await real_sleep(0)
+                    await asyncio.wait_for(worker_settling.get(), 10)
+                    await asyncio.wait_for(service_settling.get(), 10)
                     assert not worker.done()
                     assert not task.done()
                     assert _attempt(isolated_state, exclusive=True) == "busy"
@@ -646,6 +660,51 @@ def test_actual_backup_loop_settles_thread_before_lifespan_releases(
 
     asyncio.run(exercise())
     assert _attempt(isolated_state, exclusive=True) == "held"
+
+
+def test_backup_shutdown_handles_executor_delivery_inversion(
+    isolated_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_to_thread, real_sleep = asyncio.to_thread, asyncio.sleep
+    parked, deliver = asyncio.Event(), asyncio.Event()
+    service_delivered = False
+    exercise_waited = False
+
+    async def inverted(func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        nonlocal service_delivered, exercise_waited
+        task = asyncio.current_task()
+        assert task is not None
+        name = task.get_coro().__qualname__
+        result = await real_to_thread(func, *args, **kwargs)
+        if name.endswith(".<locals>.service"):
+            parked.set()
+            await deliver.wait()
+            service_delivered = True
+        elif name.endswith(".<locals>.exercise") and not exercise_waited:
+            exercise_waited = True
+            await parked.wait()
+            asyncio.get_running_loop().call_soon(deliver.set)
+        return result
+
+    async def no_executor_delivery_on_yield(
+        delay: float, *args: Any, **kwargs: Any
+    ) -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        if (
+            delay == 0
+            and not service_delivered
+            and task.get_coro().__qualname__.endswith(".<locals>.exercise")
+        ):
+            return
+        await real_sleep(delay, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", inverted)
+    monkeypatch.setattr(asyncio, "sleep", no_executor_delivery_on_yield)
+    test_actual_backup_loop_settles_thread_before_lifespan_releases(
+        isolated_state, monkeypatch, False, False
+    )
+    assert exercise_waited and service_delivered
 
 
 def test_repeated_shutdown_cancellation_keeps_hold_until_workers_settle(
