@@ -3507,8 +3507,29 @@ async def set_monitor_mode(request: Request, series_id: int, mode: str = Form("a
 
 
 @router.get("/api/series/{series_id}/volumes/{volume_id}/search")
-async def search_volume_releases(series_id: int, volume_id: int):
+async def search_volume_releases(
+    series_id: int, volume_id: int, request: Request
+) -> JSONResponse:
     import main as _m
+    from time import time
+    from release_selections import (
+        ISSUER_LIMIT,
+        SelectionError,
+        canonical_guid,
+        encode_snapshot,
+        issuer_for_request,
+        issue_selections,
+        snapshot_from_result,
+    )
+
+    try:
+        issuer = issuer_for_request(request.scope, request.cookies)
+    except SelectionError as exc:
+        return JSONResponse(
+            {"error": str(exc)},
+            status_code=exc.status,
+            headers={"Cache-Control": "no-store"},
+        )
 
     with get_db() as db:
         s = db.execute("SELECT * FROM series WHERE id=?", (series_id,)).fetchone()
@@ -3582,7 +3603,7 @@ async def search_volume_releases(series_id: int, volume_id: int):
                 "size_bytes": item.get("size_bytes", 0),
                 "size": _m.format_bytes(item.get("size_bytes", 0)),
                 "seeders": item.get("seeders", 0),
-                "guid": item.get("guid", ""),
+                "guid": canonical_guid(item.get("guid")),
                 "indexer": item.get("indexer", ""),
                 "protocol": item.get("protocol", ""),
                 "score": ev["score"],
@@ -3599,10 +3620,62 @@ async def search_volume_releases(series_id: int, volume_id: int):
             )
             if preferred_client_id is not None:
                 result["preferred_client_id"] = preferred_client_id
-            results.append(result)
+            results.append((result, item.get("_source_context")))
 
     _status_order = {"would_grab": 0, "low_score": 1, "rejected": 2}
-    results.sort(key=lambda r: (_status_order.get(r["status"], 9), -r["score"]))
+    rank = lambda r: (_status_order.get(r["status"], 9), -r["score"])
+    results.sort(key=lambda pair: rank(pair[0]))
+    selectable = []
+    unavailable = []
+    for result, context in results:
+        try:
+            if (
+                result["seen"]
+                or result["blocked"]
+                or (result["protocol"] != "nzb" and result["seeders"] == 0)
+            ):
+                raise ValueError("release unavailable")
+            snapshot = snapshot_from_result(series_id, volume_id, result, context)
+            encode_snapshot(snapshot)
+        except (ValueError, TypeError, KeyError, RecursionError, OverflowError):
+            result["selectable"] = False
+            unavailable.append(result)
+        else:
+            selectable.append((result, snapshot))
+    chosen = selectable[:ISSUER_LIMIT]
+    try:
+        with get_db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                handles = issue_selections(
+                    db,
+                    issuer=issuer,
+                    snapshots=[snapshot for _, snapshot in chosen],
+                    now=int(time()),
+                )
+            except SelectionError as exc:
+                if exc.reason == "unavailable":
+                    raise
+                # Expected refusals keep expiry pruning; get_db commits before return.
+                return JSONResponse(
+                    {"error": str(exc)},
+                    status_code=exc.status,
+                    headers={"Cache-Control": "no-store"},
+                )
+    except (SelectionError, sqlite3.Error) as exc:
+        status = exc.status if isinstance(exc, SelectionError) else 503
+        return JSONResponse(
+            {"error": "Selection evidence unavailable"},
+            status_code=status,
+            headers={"Cache-Control": "no-store"},
+        )
+    for (result, _), handle in zip(chosen, handles, strict=True):
+        result["selectable"] = True
+        result["selection_receipt"] = handle
+    public_results = [result for result, _ in chosen]
+    public_results += unavailable[: ISSUER_LIMIT - len(public_results)]
+    public_results.sort(key=rank)
+    has_more = len(results) > len(public_results)
 
     # Check Suwayomi DDL availability
     suwayomi_available = False
@@ -3613,7 +3686,13 @@ async def search_volume_releases(series_id: int, volume_id: int):
             suwayomi_available = bool(get_suwayomi_client(_swy_db))
 
     return JSONResponse(
-        {"results": results, "query": query, "suwayomi_available": suwayomi_available}
+        {
+            "results": public_results,
+            "query": query,
+            "suwayomi_available": suwayomi_available,
+            "has_more": has_more,
+        },
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -3640,12 +3719,21 @@ async def grab_volume_ddl(series_id: int, volume_id: int):
 
 
 @router.post("/api/series/{series_id}/volumes/{volume_id}/grab-release")
-async def grab_volume_release(series_id: int, volume_id: int, request: Request):
+async def grab_volume_release(
+    series_id: int, volume_id: int, request: Request
+) -> JSONResponse:
     import main as _m
+    from time import time
+    from release_selections import (
+        SelectionError,
+        consume_selection,
+        issuer_for_request,
+        parse_posted_json,
+    )
 
     try:
-        data = await request.json()
-    except (UnicodeDecodeError, ValueError):
+        data = parse_posted_json(await request.body())
+    except (UnicodeDecodeError, ValueError, RecursionError):
         return JSONResponse(
             {"ok": False, "message": "Invalid JSON payload"}, status_code=400
         )
@@ -3654,6 +3742,57 @@ async def grab_volume_release(series_id: int, volume_id: int, request: Request):
             {"ok": False, "message": "JSON payload must be an object"},
             status_code=400,
         )
+
+    if "selection_receipt" in data:
+        try:
+            issuer = issuer_for_request(request.scope, request.cookies)
+            with get_db() as db:
+                db.execute("BEGIN IMMEDIATE")
+                try:
+                    snapshot = consume_selection(
+                        db,
+                        handle=data["selection_receipt"],
+                        issuer=issuer,
+                        series_id=series_id,
+                        volume_id=volume_id,
+                        posted=data,
+                        now=int(time()),
+                    )
+                except SelectionError as exc:
+                    if exc.reason == "unavailable":
+                        raise
+                    return JSONResponse(
+                        {"ok": False, "message": str(exc)},
+                        status_code=exc.status,
+                        headers={"Cache-Control": "no-store"},
+                    )
+        except (SelectionError, sqlite3.Error) as exc:
+            status = exc.status if isinstance(exc, SelectionError) else 503
+            message = (
+                str(exc)
+                if isinstance(exc, SelectionError)
+                else "Selection evidence unavailable"
+            )
+            return JSONResponse(
+                {"ok": False, "message": message},
+                status_code=status,
+                headers={"Cache-Control": "no-store"},
+            )
+        ok = await _m.grab_item(
+            snapshot.observed_item(), series_id, respect_monitoring=False
+        )
+        return JSONResponse(
+            {"ok": ok, "message": "Grabbed" if ok else "Failed or already grabbed"},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    with get_db() as db:
+        if not db.execute(
+            "SELECT 1 FROM volumes WHERE id=? AND series_id=?", (volume_id, series_id)
+        ).fetchone():
+            return JSONResponse(
+                {"ok": False, "message": "Volume not found"}, status_code=404
+            )
 
     url = data.get("url") if isinstance(data.get("url"), str) else ""
     title = data.get("title") if isinstance(data.get("title"), str) else ""

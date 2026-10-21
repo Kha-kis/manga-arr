@@ -489,6 +489,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     with service_maintenance_guard(DB_PATH, exclusive=False):
         init_db()
+        from release_selections import clear_selection_evidence
+        with get_db() as db:
+            clear_selection_evidence(db)
         from auth import purge_expired_sessions, remove_legacy_setup_token
         remove_legacy_setup_token()
         purge_expired_sessions()

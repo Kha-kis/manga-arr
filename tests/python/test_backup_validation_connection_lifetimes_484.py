@@ -24,7 +24,8 @@ def _create_database(path: Path, value: str) -> None:
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("CREATE TABLE state(value TEXT NOT NULL)")
         connection.execute("INSERT INTO state(value) VALUES(?)", (value,))
-        connection.execute("PRAGMA user_version=7")
+        # This state-only fixture represents a pre-selection legacy database.
+        connection.execute("PRAGMA user_version=6")
 
 
 @pytest.fixture
@@ -103,7 +104,7 @@ def test_public_validation_closes_database_before_unlink(
             details = validate_backup_archive(str(legacy_archive))
 
         assert details["databaseValid"] is True
-        assert details["schemaVersion"] == 7
+        assert details["schemaVersion"] == 6
         assert legacy_archive.read_bytes() == original_archive
         assert len(connections) == 1
         assert not connections[0][0].exists()
