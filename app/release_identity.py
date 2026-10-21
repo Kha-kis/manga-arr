@@ -152,6 +152,25 @@ def identity_for(item: Mapping[str, Any], series_id: int) -> ReleaseIdentity | N
         return None
 
 
+def seen_identity(row: Mapping[str, Any]) -> ReleaseIdentity | None:
+    """Read retained observation fields only, never current configuration."""
+    protocol = canonical_protocol(row.get("protocol"))
+    series_id = row.get("series_id")
+    scope = row.get("release_source_scope")
+    guid = row.get("release_guid")
+    if (
+        protocol is None
+        or not isinstance(series_id, int)
+        or not isinstance(scope, str)
+        or not isinstance(guid, str)
+    ):
+        return None
+    try:
+        return ReleaseIdentity(series_id, scope, protocol, guid)
+    except (ValueError, TypeError):
+        return None
+
+
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:

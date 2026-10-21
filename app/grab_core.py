@@ -49,7 +49,7 @@ from parsing import (
 from evaluation import score_release
 from events import add_history, broadcast_queue_event, log_event
 from shared import get_cfg, get_db, vol_num_to_search
-from release_identity import SourceContext, identity_for
+from release_identity import SourceContext, identity_for, is_blocked
 from release_sources import item_source_is_current
 from volumes import _cascade_chapters
 import grab_dedup
@@ -100,9 +100,7 @@ async def grab_item(
 
     # Check blocklist
     with get_db() as db:
-        if db.execute(
-            "SELECT 1 FROM blocklist WHERE torrent_url=?", (item["url"],)
-        ).fetchone():
+        if is_blocked(db, url=item["url"], identity=identity_for(item, series_id)):
             grab_dedup._GRABBING_URLS.discard(item["url"])
             grab_dedup._log_grab_rejection(series_id, title, "blocklisted")
             return False
@@ -441,6 +439,9 @@ async def grab_item(
     with get_db() as db:
         if not item_source_is_current(db, item):
             return False
+        if is_blocked(db, url=item["url"], identity=identity_for(item, series_id)):
+            grab_dedup._log_grab_rejection(series_id, title, "blocklisted")
+            return False
     context = item.get("_source_context")
     source_scope = context.source_scope if isinstance(context, SourceContext) else None
     identity = identity_for(item, series_id)
@@ -587,7 +588,9 @@ async def grab_item(
                 "grabbed",
                 series_id,
                 (s_row["title"] or "") if s_row else "",
-                build_volume_label(vol_num, vol_rng, pack_type if vol_num is None else None),
+                build_volume_label(
+                    vol_num, vol_rng, pack_type if vol_num is None else None
+                ),
                 source_title=title,
                 indexer=indexer,
                 protocol=protocol,

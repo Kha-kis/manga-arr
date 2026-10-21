@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from routers._templates import templates
 from shared import get_db, get_cfg
+from release_identity import add_block, positive_id, seen_identity
 
 router = APIRouter()
 
@@ -72,16 +73,31 @@ async def clear_all_blocklist(request: Request):
 
 @router.post("/blocklist/add")
 async def add_to_blocklist(
-    series_id:    int = Form(0),
-    torrent_url:  str = Form(""),
+    series_id: int = Form(0),
+    torrent_url: str = Form(""),
     torrent_name: str = Form(""),
-    reason:       str = Form(""),
-):
+    reason: str = Form(""),
+) -> RedirectResponse:
     if torrent_url:
         with get_db() as db:
-            db.execute(
-                "INSERT OR IGNORE INTO blocklist(series_id, torrent_url, torrent_name, reason)"
-                " VALUES(?,?,?,?)",
-                (series_id or None, torrent_url, torrent_name, reason or 'Manual')
+            row = (
+                db.execute(
+                    "SELECT * FROM seen WHERE torrent_url=? AND series_id=?",
+                    (torrent_url, series_id),
+                ).fetchone()
+                if positive_id(series_id)
+                else None
+            )
+            identity = seen_identity(dict(row)) if row is not None else None
+            add_block(
+                db,
+                series_id=series_id or None,
+                url=torrent_url,
+                title=torrent_name,
+                reason=reason or "Manual",
+                indexer=None,
+                protocol=None,
+                size_bytes=None,
+                identities=[identity] if identity is not None else (),
             )
     return RedirectResponse(f"/series/{series_id}" if series_id else "/", status_code=303)

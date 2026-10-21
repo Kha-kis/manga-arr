@@ -15,6 +15,7 @@ from download_identity import (
     resolve_download_protocol,
 )
 from routers._templates import templates
+from release_identity import add_block, canonical_protocol, read_history_evidence, seen_identity
 from shared import cascade_chapters, get_db, with_flash
 
 router = APIRouter()
@@ -75,7 +76,7 @@ def mark_history_failed(hist_id: int) -> MarkHistoryFailedResult:
         h = db.execute("SELECT * FROM history WHERE id=?", (hist_id,)).fetchone()
         if not h:
             return {"ok": False, "status": "not_found"}
-        if h['event_type'] != 'grabbed':
+        if h["event_type"] != "grabbed":
             return {"ok": False, "status": "not_grabbed"}
         history_identity = _history_download_identity(db, h)
         if history_identity is not None:
@@ -103,23 +104,49 @@ def mark_history_failed(hist_id: int) -> MarkHistoryFailedResult:
                 (h["series_id"], h["download_id"]),
             ).fetchall()
             if any(
-                (
-                    candidate := _history_download_identity(db, active)
-                ) is not None
+                (candidate := _history_download_identity(db, active)) is not None
                 and download_identities_match(history_identity, candidate)
                 for active in active_imports
             ):
                 return {"ok": False, "status": "in_progress"}
 
-        bl_url = (h['torrent_url'] if 'torrent_url' in h.keys() and h['torrent_url']
-                  else h['download_id'] or h['source_title'] or '')
-        db.execute(
-            "INSERT OR IGNORE INTO blocklist"
-            "(series_id, torrent_url, torrent_name, reason, indexer, protocol, size_bytes)"
-            " VALUES(?,?,?,?,?,?,?)",
-            (h['series_id'], bl_url, h['source_title'] or '',
-             'Marked failed via history',
-             h['indexer'], h['protocol'], h['size_bytes'])
+        bl_url = (
+            h["torrent_url"]
+            if "torrent_url" in h.keys() and h["torrent_url"]
+            else h["download_id"] or h["source_title"] or ""
+        )
+        evidence_state, captured = read_history_evidence(dict(h))
+        observed = captured.identity if captured is not None else None
+        if captured is not None:
+            bl_url = captured.url
+        elif (
+            evidence_state == "absent"
+            and h["torrent_url"]
+            and history_identity is not None
+            and history_identity.download_client_id is not None
+            and history_identity.protocol is not None
+            and canonical_protocol(h["protocol"]) == history_identity.protocol
+        ):
+            seen = db.execute(
+                "SELECT * FROM seen WHERE torrent_url=? AND series_id=?",
+                (h["torrent_url"], h["series_id"]),
+            ).fetchone()
+            if (
+                seen is not None
+                and seen["protocol"] == history_identity.protocol
+                and _same_owned_download(db, seen, history_identity)
+            ):
+                observed = seen_identity(dict(seen))
+        add_block(
+            db,
+            series_id=h["series_id"],
+            url=bl_url,
+            title=h["source_title"] or "",
+            reason="Marked failed via history",
+            indexer=h["indexer"],
+            protocol=h["protocol"],
+            size_bytes=h["size_bytes"],
+            identities=[observed] if observed is not None else (),
         )
         db.execute("UPDATE history SET event_type='grab_failed' WHERE id=?", (hist_id,))
         if history_identity is not None:
@@ -133,7 +160,7 @@ def mark_history_failed(hist_id: int) -> MarkHistoryFailedResult:
                 ).fetchall()
                 if _same_owned_download(db, row, history_identity)
             ]
-            vol_ids = [r['id'] for r in grabbed]
+            vol_ids = [r["id"] for r in grabbed]
             db.executemany(
                 "DELETE FROM volumes WHERE id=? AND status='grabbed'"
                 " AND volume_num IS NULL",
@@ -147,11 +174,21 @@ def mark_history_failed(hist_id: int) -> MarkHistoryFailedResult:
                 ((row["id"],) for row in grabbed if row["volume_num"] is not None),
             )
             if vol_ids:
-                cascade_chapters(db, h['series_id'], vol_ids, 'wanted',
-                                 grabbed_at=None, torrent_name=None, torrent_url=None,
-                                 indexer=None, protocol=None, client=None,
-                                 download_client_id=None, download_id=None,
-                                 release_group=None)
+                cascade_chapters(
+                    db,
+                    h["series_id"],
+                    vol_ids,
+                    "wanted",
+                    grabbed_at=None,
+                    torrent_name=None,
+                    torrent_url=None,
+                    indexer=None,
+                    protocol=None,
+                    client=None,
+                    download_client_id=None,
+                    download_id=None,
+                    release_group=None,
+                )
             seen_rows = [
                 row
                 for row in db.execute(

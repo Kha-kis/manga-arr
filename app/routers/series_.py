@@ -26,6 +26,7 @@ from download_identity import (
     normalize_download_protocol,
 )
 from events import add_history
+from release_identity import identity_for, is_blocked
 from file_mutation_lock import (
     FileMutationGuard,
     FileMutationLockError,
@@ -323,7 +324,8 @@ async def _grab_volume_task(
                 " FROM volumes WHERE id=? AND series_id=?",
                 (v["id"], series_id),
             ).fetchone()
-            if v else None
+            if v
+            else None
         )
         current_series = dict(current_series_row) if current_series_row else None
         current_volume = dict(current_volume_row) if current_volume_row else None
@@ -339,10 +341,6 @@ async def _grab_volume_task(
             r["torrent_url"]
             for r in db.execute("SELECT torrent_url FROM seen").fetchall()
         }
-        blocked_urls = {
-            r["torrent_url"]
-            for r in db.execute("SELECT torrent_url FROM blocklist").fetchall()
-        }
         alias_rows = db.execute(
             "SELECT alias FROM series_aliases WHERE series_id=?", (series_id,)
         ).fetchall()
@@ -351,7 +349,11 @@ async def _grab_volume_task(
     )
     target_vol = current_volume["volume_num"]
     for item in all_items:
-        if item["url"] in seen_urls or item["url"] in blocked_urls:
+        with get_db() as db:
+            blocked = is_blocked(
+                db, url=item["url"], identity=identity_for(item, series_id)
+            )
+        if item["url"] in seen_urls or blocked:
             continue
         if any(_m.matches(p, item["title"]) for p in all_patterns):
             item_vol = _m.extract_volume_num(item["title"])
@@ -370,7 +372,10 @@ async def _grab_volume_task(
                 and pack_type != "chapter"
                 and (
                     (item_vol is not None and abs(item_vol - target_vol) < 0.01)
-                    or (item_rng is not None and item_rng[0] <= target_vol <= item_rng[1])
+                    or (
+                        item_rng is not None
+                        and item_rng[0] <= target_vol <= item_rng[1]
+                    )
                     or (item_rng is None and pack_type == "complete")
                 )
             )
@@ -421,7 +426,8 @@ async def _grab_volume_task_sync(
                 " FROM volumes WHERE id=? AND series_id=?",
                 (v["id"], series_id),
             ).fetchone()
-            if v else None
+            if v
+            else None
         )
         current_series = dict(current_series_row) if current_series_row else None
         current_volume = dict(current_volume_row) if current_volume_row else None
@@ -437,10 +443,6 @@ async def _grab_volume_task_sync(
             r["torrent_url"]
             for r in db.execute("SELECT torrent_url FROM seen").fetchall()
         }
-        blocked_urls = {
-            r["torrent_url"]
-            for r in db.execute("SELECT torrent_url FROM blocklist").fetchall()
-        }
         alias_rows = db.execute(
             "SELECT alias FROM series_aliases WHERE series_id=?", (series_id,)
         ).fetchall()
@@ -449,7 +451,11 @@ async def _grab_volume_task_sync(
     )
     target_vol = current_volume["volume_num"]
     for item in all_items:
-        if item["url"] in seen_urls or item["url"] in blocked_urls:
+        with get_db() as db:
+            blocked = is_blocked(
+                db, url=item["url"], identity=identity_for(item, series_id)
+            )
+        if item["url"] in seen_urls or blocked:
             continue
         if any(_m.matches(p, item["title"]) for p in all_patterns):
             item_vol = _m.extract_volume_num(item["title"])
@@ -468,7 +474,10 @@ async def _grab_volume_task_sync(
                 and pack_type != "chapter"
                 and (
                     (item_vol is not None and abs(item_vol - target_vol) < 0.01)
-                    or (item_rng is not None and item_rng[0] <= target_vol <= item_rng[1])
+                    or (
+                        item_rng is not None
+                        and item_rng[0] <= target_vol <= item_rng[1]
+                    )
                     or (item_rng is None and pack_type == "complete")
                 )
             )
@@ -514,12 +523,10 @@ async def _grab_chapter_task(sid: int, s: dict, ch: dict):
             r["torrent_url"]
             for r in db.execute("SELECT torrent_url FROM seen").fetchall()
         }
-        blocked_urls = {
-            r["torrent_url"]
-            for r in db.execute("SELECT torrent_url FROM blocklist").fetchall()
-        }
     for item in all_items:
-        if item["url"] in seen_urls or item["url"] in blocked_urls:
+        with get_db() as db:
+            blocked = is_blocked(db, url=item["url"], identity=identity_for(item, sid))
+        if item["url"] in seen_urls or blocked:
             continue
         if not _m.matches(s["search_pattern"], item["title"]):
             continue
@@ -3547,10 +3554,6 @@ async def search_volume_releases(
             r["torrent_url"]
             for r in db.execute("SELECT torrent_url FROM seen").fetchall()
         }
-        blocked_urls = {
-            r["torrent_url"]
-            for r in db.execute("SELECT torrent_url FROM blocklist").fetchall()
-        }
     if not s or not v:
         return JSONResponse({"error": "Not found"}, status_code=404)
 
@@ -3613,7 +3616,9 @@ async def search_volume_releases(
                 "quality": ev["quality"],
                 "size_mb": ev["size_mb"],
                 "seen": item["url"] in seen_urls,
-                "blocked": item["url"] in blocked_urls,
+                "blocked": is_blocked(
+                    _eval_db, url=item["url"], identity=identity_for(item, series_id)
+                ),
             }
             preferred_client_id = coerce_download_client_id(
                 item.get("preferred_client_id")
