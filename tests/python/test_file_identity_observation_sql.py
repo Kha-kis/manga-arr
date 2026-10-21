@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import gc
 import os
 from pathlib import Path
 import select
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
@@ -193,6 +195,69 @@ def test_sql_real_namespace_no_application_effects(
     journal: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    child_root = Path(
+        tempfile.mkdtemp(prefix="sql-no-effects-", dir=ledger_path.parent)
+    )
+    for name in ("tmp", "config", "home"):
+        (child_root / name).mkdir()
+    source = Path(__file__).resolve().parents[2]
+    helper = Path(__file__).with_name("file_identity_sql_process.py")
+    env = {
+        **os.environ,
+        "TMPDIR": str(child_root / "tmp"),
+        "MANGARR_CONFIG_DIR": str(child_root / "config"),
+        "XDG_CONFIG_HOME": str(child_root / "config"),
+        "XDG_CACHE_HOME": str(child_root / "tmp"),
+        "HOME": str(child_root / "home"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": os.pathsep.join((str(source / "app"), str(helper.parent))),
+    }
+    env.pop("PYTEST_ADDOPTS", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-m",
+            "pytest",
+            "-vv",
+            "-s",
+            "-p",
+            "no:cacheprovider",
+            f"--basetemp={child_root / 'basetemp'}",
+            f"{helper}::test_sql_no_effects_process[{journal}]",
+        ],
+        cwd=source,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            f"SQL no-effects child exited {result.returncode}\n{result.stdout}\n{result.stderr}"
+        )
+
+
+def _fd_targets() -> dict[str, tuple[str, int, int, int]]:
+    targets: dict[str, tuple[str, int, int, int]] = {}
+    # Keep the enumerator live: disappearing resources must fail, not be ignored.
+    with os.scandir("/proc/self/fd") as entries:
+        for entry in entries:
+            info = os.fstat(int(entry.name))
+            target = os.readlink(entry.path)
+            if target == f"/proc/{os.getpid()}/fd":
+                continue  # Exclude the live enumeration descriptor itself.
+            targets[entry.name] = target, info.st_dev, info.st_ino, info.st_mode
+    return targets
+
+
+def _assert_sql_no_application_effects(
+    ledger_path: Path,
+    namespace: Path,
+    journal: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     statements = (f"PRAGMA journal_mode={journal}",)
     if journal == "wal":
         statements += (
@@ -206,12 +271,16 @@ def test_sql_real_namespace_no_application_effects(
         before_rows, before_media = rows(ledger_path), media_snapshot(namespace)
         before = control_snapshot(ledger_path)
         before_fds, before_threads = fds(), threading.enumerate()
+        before_targets = _fd_targets()
         connections, cursors, statements = trace_connections(monkeypatch)
         result = inspect(ledger_path, namespace)
         assert result.unresolved == () and len(result.observed) == 3
         assert len(connections) == 2
         assert_closed(connections, cursors)
-        assert fds() == before_fds and threading.enumerate() == before_threads
+        assert fds() == before_fds and threading.enumerate() == before_threads, (
+            "inspection changed process descriptors or threads"
+        )
+        assert _fd_targets() == before_targets
         after = control_snapshot(ledger_path)
         for name, value in before.items():
             if not name.endswith("-shm"):
@@ -225,6 +294,117 @@ def test_sql_real_namespace_no_application_effects(
         assert not any(
             "checkpoint" in s.lower() or "journal_mode" in s.lower() for s in statements
         )
+
+
+@pytest.mark.parametrize("rooted", [False, True])
+def test_sql_no_effects_boundary_with_parent_sqlite_cycles(
+    ledger_path: Path,
+    namespace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    rooted: bool,
+) -> None:
+    gc.collect()
+    enabled, thresholds = gc.isenabled(), gc.get_threshold()
+    gc.disable()
+    garbage_path = tmp_path / "unrelated-parent.db"
+    connection = sqlite3.connect(garbage_path)
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("CREATE TABLE sentinel(value)")
+    connection.commit()
+    cycle: list[Any] = [connection]
+    cycle.append(cycle)
+    keep = cycle if rooted else None
+    del connection, cycle
+
+    def parent_targets() -> dict[str, str]:
+        result: dict[str, str] = {}
+        for fd in os.listdir("/proc/self/fd"):
+            try:
+                target = os.readlink(f"/proc/self/fd/{fd}")
+            except FileNotFoundError:
+                continue
+            if target.startswith(str(garbage_path)):
+                result[fd] = target
+        return result
+
+    before = parent_targets()
+    assert len(before) == 3
+    original_inspect = inspect
+
+    def allocation_pressure(*args: Any, **kwargs: Any) -> Any:
+        gc.set_threshold(1, 1, 1)
+        gc.enable()
+        return original_inspect(*args, **kwargs)
+
+    monkeypatch.setattr(sys.modules[__name__], "inspect", allocation_pressure)
+    try:
+        test_sql_real_namespace_no_application_effects(
+            ledger_path, namespace, "wal", monkeypatch
+        )
+        # Retain the discriminating in-process proof as well as the isolated boundary.
+        before_process = _fd_targets()
+        if rooted:
+            _assert_sql_no_application_effects(
+                ledger_path, namespace, "wal", monkeypatch
+            )
+            assert _fd_targets() == before_process
+        else:
+            with pytest.raises(AssertionError, match="inspection changed process"):
+                _assert_sql_no_application_effects(
+                    ledger_path, namespace, "wal", monkeypatch
+                )
+            expected = dict(before_process)
+            for fd in before:
+                del expected[fd]
+            assert _fd_targets() == expected
+        gc.set_threshold(1, 1, 1)
+        gc.enable()
+        allocations = [[] for _ in range(64)]
+        assert allocations
+        assert parent_targets() == (before if rooted else {})
+    finally:
+        if keep is not None:
+            keep[0].close()
+            keep.clear()
+        gc.collect()
+        gc.set_threshold(*thresholds)
+        if enabled:
+            gc.enable()
+        else:
+            gc.disable()
+
+
+def test_sql_no_effects_child_failure_preserves_full_output(
+    ledger_path: Path,
+    namespace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stdout, stderr = "child-start\n" + "x" * 20000 + "\nchild-end", "child-stderr"
+    calls: list[list[str]] = []
+
+    def failed_child(
+        argv: list[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        assert argv[:4] == [sys.executable, "-B", "-m", "pytest"]
+        assert argv[-1].endswith(
+            "file_identity_sql_process.py::test_sql_no_effects_process[wal]"
+        )
+        child_tmp = Path(kwargs["env"]["TMPDIR"])
+        assert child_tmp.is_dir() and child_tmp.parent.parent == ledger_path.parent
+        basetemp = Path(argv[-2].split("=", 1)[1])
+        assert basetemp.parent == child_tmp.parent and not basetemp.exists()
+        assert basetemp != ledger_path.parent
+        return subprocess.CompletedProcess(argv, 1, stdout, stderr)
+
+    monkeypatch.setattr(subprocess, "run", failed_child)
+    with pytest.raises(AssertionError) as failure:
+        test_sql_real_namespace_no_application_effects(
+            ledger_path, namespace, "wal", monkeypatch
+        )
+    assert f"SQL no-effects child exited 1\n{stdout}\n{stderr}" in str(failure.value)
+    assert len(calls) == 1
 
 
 def test_sql_stopped_wal_actor_missing_coordination_is_sqlite_managed(
