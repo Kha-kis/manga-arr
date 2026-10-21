@@ -355,7 +355,6 @@ def _cleanup_missing_downloads(
 ) -> None:
     """Retry only independently proven pathless claims; never infer success."""
     with get_db() as db:
-        db.execute("UPDATE import_queue SET id=id WHERE 0")
         candidates = db.execute(
             "SELECT series_id,download_id,download_client_id,protocol,source_url,"
             " torrent_name FROM volumes WHERE status='grabbed' AND client=?"
@@ -375,62 +374,62 @@ def _cleanup_missing_downloads(
                 int(include_legacy_ownerless),
             ),
         ).fetchall()
-        # Refusal proof is broader than mutation eligibility: descriptive client
-        # labels and local paths cannot erase a known concrete acquisition fork.
-        evidence = db.execute(
-            "SELECT series_id,download_id,download_client_id,protocol,source_url"
-            " FROM volumes WHERE status='grabbed' AND download_id IS NOT NULL"
-            " AND download_client_id=?"
-            " UNION ALL SELECT series_id,download_id,download_client_id,protocol,"
-            " torrent_url AS source_url FROM chapters"
-            " WHERE status='grabbed' AND download_id IS NOT NULL"
-            " AND download_client_id=?",
-            (download_client_id, download_client_id),
-        ).fetchall()
-        claim_sources: dict[tuple[int, int, DownloadProtocol, str], set[str]] = {}
-        for row in evidence:
-            row_owner = coerce_download_client_id(row["download_client_id"])
-            row_protocol = normalize_download_protocol(row["protocol"])
-            row_id = normalize_download_id(row["download_id"], row_protocol)
-            row_source = str(row["source_url"] or "")
-            if (
-                row_owner is not None
-                and row_protocol is not None
-                and row_id
-                and row_source.strip()
-            ):
-                claim_sources.setdefault(
-                    (int(row["series_id"]), row_owner, row_protocol, row_id), set()
-                ).add(row_source)
-        handled: set[tuple[int, int, str, str]] = set()
-        seen_by_series: dict[int, list[dict[str, Any]]] = {}
-        for candidate in candidates:
-            owner_id = coerce_download_client_id(candidate["download_client_id"])
-            source_url = str(candidate["source_url"] or "")
-            download_id = normalize_download_id(candidate["download_id"], protocol)
-            if (
-                owner_id is None
-                or not source_url.strip()
-                or not download_id
-                or download_id in present_ids
-                or normalize_download_protocol(candidate["protocol"]) != protocol
-            ):
-                continue
-            series_id = int(candidate["series_id"])
-            key = (series_id, owner_id, download_id, source_url)
-            if key in handled:
-                continue
-            handled.add(key)
+    handled: set[tuple[int, int, str, str]] = set()
+    for candidate in candidates:
+        owner_id = coerce_download_client_id(candidate["download_client_id"])
+        source_url = str(candidate["source_url"] or "")
+        download_id = normalize_download_id(candidate["download_id"], protocol)
+        if (
+            owner_id is None
+            or not source_url.strip()
+            or not download_id
+            or download_id in present_ids
+            or normalize_download_protocol(candidate["protocol"]) != protocol
+        ):
+            continue
+        series_id = int(candidate["series_id"])
+        key = (series_id, owner_id, download_id, source_url)
+        if key in handled:
+            continue
+        handled.add(key)
+        identity = DownloadIdentity(owner_id, protocol, download_id)
+        # Enumeration is only a work list. Close it, then reserve a short writer
+        # and recapture all authority/refusal evidence for this acquisition.
+        with get_db() as db:
+            db.execute("UPDATE import_queue SET id=id WHERE 0")
+            evidence = db.execute(
+                "SELECT download_id,download_client_id,protocol,source_url"
+                " FROM volumes WHERE status='grabbed' AND download_id IS NOT NULL"
+                " AND series_id=?"
+                " UNION ALL SELECT download_id,download_client_id,protocol,"
+                " torrent_url AS source_url FROM chapters"
+                " WHERE status='grabbed' AND download_id IS NOT NULL"
+                " AND series_id=?",
+                (series_id, series_id),
+            ).fetchall()
+            # Labels and local paths restrict mutation, not negative fork proof.
+            claim_sources: set[str] = set()
+            source_bindings: set[DownloadIdentity] = set()
+            for row in evidence:
+                binding_owner = coerce_download_client_id(row["download_client_id"])
+                binding_protocol = normalize_download_protocol(row["protocol"])
+                binding_id = normalize_download_id(row["download_id"], binding_protocol)
+                binding_source = str(row["source_url"] or "")
+                if (
+                    binding_owner is None
+                    or binding_protocol is None
+                    or not binding_id.strip()
+                    or not binding_source.strip()
+                ):
+                    continue
+                binding = DownloadIdentity(binding_owner, binding_protocol, binding_id)
+                if binding == identity:
+                    claim_sources.add(binding_source)
+                if binding_source == source_url:
+                    source_bindings.add(binding)
             # Keep both sides of a current source fork. Retiring one would erase
-            # the durable fence when seen expires, even if this poll cached it.
-            if (
-                len(
-                    claim_sources.get(
-                        (series_id, owner_id, protocol, download_id), set()
-                    )
-                )
-                > 1
-            ):
+            # the durable fence when seen expires.
+            if len(claim_sources) > 1:
                 log_event(
                     "warning",
                     "Orphan cleanup deferred: conflicting claim sources",
@@ -439,17 +438,23 @@ def _cleanup_missing_downloads(
                     dedup=True,
                 )
                 continue
-            identity = DownloadIdentity(owner_id, protocol, download_id)
-            # Earlier retries may delete receipts. Keep the original source
-            # fences for every other acquisition in this writer transaction.
-            if series_id not in seen_by_series:
-                seen_by_series[series_id] = [
-                    dict(row)
-                    for row in db.execute(
-                        "SELECT * FROM seen WHERE series_id=?", (series_id,)
-                    )
-                ]
-            seen = seen_by_series[series_id]
+            # One receipt per URL cannot choose between concrete current bindings.
+            # Preserve both claims so cleanup cannot erase its own refusal proof.
+            if len(source_bindings) > 1:
+                log_event(
+                    "warning",
+                    "Orphan cleanup deferred: conflicting claim bindings",
+                    series_id,
+                    db=db,
+                    dedup=True,
+                )
+                continue
+            seen = [
+                dict(row)
+                for row in db.execute(
+                    "SELECT * FROM seen WHERE series_id=?", (series_id,)
+                )
+            ]
             same_source = [row for row in seen if row["torrent_url"] == source_url]
             same_download = [
                 row for row in seen if _exact_orphan_identity(row, identity)
@@ -466,6 +471,7 @@ def _cleanup_missing_downloads(
                 continue
             targets: dict[str, list[int]] = {"volumes": [], "chapters": []}
             stubs: list[int] = []
+            source_title = ""
             for table, url_column in (
                 ("chapters", "torrent_url"),
                 ("volumes", "source_url"),
@@ -481,6 +487,7 @@ def _cleanup_missing_downloads(
                         "client"
                     ] not in (None, "", client_type):
                         continue
+                    source_title = str(row["torrent_name"] or "")
                     if table == "volumes" and row["volume_num"] is None:
                         if row["is_special"]:
                             continue
@@ -539,7 +546,7 @@ def _cleanup_missing_downloads(
                 series_id,
                 series["title"] if series else "",
                 "",
-                source_title=str(candidate["torrent_name"] or ""),
+                source_title=source_title,
                 protocol=protocol,
                 torrent_url=source_url,
                 download_id=download_id,

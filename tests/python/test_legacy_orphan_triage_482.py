@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import closing
+from collections.abc import Generator
+from contextlib import closing, contextmanager
 import json
 import sqlite3
 from typing import Any
@@ -30,6 +31,214 @@ def isolated_event_dedup(monkeypatch: pytest.MonkeyPatch) -> None:
     import events
 
     monkeypatch.setattr(events, "_LOG_DEDUP_LAST", {})
+
+
+def _binding_evidence_snapshot() -> dict[str, list[dict[str, Any]]]:
+    import shared
+
+    with shared.get_db() as db:
+        return {
+            table: [
+                dict(row)
+                for row in db.execute(f"SELECT * FROM {table} ORDER BY {order_column}")
+            ]
+            for table, order_column in (
+                ("seen", "torrent_url"),
+                ("import_queue", "id"),
+                ("import_queue_files", "id"),
+                ("history", "id"),
+            )
+        }
+
+
+def test_different_id_claim_keeps_same_poll_source_refusal(
+    pack: Pack, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An earlier acquisition must not consume the later claim's refusal proof."""
+    import shared
+
+    with shared.get_db() as db:
+        db.execute("DELETE FROM volumes WHERE id NOT IN (1,2)")
+        db.execute("DELETE FROM chapters WHERE id != 30")
+        db.execute("UPDATE chapters SET download_id='later-id' WHERE id=30")
+    claims = _snapshot()
+    evidence = _binding_evidence_snapshot()
+    _poll_removed(pack, monkeypatch)
+    # Both bindings survive: choosing the seen binding would erase durable proof.
+    assert _snapshot() == claims
+    assert _binding_evidence_snapshot() == evidence
+
+
+@pytest.mark.parametrize(
+    ("difference", "evidence_table", "label", "local"),
+    [
+        ("id", "chapters", None, False),
+        ("id", "volumes", "", True),
+        ("owner", "chapters", "opposite", True),
+        ("owner", "volumes", None, False),
+        ("protocol", "chapters", "", True),
+        ("protocol", "volumes", "opposite", False),
+    ],
+)
+def test_current_source_bindings_survive_polls_and_receipt_expiry(
+    pack: Pack,
+    monkeypatch: pytest.MonkeyPatch,
+    difference: str,
+    evidence_table: str,
+    label: str | None,
+    local: bool,
+) -> None:
+    import import_discovery
+    import shared
+
+    queue_id = _queue(pack)
+    other_protocol: DownloadProtocol = (
+        "nzb" if pack.protocol == "torrent" else "torrent"
+    )
+    alternate_protocol = other_protocol if difference == "protocol" else pack.protocol
+    alternate_owner = 8 if difference == "owner" else 7
+    with shared.get_db() as db:
+        db.execute("DELETE FROM volumes WHERE id NOT IN (1,2)")
+        db.execute("DELETE FROM chapters WHERE id != 30")
+        db.execute("UPDATE import_queue SET status='failed' WHERE id=?", (queue_id,))
+        row_id = 2 if evidence_table == "volumes" else 30
+        db.execute(
+            f"UPDATE {evidence_table} SET download_client_id=?,protocol=?,"
+            " download_id=?,client=?,import_path=? WHERE id=?",
+            (
+                alternate_owner,
+                alternate_protocol,
+                "later-id" if difference == "id" else pack.download_id,
+                ("sabnzbd" if pack.client_type == "qbittorrent" else "qbittorrent")
+                if label == "opposite"
+                else label,
+                str(pack.original) if local else None,
+                row_id,
+            ),
+        )
+    claims = _snapshot()
+    evidence = _binding_evidence_snapshot()
+    for poll in range(3):
+        _poll_removed(pack, monkeypatch)
+        # Exercise the other namespace too, even when its client label is unusable.
+        import_discovery._cleanup_missing_downloads(
+            set(),
+            download_client_id=alternate_owner,
+            protocol=alternate_protocol,
+            client_type="qbittorrent" if alternate_protocol == "torrent" else "sabnzbd",
+            include_legacy_ownerless=False,
+        )
+        assert _snapshot() == claims
+        assert _binding_evidence_snapshot() == evidence
+        if poll == 0:
+            with shared.get_db() as db:
+                db.execute("DELETE FROM seen")
+            evidence["seen"] = []
+    with shared.get_db() as db:
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM events WHERE message="
+                "'Orphan cleanup deferred: conflicting claim bindings'"
+            ).fetchone()[0]
+            == 1
+        )
+
+
+@pytest.mark.parametrize("difference", ["owner", "protocol", "series", "id"])
+def test_independent_binding_namespaces_remain_retryable(
+    pack: Pack, monkeypatch: pytest.MonkeyPatch, difference: str
+) -> None:
+    import import_discovery
+    import shared
+
+    other_protocol: DownloadProtocol = (
+        "nzb" if pack.protocol == "torrent" else "torrent"
+    )
+    alternate_protocol = other_protocol if difference == "protocol" else pack.protocol
+    alternate_owner = 8 if difference == "owner" else 7
+    with shared.get_db() as db:
+        db.execute("DELETE FROM volumes WHERE id NOT IN (1,2)")
+        db.execute("DELETE FROM chapters WHERE id != 30")
+        db.execute(
+            "UPDATE chapters SET torrent_url=?,download_client_id=?,protocol=?,"
+            " series_id=?,download_id=? WHERE id=30",
+            (
+                SOURCE if difference == "series" else "https://independent.invalid",
+                alternate_owner,
+                alternate_protocol,
+                2 if difference == "series" else 1,
+                "independent-id" if difference == "id" else pack.download_id,
+            ),
+        )
+    _poll_removed(pack, monkeypatch)
+    import_discovery._cleanup_missing_downloads(
+        set(),
+        download_client_id=alternate_owner,
+        protocol=alternate_protocol,
+        client_type="qbittorrent" if alternate_protocol == "torrent" else "sabnzbd",
+        include_legacy_ownerless=False,
+    )
+    with shared.get_db() as db:
+        assert tuple(
+            db.execute("SELECT status,download_id FROM volumes WHERE id=2").fetchone()
+        ) == ("wanted", None)
+        assert tuple(
+            db.execute("SELECT status,download_id FROM chapters WHERE id=30").fetchone()
+        ) == ("wanted", None)
+        assert db.execute("SELECT 1 FROM seen").fetchone() is None
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM history WHERE event_type='grab_failed'"
+            ).fetchone()[0]
+            == 2
+        )
+    after = _snapshot(), _binding_evidence_snapshot()
+    _poll_removed(pack, monkeypatch)
+    assert (_snapshot(), _binding_evidence_snapshot()) == after
+
+
+@pytest.mark.parametrize("same_source", [False, True])
+def test_binding_identity_uses_protocol_specific_id_case(
+    pack: Pack, monkeypatch: pytest.MonkeyPatch, same_source: bool
+) -> None:
+    import shared
+
+    with shared.get_db() as db:
+        db.execute("DELETE FROM volumes WHERE id NOT IN (1,2)")
+        db.execute("DELETE FROM chapters WHERE id != 30")
+        db.execute(
+            "UPDATE chapters SET download_id=?,torrent_url=?,protocol=? WHERE id=30",
+            (
+                pack.download_id.swapcase(),
+                SOURCE if same_source else "https://independent.invalid",
+                " usenet " if pack.protocol == "nzb" else " TORRENT ",
+            ),
+        )
+    claims = _snapshot()
+    refused = (pack.protocol == "torrent") != same_source
+    _poll_removed(pack, monkeypatch)
+    if refused:
+        assert _snapshot() == claims
+        with shared.get_db() as db:
+            db.execute("DELETE FROM seen")
+        _poll_removed(pack, monkeypatch)
+        _poll_removed(pack, monkeypatch)
+        assert _snapshot() == claims
+        assert _binding_evidence_snapshot()["history"] == []
+    else:
+        with shared.get_db() as db:
+            assert (
+                db.execute("SELECT status FROM volumes WHERE id=2").fetchone()[0]
+                == "wanted"
+            )
+            assert (
+                db.execute("SELECT status FROM chapters WHERE id=30").fetchone()[0]
+                == "wanted"
+            )
+            assert db.execute("SELECT 1 FROM seen").fetchone() is None
+            assert db.execute(
+                "SELECT COUNT(*) FROM history WHERE event_type='grab_failed'"
+            ).fetchone()[0] == (1 if same_source else 2)
 
 
 @pytest.mark.parametrize("chapter_id", [20, 30], ids=["mapped", "loose"])
@@ -87,6 +296,132 @@ def test_current_source_fork_refuses_repeated_polls_even_after_seen_expiry(
         )
     if not expire_seen:
         _assert_guid_dedup(pack)
+
+
+@pytest.mark.parametrize("change", ["claim", "seen", "fork", "queue"])
+def test_cleanup_recaptures_evidence_after_enumeration_closes(
+    pack: Pack, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    import import_discovery
+    import shared
+
+    with shared.get_db() as db:
+        db.execute("DELETE FROM volumes WHERE id NOT IN (1,2)")
+        db.execute(
+            "DELETE FROM chapters WHERE id != ?", (30 if change == "fork" else -1,)
+        )
+    expected = _snapshot()
+    if change == "claim":
+        row = next(row for row in expected["volumes"] if row["id"] == 2)
+        row.update(source_url="https://successor.invalid", download_id="successor-id")
+    elif change == "fork":
+        expected["chapters"][0]["torrent_url"] = "https://successor.invalid"
+    real_get_db = import_discovery.get_db
+    entries = 0
+    injected = False
+
+    @contextmanager
+    def publish_after_enumeration() -> Generator[sqlite3.Connection, None, None]:
+        nonlocal entries, injected
+        entries += 1
+        entry = entries
+        with real_get_db() as db:
+            yield db
+        if entry == 1:
+            # Commit a competitor exactly after enumeration's connection closes.
+            with shared.get_db() as db:
+                if change == "claim":
+                    db.execute(
+                        "UPDATE volumes SET source_url='https://successor.invalid',download_id='successor-id' WHERE id=2"
+                    )
+                elif change == "seen":
+                    db.execute("UPDATE seen SET download_id='successor-id'")
+                elif change == "fork":
+                    db.execute(
+                        "UPDATE chapters SET torrent_url='https://successor.invalid' WHERE id=30"
+                    )
+                else:
+                    db.execute(
+                        "INSERT INTO import_queue(series_id,download_id,download_client_id,status) VALUES(1,?,7,'pending')",
+                        (pack.download_id,),
+                    )
+            injected = True
+
+    monkeypatch.setattr(import_discovery, "get_db", publish_after_enumeration)
+    import_discovery._cleanup_missing_downloads(
+        set(),
+        download_client_id=7,
+        protocol=pack.protocol,
+        client_type=pack.client_type,
+        include_legacy_ownerless=False,
+    )
+    assert injected
+    assert _snapshot() == expected
+    with shared.get_db() as db:
+        assert (
+            db.execute(
+                "SELECT 1 FROM history WHERE event_type='grab_failed'"
+            ).fetchone()
+            is None
+        )
+        assert db.execute("SELECT 1 FROM seen").fetchone() is not None
+        if change == "queue":
+            assert tuple(
+                db.execute(
+                    "SELECT status,torrent_url,download_protocol FROM import_queue"
+                ).fetchone()
+            ) == ("pending", None, None)
+
+
+@pytest.mark.parametrize("missing", ["source", "protocol", "both"])
+def test_unknown_terminal_queue_identity_cannot_grant_failed_retry(
+    pack: Pack, monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    import shared
+
+    queue_id = _queue(pack)
+    source = None if missing in ("source", "both") else SOURCE
+    protocol = None if missing in ("protocol", "both") else pack.protocol
+    with shared.get_db() as db:
+        db.execute("DELETE FROM volumes WHERE id NOT IN (1,2)")
+        db.execute("DELETE FROM chapters")
+        db.execute(
+            "UPDATE import_queue SET status='failed',torrent_url=?,download_protocol=? WHERE id=?",
+            (source, protocol, queue_id),
+        )
+        db.execute(
+            "INSERT INTO import_queue(series_id,download_id,download_client_id,download_protocol,torrent_url,status) VALUES(1,?,7,?,?,'imported')",
+            (pack.download_id, protocol, source),
+        )
+        before = {
+            table: [
+                tuple(row)
+                for row in db.execute(
+                    f"SELECT * FROM {table} ORDER BY {'torrent_url' if table == 'seen' else 'id'}"
+                )
+            ]
+            for table in ("import_queue", "import_queue_files", "seen")
+        }
+    claims_before = _snapshot()
+    _poll_removed(pack, monkeypatch)
+    _poll_removed(pack, monkeypatch)
+    assert _snapshot() == claims_before
+    with shared.get_db() as db:
+        assert {
+            table: [
+                tuple(row)
+                for row in db.execute(
+                    f"SELECT * FROM {table} ORDER BY {'torrent_url' if table == 'seen' else 'id'}"
+                )
+            ]
+            for table in before
+        } == before
+        assert (
+            db.execute(
+                "SELECT 1 FROM history WHERE event_type='grab_failed'"
+            ).fetchone()
+            is None
+        )
 
 
 @pytest.mark.parametrize("evidence_table", ["volumes", "chapters"])

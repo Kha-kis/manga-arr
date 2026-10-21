@@ -1818,6 +1818,17 @@ def test_qbit_and_sab_orphan_passes_protect_active_rows_and_scope_children(
             protocol="torrent" if client == "qbittorrent" else "nzb",
             download_client_id=download_client_id,
         )
+        # Positive retry parents must carry this domain's exact acquisition proof.
+        with sqlite3.connect(lease_env) as db:
+            db.execute(
+                "UPDATE import_queue SET torrent_url=?,download_protocol=? WHERE id IN (?,?)",
+                (
+                    source_url,
+                    "torrent" if client == "qbittorrent" else "nzb",
+                    failed_id,
+                    sibling_id,
+                ),
+            )
         transitioned.append(
             (
                 failed_id,
