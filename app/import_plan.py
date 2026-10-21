@@ -319,6 +319,16 @@ def _plan_import(
         (queue_id,),
     ).fetchall()
 
+    retained_skip_replay = False
+    if not files:
+        # Retry may retain only completed skip decisions after preparation failed.
+        retained = db.execute(
+            "SELECT * FROM import_queue_files WHERE queue_id=?", (queue_id,)
+        ).fetchall()
+        if retained and all(f["status"] == "skipped" for f in retained):
+            files = retained
+            retained_skip_replay = True
+
     if not files:
         _release_import_queue_lease(db, queue_id, lease_owner)
         return None
@@ -354,7 +364,7 @@ def _plan_import(
             download_client_id=queue.get("download_client_id"),
             series_id=queue["series_id"],
         )
-        if transitioned and not shared_download:
+        if transitioned and not shared_download and not retained_skip_replay:
             owner_id = coerce_download_client_id(queue.get("download_client_id"))
             protocol = resolve_download_protocol(
                 db,
@@ -390,7 +400,7 @@ def _plan_import(
     plans = []
 
     for f in files:
-        if f["id"] in skip_ids:
+        if f["id"] in skip_ids or f["status"] == "skipped":
             db.execute(
                 "UPDATE import_queue_files SET status='skipped' WHERE id=?", (f["id"],)
             )

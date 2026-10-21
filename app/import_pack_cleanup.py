@@ -439,6 +439,130 @@ def _active_publication_exists(db: sqlite3.Connection, queue_id: int) -> bool:
     return row is not None
 
 
+def _retained_skipped_pack_uses_source(
+    db: sqlite3.Connection,
+    *,
+    queue_id: int,
+    identity: DownloadIdentity,
+) -> bool:
+    """SQL-only retained-source veto, not a preparation-cause classification."""
+    queue = db.execute(
+        "SELECT status,download_id,download_client_id,download_protocol"
+        " FROM import_queue WHERE id=?",
+        (queue_id,),
+    ).fetchone()
+    if queue is None or queue["status"] != "failed":
+        return False
+    key = download_identity_key(identity)
+    if (
+        not key
+        or download_identity_key(
+            DownloadIdentity(
+                coerce_download_client_id(queue["download_client_id"]),
+                normalize_download_protocol(queue["download_protocol"]),
+                str(queue["download_id"] or ""),
+            )
+        )
+        != key
+    ):
+        return False
+    children = db.execute(
+        "SELECT status,src_path FROM import_queue_files WHERE queue_id=?", (queue_id,)
+    ).fetchall()
+    if not children or any(child["status"] != "skipped" for child in children):
+        return False
+    sources = {child["src_path"] for child in children if child["src_path"]}
+    canonical = _canonical_pack_path(identity)
+    normalized = normalize_download_id(identity.download_id, identity.protocol)
+    inventories: list[tuple[str, PackInventory]] = []
+    row = db.execute(
+        "SELECT * FROM import_pack_cleanup_reservations"
+        " WHERE download_identity_key=? AND queue_id=?",
+        (key, queue_id),
+    ).fetchone()
+    if row is not None:
+        reservation = _reservation_from_row(dict(row))
+        if (
+            reservation.pack_path == canonical
+            and download_identity_key(
+                DownloadIdentity(
+                    reservation.download_client_id,
+                    reservation.protocol,
+                    reservation.download_id,
+                )
+            )
+            == key
+        ):
+            if reservation.normalized_download_id != normalized:
+                raise PackProofError(
+                    "retained skipped source normalized identity mismatch"
+                )
+            ownership = _ownership(reservation)
+            if ownership is not None:
+                if ownership.inventory is None and not ownership.claims:
+                    raise PackProofError("retained skipped source lacks pack inventory")
+                if ownership.inventory is not None:
+                    for proof in (
+                        ownership.canonical_directory,
+                        ownership.private_directory,
+                    ):
+                        if proof is not None and proof.marker_fingerprint is not None:
+                            inventories.append((proof.path, ownership.inventory))
+                for claim in ownership.claims:
+                    if claim.artifact_owner_token == ownership.artifact_owner_token:
+                        inventories.append(
+                            (claim.source_directory.path, claim.inventory)
+                        )
+    # A detached claim may have transferred out of the reservation already.
+    for row in db.execute(
+        "SELECT * FROM import_pack_cleanup_tombstones"
+        " WHERE download_identity_key=? AND queue_id=?",
+        (key, queue_id),
+    ).fetchall():
+        if (
+            row["pack_path"] != canonical
+            or download_identity_key(
+                DownloadIdentity(
+                    coerce_download_client_id(row["download_client_id"]),
+                    normalize_download_protocol(row["protocol"]),
+                    str(row["download_id"]),
+                )
+            )
+            != key
+            or row["carrier_json"] is None
+        ):
+            continue
+        if row["normalized_download_id"] != normalized:
+            raise PackProofError("retained skipped source normalized identity mismatch")
+        claim = PackDirectoryClaim.from_json(str(row["carrier_json"]))
+        if (
+            row["tombstone_path"]
+            != os.path.join(claim.carrier.carrier_path, "artifact")
+            or not (
+                claim.source_directory.path == canonical
+                or (
+                    claim.artifact_owner_token is None
+                    and _valid_tombstone_path(canonical, claim.source_directory.path)
+                )
+            )
+            or (
+                claim.artifact_owner_token is not None
+                and claim.artifact_owner_token != claim.carrier.binding.operation_key
+            )
+        ):
+            continue
+        # Legacy cleanup renamed the canonical source before private capture.
+        # Keep its logical consumer as well as the proven capture-origin name.
+        inventories.append((canonical, claim.inventory))
+        if claim.source_directory.path != canonical:
+            inventories.append((claim.source_directory.path, claim.inventory))
+    return any(
+        os.path.join(base, relative) in sources
+        for base, inventory in inventories
+        for relative in inventory.files
+    )
+
+
 def _terminal_cleanup_eligible(
     db: sqlite3.Connection,
     *,
@@ -455,6 +579,8 @@ def _terminal_cleanup_eligible(
     ):
         return False
     if _active_publication_exists(db, queue_id):
+        return False
+    if _retained_skipped_pack_uses_source(db, queue_id=queue_id, identity=identity):
         return False
 
     placeholders = ",".join("?" for _ in _ACTIVE_PUBLICATION_STATES)
@@ -2925,6 +3051,18 @@ def _recover_pack_cleanup_with_guard(
             observed = _reservation_from_row(dict(row))
             _ownership(observed)
             guard.verify()
+            if observed.queue_id is not None:
+                # Contradictions refuse before takeover; valid rows still renew.
+                with get_db() as db:
+                    _retained_skipped_pack_uses_source(
+                        db,
+                        queue_id=observed.queue_id,
+                        identity=DownloadIdentity(
+                            observed.download_client_id,
+                            observed.protocol,
+                            observed.download_id,
+                        ),
+                    )
             reservation = _claim_expired_reservation(observed)
             if reservation is None:
                 continue
