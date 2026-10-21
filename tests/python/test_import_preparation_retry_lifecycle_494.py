@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 from typing import Any
@@ -32,6 +32,7 @@ class Case:
     source: Path
     source_bytes: bytes
     original_bytes: bytes
+    candidate_bytes: bytes
     raw_page: Path | None
     before: dict[str, list[dict[str, Any]]]
     seen: list[dict[str, Any]]
@@ -142,6 +143,7 @@ def _case(pack: Pack, *, generated: bool, reason: str) -> Case:
         source,
         source.read_bytes(),
         pack.original.read_bytes(),
+        pack.candidate.read_bytes(),
         raw_page,
         _snapshot(),
         seen,
@@ -196,14 +198,16 @@ def _fail_preparation(case: Case, reason: str, monkeypatch: pytest.MonkeyPatch) 
         )
 
 
-def _assert_settled(case: Case, *, had_failure: bool) -> None:
+def _assert_settled(case: Case, *, had_failure: bool, failure_count: int = 1) -> None:
     import import_queue
     import shared
 
     state = _rows(case)
     assert state["parent"] is None and state["children"] == []
     assert [row["event_type"] for row in state["history"]] == (
-        ["import_failed", "import_skipped"] if had_failure else ["import_skipped"]
+        ["import_failed"] * failure_count + ["import_skipped"]
+        if had_failure
+        else ["import_skipped"]
     )
     receipt = state["history"][-1]
     assert receipt["series_id"] == 1 and receipt["torrent_url"] == SOURCE
@@ -249,7 +253,11 @@ def _assert_settled(case: Case, *, had_failure: bool) -> None:
 
 
 def _retry(
-    case: Case, monkeypatch: pytest.MonkeyPatch, *, had_failure: bool = True
+    case: Case,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    had_failure: bool = True,
+    failure_count: int = 1,
 ) -> None:
     import import_execute
     import main
@@ -272,7 +280,7 @@ def _retry(
         )
     )
     assert retry_result is True, f"repaired Retry stranded retained decisions: {state}"
-    _assert_settled(case, had_failure=had_failure)
+    _assert_settled(case, had_failure=had_failure, failure_count=failure_count)
 
 
 @pytest.mark.parametrize("reason", ["quality", "operator"])
@@ -861,3 +869,384 @@ def test_managed_pack_cleanup_and_retry_preserve_live_authority_fences(
     assert retry_import_queue_entry(case.queue_id)["ok"] is False
     assert _rows(case) == before
     assert case.source.read_bytes() == case.source_bytes
+
+
+def _contract_rows() -> dict[str, list[dict[str, Any]]]:
+    """Conserve every fixture table, including private authority and metadata."""
+    import shared
+
+    with shared.get_db() as db:
+        tables = [
+            row[0]
+            for row in db.execute(
+                "SELECT name FROM sqlite_schema WHERE type='table'"
+                " AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+        ]
+        return {
+            table: [
+                dict(row)
+                for row in db.execute(
+                    'SELECT * FROM "' + table.replace('"', '""') + '" ORDER BY rowid'
+                )
+            ]
+            for table in tables
+        }
+
+
+def _assert_source_names_and_bytes(case: Case) -> None:
+    assert case.source.is_file(), "cleanup moved or discarded retained source name"
+    assert case.source.read_bytes() == case.source_bytes
+    assert case.pack.original.read_bytes() == case.original_bytes
+    assert case.pack.candidate.read_bytes() == case.candidate_bytes
+    if case.raw_page is not None:
+        assert case.raw_page.read_bytes() == b"generated pack source page"
+
+
+def _reservation_case(
+    pack: Pack, monkeypatch: pytest.MonkeyPatch, layout: str, purpose: str
+) -> Case:
+    import errno
+    import import_pack_cleanup as cleanup
+    import shared
+
+    def unsupported(_source: str, _destination: str) -> None:
+        raise OSError(errno.EOPNOTSUPP, "injected unavailable atomic directory rename")
+
+    with monkeypatch.context() as placement:
+        if layout == "private":
+            placement.setattr(cleanup, "_rename_noreplace", unsupported)
+        case = _retained_managed_case(pack, monkeypatch)
+        assert (".mangarr-claims" in case.source.parts) == (layout == "private")
+        if purpose == "cleanup":
+            with shared.get_db() as db:
+                db.execute(
+                    "UPDATE import_queue_files SET status='failed' WHERE id=?",
+                    (case.file_id,),
+                )
+            assert (
+                cleanup._acquire_cleanup_reservation(
+                    queue_id=case.queue_id,
+                    download_id=pack.download_id,
+                    download_client_id=7,
+                    protocol=pack.protocol,
+                    publication_id=None,
+                    lease_seconds=300,
+                )
+                is not None
+            )
+            with shared.get_db() as db:
+                db.execute(
+                    "UPDATE import_queue_files SET status='skipped' WHERE id=?",
+                    (case.file_id,),
+                )
+    return case
+
+
+def _contradict_reservation(case: Case, *, expired: bool) -> None:
+    import shared
+
+    with shared.get_db() as db:
+        if expired:
+            db.execute(
+                "UPDATE import_pack_cleanup_reservations"
+                " SET expires_at=datetime('now','-1 hour') WHERE queue_id=?",
+                (case.queue_id,),
+            )
+        before = dict(
+            db.execute(
+                "SELECT * FROM import_pack_cleanup_reservations WHERE queue_id=?",
+                (case.queue_id,),
+            ).fetchone()
+        )
+        assert db.execute(
+            "SELECT expires_at <= CURRENT_TIMESTAMP"
+            " FROM import_pack_cleanup_reservations WHERE queue_id=?",
+            (case.queue_id,),
+        ).fetchone()[0] == int(expired)
+        assert (
+            db.execute(
+                "UPDATE import_pack_cleanup_reservations SET normalized_download_id=?"
+                " WHERE queue_id=?",
+                ("contradictory-normalized-id", case.queue_id),
+            ).rowcount
+            == 1
+        )
+        after = dict(
+            db.execute(
+                "SELECT * FROM import_pack_cleanup_reservations WHERE queue_id=?",
+                (case.queue_id,),
+            ).fetchone()
+        )
+        assert before.pop("normalized_download_id") != after.pop(
+            "normalized_download_id"
+        )
+        assert after == before
+
+
+@pytest.mark.parametrize("layout", ["native", "private"])
+def test_w1_direct_reservation_contradiction_refuses_before_mutation(
+    pack: Pack, monkeypatch: pytest.MonkeyPatch, layout: str
+) -> None:
+    import import_pack_cleanup as cleanup
+
+    case = _reservation_case(pack, monkeypatch, layout, "queueing")
+    _contradict_reservation(case, expired=False)
+    before = _contract_rows()
+    result = cleanup.cleanup_terminal_pack_staging(
+        case.queue_id, pack.download_id, download_client_id=7, protocol=pack.protocol
+    )
+    _assert_source_names_and_bytes(case)
+    assert _contract_rows() == before
+    assert result is False
+
+
+@pytest.mark.parametrize("layout", ["native", "private"])
+@pytest.mark.parametrize("purpose", ["queueing", "cleanup"])
+def test_w2_recovery_reservation_contradiction_refuses_before_takeover(
+    pack: Pack, monkeypatch: pytest.MonkeyPatch, layout: str, purpose: str
+) -> None:
+    import import_pack_cleanup as cleanup
+
+    case = _reservation_case(pack, monkeypatch, layout, purpose)
+    _contradict_reservation(case, expired=True)
+    before = _contract_rows()
+    result = cleanup.recover_pack_cleanup_state()
+    _assert_source_names_and_bytes(case)
+    assert _contract_rows() == before
+    assert result.reservations_recovered == 0 and result.tombstones_removed == 0
+
+
+def _admit_retry(case: Case, monkeypatch: pytest.MonkeyPatch) -> None:
+    import main
+    from routers.import_ import retry_import_queue_entry
+
+    monkeypatch.setattr(main, "schedule_import_worker", lambda _queue_id: None)
+    assert retry_import_queue_entry(case.queue_id) == {
+        "ok": True,
+        "status": "pending",
+        "queued": False,
+        "retried_files": 0,
+    }
+
+
+def _assert_failed_replay(
+    case: Case,
+    before: dict[str, list[dict[str, Any]]],
+    *,
+    fresh: bool = False,
+    failure_count: int = 1,
+) -> None:
+    import import_queue
+    import shared
+
+    _assert_source_names_and_bytes(case)
+    after = _contract_rows()
+    parent = _rows(case)["parent"]
+    assert parent["status"] == "failed" and parent["failed_at"]
+    assert parent["lease_owner"] is None and parent["lease_expires_at"] is None
+    mutable_parent = {"status", "failed_at", "lease_owner", "lease_expires_at"}
+    assert [
+        {key: value for key, value in row.items() if key not in mutable_parent}
+        for row in after["import_queue"]
+    ] == [
+        {key: value for key, value in row.items() if key not in mutable_parent}
+        for row in before["import_queue"]
+    ]
+    assert after["import_queue_files"] == before["import_queue_files"]
+    assert after["history"][: len(before["history"])] == before["history"]
+    assert [row["event_type"] for row in after["history"]] == (
+        [] if fresh else ["import_failed"] * failure_count
+    )
+    with shared.get_db() as db:
+        assert not import_queue._has_terminal_download_receipt(
+            db,
+            series_id=1,
+            torrent_url=SOURCE,
+            identity=DownloadIdentity(7, case.pack.protocol, case.pack.download_id),
+        )
+    # Parent failure/lease and diagnostics are intended; no other row is mutable.
+    for table in before.keys() - {"import_queue", "history", "events"}:
+        if fresh and table == "volumes":
+            expected = [dict(row) for row in before[table]]
+            reset = (
+                "grabbed_at",
+                "download_id",
+                "source_url",
+                "torrent_name",
+                "indexer",
+                "protocol",
+                "client",
+                "download_client_id",
+                "release_group",
+                "import_path",
+            )
+            for row in expected:
+                if (
+                    row["series_id"] == 1
+                    and row["download_client_id"] == 7
+                    and row["status"] == "grabbed"
+                ):
+                    row.update(dict.fromkeys(reset))
+                    row["status"] = "wanted"
+            assert after[table] == expected
+        else:
+            assert after[table] == before[table], table
+
+
+@pytest.mark.parametrize("retained", [True, False], ids=["retained", "fresh"])
+def test_w3_destination_none_retained_conservation_and_fresh_reset(
+    pack: Pack, monkeypatch: pytest.MonkeyPatch, retained: bool
+) -> None:
+    import import_execute
+    import import_plan
+    import shared
+
+    # This fixture has conflicting protocol negatives; configure the exact owner
+    # so the old resolver/reset branch is exercised for both protocols.
+    with shared.get_db() as db:
+        db.execute(
+            "INSERT INTO download_clients(id,name,type,host,enabled)"
+            " VALUES(7,'fixture',?,'http://downloader.invalid',1)",
+            (pack.client_type,),
+        )
+    case = _case(pack, generated=retained, reason="quality")
+    if retained:
+        _fail_preparation(case, "quality", monkeypatch)
+        _admit_retry(case, monkeypatch)
+    before = _contract_rows()
+    monkeypatch.setattr(import_plan, "_series_library_dir", lambda _db, _series: None)
+    assert asyncio.run(import_execute._guarded_execute_import(case.queue_id)) is False
+    _assert_failed_replay(case, before, fresh=not retained)
+
+
+def test_w4_real_root_exception_preserves_retained_replay(
+    pack: Pack, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import import_execute
+    import shared
+
+    case = _case(pack, generated=True, reason="quality")
+    _fail_preparation(case, "quality", monkeypatch)
+    _admit_retry(case, monkeypatch)
+    with shared.get_db() as db:
+        db.execute("DELETE FROM root_folders")
+    before = _contract_rows()
+    assert asyncio.run(import_execute._guarded_execute_import(case.queue_id)) is False
+    _assert_failed_replay(case, before)
+    assert any(
+        "No root folders configured" in row["message"]
+        for row in _contract_rows()["events"]
+    )
+
+
+def test_w5_repeated_preparation_failure_preserves_then_settles_retained_replay(
+    pack: Pack, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import import_execute
+
+    case = _case(pack, generated=True, reason="quality")
+    _fail_preparation(case, "quality", monkeypatch)
+    _admit_retry(case, monkeypatch)
+    before = _contract_rows()
+
+    def deny(path: str) -> None:
+        assert path == str(pack.original.parent)
+        raise PermissionError("repeated retained destination preparation denied")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(import_execute, "ensure_durable_directory", deny)
+        assert (
+            asyncio.run(import_execute._guarded_execute_import(case.queue_id)) is False
+        )
+    _assert_failed_replay(case, before, failure_count=2)
+    assert len(_rows(case)["history"]) == 2
+    _retry(case, monkeypatch, failure_count=2)
+
+
+def test_retained_reservation_renewal_advances_bounded_recovery(
+    pack: Pack, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import import_pack_cleanup as cleanup
+    import shared
+
+    retained = _retained_managed_case(pack, monkeypatch)
+    later = _retained_managed_case(
+        replace(pack, root=pack.root / "later", download_id="Later-Recoverable-Pack"),
+        monkeypatch,
+    )
+    with shared.get_db() as db:
+        db.execute(
+            "UPDATE import_queue_files SET status='failed' WHERE id=?",
+            (later.file_id,),
+        )
+        db.execute(
+            "UPDATE import_pack_cleanup_reservations"
+            " SET expires_at=datetime('now','-1 hour'),"
+            " updated_at=CASE WHEN queue_id=? THEN '2000-01-01' ELSE '2000-01-02' END",
+            (retained.queue_id,),
+        )
+        assert [
+            row[0]
+            for row in db.execute(
+                "SELECT queue_id FROM import_pack_cleanup_reservations"
+                " WHERE expires_at <= CURRENT_TIMESTAMP"
+                " ORDER BY updated_at,normalized_download_id"
+            )
+        ] == [retained.queue_id, later.queue_id]
+    before = _contract_rows()
+    first = cleanup.recover_pack_cleanup_state(max_rows=1)
+    _assert_source_names_and_bytes(retained)
+    _assert_source_names_and_bytes(later)
+    assert first.reservations_recovered == first.tombstones_removed == 0
+    after_first = _contract_rows()
+    for table in before.keys() - {"import_pack_cleanup_reservations"}:
+        assert after_first[table] == before[table], table
+    assert (
+        after_first["import_pack_cleanup_reservations"][1]
+        == before["import_pack_cleanup_reservations"][1]
+    )
+
+    second = cleanup.recover_pack_cleanup_state(max_rows=1)
+    _assert_source_names_and_bytes(retained)
+    assert not later.source.exists(), (
+        "retained first page starved later recoverable pack"
+    )
+    assert second.reservations_recovered == second.tombstones_removed == 1
+    after = _contract_rows()
+    reservations = after["import_pack_cleanup_reservations"]
+    assert [row["queue_id"] for row in reservations] == [
+        retained.queue_id,
+        later.queue_id,
+    ]
+    # Completed generated cleanup keeps its ordinary provenance fence.
+    completed = reservations[1]
+    assert completed["purpose"] == "queueing"
+    assert json.loads(completed["directory_ownership_json"])["retained_reason"] == (
+        "terminal-discarded"
+    )
+    original = before["import_pack_cleanup_reservations"][0]
+    renewed = reservations[0]
+    assert renewed["owner_token"] != original["owner_token"]
+    assert renewed["updated_at"] != original["updated_at"]
+    mutable = {"owner_token", "expires_at", "updated_at"}
+    assert {key: value for key, value in renewed.items() if key not in mutable} == {
+        key: value for key, value in original.items() if key not in mutable
+    }
+    assert renewed == after_first["import_pack_cleanup_reservations"][0]
+    with shared.get_db() as db:
+        assert (
+            db.execute(
+                "SELECT expires_at > CURRENT_TIMESTAMP"
+                " FROM import_pack_cleanup_reservations WHERE queue_id=?",
+                (retained.queue_id,),
+            ).fetchone()[0]
+            == 1
+        )
+    # Later ordinary cleanup may register its private namespace, but no domain
+    # rows or retained source proofs are disposable merely because a page expired.
+    for table in before.keys() - {
+        "import_pack_cleanup_reservations",
+        "file_claim_namespaces",
+    }:
+        assert after[table] == before[table], table

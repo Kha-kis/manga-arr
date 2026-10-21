@@ -473,6 +473,7 @@ def _retained_skipped_pack_uses_source(
         return False
     sources = {child["src_path"] for child in children if child["src_path"]}
     canonical = _canonical_pack_path(identity)
+    normalized = normalize_download_id(identity.download_id, identity.protocol)
     inventories: list[tuple[str, PackInventory]] = []
     row = db.execute(
         "SELECT * FROM import_pack_cleanup_reservations"
@@ -491,9 +492,11 @@ def _retained_skipped_pack_uses_source(
                 )
             )
             == key
-            and reservation.normalized_download_id
-            == normalize_download_id(identity.download_id, identity.protocol)
         ):
+            if reservation.normalized_download_id != normalized:
+                raise PackProofError(
+                    "retained skipped source normalized identity mismatch"
+                )
             ownership = _ownership(reservation)
             if ownership is not None:
                 if ownership.inventory is None and not ownership.claims:
@@ -529,9 +532,7 @@ def _retained_skipped_pack_uses_source(
             or row["carrier_json"] is None
         ):
             continue
-        if row["normalized_download_id"] != normalize_download_id(
-            identity.download_id, identity.protocol
-        ):
+        if row["normalized_download_id"] != normalized:
             raise PackProofError("retained skipped source normalized identity mismatch")
         claim = PackDirectoryClaim.from_json(str(row["carrier_json"]))
         if (
@@ -3050,6 +3051,18 @@ def _recover_pack_cleanup_with_guard(
             observed = _reservation_from_row(dict(row))
             _ownership(observed)
             guard.verify()
+            if observed.queue_id is not None:
+                # Contradictions refuse before takeover; valid rows still renew.
+                with get_db() as db:
+                    _retained_skipped_pack_uses_source(
+                        db,
+                        queue_id=observed.queue_id,
+                        identity=DownloadIdentity(
+                            observed.download_client_id,
+                            observed.protocol,
+                            observed.download_id,
+                        ),
+                    )
             reservation = _claim_expired_reservation(observed)
             if reservation is None:
                 continue
