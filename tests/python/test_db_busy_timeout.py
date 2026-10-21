@@ -145,15 +145,102 @@ def test_cleanup_stuck_state_uses_separate_transactions_per_phase(env):
     }
 
 
-def test_orphan_cleanup_helper_per_row_transactions_still_correct(env):
-    """qBit orphan enumeration closes before each per-orphan writer."""
-    import inspect
+@pytest.mark.parametrize("protocol", ["torrent", "nzb"])
+def test_orphan_cleanup_helper_per_row_transactions_still_correct(
+    env: str, monkeypatch: pytest.MonkeyPatch, protocol: str
+) -> None:
+    """Enumeration closes; independent acquisitions commit and release separately."""
+    from collections.abc import Generator
+    from contextlib import closing, contextmanager
+    from typing import Any
 
+    from download_identity import DownloadProtocol
     import import_discovery
+    import shared
 
-    src = inspect.getsource(import_discovery._poll_qbit_partition)
-    enumerate_writer = src.index("orphaned = [")
-    orphan_loop = src.index("for orphan in orphaned:")
-    per_orphan_writer = src.index("with get_db() as db:", orphan_loop)
+    download_protocol: DownloadProtocol = "torrent" if protocol == "torrent" else "nzb"
+    client_type = "qbittorrent" if protocol == "torrent" else "sabnzbd"
+    ids = {"first-id": 101, "second-id": 102}
+    with shared.get_db() as db:
+        db.execute("INSERT INTO series(id,title,search_pattern) VALUES(1,'S','S')")
+        for download_id, row_id in ids.items():
+            db.execute(
+                "INSERT INTO volumes(id,series_id,volume_num,status,download_id,"
+                " download_client_id,protocol,client,source_url)"
+                " VALUES(?,1,?,'grabbed',?,7,?,?,?)",
+                (
+                    row_id,
+                    row_id,
+                    download_id,
+                    protocol,
+                    client_type,
+                    f"https://fixture.invalid/{row_id}",
+                ),
+            )
+    real_get_db = import_discovery.get_db
+    real_reserve = import_discovery._reserve_orphan_cleanup
+    connections: list[sqlite3.Connection] = []
+    statements: list[list[str]] = []
+    reservations: list[tuple[sqlite3.Connection, str]] = []
 
-    assert enumerate_writer < orphan_loop < per_orphan_writer
+    @contextmanager
+    def observed_get_db() -> Generator[sqlite3.Connection, None, None]:
+        # No timing oracle: an outside writer must fit between every context.
+        with closing(sqlite3.connect(env, timeout=0)) as competitor:
+            competitor.execute("BEGIN IMMEDIATE")
+            competitor.rollback()
+        if connections:
+            with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+                connections[-1].execute("SELECT 1")
+        with real_get_db() as db:
+            connections.append(db)
+            trace: list[str] = []
+            statements.append(trace)
+            db.set_trace_callback(trace.append)
+            yield db
+
+    def observe_reservation(
+        db: sqlite3.Connection, download_id: str, **scope: Any
+    ) -> tuple[bool, list[int]]:
+        assert db.in_transaction
+        with closing(sqlite3.connect(env, timeout=0)) as competitor:
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                competitor.execute("BEGIN IMMEDIATE")
+            if reservations:
+                previous, previous_id = reservations[-1]
+                assert competitor.execute(
+                    "SELECT status FROM volumes WHERE id=?", (ids[previous_id],)
+                ).fetchone() == ("wanted",), "prior acquisition is not committed"
+                with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+                    previous.execute("SELECT 1")
+                assert previous is not db
+        reservations.append((db, download_id))
+        return real_reserve(db, download_id, **scope)
+
+    monkeypatch.setattr(import_discovery, "get_db", observed_get_db)
+    monkeypatch.setattr(
+        import_discovery, "_reserve_orphan_cleanup", observe_reservation
+    )
+    import_discovery._cleanup_missing_downloads(
+        set(),
+        download_client_id=7,
+        protocol=download_protocol,
+        client_type=client_type,
+        include_legacy_ownerless=False,
+    )
+    assert len(reservations) == 2
+    assert len(connections) == 3  # One read-only enumeration, then two writers.
+    assert not any(
+        sql.startswith(("UPDATE", "INSERT", "DELETE", "BEGIN")) for sql in statements[0]
+    )
+    for trace in statements[1:]:
+        operations = [sql for sql in trace if not sql.startswith("BEGIN")]
+        assert operations[0] == "UPDATE import_queue SET id=id WHERE 0"
+    with closing(sqlite3.connect(env, timeout=0)) as competitor:
+        competitor.execute("BEGIN IMMEDIATE")
+        assert competitor.execute(
+            "SELECT COUNT(*) FROM volumes WHERE status='wanted'"
+        ).fetchone() == (2,)
+        assert competitor.execute(
+            "SELECT COUNT(*) FROM history WHERE event_type='grab_failed'"
+        ).fetchone() == (2,)
