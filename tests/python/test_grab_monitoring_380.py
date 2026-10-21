@@ -1903,10 +1903,12 @@ def test_automatic_range_import_preserves_existing_nonclaim_artifact(
                 ).fetchone()[0]
                 == 0
             )
-            assert (
-                db.execute("SELECT status FROM volumes WHERE id=1").fetchone()[0]
-                == "grabbed"
-            )
+            assert tuple(
+                db.execute(
+                    "SELECT status,download_id,download_client_id,source_url"
+                    " FROM volumes WHERE id=1"
+                ).fetchone()
+            ) == ("wanted", None, None, None)
         else:
             assert event == "imported"
             assert receipt["count"] == (

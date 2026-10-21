@@ -136,6 +136,44 @@ def _restore_protected_grab_rows(
             )
 
 
+def _settle_skipped_grab_claims(db: sqlite3.Connection, plan: "_ImportPlan") -> None:
+    """Release only proven, pathless claims in the authorized Phase 3 writer."""
+    identity = _queue_identity(db, plan.queue)
+    source_url = str(plan.queue.get("torrent_url") or "")
+    if (
+        identity.download_client_id is None
+        or identity.protocol is None
+        or not identity.download_id.strip()
+        or not source_url.strip()
+    ):
+        return
+    tables: tuple[tuple[str, Literal["source_url", "torrent_url"]], ...] = (
+        ("volumes", "source_url"),
+        ("chapters", "torrent_url"),
+    )
+    for table, url_column in tables:
+        numbered_only = " AND volume_num IS NOT NULL" if table == "volumes" else ""
+        rows = db.execute(
+            f"SELECT * FROM {table} WHERE series_id=? AND status='grabbed'"
+            f" AND download_client_id=? AND {url_column}=?"
+            " AND COALESCE(import_path,'')=''" + numbered_only,
+            (plan.series_id, identity.download_client_id, source_url),
+        ).fetchall()
+        # No parent cascade: children retain their independent ownership and paths.
+        db.executemany(
+            f"UPDATE {table} SET status='wanted', grabbed_at=NULL,"
+            f" {url_column}=NULL, download_id=NULL, download_client_id=NULL,"
+            " torrent_name=NULL, indexer=NULL, protocol=NULL, client=NULL,"
+            " release_group=NULL WHERE id=? AND status='grabbed'"
+            " AND COALESCE(import_path,'')=''",
+            (
+                (row["id"],)
+                for row in rows
+                if _same_acquisition(row, identity, source_url, url_column)
+            ),
+        )
+
+
 def _queue_metadata(
     db: sqlite3.Connection,
     queue: Mapping[str, Any],
@@ -578,11 +616,17 @@ def _commit_import(
             },
         )
     elif new_status == "imported" and not any_error:
+        if (
+            plan.files
+            and all(fp.plan_status == "skip" for fp in plan.files)
+            and not commit_failure_reason
+            and not reset_is_shared
+        ):
+            _settle_skipped_grab_claims(db, plan)
         skipped_count = sum(fp.plan_status == "skip" for fp in plan.files)
         log_event(
             "import",
-            f"Skipped {skipped_count} file(s); import already satisfied: "
-            f"{queue['torrent_name']}",
+            f"Skipped {skipped_count} file(s): {queue['torrent_name']}",
             series_id,
             db=db,
         )
