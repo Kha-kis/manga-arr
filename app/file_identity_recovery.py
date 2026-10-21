@@ -36,6 +36,7 @@ from file_identity_consumers import (
     RoleSpec,
     collect_references,
     roles_for,
+    _validate_closure,
 )
 from file_identity_store import OwnerSnapshot
 from file_mutation_lock import FileMutationGuard, FileMutationLockError
@@ -260,8 +261,9 @@ def _constraints(encoded: str, spec: RoleSpec) -> dict[str, object]:
             current,
             {"dev", "inode", "uid", "mode", "nlink", "size", "mtime_ns", "ctime_ns"},
         )
-        for key in ("dev", "inode", "uid"):
-            _ = _integer(info[key])
+        for key in ("dev", "inode"):
+            _ = _integer(info[key], 0, 2**64 - 1)
+        _ = _integer(info["uid"])
         _ = _integer(info["mode"], 0, 0o7777)
         for key in ("nlink", "size", "mtime_ns", "ctime_ns"):
             if spec.role.kind == "directory":
@@ -342,6 +344,37 @@ class ObservedRole:
                     raise InvalidIdentity("complete observation lacks current evidence")
                 if (self.outcome == "observed") != (self.native is not None):
                     raise InvalidIdentity("native observation outcome mismatch")
+        elif self.outcome == "unknown_children":
+            if (
+                self.spec.role.kind != "directory"
+                or fields["current"] is None
+                or fields["content"] is not None
+                or fields["policy"] != "satisfied"
+                or fields["boundary"] != "verified"
+                or not fields["children"]
+            ):
+                raise InvalidIdentity("unknown children lack stable directory evidence")
+        elif (
+            self.native is not None
+            or fields["current"] is not None
+            or fields["content"] is not None
+            or fields["children"]
+            or fields["policy"]
+            not in (
+                {"mismatch"}
+                if self.outcome == "policy_mismatch"
+                else {"not_checked", "satisfied"}
+            )
+            or fields["boundary"]
+            not in (
+                {"cross_device"}
+                if self.outcome == "cross_device"
+                else {"unknown", "verified"}
+            )
+        ):
+            raise InvalidIdentity(
+                "failure outcome contradicts retained object evidence"
+            )
 
     @property
     def unresolved(self) -> bool:
@@ -533,6 +566,7 @@ class OwnershipInventory:
         if any(type(record) is not ObservedRole for record in self.observed):
             raise InvalidIdentity("invalid observation record")
         _ = _wire_size(self._value())
+        _validate_closure(self.closure, self.parent, self.budget)
         if self.closure.roles != tuple(
             role for snapshot in self.closure.snapshots for role in roles_for(snapshot)
         ):

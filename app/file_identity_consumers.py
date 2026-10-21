@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import cast
 
@@ -20,7 +21,15 @@ from download_identity import (
     download_identity_path_token,
     normalize_download_id,
 )
-from file_identity import IdentityMismatch, InvalidIdentity, OwnerRef, RoleKey
+from file_identity import (
+    IdentityMismatch,
+    InvalidIdentity,
+    NativeHandle,
+    OwnerRef,
+    RoleKey,
+    StorageProfile,
+)
+import file_identity_store as _store
 from file_identity_store import OwnerSnapshot, capture_owner_snapshot
 from private_file_claim import (
     CarrierRecord,
@@ -49,15 +58,50 @@ _ROOTS = {
     "pack_tombstone": ("import_pack_cleanup_tombstones", "tombstone_path"),
     "queue_source": ("import_queue", "id"),
 }
-_TABLES = {table: pk for table, pk in _ROOTS.values()} | {
-    "import_queue_files": "id",
-    "import_publication_files": "id",
-    "series": "id",
-    "volumes": "id",
-    "chapters": "id",
-    "chapter_quarantine": "id",
-    "root_folders": "id",
-    "series_tags": "series_id",
+_LEDGER_KEYS = {
+    "file_identity_authorities": "authority_id",
+    "file_identity_epochs": "epoch_id",
+    "file_identity_sets": "set_id",
+    "file_identity_events": "id",
+}
+_TABLES = (
+    {table: pk for table, pk in _ROOTS.values()}
+    | {
+        "import_queue_files": "id",
+        "import_publication_files": "id",
+        "series": "id",
+        "volumes": "id",
+        "chapters": "id",
+        "chapter_quarantine": "id",
+        "root_folders": "id",
+        "series_tags": "series_id",
+    }
+    | _LEDGER_KEYS
+)
+_REQUIRED_RAW = {
+    **{table: frozenset(columns) for table, columns in _store._PROJECTIONS.items()},
+    "series": frozenset("id title root_folder_id".split()),
+    "volumes": frozenset(
+        "id series_id volume_num status import_path download_id download_client_id torrent_name indexer protocol client grabbed_at imported_at source_url release_group size_bytes quality".split()
+    ),
+    "chapters": frozenset("id series_id volume_id import_path".split()),
+    "chapter_quarantine": frozenset(
+        "id series_id volume_id state original_path volume_path carrier_path quarantine_path".split()
+    ),
+    "root_folders": frozenset("id path".split()),
+    "series_tags": frozenset("series_id tag".split()),
+    "file_identity_authorities": frozenset(
+        "authority_id incarnation_token profile_json declaration_json qualification_sha256".split()
+    ),
+    "file_identity_epochs": frozenset(
+        "epoch_id authority_id origin_path allocation_path root_path birth_json".split()
+    ),
+    "file_identity_sets": frozenset(
+        "set_id owner_domain owner_key_json prior_set_id snapshot_json snapshot_sha256 origin epoch_id manifest_json manifest_sha256".split()
+    ),
+    "file_identity_events": frozenset(
+        "id owner_domain owner_key_json revision predecessor_event_id set_id kind payload_json".split()
+    ),
 }
 _VOLUME_FIELDS = frozenset(
     "id series_id volume_num status import_path download_id download_client_id torrent_name indexer protocol client grabbed_at imported_at source_url release_group size_bytes quality".split()
@@ -319,6 +363,8 @@ class RawRow:
                 _path(value)
             elif column in {"download_identity_key", "tag"}:
                 _text(value)
+            elif self.table in _LEDGER_KEYS and column != "id":
+                _hex(value)
             else:
                 _integer(value, 1)
         columns: list[str] = []
@@ -352,6 +398,7 @@ class ReferenceDependency:
             "namespace",
             "pack",
             "shared_context",
+            "identity_ledger",
         }:
             raise InvalidIdentity("invalid inventory dependency")
 
@@ -402,6 +449,8 @@ class ReferenceClosure:
             self.raw_rows
         ) != sorted(set(self.raw_rows), key=_raw_order):
             raise InvalidIdentity("inventory raw rows duplicate or unordered")
+        if len({(r.table, r.key) for r in self.raw_rows}) != len(self.raw_rows):
+            raise InvalidIdentity("inventory raw table/key is duplicated")
 
 
 def _dependency_order(value: ReferenceDependency) -> tuple[str, str, str]:
@@ -1803,7 +1852,12 @@ def _scan(db: sqlite3.Connection, counter: _Counter) -> dict[str, list[RawRow]]:
                         tuple(cast(str | int, row[c]) for c in columns),
                         tuple(sorted(row.items())),
                     )
-                    counter.charge(hash_bytes=len(_encode(raw.values).encode("utf-8")))
+                    counter.charge(
+                        hash_bytes=_row_bytes(
+                            raw.values,
+                            counter.budget.max_hash_bytes - counter.hash_bytes,
+                        )
+                    )
                     result[table].append(raw)
                     count += 1
             finally:
@@ -1812,6 +1866,36 @@ def _scan(db: sqlite3.Connection, counter: _Counter) -> dict[str, list[RawRow]]:
                 break
             last = tuple(dict(result[table][-1].values)[c] for c in columns)
     return result
+
+
+def _row_bytes(values: tuple[tuple[str, SQLScalar], ...], remaining: int) -> int:
+    """Admit ASCII JSON evidence before allocating an escaped row document."""
+    size = 2 + max(0, len(values) - 1)
+    for name, scalar in values:
+        size += 3  # pair brackets and comma
+        for value in (name, scalar):
+            if isinstance(value, str):
+                size += 2
+                for character in value:
+                    code = ord(character)
+                    size += (
+                        2
+                        if character in '\\"\b\t\n\f\r'
+                        else 6
+                        if code < 32 or 127 <= code <= 0xFFFF
+                        else 12
+                        if code > 0xFFFF
+                        else 1
+                    )
+                    if size > remaining:
+                        raise InvalidIdentity("inventory budget exceeded")
+            else:
+                size += len(_encode(value))
+            if size > remaining:
+                raise InvalidIdentity("inventory budget exceeded")
+    if size > remaining:
+        raise InvalidIdentity("inventory budget exceeded")
+    return size
 
 
 def _context_series(snapshot: OwnerSnapshot, evidence: _Evidence) -> set[int]:
@@ -1844,6 +1928,8 @@ def _context_series(snapshot: OwnerSnapshot, evidence: _Evidence) -> set[int]:
 
 
 def _historical_context(domain: str, row: dict[str, object]) -> bool:
+    if domain in {"rescan", "deletion"} and row.get("recovery_event_id") is not None:
+        return True
     if domain == "publication":
         return row["state"] in _TERMINAL_PUBLICATIONS
     if domain == "rescan":
@@ -1857,30 +1943,430 @@ def _version(db: sqlite3.Connection) -> int:
     return cast(int, db.execute("PRAGMA data_version").fetchone()[0])
 
 
-def collect_references(
-    db: sqlite3.Connection, parent: str, budget: InventoryBudget
-) -> ReferenceClosure:
-    """Capture a bounded all-state SQL graph without media I/O or a writer.
+def _snapshot_from_rows(raw: dict[str, list[RawRow]], owner: OwnerRef) -> OwnerSnapshot:
+    table, _pk = _ROOTS[owner.domain]
+    matches = [r for r in raw[table] if r.key == owner.key]
+    if len(matches) != 1:
+        raise IdentityMismatch("owner raw root is missing")
 
-    Own a DEFERRED read view only. A caller-owned transaction cannot expose
-    post-view data_version, so it is refused rather than committed or reopened.
-    Concurrent commits and same-connection changes invalidate the whole result.
-    """
+    def project(record: RawRow) -> dict[str, object]:
+        values = dict(record.values)
+        return {
+            "table": record.table,
+            "key": list(record.key),
+            "row": {c: values[c] for c in sorted(_store._PROJECTIONS[record.table])},
+        }
+
+    root = matches[0]
+    related: list[RawRow] = []
+    if owner.domain in {"publication", "queue_source"}:
+        queue_id = (
+            dict(root.values)["queue_id"]
+            if owner.domain == "publication"
+            else owner.key[0]
+        )
+        publications = {
+            r.key[0]
+            for r in raw["import_publications"]
+            if dict(r.values)["queue_id"] == queue_id
+        }
+        related = [
+            r
+            for name in (
+                "import_queue",
+                "import_queue_files",
+                "import_publications",
+                "import_publication_files",
+            )
+            for r in raw[name]
+            if (
+                r.key[0] == queue_id
+                if name == "import_queue"
+                else dict(r.values)["publication_id"] in publications
+                if name == "import_publication_files"
+                else dict(r.values)["queue_id"] == queue_id
+            )
+            and r != root
+        ]
+    encoded = _encode(
+        {
+            "version": 1,
+            "owner": {"domain": owner.domain, "key": list(owner.key)},
+            "root": project(root),
+            "related": [project(r) for r in sorted(related, key=_raw_order)],
+        }
+    )
+    return OwnerSnapshot(owner, encoded, hashlib.sha256(encoded.encode()).hexdigest())
+
+
+class _Ledger:
+    """Inventory-only immutable history; never active-CAS or qualification authority."""
+
+    def __init__(
+        self, raw: dict[str, list[RawRow]], evidence: _Evidence, counter: _Counter
+    ) -> None:
+        self.raw = raw
+        self.evidence = evidence
+        self.counter = counter
+        self.index = {
+            table: {r.key[0]: r for r in raw[table]} for table in _LEDGER_KEYS
+        }
+        self.sets: dict[OwnerRef, list[str]] = {}
+        self.events: dict[OwnerRef, list[dict[str, object]]] = {}
+        self.snapshots: dict[str, OwnerSnapshot] = {}
+        self.specs: dict[str, tuple[RoleSpec, ...]] = {}
+        self.proofs: dict[str, _store.ProofSet] = {}
+        self.rows: set[RawRow] = set()
+        self.validated: set[OwnerRef] = set()
+        self.dependencies: dict[OwnerRef, set[OwnerRef]] = {}
+        self.links: dict[OwnerRef, set[OwnerRef]] = {}
+        self.frozen_dependencies: dict[str, tuple[OwnerSnapshot, ...]] = {}
+        for record in raw["file_identity_sets"]:
+            row = dict(record.values)
+            owner = self.owner(row)
+            set_id = _hex(row["set_id"])
+            snapshot = OwnerSnapshot(
+                owner, _text(row["snapshot_json"]), _hex(row["snapshot_sha256"], 64)
+            )
+            self.snapshots[set_id] = snapshot
+            inventory = _inventory(snapshot, counter, evidence)
+            self.specs[set_id] = tuple(inventory.values.values())
+            manifest = _mapping(evidence.load(row["manifest_json"]))
+            dependencies = tuple(_store._dependencies(manifest, owner))
+            self.frozen_dependencies[set_id] = dependencies
+            self.links.setdefault(owner, set()).update(d.owner for d in dependencies)
+            for dependency in dependencies:
+                frozen = _inventory(dependency, counter, evidence)
+                self.specs[set_id] += tuple(frozen.values.values())
+            self.sets.setdefault(owner, []).append(set_id)
+        for record in raw["file_identity_events"]:
+            row = cast(dict[str, object], dict(record.values))
+            self.events.setdefault(self.owner(row), []).append(row)
+
+    def document(self, encoded: object, keys: set[str]) -> dict[str, object]:
+        value = _mapping(self.evidence.load(encoded), keys | {"version"})
+        _integer(value["version"], 1, 1)
+        if _encode(value) != encoded:
+            raise InvalidIdentity("identity ledger JSON is not canonical")
+        return value
+
+    def owner(self, row: Mapping[str, object]) -> OwnerRef:
+        key = self.document(row["owner_key_json"], {"key"})
+        owner = OwnerRef(
+            _text(row["owner_domain"]), tuple(cast(list[str | int], _list(key["key"])))
+        )
+        _owner(owner)
+        return owner
+
+    def require(self, table: str, key: str | int) -> dict[str, object]:
+        record = self.index[table].get(key)
+        if record is None:
+            raise IdentityMismatch("identity ledger reference is dangling")
+        self.rows.add(record)
+        return cast(dict[str, object], dict(record.values))
+
+    def seeds(self, parent: str) -> set[OwnerRef]:
+        return {
+            self.snapshots[s].owner
+            for s, specs in self.specs.items()
+            if any(_within(r.path, parent) for r in specs)
+        }
+
+    def neighbours(self, owners: set[OwnerRef]) -> set[OwnerRef]:
+        result: set[OwnerRef] = set()
+        for owner, requires in self.links.items():
+            if owner in owners or requires.intersection(owners):
+                result.update((owner, *requires))
+        return result
+
+    def epoch(self, row: dict[str, object], snapshot: OwnerSnapshot) -> tuple[str, str]:
+        epoch_id = _hex(row["epoch_id"])
+        epoch = self.require("file_identity_epochs", epoch_id)
+        authority_id = _hex(epoch["authority_id"])
+        authority = self.require("file_identity_authorities", authority_id)
+        profile = self.document(
+            authority["profile_json"],
+            {
+                "profile_id",
+                "revision",
+                "qualification_sha256",
+                "client_contract",
+                "server_contract",
+            },
+        )
+        StorageProfile(
+            _text(profile["profile_id"]),
+            _integer(profile["revision"], 1),
+            _hex(profile["qualification_sha256"], 64),
+            _mapping(profile["client_contract"]),
+            _mapping(profile["server_contract"]),
+        )
+        if (
+            _hex(authority["qualification_sha256"], 64)
+            != profile["qualification_sha256"]
+        ):
+            raise InvalidIdentity("authority qualification digest mismatch")
+        declaration = self.document(
+            authority["declaration_json"], {"scope_path", "scope_token"}
+        )
+        scope = _path(declaration["scope_path"])
+        _hex(declaration["scope_token"])
+        incarnation = _hex(authority["incarnation_token"])
+        birth = self.document(
+            epoch["birth_json"],
+            {"layout", "enrollment", "legacy_namespace", "controlled_birth"},
+        )
+        enrollment = _text(birth["enrollment"])
+        if enrollment not in {"birth", "exact_legacy", "recovery"}:
+            raise InvalidIdentity("invalid epoch enrollment")
+        origin, allocation, root = (
+            _path(epoch[c]) for c in ("origin_path", "allocation_path", "root_path")
+        )
+        if (
+            not _within(origin, scope)
+            or _parent(root) != allocation
+            or root == allocation
+        ):
+            raise InvalidIdentity("epoch scope geometry mismatch")
+        if birth["layout"] == "same_parent":
+            valid = allocation == origin
+        elif birth["layout"] == "dedicated_parent":
+            valid = _parent(allocation) == origin and allocation != origin
+        else:
+            valid = False
+        if not valid:
+            raise InvalidIdentity("epoch allocation geometry mismatch")
+        legacy, controlled = birth["legacy_namespace"], birth["controlled_birth"]
+        if legacy is not None:
+            _store._legacy(legacy, namespace=True)
+        if controlled is not None:
+            receipt = _mapping(
+                controlled,
+                {
+                    "authority_incarnation",
+                    "allocation_token",
+                    "root_native",
+                    "marker_native",
+                    "receipt_sha256",
+                },
+            )
+            if _hex(receipt["authority_incarnation"]) != incarnation:
+                raise InvalidIdentity("epoch incarnation mismatch")
+            _hex(receipt["allocation_token"])
+            _hex(receipt["receipt_sha256"], 64)
+            NativeHandle.from_value(receipt["root_native"])
+            NativeHandle.from_value(receipt["marker_native"])
+        if (
+            (enrollment == "birth" and (controlled is None or legacy is not None))
+            or (
+                enrollment == "exact_legacy"
+                and (legacy is None or controlled is not None)
+            )
+            or (legacy is None and controlled is None)
+        ):
+            raise InvalidIdentity("epoch receipt/enrollment mismatch")
+        return epoch_id, authority_id
+
+    def validate(self, owner: OwnerRef) -> set[OwnerRef]:
+        if owner in self.validated:
+            return self.dependencies[owner]
+        dependencies: set[OwnerRef] = set()
+        self.dependencies[owner] = dependencies
+        prior_edges: dict[str, list[str]] = {}
+        for set_id in self.sets.get(owner, []):
+            row = self.require("file_identity_sets", set_id)
+            prior = None if row["prior_set_id"] is None else _hex(row["prior_set_id"])
+            if prior is not None and prior not in self.sets.get(owner, []):
+                raise IdentityMismatch(
+                    "identity prior set belongs to another owner or is missing"
+                )
+            prior_edges[set_id] = [] if prior is None else [prior]
+            snapshot = self.snapshots[set_id]
+            epoch_id, authority_id = self.epoch(row, snapshot)
+            manifest_json = _text(row["manifest_json"])
+            if hashlib.sha256(manifest_json.encode()).hexdigest() != _hex(
+                row["manifest_sha256"], 64
+            ):
+                raise InvalidIdentity("stored manifest digest mismatch")
+            manifest = _mapping(self.evidence.load(manifest_json))
+            proof = _store.ProofSet(
+                set_id,
+                owner,
+                snapshot,
+                authority_id,
+                epoch_id,
+                _text(row["origin"]),
+                tuple(_store._object_from(o) for o in _list(manifest["roles"])),
+                manifest_json,
+            )
+            declaration = self.document(
+                self.require("file_identity_authorities", authority_id)[
+                    "declaration_json"
+                ],
+                {"scope_path", "scope_token"},
+            )
+            if any(
+                not _within(o.canonical_path, _path(declaration["scope_path"]))
+                for o in proof.roles
+            ):
+                raise InvalidIdentity("object outside declared authority scope")
+            self.proofs[set_id] = proof
+            for dependency in self.frozen_dependencies[set_id]:
+                dependencies.add(dependency.owner)
+        _store._acyclic(prior_edges)
+        previous: dict[str, object] | None = None
+        seen: set[tuple[str, str]] = set()
+        events = sorted(
+            self.events.get(owner, []), key=lambda r: _integer(r["revision"], 1)
+        )
+        for revision, event in enumerate(events, 1):
+            self.require("file_identity_events", _integer(event["id"], 1))
+            if _integer(event["revision"], 1) != revision or event[
+                "predecessor_event_id"
+            ] != (None if previous is None else previous["id"]):
+                raise InvalidIdentity("identity event predecessor/revision mismatch")
+            set_id = _hex(event["set_id"])
+            proof = self.proofs.get(set_id)
+            if proof is None or proof.owner != owner:
+                raise IdentityMismatch(
+                    "identity event belongs to a missing or foreign set"
+                )
+            kind = _text(event["kind"])
+            if kind in {"prepared", "activated"}:
+                payload = self.document(
+                    event["payload_json"], {"snapshot_sha256", "manifest_sha256"}
+                )
+                if (
+                    payload["snapshot_sha256"] != proof.snapshot.sha256
+                    or payload["manifest_sha256"]
+                    != hashlib.sha256(proof.manifest_json.encode()).hexdigest()
+                    or (set_id, kind) in seen
+                ):
+                    raise InvalidIdentity("identity event digest/uniqueness mismatch")
+                seen.add((set_id, kind))
+                set_row = self.require("file_identity_sets", set_id)
+                if kind == "prepared" and set_row["prior_set_id"] != (
+                    None if previous is None else previous["set_id"]
+                ):
+                    raise InvalidIdentity("identity preparation predecessor mismatch")
+                if kind == "activated" and (
+                    previous is None
+                    or previous["kind"] != "prepared"
+                    or previous["set_id"] != set_id
+                ):
+                    raise InvalidIdentity("identity activation predecessor mismatch")
+            elif kind in {
+                "recovery_intent",
+                "recovery_step",
+                "superseded",
+                "retained",
+                "retired",
+            }:
+                payload = self.document(
+                    event["payload_json"],
+                    {"before_snapshot_json", "before_snapshot_sha256", "plan_sha256"},
+                )
+                if (
+                    payload["before_snapshot_json"] != proof.snapshot.rows_json
+                    or payload["before_snapshot_sha256"] != proof.snapshot.sha256
+                ):
+                    raise InvalidIdentity("identity event preimage mismatch")
+                _hex(payload["plan_sha256"], 64)
+            else:
+                raise InvalidIdentity("unknown identity event kind")
+            previous = event
+        for set_id in self.sets.get(owner, []):
+            proof = self.proofs[set_id]
+            manifest = _mapping(self.evidence.load(proof.manifest_json))
+            intent = manifest["intent"]
+            if intent is not None and _mapping(intent)["kind"] == "recovery":
+                intent = _mapping(intent)
+                event = self.require(
+                    "file_identity_events", _integer(intent["event_id"], 1)
+                )
+                payload = self.document(
+                    event["payload_json"],
+                    {"before_snapshot_json", "before_snapshot_sha256", "plan_sha256"},
+                )
+                if (
+                    self.owner(event) != owner
+                    or event["kind"] not in {"recovery_intent", "recovery_step"}
+                    or payload["before_snapshot_json"] != proof.snapshot.rows_json
+                    or payload["before_snapshot_sha256"] != proof.snapshot.sha256
+                    or payload["plan_sha256"] != intent["plan_sha256"]
+                ):
+                    raise IdentityMismatch(
+                        "recovery intent snapshot/owner/plan mismatch"
+                    )
+        self.validated.add(owner)
+        return dependencies
+
+    def recovery_flag(self, owner: OwnerRef, row: dict[str, object]) -> None:
+        if owner.domain not in {"rescan", "deletion"}:
+            return
+        flag = row.get("recovery_event_id")
+        if flag is None:
+            return
+        self.validate(owner)
+        event = self.require("file_identity_events", _integer(flag, 1))
+        if self.owner(event) != owner or event["kind"] != "superseded":
+            raise IdentityMismatch(
+                "journal recovery flag has a foreign or wrong-kind event"
+            )
+        proof = self.proofs[_hex(event["set_id"])]
+        frozen = _mapping(
+            _mapping(self.evidence.load(proof.snapshot.rows_json))["root"]
+        )
+        before = _mapping(frozen["row"])
+        projected = {c: row[c] for c in _store._PROJECTIONS[_ROOTS[owner.domain][0]]}
+        if before.get("recovery_event_id") is not None or projected != {
+            **before,
+            "recovery_event_id": flag,
+        }:
+            raise IdentityMismatch("journal recovery flag preimage differs")
+
+
+def _validate_closure(
+    closure: ReferenceClosure, parent: str, budget: InventoryBudget
+) -> None:
+    raw: dict[str, list[RawRow]] = {table: [] for table in _TABLES}
+    for row in closure.raw_rows:
+        row.__post_init__()
+        raw[row.table].append(row)
+    try:
+        rebuilt = _bind_references(
+            raw,
+            parent,
+            InventoryBudget(budget.max_rows, budget.max_objects, _JSON_LIMIT),
+        )
+    except IdentityMismatch as exc:
+        raise InvalidIdentity("inconsistent observation SQL closure") from exc
+    if rebuilt != closure:
+        raise InvalidIdentity("observation closure omits or contradicts SQL evidence")
+
+
+def _bind_references(
+    raw: dict[str, list[RawRow]],
+    parent: str,
+    budget: InventoryBudget,
+    counter: _Counter | None = None,
+    expected: dict[OwnerRef, OwnerSnapshot] | None = None,
+) -> ReferenceClosure:
+    """Pure fixed-schema binding shared by SQL acquisition and wire validation."""
     parent = _path(parent)
     if type(budget) is not InventoryBudget:
         raise InvalidIdentity("expected inventory budget")
     budget.__post_init__()
-    try:
-        if db.in_transaction:
-            raise IdentityMismatch("inventory requires a clean SQL connection")
-        version, changes = _version(db), db.total_changes
-        db.execute("BEGIN DEFERRED")
-    except sqlite3.Error as exc:
-        raise InvalidIdentity("SQL inventory read view could not be opened") from exc
-    counter = _Counter(budget)
+    counter = counter or _Counter(budget)
     evidence = _Evidence()
     try:
-        raw = _scan(db, counter)
+        for table, records in raw.items():
+            if len({r.key for r in records}) != len(records):
+                raise InvalidIdentity("inventory raw table/key is duplicated")
+            for record in records:
+                if not _REQUIRED_RAW[table] <= dict(record.values).keys():
+                    raise InvalidIdentity("inventory raw row omits required columns")
+        ledger = _Ledger(raw, evidence, counter)
         snapshots: dict[OwnerRef, OwnerSnapshot] = {}
         roles: dict[OwnerRef, tuple[RoleSpec, ...]] = {}
         roots: dict[OwnerRef, dict[str, object]] = {}
@@ -1891,12 +2377,15 @@ def collect_references(
             for record in raw[table]:
                 row = cast(dict[str, object], dict(record.values))
                 owner = OwnerRef(domain, (cast(str | int, row[pk]),))
-                snapshot = capture_owner_snapshot(db, owner)
+                snapshot = _snapshot_from_rows(raw, owner)
+                if expected is not None and expected.get(owner) != snapshot:
+                    raise IdentityMismatch("same-connection SQL drift during inventory")
                 root, related = _snapshot_records(snapshot, evidence)
-                counter.charge(
-                    rows=1 + len(related),
-                    hash_bytes=len(snapshot.rows_json.encode("utf-8")),
-                )
+                if expected is None:
+                    counter.charge(
+                        rows=1 + len(related),
+                        hash_bytes=len(snapshot.rows_json.encode("utf-8")),
+                    )
                 inventory = _inventory(snapshot, counter, evidence)
                 objects = tuple(sorted(inventory.values.values(), key=_role_order))
                 carriers[owner] = inventory.carriers
@@ -2109,6 +2598,8 @@ def collect_references(
             for o, specs in roles.items()
             if any(_within(r.path, parent) for r in specs)
         }
+        relevant_history = ledger.seeds(parent)
+        selected.update(relevant_history.intersection(snapshots))
         # Only declared objects close an external path reference. These three
         # directory roles are context/parents, not claims on arbitrary children.
         by_path: dict[str, set[OwnerRef]] = {}
@@ -2126,7 +2617,21 @@ def collect_references(
                 link(owner, anchor, "shared_context")
         series_ids = set(path_series)
         while True:
-            before = set(selected)
+            before = set(selected), set(relevant_history)
+            relevant_history.update(selected)
+            relevant_history.update(ledger.neighbours(relevant_history))
+            selected.update(relevant_history.intersection(snapshots))
+            for owner in tuple(relevant_history):
+                for target in ledger.validate(owner):
+                    relevant_history.add(target)
+                    if target in snapshots:
+                        selected.add(target)
+                        if owner in snapshots and owner != target:
+                            edges.add(
+                                ReferenceDependency(owner, target, "identity_ledger")
+                            )
+                if owner in selected:
+                    ledger.recovery_flag(owner, roots[owner])
             for edge in edges:
                 if edge.owner in selected or edge.requires in selected:
                     selected.update((edge.owner, edge.requires))
@@ -2135,7 +2640,7 @@ def collect_references(
             for owner, row in roots.items():
                 if row.get("series_id") in series_ids:
                     selected.add(owner)
-            if selected == before:
+            if (selected, relevant_history) == before:
                 break
         live_series = {cast(int, r.key[0]) for r in raw["series"]}
         volumes = {r.key[0]: dict(r.values) for r in raw["volumes"]}
@@ -2199,7 +2704,10 @@ def collect_references(
             for r in selected_raw
             if r.table == "series"
         }
+        if root_ids - {None} - {r.key[0] for r in raw["root_folders"]}:
+            raise IdentityMismatch("reference root folder context is dangling")
         selected_raw.update(r for r in raw["root_folders"] if r.key[0] in root_ids)
+        selected_raw.update(ledger.rows)
         if len(selected_raw) > _LIMIT or len(selected) > _LIMIT:
             raise InvalidIdentity("inventory closure exceeds collection bound")
         result = ReferenceClosure(
@@ -2210,6 +2718,40 @@ def collect_references(
             ),
             tuple(sorted(selected_raw, key=_raw_order)),
         )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InvalidIdentity("invalid inventory raw binding") from exc
+    return result
+
+
+def collect_references(
+    db: sqlite3.Connection, parent: str, budget: InventoryBudget
+) -> ReferenceClosure:
+    """Capture a coherent bounded graph, releasing only our DEFERRED read view."""
+    parent = _path(parent)
+    if type(budget) is not InventoryBudget:
+        raise InvalidIdentity("expected inventory budget")
+    budget.__post_init__()
+    try:
+        if db.in_transaction:
+            raise IdentityMismatch("inventory requires a clean SQL connection")
+        version, changes = _version(db), db.total_changes
+        db.execute("BEGIN DEFERRED")
+    except sqlite3.Error as exc:
+        raise InvalidIdentity("SQL inventory read view could not be opened") from exc
+    counter = _Counter(budget)
+    try:
+        raw = _scan(db, counter)
+        expected: dict[OwnerRef, OwnerSnapshot] = {}
+        for domain, (table, _pk) in _ROOTS.items():
+            for row in raw[table]:
+                owner = OwnerRef(domain, row.key)
+                snapshot = capture_owner_snapshot(db, owner)
+                # Admit each capture before retaining the expectation collection.
+                counter.charge(hash_bytes=len(snapshot.rows_json.encode("utf-8")))
+                _, related = _snapshot_records(snapshot, _Evidence())
+                counter.charge(rows=1 + len(related))
+                expected[owner] = snapshot
+        result = _bind_references(raw, parent, budget, counter, expected)
         if db.total_changes != changes:
             raise IdentityMismatch("same-connection SQL drift during inventory")
     except sqlite3.Error as exc:
