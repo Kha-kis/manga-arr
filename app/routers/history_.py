@@ -14,6 +14,7 @@ from download_identity import (
     normalize_download_protocol,
     resolve_download_protocol,
 )
+from events import log_event
 from routers._templates import templates
 from release_identity import add_block, canonical_protocol, read_history_evidence, seen_identity
 from shared import cascade_chapters, get_db, with_flash
@@ -116,6 +117,12 @@ def mark_history_failed(hist_id: int) -> MarkHistoryFailedResult:
             else h["download_id"] or h["source_title"] or ""
         )
         evidence_state, captured = read_history_evidence(dict(h))
+        if evidence_state == "invalid":
+            log_event(
+                "warning",
+                f"Invalid release identity evidence for history ID {hist_id}; using URL-only block",
+                db=db,
+            )
         observed = captured.identity if captured is not None else None
         if captured is not None:
             bl_url = captured.url

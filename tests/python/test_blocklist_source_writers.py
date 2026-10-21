@@ -772,3 +772,173 @@ def test_history_fallback_needs_positive_outer_download_evidence(
             ]
             == 0
         )
+
+
+def _history_diagnostic_request(
+    writers: Writers, history_id: int, *, htmx: bool = False
+) -> httpx.Response:
+    token = "history-diagnostic-csrf-" + "x" * 32
+    writers.flow.client.cookies.set("csrftoken", token)
+    headers = {**writers.flow.headers, "X-CSRFToken": token}
+    if htmx:
+        headers["HX-Request"] = "true"
+    return writers.flow.client.post(
+        f"/history/{history_id}/mark-failed",
+        headers=headers,
+        follow_redirects=False,
+    )
+
+
+@pytest.mark.parametrize("htmx", [False, True])
+@pytest.mark.parametrize("corruption", ["json", "invalid", "contradictory"])
+def test_history_invalid_proof_route_warns_with_only_record_id(
+    writers: Writers,
+    monkeypatch: pytest.MonkeyPatch,
+    corruption: str,
+    htmx: bool,
+) -> None:
+    from collections.abc import Generator
+    from contextlib import contextmanager
+    import sqlite3
+
+    import events
+
+    item = writers.acquire()
+    private_url = "https://private.invalid/download?apikey=fixture-private-key"
+    private_guid = "fixture-private-guid"
+    private_handle = "fixture-private-handle"
+    with shared.get_db() as db:
+        history = dict(
+            db.execute("SELECT * FROM history WHERE event_type='grabbed'").fetchone()
+        )
+        payload = json.loads(history["data"])
+        payload["selection_receipt"] = private_handle
+        payload["release_identity"].update(url=private_url, release_guid=private_guid)
+        if corruption == "invalid":
+            payload["release_identity"]["source_scope"] = "not-a-scope"
+        raw = json.dumps(payload)
+        if corruption == "json":
+            raw = raw[:-1]
+        db.execute("UPDATE history SET data=? WHERE id=?", (raw, history["id"]))
+        db.execute("DELETE FROM events")
+        # The exact live acquisition is eligible, but invalid-present proof must
+        # never borrow it to create an identity child.
+        assert db.execute("SELECT release_source_scope FROM seen").fetchone()[0]
+    writers.flow.submitted.clear()
+    logger_connections: list[bool] = []
+    real_get_db = shared.get_db
+
+    @contextmanager
+    def logger_db() -> Generator[sqlite3.Connection, None, None]:
+        logger_connections.append(True)
+        with real_get_db() as db:
+            db.execute("PRAGMA busy_timeout=0")
+            yield db
+
+    monkeypatch.setattr(events, "get_db", logger_db)
+    response = _history_diagnostic_request(writers, history["id"], htmx=htmx)
+    assert response.status_code == (200 if htmx else 303)
+    with shared.get_db() as db:
+        assert (
+            db.execute("SELECT torrent_url FROM blocklist").fetchone()[0] == item["url"]
+        )
+        assert (
+            db.execute("SELECT count(*) FROM blocklist_release_identities").fetchone()[
+                0
+            ]
+            == 0
+        )
+        assert (
+            db.execute(
+                "SELECT event_type FROM history WHERE id=?", (history["id"],)
+            ).fetchone()[0]
+            == "grab_failed"
+        )
+        warnings = [
+            tuple(row)
+            for row in db.execute("SELECT event_type,series_id,message FROM events")
+        ]
+    assert warnings == [
+        (
+            "warning",
+            None,
+            f"Invalid release identity evidence for history ID {history['id']}; using URL-only block",
+        )
+    ]
+    assert all(
+        value not in warnings[0][2]
+        for value in (private_url, private_guid, private_handle, item["url"], raw)
+    )
+    assert logger_connections == []
+    assert writers.flow.submitted == []
+
+
+@pytest.mark.parametrize("proof", ["valid", "absent"])
+def test_history_valid_or_absent_proof_has_no_diagnostic(
+    writers: Writers, proof: str
+) -> None:
+    writers.acquire()
+    with shared.get_db() as db:
+        history_id = db.execute(
+            "SELECT id FROM history WHERE event_type='grabbed'"
+        ).fetchone()[0]
+        if proof == "absent":
+            db.execute("UPDATE history SET data=NULL WHERE id=?", (history_id,))
+        db.execute("DELETE FROM events")
+    response = _history_diagnostic_request(writers, history_id)
+    assert response.status_code == 303
+    with shared.get_db() as db:
+        assert db.execute("SELECT count(*) FROM events").fetchone()[0] == 0
+        assert (
+            db.execute("SELECT count(*) FROM blocklist_release_identities").fetchone()[
+                0
+            ]
+            == 1
+        )
+
+
+@pytest.mark.parametrize("fence", ["importing", "lease", "publication"])
+def test_history_refused_invalid_proof_has_no_diagnostic_or_mutation(
+    writers: Writers, fence: str
+) -> None:
+    item = writers.acquire()
+    with shared.get_db() as db:
+        history_id = db.execute(
+            "SELECT id FROM history WHERE event_type='grabbed'"
+        ).fetchone()[0]
+        db.execute("UPDATE history SET data='invalid-proof' WHERE id=?", (history_id,))
+        db.execute(
+            "INSERT INTO import_queue(id,series_id,download_id,download_client_id,download_protocol,torrent_url,status,lease_owner) VALUES(90,1,'flow-hash',7,'torrent',?,?,?)",
+            (
+                item["url"],
+                "importing" if fence == "importing" else "failed",
+                "worker" if fence == "lease" else None,
+            ),
+        )
+        if fence == "publication":
+            db.execute(
+                "INSERT INTO import_publications(queue_id,series_id,state,owner_token,dst_dir,import_mode,staging_dir,queue_snapshot_json,series_tags_json,queue_status) VALUES(90,1,'prepared','writer-owner','/private/dst','copy','/private/stage','{}','[]','failed')"
+            )
+        db.execute("DELETE FROM events")
+        before = {
+            table: [tuple(row) for row in db.execute(f"SELECT * FROM {table}")]
+            for table in (
+                "history",
+                "seen",
+                "volumes",
+                "import_queue",
+                "import_publications",
+                "blocklist",
+                "blocklist_release_identities",
+                "events",
+            )
+        }
+    response = _history_diagnostic_request(writers, history_id, htmx=True)
+    assert response.status_code == 200
+    assert "Import is in progress" in response.headers["HX-Trigger"]
+    with shared.get_db() as db:
+        after = {
+            table: [tuple(row) for row in db.execute(f"SELECT * FROM {table}")]
+            for table in before
+        }
+    assert after == before
