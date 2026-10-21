@@ -56,45 +56,50 @@ def _download_client_poll_partitions(
     client_type: _SupportedClientType,
 ) -> list[_ClientPollPartition]:
     """Snapshot exact owners that have completion or orphan work to poll."""
+    protocol: DownloadProtocol = "torrent" if client_type == "qbittorrent" else "nzb"
     if client_type == "qbittorrent":
         evidence_sql = """
-            SELECT DISTINCT download_client_id
+            SELECT DISTINCT download_client_id, protocol
             FROM seen
             WHERE client='qbittorrent' AND protocol='torrent'
               AND download_id IS NOT NULL
             UNION
-            SELECT DISTINCT download_client_id
+            SELECT DISTINCT download_client_id, 'torrent' AS protocol
             FROM volumes
             WHERE client='qbittorrent' AND status='grabbed'
               AND download_id IS NOT NULL
             UNION
-            SELECT DISTINCT download_client_id
+            SELECT DISTINCT download_client_id, protocol
             FROM chapters
-            WHERE protocol='torrent' AND status='grabbed'
+            WHERE status='grabbed'
               AND (client IS NULL OR client='' OR client='qbittorrent')
               AND download_id IS NOT NULL
         """
     else:
         evidence_sql = """
-            SELECT DISTINCT download_client_id
+            SELECT DISTINCT download_client_id, protocol
             FROM seen
             WHERE client='sabnzbd' AND protocol='nzb'
               AND download_id IS NOT NULL
             UNION
-            SELECT DISTINCT download_client_id
+            SELECT DISTINCT download_client_id, 'nzb' AS protocol
             FROM volumes
             WHERE client='sabnzbd' AND status='grabbed'
               AND download_id IS NOT NULL
             UNION
-            SELECT DISTINCT download_client_id
+            SELECT DISTINCT download_client_id, protocol
             FROM chapters
-            WHERE protocol='nzb' AND status='grabbed'
+            WHERE status='grabbed'
               AND (client IS NULL OR client='' OR client='sabnzbd')
               AND download_id IS NOT NULL
         """
 
     with get_db() as db:
-        evidence_rows = db.execute(evidence_sql).fetchall()
+        evidence_rows = [
+            row
+            for row in db.execute(evidence_sql).fetchall()
+            if normalize_download_protocol(row["protocol"]) == protocol
+        ]
         owner_ids = {
             owner_id
             for row in evidence_rows
