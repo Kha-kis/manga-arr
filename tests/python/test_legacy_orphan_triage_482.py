@@ -1110,14 +1110,31 @@ def test_missing_client_never_mutates_archive_bytes(
     assert pack.candidate.read_bytes() == candidate_bytes
 
 
+@pytest.fixture(
+    params=[
+        ("torrent", "nzb"),
+        ("TORRENT", "NZB"),
+        (" torrent ", " nzb "),
+        ("\t\u00a0TORRENT\u2003\n", "\t\u00a0NZB\u2003\n"),
+        ("torrent", " UsEnEt "),
+    ],
+    ids=["canonical", "case", "spaces", "python-strip", "usenet"],
+)
+def chapter_protocol_spelling(request: pytest.FixtureRequest, pack: Pack) -> str:
+    return request.param[0 if pack.protocol == "torrent" else 1]
+
+
 @pytest.mark.parametrize("retain_seen", [False, True])
-def test_chapter_only_owner_is_discovered(pack: Pack, retain_seen: bool) -> None:
+def test_chapter_only_owner_is_discovered(
+    pack: Pack, retain_seen: bool, chapter_protocol_spelling: str
+) -> None:
     import import_discovery
     import shared
 
     with shared.get_db() as db:
         db.execute("DELETE FROM volumes")
         db.execute("DELETE FROM chapters WHERE id != 30")
+        db.execute("UPDATE chapters SET protocol=?", (chapter_protocol_spelling,))
         if not retain_seen:
             db.execute("DELETE FROM seen")
         db.execute(
@@ -1130,19 +1147,95 @@ def test_chapter_only_owner_is_discovered(pack: Pack, retain_seen: bool) -> None
     ]
 
 
+@pytest.mark.parametrize("retain_seen", [False, True])
 def test_chapter_only_missing_client_releases_genuine_unhandled_claim(
-    pack: Pack, monkeypatch: pytest.MonkeyPatch
+    pack: Pack,
+    monkeypatch: pytest.MonkeyPatch,
+    retain_seen: bool,
+    chapter_protocol_spelling: str,
 ) -> None:
+    import import_discovery
+    import security
     import shared
 
     with shared.get_db() as db:
         db.execute("DELETE FROM volumes")
         db.execute("DELETE FROM chapters WHERE id != 30")
-    _poll_removed(pack, monkeypatch)
+        db.execute("UPDATE chapters SET protocol=?", (chapter_protocol_spelling,))
+        if not retain_seen:
+            db.execute("DELETE FROM seen")
+        db.execute(
+            "INSERT INTO download_clients(id,name,type,host,password,enabled) VALUES(7,'fixture',?,'http://downloader.invalid',?,1)",
+            (pack.client_type, security.encrypt_secret("fixture")),
+        )
+    real_client = httpx.AsyncClient
+    requests: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "downloader.invalid"
+        requests.append(request.url.path)
+        if pack.protocol == "torrent":
+            if request.url.path == "/api/v2/auth/login":
+                return httpx.Response(200, text="Ok.")
+            assert request.url.path == "/api/v2/torrents/info"
+            return httpx.Response(200, json=[])
+        assert request.url.path == "/api"
+        mode = request.url.params["mode"]
+        assert mode in ("history", "queue")
+        return httpx.Response(200, json={mode: {"slots": []}})
+
+    def client(**kwargs: Any) -> httpx.AsyncClient:
+        return real_client(transport=httpx.MockTransport(respond), **kwargs)
+
+    monkeypatch.setattr(import_discovery.httpx, "AsyncClient", client)
+    partitions = import_discovery._download_client_poll_partitions(pack.client_type)
+    for partition in partitions:
+        config = import_discovery._load_poll_client(partition)
+        assert config is not None
+        poll = (
+            import_discovery._poll_qbit_partition
+            if pack.protocol == "torrent"
+            else import_discovery._poll_sab_partition
+        )
+        asyncio.run(poll(partition, config))
     with shared.get_db() as db:
         assert tuple(
             db.execute("SELECT status,download_id FROM chapters WHERE id=30").fetchone()
         ) == ("wanted", None)
+        assert db.execute("SELECT 1 FROM seen").fetchone() is None
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize("spelling", [None, "", "unknown", "wrong-protocol"])
+def test_chapter_only_invalid_protocol_is_not_polled_or_claimed(
+    pack: Pack, spelling: str | None
+) -> None:
+    import import_discovery
+    import shared
+
+    if spelling == "wrong-protocol":
+        spelling = " UsEnEt " if pack.protocol == "torrent" else " TORRENT "
+    with shared.get_db() as db:
+        db.execute("DELETE FROM seen")
+        db.execute("DELETE FROM volumes")
+        db.execute("DELETE FROM chapters WHERE id != 30")
+        db.execute("UPDATE chapters SET protocol=?", (spelling,))
+        db.execute(
+            "INSERT INTO download_clients(id,name,type,host,enabled) VALUES(7,'fixture',?,'http://downloader.invalid',1)",
+            (pack.client_type,),
+        )
+    before = _snapshot()
+    evidence = _binding_evidence_snapshot()
+    assert import_discovery._download_client_poll_partitions(pack.client_type) == []
+    import_discovery._cleanup_missing_downloads(
+        set(),
+        download_client_id=7,
+        protocol=pack.protocol,
+        client_type=pack.client_type,
+        include_legacy_ownerless=False,
+    )
+    assert _snapshot() == before
+    assert _binding_evidence_snapshot() == evidence
 
 
 @pytest.mark.parametrize("local_stub", [False, True])
