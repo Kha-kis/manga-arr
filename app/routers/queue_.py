@@ -11,6 +11,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from clients import load_bound_download_client
+from release_identity import add_block, seen_identity
 from download_identity import (
     DownloadIdentity,
     DownloadProtocol,
@@ -1440,20 +1441,20 @@ async def _remove_from_queue(
             seen_rows = _seen_rows_for_identity(db, identity)
             seen_row = seen_rows[0] if seen_rows else None
 
-            if blocklist == "1" and seen_row:
-                db.execute(
-                    "INSERT OR IGNORE INTO blocklist"
-                    "(series_id, torrent_url, torrent_name, reason,"
-                    " indexer, protocol) VALUES(?,?,?,?,?,?)",
-                    (
-                        seen_row["series_id"],
-                        seen_row["torrent_url"] or "",
-                        seen_row["torrent_name"] or "",
-                        "Manually removed from queue",
-                        seen_row["indexer"] or "",
-                        seen_row["protocol"] or "",
-                    ),
-                )
+            if blocklist == "1":
+                for owned_row in seen_rows:
+                    observed = seen_identity(owned_row)
+                    add_block(
+                        db,
+                        series_id=owned_row["series_id"],
+                        url=owned_row["torrent_url"],
+                        title=owned_row["torrent_name"] or "",
+                        reason="Manually removed from queue",
+                        indexer=owned_row["indexer"] or "",
+                        protocol=owned_row["protocol"] or "",
+                        size_bytes=None,
+                        identities=[observed] if observed is not None else (),
+                    )
 
             grabbed = _grabbed_volumes_for_identity(db, identity)
             by_series: dict[int, list[int]] = {}
@@ -1463,11 +1464,7 @@ async def _remove_from_queue(
             db.executemany(
                 "DELETE FROM volumes WHERE id=? AND status='grabbed'"
                 " AND volume_num IS NULL",
-                (
-                    (volume["id"],)
-                    for volume in grabbed
-                    if volume["volume_num"] is None
-                ),
+                ((volume["id"],) for volume in grabbed if volume["volume_num"] is None),
             )
             db.executemany(
                 "UPDATE volumes SET status='wanted', download_id=NULL,"
@@ -1538,9 +1535,7 @@ async def _remove_from_queue(
                     login_mode = classify_qbit_login(r.status_code, r.text)
                     bypass_proven = login_mode is QbitLoginMode.NORMAL_AUTH
                     if login_mode is QbitLoginMode.BYPASS_PROBE_REQUIRED:
-                        proof = await client.get(
-                            f"{_cc_host}/api/v2/app/version"
-                        )
+                        proof = await client.get(f"{_cc_host}/api/v2/app/version")
                         bypass_proven = is_valid_qbit_version_response(
                             proof.status_code, proof.text
                         )
@@ -1658,19 +1653,18 @@ async def _block_and_remove(
         if cleanup_allowed and identity is not None:
             seen_rows = _seen_rows_for_identity(db, identity)
             seen_row = seen_rows[0] if seen_rows else None
-            if seen_row:
-                db.execute(
-                    "INSERT OR IGNORE INTO blocklist"
-                    "(series_id, torrent_url, torrent_name, reason,"
-                    " indexer, protocol) VALUES(?,?,?,?,?,?)",
-                    (
-                        seen_row["series_id"],
-                        seen_row["torrent_url"] or "",
-                        seen_row["torrent_name"] or "",
-                        "Manually blocked from queue",
-                        seen_row["indexer"] or "",
-                        seen_row["protocol"] or "",
-                    ),
+            for owned_row in seen_rows:
+                observed = seen_identity(owned_row)
+                add_block(
+                    db,
+                    series_id=owned_row["series_id"],
+                    url=owned_row["torrent_url"],
+                    title=owned_row["torrent_name"] or "",
+                    reason="Manually blocked from queue",
+                    indexer=owned_row["indexer"] or "",
+                    protocol=owned_row["protocol"] or "",
+                    size_bytes=None,
+                    identities=[observed] if observed is not None else (),
                 )
             grabbed = _grabbed_volumes_for_identity(db, identity)
             by_series: dict[int, list[int]] = {}
@@ -1691,11 +1685,7 @@ async def _block_and_remove(
             )
             db.executemany(
                 "DELETE FROM volumes WHERE id=? AND volume_num IS NULL",
-                (
-                    (volume["id"],)
-                    for volume in grabbed
-                    if volume["volume_num"] is None
-                ),
+                ((volume["id"],) for volume in grabbed if volume["volume_num"] is None),
             )
             for series_id, volume_ids in by_series.items():
                 cascade_chapters(
@@ -1882,11 +1872,15 @@ async def set_torrent_category(
 @router.post("/queue/pending/{pending_id}/force-grab")
 async def force_grab_pending(request: Request, pending_id: int):
     """Immediately grab a pending release, bypassing its delay profile."""
+    from release_sources import item_source_is_current, restore_pending_source
+
     row = None
     item = None
+    refused = False
     with get_db() as db:
         pending_row = db.execute(
-            "SELECT id, series_id, url, title, indexer, protocol, size_bytes"
+            "SELECT id, series_id, url, title, indexer, protocol, size_bytes,"
+            " release_source_scope, release_guid, release_context"
             " FROM pending_releases WHERE id=?",
             (pending_id,),
         ).fetchone()
@@ -1899,7 +1893,18 @@ async def force_grab_pending(request: Request, pending_id: int):
                 "protocol": row["protocol"] or "torrent",
                 "size_bytes": row["size_bytes"] or 0,
             }
-            db.execute("DELETE FROM pending_releases WHERE id=?", (pending_id,))
+            try:
+                restore_pending_source(row, item)
+                refused = not item_source_is_current(db, item)
+            except ValueError:
+                refused = True
+            if not refused:
+                db.execute("DELETE FROM pending_releases WHERE id=?", (pending_id,))
+    if refused:
+        return await _queue_partial_response(
+            request,
+            message="Release source changed or evidence unavailable; refresh required.",
+        )
     if row is None or item is None:
         return await _queue_partial_response(request)
     import main as _m

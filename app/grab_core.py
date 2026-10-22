@@ -49,6 +49,8 @@ from parsing import (
 from evaluation import score_release
 from events import add_history, broadcast_queue_event, log_event
 from shared import get_cfg, get_db, vol_num_to_search
+from release_identity import SourceContext, identity_for, is_blocked
+from release_sources import item_source_is_current
 from volumes import _cascade_chapters
 import grab_dedup
 
@@ -74,7 +76,8 @@ async def grab_item(
     # distinct URLs for the same content. The indexer-supplied release_guid
     # catches that — same content, same guid, regardless of URL. release_guid
     # is nullable; a missing guid falls back to URL-only behavior.
-    _release_guid = (item.get("guid") or "").strip() or None
+    _raw_guid = item.get("guid")
+    _release_guid = (_raw_guid.strip() or None) if isinstance(_raw_guid, str) else None
     with get_db() as db:
         if db.execute(
             "SELECT 1 FROM seen WHERE torrent_url=?", (item["url"],)
@@ -97,9 +100,7 @@ async def grab_item(
 
     # Check blocklist
     with get_db() as db:
-        if db.execute(
-            "SELECT 1 FROM blocklist WHERE torrent_url=?", (item["url"],)
-        ).fetchone():
+        if is_blocked(db, url=item["url"], identity=identity_for(item, series_id)):
             grab_dedup._GRABBING_URLS.discard(item["url"])
             grab_dedup._log_grab_rejection(series_id, title, "blocklisted")
             return False
@@ -433,6 +434,28 @@ async def grab_item(
                 )
                 return False
 
+    # This local check uses the original request purpose/filter, not the target
+    # series or mutable source labels. Release the connection before client I/O.
+    with get_db() as db:
+        if not item_source_is_current(db, item):
+            return False
+        if is_blocked(db, url=item["url"], identity=identity_for(item, series_id)):
+            grab_dedup._log_grab_rejection(series_id, title, "blocklisted")
+            return False
+    context = item.get("_source_context")
+    source_scope = context.source_scope if isinstance(context, SourceContext) else None
+    identity = identity_for(item, series_id)
+    identity_data: dict[str, Any] = {}
+    if identity is not None:
+        identity_data["release_identity"] = {
+            "version": 1,
+            "series_id": identity.series_id,
+            "url": item["url"],
+            "source_scope": identity.source_scope,
+            "protocol": identity.protocol,
+            "release_guid": identity.release_guid,
+        }
+
     # Outer timeout on the grab operation as a whole. grab_url has its own
     # per-HTTP-request timeout (30s for qBittorrent, similar for SABnzbd),
     # but a slow client + retry logic can accumulate well past that. Without
@@ -498,8 +521,8 @@ async def grab_item(
                 "INSERT OR IGNORE INTO seen"
                 "(torrent_url, torrent_name, series_id, volume_num, grabbed_at,"
                 " indexer, protocol, client, download_id, release_group, size_bytes,"
-                " release_guid, download_client_id,respect_grab_claims)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
+                " release_guid, download_client_id,respect_grab_claims,release_source_scope)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)",
                 (
                     item["url"],
                     title,
@@ -514,6 +537,7 @@ async def grab_item(
                     item.get("size_bytes", 0),
                     _release_guid,
                     download_client_id,
+                    source_scope,
                 ),
             )
         log_event(
@@ -538,8 +562,8 @@ async def grab_item(
             "INSERT OR IGNORE INTO seen"
             "(torrent_url, torrent_name, series_id, volume_num, grabbed_at,"
             " indexer, protocol, client, download_id, release_group, size_bytes,"
-            " release_guid, download_client_id,respect_grab_claims)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " release_guid, download_client_id,respect_grab_claims,release_source_scope)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 item["url"],
                 title,
@@ -555,6 +579,7 @@ async def grab_item(
                 _release_guid,
                 download_client_id,
                 int(respect_monitoring),
+                source_scope,
             ),
         )
         if seen_insert.rowcount != 1:
@@ -563,7 +588,9 @@ async def grab_item(
                 "grabbed",
                 series_id,
                 (s_row["title"] or "") if s_row else "",
-                build_volume_label(vol_num, vol_rng, pack_type if vol_num is None else None),
+                build_volume_label(
+                    vol_num, vol_rng, pack_type if vol_num is None else None
+                ),
                 source_title=title,
                 indexer=indexer,
                 protocol=protocol,
@@ -572,7 +599,11 @@ async def grab_item(
                 download_client_id=download_client_id,
                 size_bytes=size,
                 release_group=rgroup,
-                data={"respect_monitoring": respect_monitoring, "claim_lost": True},
+                data={
+                    "respect_monitoring": respect_monitoring,
+                    "claim_lost": True,
+                    **identity_data,
+                },
                 torrent_url=item["url"],
             )
             return False
@@ -963,7 +994,10 @@ async def grab_item(
 
     with get_db() as db:
         _grab_score = item.get("_score")
-        _grab_data: dict[str, Any] = {"respect_monitoring": respect_monitoring}
+        _grab_data: dict[str, Any] = {
+            "respect_monitoring": respect_monitoring,
+            **identity_data,
+        }
         if claim_lost:
             _grab_data["claim_lost"] = True
         if _grab_score is not None:

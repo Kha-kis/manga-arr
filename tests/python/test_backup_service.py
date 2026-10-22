@@ -31,7 +31,8 @@ def _create_database(path, value="current"):
     connection.execute("PRAGMA wal_autocheckpoint=0")
     connection.execute("CREATE TABLE state(value TEXT NOT NULL)")
     connection.execute("INSERT INTO state(value) VALUES(?)", (value,))
-    connection.execute("PRAGMA user_version=7")
+    # This state-only fixture represents a pre-selection legacy database.
+    connection.execute("PRAGMA user_version=6")
     connection.commit()
     return connection
 
@@ -111,7 +112,7 @@ def test_snapshot_closes_connections_on_success_and_failure(
         with _track_snapshot_connections(monkeypatch, failure=failure) as connections:
             if failure is None:
                 assert (
-                    _snapshot_database(str(db_path), str(tmp_path / "snapshot.db")) == 7
+                    _snapshot_database(str(db_path), str(tmp_path / "snapshot.db")) == 6
                 )
             else:
                 message = {
@@ -239,7 +240,7 @@ def test_create_backup_is_wal_safe_self_contained_and_versioned(tmp_path):
     assert os.stat(archive_path).st_mode & 0o777 == 0o600
     details = validate_backup_archive(archive_path)
     assert details["selfContained"] is True
-    assert details["schemaVersion"] == 7
+    assert details["schemaVersion"] == 6
     assert details["formatVersion"] == 1
 
     extracted_db = tmp_path / "snapshot.db"
@@ -253,7 +254,7 @@ def test_create_backup_is_wal_safe_self_contained_and_versioned(tmp_path):
         assert archive.read(SECRET_KEY_ENTRY).strip() == key
         manifest = json.loads(archive.read(MANIFEST_ENTRY))
         assert manifest["includesSecretKey"] is True
-        assert manifest["schemaVersion"] == 7
+        assert manifest["schemaVersion"] == 6
     assert _read_value(extracted_db) == "current"
 
 

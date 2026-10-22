@@ -53,7 +53,7 @@ def insert_rescan(db: sqlite3.Connection, row_id: int = 1) -> None:
 def test_fresh_schema_v6_and_no_automatic_enrollment(
     ledger_db: sqlite3.Connection,
 ) -> None:
-    assert ledger_db.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert ledger_db.execute("PRAGMA user_version").fetchone()[0] == 7
     for table in ("authorities", "epochs", "sets", "events"):
         assert (
             ledger_db.execute(f"SELECT * FROM file_identity_{table}").fetchall() == []
@@ -112,7 +112,7 @@ def test_v5_upgrade_and_idempotent_v6_preserve_legacy_bytes(ledger_path: Path) -
             " FROM rescan_file_operations"
         ).fetchall()
         assert after_legacy_json == before_legacy_json
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
         assert db.execute(
             "SELECT recovery_event_id FROM rescan_file_operations"
         ).fetchall() == [(None,)]
@@ -120,9 +120,9 @@ def test_v5_upgrade_and_idempotent_v6_preserve_legacy_bytes(ledger_path: Path) -
             "SELECT ownership_json FROM file_claim_namespaces"
         ).fetchone() == ('{ "old":true }\n',)
         assert db.execute("SELECT * FROM file_identity_events").fetchall() == []
-        # The idempotent old helper must not downgrade a v6 stamp.
+        # The idempotent old helper must not downgrade the current stamp.
         schema._migrate_history_download_ownership(db)
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
 
 
 # Frozen verbatim from schema.py at a4010b42b400bbbfffdb76936f0fed8e7f2a4ed8.

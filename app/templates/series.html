@@ -1159,8 +1159,11 @@ function renderSearchResults(data) {
   _srchSortCol = null;
 
   let prefix = '';
+  if (data.has_more) {
+    prefix = '<div class="small text-muted px-3 py-2">Additional results omitted</div>';
+  }
   if (data.suwayomi_available) {
-    prefix = `<div class="series-ddl-banner">
+    prefix += `<div class="series-ddl-banner">
       <div class="series-ddl-row">
         <div>
           <div class="series-ddl-title"><i class="bi bi-cloud-arrow-down me-1"></i>Suwayomi DDL</div>
@@ -1224,9 +1227,9 @@ function _renderSrchTable(results) {
       ? `<span class="series-seed-count ${r.seeders>=5?'is-high':'is-low'}">${r.seeders}</span>`
       : '<span class="series-seed-count is-zero">0</span>';
     const noSeeders = r.protocol !== 'nzb' && r.seeders === 0;
-    const disabled  = r.seen || r.blocked || noSeeders;
+    const disabled  = r.seen || r.blocked || noSeeders || r.selectable === false;
     const btnClass  = disabled ? 'is-disabled' : 'is-ready';
-    const btnLabel  = r.seen ? 'Seen' : r.blocked ? 'Blocked' : noSeeders ? 'No seeds' : '<i class="bi bi-cloud-download me-1"></i>Grab';
+    const btnLabel  = r.seen ? 'Seen' : r.blocked ? 'Blocked' : noSeeders ? 'No seeds' : r.selectable === false ? 'Unavailable' : '<i class="bi bi-cloud-download me-1"></i>Grab';
     const origIdx   = _searchResults.indexOf(r);
     const grabIdx   = origIdx >= 0 ? origIdx : idx;
     let statusBadge;
@@ -1301,7 +1304,7 @@ async function grabRelease(idx, btn) {
     });
     const d = await resp.json();
     if (d.ok) { btn.classList.add('is-success'); btn.innerHTML = '<i class="bi bi-check-lg"></i> Grabbed'; setTimeout(() => location.reload(), 1200); }
-    else { btn.classList.add('is-error'); btn.textContent = d.message||'Failed'; btn.disabled = false; }
+    else { btn.classList.add('is-error'); btn.textContent = r.selection_receipt ? 'Refresh search' : 'Failed'; btn.title = d.message||'Failed'; btn.disabled = !!r.selection_receipt; }
   } catch(e) { btn.classList.add('is-error'); btn.textContent = 'Error'; btn.disabled = false; }
 }
 

@@ -11,6 +11,7 @@ from typing import cast
 import httpx
 
 from clients import load_bound_download_client
+from release_identity import add_block, seen_identity
 from download_identity import (
     DownloadIdentity,
     DownloadProtocol,
@@ -666,9 +667,7 @@ async def _poll_qbit_partition(
             if torrent.get("hash")
         }
         completed = [
-            torrent
-            for torrent in all_torrents
-            if torrent.get("progress", 0) >= 1.0
+            torrent for torrent in all_torrents if torrent.get("progress", 0) >= 1.0
         ]
         torrent_by_hash = {
             str(torrent["hash"]).lower(): torrent
@@ -783,9 +782,7 @@ async def _poll_qbit_partition(
             seen_rows = [
                 dict(row)
                 for row in db.execute(
-                    "SELECT download_id, download_client_id, series_id,"
-                    " torrent_name, torrent_url"
-                    " FROM seen WHERE client='qbittorrent'"
+                    "SELECT * FROM seen WHERE client='qbittorrent'"
                     " AND protocol='torrent'"
                     " AND (download_client_id=?"
                     "      OR (?=1 AND download_client_id IS NULL))",
@@ -805,9 +802,7 @@ async def _poll_qbit_partition(
             failed_state = str(torrent.get("state") or "error")
 
             def _mark_failed() -> bool:
-                owner_id = coerce_download_client_id(
-                    row["download_client_id"]
-                )
+                owner_id = coerce_download_client_id(row["download_client_id"])
                 with get_db() as db:
                     cleanup_allowed, _ = _reserve_orphan_cleanup(
                         db,
@@ -817,16 +812,27 @@ async def _poll_qbit_partition(
                     )
                     if not cleanup_allowed:
                         return False
-                    db.execute(
-                        "INSERT OR IGNORE INTO blocklist("
-                        "series_id, torrent_url, torrent_name, reason"
-                        ") VALUES(?,?,?,?)",
-                        (
-                            row["series_id"],
-                            row["torrent_url"] or "",
-                            row["torrent_name"] or "",
-                            f"Download failed: {failed_state}",
-                        ),
+                    fresh = db.execute(
+                        "SELECT * FROM seen WHERE torrent_url=?",
+                        (row["torrent_url"],),
+                    ).fetchone()
+                    # Enumeration is not cleanup authority. Undo the reservation's
+                    # transitions too if the polled acquisition changed meanwhile.
+                    if fresh is None or dict(fresh) != row:
+                        db.rollback()
+                        return False
+                    current = dict(fresh)
+                    observed = seen_identity(current)
+                    add_block(
+                        db,
+                        series_id=current["series_id"],
+                        url=current["torrent_url"],
+                        title=current["torrent_name"] or "",
+                        reason=f"Download failed: {failed_state}",
+                        indexer=None,
+                        protocol=None,
+                        size_bytes=None,
+                        identities=[observed] if observed is not None else (),
                     )
                     db.execute(
                         "DELETE FROM volumes WHERE series_id=?"
@@ -847,11 +853,17 @@ async def _poll_qbit_partition(
                         (row["series_id"], owner_id, failed_hash),
                     )
                     db.execute(
-                        "DELETE FROM seen WHERE series_id=?"
+                        "DELETE FROM seen WHERE torrent_url=? AND protocol='torrent'"
+                        " AND series_id=?"
                         " AND download_client_id IS ?"
                         " AND download_id IS NOT NULL"
                         " AND download_id=? COLLATE NOCASE",
-                        (row["series_id"], owner_id, failed_hash),
+                        (
+                            current["torrent_url"],
+                            row["series_id"],
+                            owner_id,
+                            failed_hash,
+                        ),
                     )
                 return True
 

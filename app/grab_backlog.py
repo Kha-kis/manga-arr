@@ -15,6 +15,7 @@ from typing import Any
 
 from parsing import matches as _title_matches
 from shared import get_cfg, get_db, vol_num_to_search
+from release_identity import identity_for, is_blocked
 
 try:
     from .grab_core import grab_item, _search_all
@@ -69,10 +70,6 @@ async def _grab_existing_inner(series_id: int, title: str, pattern: str) -> int:
             r["torrent_url"]
             for r in db.execute("SELECT torrent_url FROM seen").fetchall()
         }
-        blocked_urls = {
-            r["torrent_url"]
-            for r in db.execute("SELECT torrent_url FROM blocklist").fetchall()
-        }
         alias_rows = db.execute(
             "SELECT alias FROM series_aliases WHERE series_id=?", (series_id,)
         ).fetchall()
@@ -85,10 +82,18 @@ async def _grab_existing_inner(series_id: int, title: str, pattern: str) -> int:
             if it["url"] not in {x["url"] for x in all_items}:
                 all_items.append(it)
 
+    with get_db() as db:
+        available = [
+            item
+            for item in all_items
+            if item["url"] not in seen_urls
+            and not is_blocked(
+                db, url=item["url"], identity=identity_for(item, series_id)
+            )
+        ]
+
     grabbed = 0
-    for item in all_items:
-        if item["url"] in seen_urls or item["url"] in blocked_urls:
-            continue
+    for item in available:
         if any(matches(p, item["title"]) for p in all_patterns):
             if await grab_item(item, series_id):
                 grabbed += 1
@@ -187,10 +192,6 @@ async def search_complete_pack(
             r["torrent_url"]
             for r in db.execute("SELECT torrent_url FROM seen").fetchall()
         }
-        blocked_urls = {
-            r["torrent_url"]
-            for r in db.execute("SELECT torrent_url FROM blocklist").fetchall()
-        }
         alias_rows = db.execute(
             "SELECT alias FROM series_aliases WHERE series_id=?", (series_id,)
         ).fetchall()
@@ -242,11 +243,13 @@ async def search_complete_pack(
             ).fetchall()
         }
 
-    available = [
-        i
-        for i in all_items
-        if i["url"] not in seen_urls and i["url"] not in blocked_urls
-    ]
+    with get_db() as db:
+        available = [
+            i
+            for i in all_items
+            if i["url"] not in seen_urls
+            and not is_blocked(db, url=i["url"], identity=identity_for(i, series_id))
+        ]
 
     packs_to_grab = _select_covering_packs(
         available,
@@ -272,9 +275,17 @@ async def search_complete_pack(
     gap_grabbed = 0
     for vol_num in sorted(gaps)[:10]:
         query = f"{title} vol {vol_num_to_search(vol_num)}"
-        for item in await _search_all(query, series_id=series_id):
-            if item["url"] in seen_urls or item["url"] in blocked_urls:
-                continue
+        gap_items = await _search_all(query, series_id=series_id)
+        with get_db() as db:
+            available = [
+                item
+                for item in gap_items
+                if item["url"] not in seen_urls
+                and not is_blocked(
+                    db, url=item["url"], identity=identity_for(item, series_id)
+                )
+            ]
+        for item in available:
             if not any(_matches(p, item["title"]) for p in all_patterns):
                 continue
             item_vol = extract_volume_num(item["title"])

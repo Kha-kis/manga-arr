@@ -6,6 +6,8 @@ from datetime import datetime
 from shared import get_cfg, get_db
 from events import log_event
 from parsing import is_foreign_language, matches
+from release_sources import pending_source_fields
+from release_identity import identity_for, is_blocked
 
 try:
     from .grab_core import grab_item
@@ -37,10 +39,6 @@ async def poll_rss():
             r["torrent_url"]
             for r in db.execute("SELECT torrent_url FROM seen").fetchall()
         }
-        blocked_urls = {
-            r["torrent_url"]
-            for r in db.execute("SELECT torrent_url FROM blocklist").fetchall()
-        }
         alias_map: dict[int, list[str]] = {}
         for row in db.execute("SELECT series_id, alias FROM series_aliases").fetchall():
             alias_map.setdefault(row["series_id"], []).append(row["alias"])
@@ -50,7 +48,7 @@ async def poll_rss():
         # Matching a large multi-indexer feed is CPU-bound. Yield once per
         # release so health checks and interactive requests remain responsive.
         await asyncio.sleep(0)
-        if not item["url"] or item["url"] in seen_urls or item["url"] in blocked_urls:
+        if not item["url"] or item["url"] in seen_urls:
             continue
         if is_foreign_language(item["title"]):
             continue
@@ -63,6 +61,11 @@ async def poll_rss():
                 matches(p, item["title"], pub_year=pub_year) for p in all_patterns
             ):
                 continue
+            with get_db() as db:
+                if is_blocked(
+                    db, url=item["url"], identity=identity_for(item, s["id"])
+                ):
+                    continue
 
             try:
                 from routers.delay_profiles import get_delay_for_series
@@ -81,15 +84,22 @@ async def poll_rss():
 
             if delay_minutes > 0:
                 with get_db() as db2:
-                    existing_pr = db2.execute(
+                    existing_row = db2.execute(
                         "SELECT first_seen FROM pending_releases WHERE series_id=? AND url=?",
                         (s["id"], item["url"]),
                     ).fetchone()
+                    existing_pr = (
+                        dict(existing_row) if existing_row is not None else None
+                    )
                     if not existing_pr:
+                        source_scope, release_guid, release_context = (
+                            pending_source_fields(item)
+                        )
                         db2.execute(
                             "INSERT OR IGNORE INTO pending_releases"
-                            "(series_id, url, title, indexer, protocol, size_bytes)"
-                            " VALUES(?,?,?,?,?,?)",
+                            "(series_id, url, title, indexer, protocol, size_bytes,"
+                            " release_source_scope, release_guid, release_context)"
+                            " VALUES(?,?,?,?,?,?,?,?,?)",
                             (
                                 s["id"],
                                 item["url"],
@@ -97,24 +107,27 @@ async def poll_rss():
                                 item.get("indexer", ""),
                                 item.get("protocol", "torrent"),
                                 item.get("size_bytes", 0),
+                                source_scope,
+                                release_guid,
+                                release_context,
                             ),
                         )
-                    else:
-                        elapsed = (
-                            now_ts
-                            - datetime.fromisoformat(
-                                existing_pr["first_seen"].replace("Z", "")
-                            )
-                        ).total_seconds() / 60
-                        if elapsed >= delay_minutes:
-                            if await grab_item(item, s["id"]):
-                                grabbed += 1
-                                seen_urls.add(item["url"])
-                                with get_db() as db3:
-                                    db3.execute(
-                                        "DELETE FROM pending_releases WHERE series_id=? AND url=?",
-                                        (s["id"], item["url"]),
-                                    )
+                if existing_pr:
+                    elapsed = (
+                        now_ts
+                        - datetime.fromisoformat(
+                            existing_pr["first_seen"].replace("Z", "")
+                        )
+                    ).total_seconds() / 60
+                    if elapsed >= delay_minutes:
+                        if await grab_item(item, s["id"]):
+                            grabbed += 1
+                            seen_urls.add(item["url"])
+                            with get_db() as db3:
+                                db3.execute(
+                                    "DELETE FROM pending_releases WHERE series_id=? AND url=?",
+                                    (s["id"], item["url"]),
+                                )
             else:
                 if await grab_item(item, s["id"]):
                     grabbed += 1

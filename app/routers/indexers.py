@@ -1,5 +1,6 @@
 """Indexers — DB-managed indexer configuration (Sonarr parity)."""
 
+from dataclasses import replace
 import json
 import math
 import sqlite3
@@ -12,6 +13,15 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from routers._templates import templates
 
 from events import log_event
+from release_identity import canonical_protocol, positive_id
+from release_sources import (
+    SourceRequest,
+    bind_indexer_scope,
+    capture_source_request,
+    effective_endpoint,
+    facade_matches,
+    observe_source_items,
+)
 from shared import get_db, from_json, get_cfg, get_secret_health_summary
 from security import (
     validate_outbound_url,
@@ -552,6 +562,9 @@ async def create_indexer(
             ),
         )
         new_id = cur.lastrowid
+        if new_id is None:
+            raise RuntimeError("indexer creation did not allocate an ID")
+        bind_indexer_scope(db, indexer_id=new_id, previous=None)
         for tag in tag_list:
             db.execute(
                 "INSERT OR IGNORE INTO indexer_tags(indexer_id, tag) VALUES(?, ?)",
@@ -612,6 +625,8 @@ async def edit_indexer(request: Request, indexer_id: int):
     }
 
     with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        previous = db.execute("SELECT * FROM indexers WHERE id=?", (indexer_id,)).fetchone()
         updates, params = submitted_subset(submitted, plain_fields)
 
         # api_key: only update if the form carries the field AND it's
@@ -628,6 +643,8 @@ async def edit_indexer(request: Request, indexer_id: int):
         if updates:
             params.append(indexer_id)
             db.execute(f"UPDATE indexers SET {', '.join(updates)} WHERE id=?", params)
+        if previous is not None:
+            bind_indexer_scope(db, indexer_id=indexer_id, previous=dict(previous))
 
         # Tag set is only rebuilt if the form actually carries `tags`.
         # Empty `tags=""` is an explicit clear; absent means leave alone.
@@ -691,7 +708,7 @@ async def _list_prowlarr_subs_for_ui(url: str, key: str, cats: list) -> list[dic
                     "id": idx["id"],
                     "name": idx.get("name", str(idx["id"])),
                     "enable": enabled,
-                    "protocol": idx.get("protocol", "torrent"),
+                    "protocol": idx.get("protocol"),
                     "categories": sorted(idx_cats_int),
                     "priority": idx_priority,
                     "manga_compatible": manga_compatible,
@@ -855,6 +872,7 @@ async def prowlarr_sync_commit(request: Request, indexer_id: int):
         return RedirectResponse("/indexers?prowlarr_sync=none", status_code=303)
 
     with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
         parent_row = db.execute(
             "SELECT * FROM indexers WHERE id=?", (indexer_id,)
         ).fetchone()
@@ -863,8 +881,12 @@ async def prowlarr_sync_commit(request: Request, indexer_id: int):
         parent = dict(
             parent_row
         )  # sqlite3.Row has no .get(); convert before .get() use
+        if parent.get("release_source_scope") is None:
+            parent["release_source_scope"] = bind_indexer_scope(
+                db, indexer_id=indexer_id, previous=parent
+            )
+        decrypted = _row_decrypted(parent)
 
-    decrypted = _row_decrypted(parent_row)
     parent_url = (decrypted.get("url") or "").rstrip("/")
     parent_key = decrypted.get("api_key") or ""
     parent_cats = from_json(decrypted.get("categories"), [7000, 7010, 7020])
@@ -874,22 +896,37 @@ async def prowlarr_sync_commit(request: Request, indexer_id: int):
         )
 
     live_subs = await _list_prowlarr_subs_for_ui(parent_url, parent_key, parent_cats)
-    by_sub_id = {s["id"]: s for s in live_subs}
+    by_sub_id = {s["id"]: s for s in live_subs if positive_id(s.get("id"))}
 
-    imported, skipped = 0, 0
+    imported, skipped, mismatched = 0, 0, 0
     with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        current_parent = db.execute("SELECT * FROM indexers WHERE id=?", (indexer_id,)).fetchone()
+        if (current_parent is None or current_parent["type"] != parent["type"]
+                or current_parent["release_source_scope"] != parent["release_source_scope"]
+                or effective_endpoint(dict(current_parent)) != parent_url):
+            return RedirectResponse("/indexers?prowlarr_sync=mismatch", status_code=303)
         for sub_id in selected_sub_ids:
+            if not positive_id(sub_id):
+                continue
             sub = by_sub_id.get(sub_id)
             if not sub:
                 # Sub vanished between preview and commit (rare race / Prowlarr
                 # config change). Skip silently rather than fail the whole batch.
                 continue
 
+            if canonical_protocol(sub.get("protocol")) is None:
+                mismatched += 1
+                continue
             existing = db.execute(
-                "SELECT id FROM indexers WHERE parent_prowlarr_id=? AND prowlarr_indexer_id=?",
+                "SELECT * FROM indexers WHERE parent_prowlarr_id=? AND prowlarr_indexer_id=?",
                 (indexer_id, sub_id),
             ).fetchone()
             if existing:
+                if not facade_matches(dict(existing), parent, sub_id):
+                    skipped += 1
+                    mismatched += 1
+                    continue
                 # Prowlarr can change a child's protocol after import. Correct
                 # only the implementation type; enabled state, priority,
                 # categories, client selection, and other user settings remain
@@ -898,6 +935,8 @@ async def prowlarr_sync_commit(request: Request, indexer_id: int):
                     "UPDATE indexers SET type=? WHERE id=?",
                     (_indexer_type_for_protocol(sub.get("protocol")), existing["id"]),
                 )
+                bind_indexer_scope(db, indexer_id=existing["id"], previous=dict(existing),
+                                   verified_parent=parent, sub_id=sub_id)
                 skipped += 1
                 continue
 
@@ -916,7 +955,7 @@ async def prowlarr_sync_commit(request: Request, indexer_id: int):
             sub_priority = sub.get("priority") or 25
             sub_type = _indexer_type_for_protocol(sub.get("protocol"))
 
-            db.execute(
+            created = db.execute(
                 "INSERT INTO indexers"
                 "(name, type, url, api_key, priority, enabled, categories,"
                 " min_seeders, seed_ratio, parent_prowlarr_id, prowlarr_indexer_id)"
@@ -935,6 +974,11 @@ async def prowlarr_sync_commit(request: Request, indexer_id: int):
                     sub_id,
                 ),
             )
+            child_id = created.lastrowid
+            if child_id is None:
+                raise RuntimeError("indexer creation did not allocate an ID")
+            bind_indexer_scope(db, indexer_id=child_id, previous=None,
+                               verified_parent=parent, sub_id=sub_id)
             imported += 1
 
         # Auto-disable the parent Prowlarr row on first successful import.
@@ -956,8 +1000,9 @@ async def prowlarr_sync_commit(request: Request, indexer_id: int):
             parent_was_disabled = cur.rowcount > 0
 
     parent_flag = "&parent_disabled=1" if parent_was_disabled else ""
+    mismatch_flag = "&configuration_mismatch=1" if mismatched else ""
     return RedirectResponse(
-        f"/indexers?prowlarr_sync=ok&imported={imported}&skipped={skipped}{parent_flag}",
+        f"/indexers?prowlarr_sync=ok&imported={imported}&skipped={skipped}{parent_flag}{mismatch_flag}",
         status_code=303,
     )
 
@@ -1058,6 +1103,10 @@ async def fetch_all_rss(db) -> list[dict[str, Any]]:
     import asyncio
 
     idx_list = [_row_decrypted(idx) for idx in indexers]
+    for idx in idx_list:
+        idx["_source_request"] = capture_source_request(
+            idx, purpose="rss", fetch_series_id=None
+        )
     child_ownership = _prowlarr_child_ownership(idx_list)
     results = await asyncio.gather(
         *[
@@ -1155,6 +1204,7 @@ async def _fetch_rss_for_indexer(
                 excluded_prowlarr_ids=excluded_prowlarr_ids,
                 query="",
                 operation="RSS",
+                source_request=idx.get("_source_request"),
             )
             if failures:
                 recorded_failure = _preferred_indexer_failure(failures)
@@ -1196,7 +1246,11 @@ async def _fetch_rss_for_indexer(
                 r.text, name, "torrent" if t == "torznab" else "nzb"
             )
             _indexer_record_success(idx_id)
-            return items
+            return observe_source_items(
+                items,
+                idx.get("_source_request"),
+                expected_protocol="torrent" if t == "torznab" else "nzb",
+            )
 
     except Exception as e:
         _log_indexer_exception(f"[Indexer:{name}]", "RSS request failed", e)
@@ -1212,14 +1266,14 @@ async def _fetch_rss_for_indexer(
 
 async def _get_prowlarr_indexers(
     url: str, key: str, cats: list[int]
-) -> list[tuple[int, str, Literal["torrent", "nzb"]]]:
+) -> list[tuple[int, str, object]]:
     """Get list of (id, name, protocol) from Prowlarr."""
     async with httpx.AsyncClient(timeout=10) as cli:
         r = await cli.get(f"{url}/api/v1/indexer", headers={"X-Api-Key": key})
     if r.status_code != 200:
         r.raise_for_status()
     indexers = r.json()
-    result: list[tuple[int, str, Literal["torrent", "nzb"]]] = []
+    result: list[tuple[int, str, object]] = []
     for idx in indexers:
         if not idx.get("enable", True):
             continue
@@ -1229,13 +1283,10 @@ async def _get_prowlarr_indexers(
         }
         if idx_cats and not (idx_cats & set(cats)):
             continue
-        proto: Literal["torrent", "nzb"] = (
-            "torrent"
-            if idx.get("protocol", "torrent").lower() == "torrent"
-            else "nzb"
-        )
-        indexer_id = int(idx["id"])
-        result.append((indexer_id, str(idx.get("name", indexer_id)), proto))
+        indexer_id = idx.get("id")
+        if not positive_id(indexer_id):
+            continue
+        result.append((indexer_id, str(idx.get("name", indexer_id)), idx.get("protocol")))
     return result
 
 
@@ -1267,6 +1318,7 @@ async def _fetch_prowlarr_fanout(
     excluded_prowlarr_ids: frozenset[int],
     query: str,
     operation: Literal["RSS", "search"],
+    source_request: SourceRequest | None = None,
 ) -> tuple[list[dict[str, Any]], list[Exception]]:
     """Query each live, unowned Prowlarr source through its API façade."""
     import asyncio
@@ -1275,6 +1327,10 @@ async def _fetch_prowlarr_fanout(
         sub_indexer
         for sub_indexer in await _get_prowlarr_indexers(url, key, cats)
         if sub_indexer[0] not in excluded_prowlarr_ids
+    ]
+    requests = [
+        replace(source_request, sub_id=sub[0]) if source_request is not None else None
+        for sub in sub_indexers
     ]
     batches = await asyncio.gather(
         *[
@@ -1287,7 +1343,7 @@ async def _fetch_prowlarr_fanout(
     )
     items: list[dict[str, Any]] = []
     failures: list[Exception] = []
-    for sub_indexer, batch in zip(sub_indexers, batches):
+    for sub_indexer, request, batch in zip(sub_indexers, requests, batches):
         if isinstance(batch, BaseException):
             if isinstance(batch, asyncio.CancelledError):
                 raise batch
@@ -1299,7 +1355,9 @@ async def _fetch_prowlarr_fanout(
             )
             failures.append(batch)
             continue
-        items.extend(batch)
+        items.extend(
+            observe_source_items(batch, request, expected_protocol=sub_indexer[2])
+        )
     return items, failures
 
 
@@ -1308,7 +1366,7 @@ async def _fetch_prowlarr_results(
     key: str,
     indexer_id: int,
     name: str,
-    protocol: Literal["torrent", "nzb"],
+    protocol: object,
     cats: list[int],
     *,
     query: str,
@@ -1326,7 +1384,7 @@ async def _fetch_prowlarr_results(
 
 
 def _parse_torznab_rss(
-    xml_text: str, indexer: str, default_protocol: str = "torrent"
+    xml_text: str, indexer: str, default_protocol: object = "torrent"
 ) -> list[dict[str, Any]]:
     from defusedxml.common import DefusedXmlException
     from defusedxml.ElementTree import fromstring as _safe_fromstring
@@ -1362,6 +1420,12 @@ def _parse_torznab_rss(
             continue
         proto_raw = _attr(item, "downloadProtocol") or default_protocol
         protocol = _normalize_indexer_protocol(proto_raw)
+        protocol_evidence = default_protocol
+        for ns_url in attribute_namespaces:
+            protocol_element = item.find(f'{{{ns_url}}}attr[@name="downloadProtocol"]')
+            if protocol_element is not None:
+                protocol_evidence = protocol_element.get("value")
+                break
         size_raw = _attr(item, "size") or (
             enclosure.get("length", "0") if enclosure is not None else "0"
         )
@@ -1386,6 +1450,7 @@ def _parse_torznab_rss(
                 "indexer": indexer,
                 "protocol": protocol,
                 "guid": guid,
+                "_protocol_evidence": protocol_evidence,
             }
         )
     return items
@@ -1461,6 +1526,10 @@ async def search_all_indexers(
     import asyncio
 
     idx_list = [_row_decrypted(idx) for idx in indexers]
+    for idx in idx_list:
+        idx["_source_request"] = capture_source_request(
+            idx, purpose=normalized_purpose, fetch_series_id=series_id
+        )
     child_ownership = _prowlarr_child_ownership(idx_list)
     results = await asyncio.gather(
         *[
@@ -1538,6 +1607,7 @@ async def _search_indexer(
                 excluded_prowlarr_ids=excluded_prowlarr_ids,
                 query=query,
                 operation="search",
+                source_request=idx.get("_source_request"),
             )
             if failures:
                 recorded_failure = _preferred_indexer_failure(failures)
@@ -1577,7 +1647,9 @@ async def _search_indexer(
                 return []
             items = _parse_torznab_rss(r.text, name, proto)
             _indexer_record_success(idx_id)
-            return items
+            return observe_source_items(
+                items, idx.get("_source_request"), expected_protocol=proto
+            )
 
     except Exception as e:
         _log_indexer_exception(f"[Indexer:{name}]", "search request failed", e)

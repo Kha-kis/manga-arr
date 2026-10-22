@@ -16,6 +16,7 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet
 
+from release_selections import clear_selection_evidence
 from version import APP_VERSION
 
 
@@ -340,6 +341,7 @@ def restore_backup_archive(
                     raise BackupArchiveError(
                         f"{DATABASE_ENTRY} failed validation during restore"
                     )
+                clear_selection_evidence(connection, allow_legacy=True)
         except sqlite3.DatabaseError as exc:
             raise BackupArchiveError(
                 f"{DATABASE_ENTRY} failed validation during restore"
