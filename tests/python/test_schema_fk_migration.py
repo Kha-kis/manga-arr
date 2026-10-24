@@ -148,13 +148,15 @@ def test_delete_series_cascades_to_pending_releases(env):
 
 # ── Migration path: old DB gets rebuilt with FKs ────────────────────────────
 
-def test_legacy_db_without_fks_gets_migrated():
+def test_legacy_db_without_fks_gets_migrated(monkeypatch: pytest.MonkeyPatch):
     """Simulate an old DB that has been through prior init_db runs but
     never had the FK-shape migration: drop the target tables, recreate
     them with the legacy FK-less DDL, reset user_version, then re-run
     init_db and verify the migration rebuilds them with CASCADE FKs and
     drops orphan rows."""
     import main, shared, security
+    from pathlib import Path
+    from file_identity_schema7 import initialize_schema7
     db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     db.close(); os.unlink(db.name)
     key_dir = tempfile.mkdtemp(prefix="mangarr-legacy-keys-")
@@ -167,8 +169,8 @@ def test_legacy_db_without_fks_gets_migrated():
     security.load_or_create_secret_cipher(key_dir)
 
     try:
-        # Step 1: let init_db build the full current schema
-        main.init_db()
+        # Build the real predecessor before reconstructing the older FK boundary.
+        initialize_schema7(Path(db.name), monkeypatch)
         main.load_config()
 
         # Step 2: tear down the FK-bearing tables and re-create the
@@ -330,7 +332,7 @@ def test_fresh_install_sets_user_version(env):
     empty tables."""
     with sqlite3.connect(env) as c:
         ver = c.execute("PRAGMA user_version").fetchone()[0]
-    assert ver == 7
+    assert ver == 8
 
 
 def test_volumes_status_has_check_constraint(env):

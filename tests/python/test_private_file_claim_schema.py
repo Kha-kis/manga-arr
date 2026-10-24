@@ -3,6 +3,7 @@
 import sqlite3
 
 from test_volume_file_deletion_journal import deletion_env as deletion_env
+from file_identity_schema7 import predecessor_init as predecessor_init
 
 
 def _assert_shape(db_path: str) -> None:

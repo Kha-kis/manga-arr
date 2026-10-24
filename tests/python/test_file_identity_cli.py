@@ -1272,7 +1272,7 @@ def test_cli_actual_schema7_inspect(
     from contextlib import closing
     import json
     import sqlite3
-    import schema
+    from file_identity_schema7 import initialize_schema7
     import shared
     from file_identity_recovery import OwnershipInventory
 
@@ -1281,7 +1281,7 @@ def test_cli_actual_schema7_inspect(
     media.mkdir(mode=0o700)
     database = config / "manga_arr.db"
     monkeypatch.setattr(shared, "DB_PATH", str(database))
-    schema.init_db()
+    initialize_schema7(database, monkeypatch)
     with closing(sqlite3.connect(database)) as connection:
         assert connection.execute("PRAGMA user_version").fetchone() == (7,)
         if change != "complete":
@@ -1857,7 +1857,7 @@ def test_cli_existing_library_byte_budget_maps_without_raw_text(
 
 
 def cli_schema(private: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
-    import schema
+    from file_identity_schema7 import initialize_schema7
     import shared
 
     config, media = private / "config", private / "media"
@@ -1865,8 +1865,45 @@ def cli_schema(private: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Pa
     media.mkdir(mode=0o700)
     database = config / "manga_arr.db"
     monkeypatch.setattr(shared, "DB_PATH", str(database))
-    schema.init_db()
+    initialize_schema7(database, monkeypatch)
     return database, media
+
+
+@pytest.mark.parametrize("version", [None, "1", "2"])
+def test_cli_empty_schema8_requires_explicit_inventory2(
+    private: Path, monkeypatch: pytest.MonkeyPatch, version: str | None
+) -> None:
+    import schema
+    import shared
+    from file_identity_recovery import OwnershipInventory
+
+    config, media = private / "config8", private / "media8"
+    config.mkdir(mode=0o700)
+    media.mkdir(mode=0o700)
+    database = config / "manga_arr.db"
+    monkeypatch.setattr(shared, "DB_PATH", str(database))
+    schema.init_db()
+    before = database.read_bytes()
+    status, _, stderr = cli_process(
+        [
+            "--config-dir",
+            str(config),
+            "ownership",
+            "inspect",
+            "--parent",
+            str(media),
+            "--output",
+            str(private / "result"),
+            *(["--inventory-version", version] if version is not None else []),
+        ],
+        private,
+    )
+    result = OwnershipInventory.from_json((private / "result").read_text())
+    assert status == (0 if version == "2" else 3)
+    assert stderr == ""
+    assert result.version == int(version or "1")
+    assert result.unresolved == (() if version == "2" else ("reference_uncertain",))
+    assert database.read_bytes() == before
 
 
 def test_cli_plan2_subprocess_caught_private_refusal_cannot_publish_success(

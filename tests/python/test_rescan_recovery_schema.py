@@ -5,6 +5,7 @@ import sqlite3
 import pytest
 
 from test_rescan_transactions import rescan_env as rescan_env
+from file_identity_schema7 import predecessor_init as predecessor_init
 
 
 COLUMNS = [

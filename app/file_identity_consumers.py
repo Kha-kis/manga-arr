@@ -2402,7 +2402,10 @@ class _Counter:
 
 def _scan(db: sqlite3.Connection, counter: _Counter) -> dict[str, list[RawRow]]:
     result: dict[str, list[RawRow]] = {}
-    for table, pk in _TABLES.items():
+    tables = dict(_TABLES)
+    if db.execute("PRAGMA user_version").fetchone()[0] == 8:
+        tables["file_identity_provision_intents"] = "intent_id"
+    for table, pk in tables.items():
         result[table] = []
         # series_tags has a composite key; all other static selectors have one.
         columns = ("series_id", "tag") if table == "series_tags" else (pk,)
@@ -2417,8 +2420,13 @@ def _scan(db: sqlite3.Connection, counter: _Counter) -> dict[str, list[RawRow]]:
                 + ",".join("?" for _ in columns)
                 + ")"
             )
+            projection = (
+                ",".join(sorted(_store._PROVISION_ROWS[table]))
+                if table == "file_identity_provision_intents"
+                else "*"
+            )
             cursor = db.execute(
-                f"SELECT * FROM {table}{where} ORDER BY {','.join(columns)} LIMIT 64",
+                f"SELECT {projection} FROM {table}{where} ORDER BY {','.join(columns)} LIMIT 64",
                 last or (),
             )
             names = tuple(c[0] for c in cursor.description)

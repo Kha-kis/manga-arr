@@ -19,6 +19,7 @@ ISSUER_LIMIT = 256
 GLOBAL_LIMIT = 2048
 SNAPSHOT_LIMIT = 16384
 _SELECTION_SCHEMA_VERSION = 7
+_SELECTION_SUPPORTED_SCHEMA_VERSION = 8
 _HANDLE = re.compile(r"[A-Za-z0-9_-]{64}", re.ASCII)
 _DIGEST = re.compile(r"[0-9a-f]{64}", re.ASCII)
 _PURPOSE = "blocklist-release-selection"
@@ -389,7 +390,7 @@ def clear_selection_evidence(
 ) -> None:
     """Clear ephemeral capabilities only; caller owns the restore/startup transaction."""
     version = db.execute("PRAGMA user_version").fetchone()[0]
-    if version > _SELECTION_SCHEMA_VERSION:
+    if version > _SELECTION_SUPPORTED_SCHEMA_VERSION:
         raise sqlite3.DatabaseError("unsupported selection evidence schema")
     exists = db.execute(
         "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='release_selection_evidence'"

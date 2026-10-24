@@ -9,6 +9,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -17,8 +18,9 @@ import conftest  # noqa: F401
 
 
 @pytest.fixture
-def env():
+def env(monkeypatch: pytest.MonkeyPatch):
     import main, shared, security
+    from file_identity_schema7 import initialize_schema7
     db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     db.close(); os.unlink(db.name)
     key_dir = tempfile.mkdtemp(prefix="mangarr-drift-keys-")
@@ -29,7 +31,7 @@ def env():
     shared.DB_PATH = db.name
     security._SECRET_CIPHER = None
     security.load_or_create_secret_cipher(key_dir)
-    main.init_db()
+    initialize_schema7(Path(db.name), monkeypatch)
     main.load_config()
 
     try:

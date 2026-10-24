@@ -588,6 +588,31 @@ docker compose ps mangarr
 After upgrading, verify `/healthz`, **System > Status**, administrator login,
 stored credentials, and a representative search/import workflow.
 
+### Schema 8 migration (unreleased)
+
+Unreleased development source advances the database to schema 8 through normal
+application startup. The migration adds immutable provisioning intents and
+versioned event validation while preserving existing ledger rows and receipt
+strings. It does not create an intent, epoch, proof set, activation or allocation
+grant, qualify a storage profile, or recover a blocked operation.
+
+Before upgrading, stop every Mangarr instance and maintenance tool that can
+write the same database, then take the matching stopped `/config` snapshot
+described under [Backups](#backups). An older binary's startup version check
+does not protect an old process already running when migration begins.
+
+Ownership inspection and planning remain read-only. Default inventory version 1
+accepts schema 7 only. Explicit `--inventory-version 2` supports schema 7 or 8;
+new provisioning evidence requires schema 8. This flag selects an evidence
+format, not a migration, repair or recovery action. A completed inventory or
+plan does not qualify a remounted filesystem or authorize changing library files.
+
+For [rollback](#rollback), restore the pre-upgrade `/config` snapshot with its
+matching previous image. Do not force `user_version` backward, delete ledger
+rows, or edit ownership markers. Native qualification and the recovery executor
+remain separate work; no new provisioning or recovery-application command is
+enabled by this migration.
+
 ### Version pins
 
 Operators who value reproducibility over automatic stable-channel updates can

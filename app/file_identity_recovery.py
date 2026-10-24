@@ -526,7 +526,30 @@ def _validate_plan(plan: RecoveryPlan) -> None:
     _ = _path(archive["path"])
     _ = _plan_hex(archive["sha256"])
     _ = _integer(archive["format_version"], 1, 1)
-    _ = _integer(archive["schema_version"], 7, 7)
+    new_ledger = any(
+        row.table == "file_identity_provision_intents"
+        or any(
+            row.table == table
+            and _object_record(_load(dict(row.values)[column]))["version"] == 2
+            for table, column in (
+                ("file_identity_epochs", "birth_json"),
+                ("file_identity_sets", "snapshot_json"),
+                ("file_identity_sets", "manifest_json"),
+                ("file_identity_events", "payload_json"),
+            )
+        )
+        for row in plan.inventory.closure.raw_rows
+    ) or any(
+        _object_record(_load(snapshot.rows_json))["version"] == 2
+        for snapshot in plan.inventory.closure.snapshots
+    )
+    # Ordinary inventory2 has no offline proof of the database revision. The
+    # declared 7/8 revision still needs a fresh DB/archive comparison at apply.
+    _ = _integer(
+        archive["schema_version"],
+        8 if new_ledger else 7,
+        8 if plan.inventory.version == 2 else 7,
+    )
     if archive["format"] != "mangarr-backup" or archive["self_contained"] is not True:
         raise InvalidIdentity("ownership_binding")
     components = _object(archive["components"], {"database", "configuration", "key"})
@@ -5364,6 +5387,7 @@ _SQL_BUDGET_ERRORS = frozenset(
         "inventory closure exceeds collection bound",
         "snapshot row count exceeds bound",
         "identity JSON exceeds document bound",
+        "ownership_budget",
     }
 )
 
@@ -5479,12 +5503,16 @@ def _sql_paths(guard: FileMutationGuard) -> str:
     return path
 
 
-def _sql_schema(db: _ReadConnection) -> None:
-    # Revision 7 adds release evidence only; every ownership projection below
-    # remains required. Keep this standalone adapter exact, not forward-open.
-    if db.execute("PRAGMA user_version").fetchone()[0] != 7:
+def _sql_schema(db: _ReadConnection, *, inventory_version: int = 1) -> None:
+    revision = cast(int, db.execute("PRAGMA user_version").fetchone()[0])
+    if revision not in ({7} if inventory_version == 1 else {7, 8}):
         raise _SQLFailure("reference_uncertain")
-    for table, columns in _SQL_COLUMNS.items():
+    projections = dict(_SQL_COLUMNS)
+    if revision == 8:
+        projections["file_identity_provision_intents"] = (
+            "intent_id authority_id payload_json payload_sha256"
+        )
+    for table, columns in projections.items():
         kind = db.execute(
             "SELECT type FROM sqlite_schema WHERE name=?", (table,)
         ).fetchone()
@@ -5533,6 +5561,8 @@ def _capture_sql(
     guard: FileMutationGuard,
     parent: str,
     budget: InventoryBudget,
+    *,
+    inventory_version: int = 1,
 ) -> ReferenceClosure:
     db: _ReadConnection | None = None
     try:
@@ -5547,7 +5577,12 @@ def _capture_sql(
         db.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, 65536)
         # Include schema validation in this connection's acquisition freshness fence.
         version = cast(int, db.execute("PRAGMA data_version").fetchone()[0])
-        _sql_schema(db)
+        if inventory_version == 1:
+            _sql_schema(db)
+        else:
+            _sql_schema(db, inventory_version=inventory_version)
+        if db.execute("PRAGMA data_version").fetchone()[0] != version:
+            raise _SQLFailure("sql_changed")
         # Task4a's counter charges SQL evidence, not operator media content.
         sql_budget = InventoryBudget(
             budget.max_rows, budget.max_objects, _DOCUMENT_BYTES
@@ -5600,7 +5635,11 @@ def inspect_ownership(
     budget.__post_init__()
     try:
         try:
-            closure = _capture_sql(guard, parent, budget)
+            closure = (
+                _capture_sql(guard, parent, budget)
+                if inventory_version == 1
+                else _capture_sql(guard, parent, budget, inventory_version=2)
+            )
         except _SQLFailure as exc:
             return OwnershipInventory.create(
                 parent,
@@ -5617,7 +5656,12 @@ def inspect_ownership(
         )
         unresolved = set(result.unresolved)
         try:
-            if _capture_sql(guard, parent, budget) != closure:
+            recaptured = (
+                _capture_sql(guard, parent, budget)
+                if inventory_version == 1
+                else _capture_sql(guard, parent, budget, inventory_version=2)
+            )
+            if recaptured != closure:
                 unresolved.add("sql_changed")
         except _SQLFailure as exc:
             unresolved.add(exc.code)

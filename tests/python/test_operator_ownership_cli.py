@@ -180,6 +180,67 @@ def test_ownership_inspect_schema7_and_incomplete(
     assert before == (database.read_bytes(), media_snapshot(media))
 
 
+@pytest.mark.parametrize("version", [None, "1", "2"])
+def test_ownership_inspect_genuine_schema8_requires_explicit_inventory2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: str | None
+) -> None:
+    # Schema is fixture setup in the test interpreter, never an installed CLI
+    # import. run_cli retains the selected wheel/RECORD/no-source-fallback checks.
+    import schema
+    import shared
+
+    config, media = tmp_path / "config8", tmp_path / "media8"
+    config.mkdir(mode=0o700)
+    media.mkdir(mode=0o700)
+    database = config / "manga_arr.db"
+    monkeypatch.setattr(shared, "DB_PATH", str(database))
+    schema.init_db()
+    with closing(sqlite3.connect(database)) as db:
+        assert db.execute("PRAGMA user_version").fetchone() == (8,)
+        assert (
+            db.execute("SELECT * FROM file_identity_provision_intents").fetchall() == []
+        )
+        assert db.execute(
+            "SELECT type FROM sqlite_master WHERE name='file_identity_provision_intents'"
+        ).fetchone() == ("table",)
+        assert db.execute(
+            "SELECT type FROM sqlite_master WHERE name='file_identity_provision_epoch_validate'"
+        ).fetchone() == ("trigger",)
+    before = database.read_bytes(), media_snapshot(media)
+    output = tmp_path / "inventory8"
+    result = run_cli(
+        tmp_path,
+        [
+            "--config-dir",
+            str(config),
+            "ownership",
+            "inspect",
+            "--parent",
+            str(media),
+            "--output",
+            str(output),
+            *(["--inventory-version", version] if version is not None else []),
+        ],
+    )
+    complete = version == "2"
+    assert result.returncode == (0 if complete else 3), result.stderr
+    assert result.stderr == ""
+    inventory = OwnershipInventory.from_json(output.read_text())
+    assert inventory.version == int(version or "1")
+    assert inventory.unresolved == (() if complete else ("reference_uncertain",))
+    assert inventory.closure.raw_rows == ()
+    assert json_object(result.stdout) == {
+        "outcome": "inspect_complete" if complete else "inspect_incomplete",
+        "sha256": inventory.sha256,
+        "owners": 0,
+        "roles": 0,
+        "decisions": 0,
+        "retained": 0,
+        "blocked": 0 if complete else 1,
+    }
+    assert before == (database.read_bytes(), media_snapshot(media))
+
+
 @pytest.mark.parametrize("wire_fault", [False, True])
 def test_ownership_plan_complete_and_wire_privacy(
     tmp_path: Path, wire_fault: bool

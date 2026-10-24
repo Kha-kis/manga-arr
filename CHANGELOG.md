@@ -29,8 +29,16 @@ All notable changes to this project. Format roughly follows
 
 ### Changed
 
-- Source-scoped blocklists use database schema 7. Rollback to an older binary
-  requires a compatible pre-upgrade database backup. Restarts and restores
+- Recovery evidence uses database schema 8, with immutable provisioning intents
+  and versioned event validation. Stop Mangarr database writers before upgrading;
+  rollback requires the matching pre-upgrade backup. The migration preserves
+  existing evidence and does not allocate files or enable live recovery
+  ([#474](https://github.com/Kha-kis/manga-arr/issues/474)).
+- Read-only ownership inspection supports explicit inventory version 2 for
+  schema 7 or 8. The default remains version 1/schema 7 only. Inspection and
+  planning do not migrate the database or qualify storage profiles.
+- Source-scoped blocklists were introduced in database schema 7. Rollback to an
+  older binary requires a compatible pre-upgrade database backup. Restarts and restores
   invalidate one-use interactive selections; refresh search to select again.
 
 ## 1.3.3-rc.10 - 2026-10-19
