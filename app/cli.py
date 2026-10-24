@@ -32,6 +32,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="persistent configuration directory (default: /config)",
     )
     commands = parser.add_subparsers(dest="group", required=True)
+    _ = commands.add_parser(
+        "ownership", help="read-only ownership review", add_help=False
+    )
 
     admin = commands.add_parser("admin", help="administrator recovery")
     admin_commands = admin.add_subparsers(dest="admin_command", required=True)
@@ -126,9 +129,47 @@ def _restore_backup(
     return 0
 
 
+def is_ownership_invocation(arguments: list[str]) -> bool:
+    """Identify the group before parsing, respecting legacy config-value slots."""
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        option, equal, _value = argument.partition("=")
+        # Legacy argparse accepts these global abbreviations. They are not
+        # accepted by the ownership grammar, but their values are still literals.
+        if (
+            option.startswith("--")
+            and len(option) > 2
+            and "--config-dir".startswith(option)
+        ):
+            index += 1
+            if (
+                not equal
+                and index < len(arguments)
+                and not arguments[index].startswith("-")
+            ):
+                index += 1
+            continue
+        if argument in {"admin", "backup"}:
+            return False
+        if argument == "ownership":
+            return True
+        index += 1
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
+    arguments = sys.argv[1:] if argv is None else argv
+    if is_ownership_invocation(arguments):
+        try:
+            from file_identity_cli import ownership_main
+
+            return ownership_main(arguments)
+        except Exception:
+            _ = sys.stderr.write("ownership_internal\n")
+            return 1
     parser = _build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(arguments)
     config_dir = _config_dir(args.config_dir)
 
     try:

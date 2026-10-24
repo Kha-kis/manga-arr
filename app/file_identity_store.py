@@ -122,6 +122,21 @@ _PKS = {
     for table in _PROJECTIONS
 }
 
+# Pure wire metadata only. Never add these to _PROJECTIONS: schema7 SQL guards
+# and acquisition intentionally continue using that unchanged table inventory.
+_PROVISION_ROWS = {
+    "file_identity_epochs": _columns(
+        "epoch_id authority_id origin_path allocation_path root_path birth_json", ""
+    ),
+    "file_identity_provision_intents": _columns(
+        "intent_id authority_id payload_json payload_sha256", ""
+    ),
+}
+_PROVISION_PKS = {
+    "file_identity_epochs": "epoch_id",
+    "file_identity_provision_intents": "intent_id",
+}
+
 
 def _text(value: object, *, empty: bool = False) -> str:
     if type(value) is not str or (not empty and not value):
@@ -221,7 +236,58 @@ def _finite(value: object, depth: int = 0) -> None:
     raise InvalidIdentity("identity JSON requires finite values")
 
 
+def _successor_size(value: object, remaining: int = _MAX_JSON, depth: int = 0) -> int:
+    """Charge escaped bytes before encoding strings or accumulating wire records."""
+    if depth > 32 or remaining < 0:
+        raise InvalidIdentity("ownership_budget")
+    if type(value) is str:
+        text = _text(value, empty=True)
+        size = 2
+        for char in text:
+            code = ord(char)
+            size += (
+                2
+                if char in '"\\\b\f\n\r\t'
+                else 6
+                if code < 32 or 127 <= code <= 0xFFFF
+                else 12
+                if code > 0xFFFF
+                else 1
+            )
+            if size > remaining:
+                raise InvalidIdentity("ownership_budget")
+        return size
+    if type(value) in (list, dict):
+        collection = cast(list[object] | dict[str, object], value)
+        if len(collection) > _MAX_RECORDS:
+            raise InvalidIdentity("ownership_budget")
+        size = 2
+        if type(value) is list:
+            for index, child in enumerate(cast(list[object], value)):
+                size += bool(index)
+                size += _successor_size(child, remaining - size, depth + 1)
+        else:
+            for index, (key, child) in enumerate(
+                cast(dict[str, object], value).items()
+            ):
+                size += bool(index) + 1
+                size += _successor_size(key, remaining - size, depth + 1)
+                size += _successor_size(child, remaining - size, depth + 1)
+        if size > remaining:
+            raise InvalidIdentity("ownership_budget")
+        return size
+    if value is not None and type(value) not in (bool, int, float):
+        raise InvalidIdentity("ownership_wire")
+    if type(value) is float and not math.isfinite(cast(float, value)):
+        raise InvalidIdentity("ownership_wire")
+    size = len(json.dumps(value, allow_nan=False, separators=(",", ":")))
+    if size > remaining:
+        raise InvalidIdentity("ownership_budget")
+    return size
+
+
 def _encode(value: object) -> str:
+    _ = _successor_size(value)
     _finite(value)
     encoded = json.dumps(value, allow_nan=False, sort_keys=True, separators=(",", ":"))
     if len(encoded.encode("utf-8")) > _MAX_JSON:
@@ -279,12 +345,16 @@ def _key_json(owner: OwnerRef) -> str:
     return _encode({"version": 1, "key": list(owner.key)})
 
 
-def _row(value: object, allowed: set[str]) -> dict[str, object]:
+def _row(value: object, allowed: set[str], *, version: int = 1) -> dict[str, object]:
     record = _object(value, {"table", "key", "row"})
     table = _text(record["table"])
     if table not in allowed:
         raise InvalidIdentity("unexpected snapshot table")
-    columns = _PROJECTIONS[table]
+    columns = (
+        _PROVISION_ROWS[table]
+        if version == 2 and table in _PROVISION_ROWS
+        else _PROJECTIONS[table]
+    )
     row = _object(record["row"], set(columns))
     for column, kind in columns.items():
         scalar = row[column]
@@ -300,7 +370,7 @@ def _row(value: object, allowed: set[str]) -> dict[str, object]:
         else:
             _text(scalar, empty=True)
     key = _list(record["key"])
-    pk = _PKS[table]
+    pk = _PROVISION_PKS[table] if table in _PROVISION_ROWS else _PKS[table]
     if len(key) != 1 or type(key[0]) is not type(row[pk]) or key[0] != row[pk]:
         raise InvalidIdentity("snapshot primary key mismatch")
     if columns[pk] == "integer":
@@ -322,7 +392,10 @@ class OwnerSnapshot:
 
     def __post_init__(self) -> None:
         _owner(self.owner)
-        value = _version(_load(self.rows_json), {"owner", "root", "related"})
+        value = _object(_load(self.rows_json), {"version", "owner", "root", "related"})
+        version = _integer(value["version"], 1, 2)
+        if version == 2 and self.owner.domain != "namespace":
+            raise InvalidIdentity("ownership_wire")
         if _owner_from(value["owner"]) != self.owner:
             raise InvalidIdentity("snapshot owner mismatch")
         table = _DOMAINS[self.owner.domain]
@@ -330,16 +403,22 @@ class OwnerSnapshot:
         if root["key"] != list(self.owner.key):
             raise InvalidIdentity("snapshot root key mismatch")
         allowed = (
-            {
-                "import_queue",
-                "import_queue_files",
-                "import_publications",
-                "import_publication_files",
-            }
-            if self.owner.domain in {"publication", "queue_source"}
-            else set()
+            set(_PROVISION_ROWS)
+            if version == 2
+            else (
+                {
+                    "import_queue",
+                    "import_queue_files",
+                    "import_publications",
+                    "import_publication_files",
+                }
+                if self.owner.domain in {"publication", "queue_source"}
+                else set()
+            )
         )
-        records = [_row(item, allowed) for item in _list(value["related"])]
+        records = [
+            _row(item, allowed, version=version) for item in _list(value["related"])
+        ]
         orders = [_row_order(item) for item in records]
         if orders != sorted(set(orders)) or _row_order(root) in orders:
             raise InvalidIdentity("snapshot related rows duplicate or unordered")
@@ -347,6 +426,8 @@ class OwnerSnapshot:
             raise InvalidIdentity("snapshot row count exceeds bound")
         if _hex(self.sha256) != _digest(self.rows_json):
             raise InvalidIdentity("snapshot digest mismatch")
+        if version == 2:
+            _ = _provision_snapshot(value)
 
 
 def _select(
@@ -467,6 +548,57 @@ def _legacy(value: object, *, namespace: bool = False) -> dict[str, object]:
     return record
 
 
+def _birth_namespace(encoded: str) -> dict[str, object]:
+    """Decode the existing namespace2 receipt without importing live consumers.
+
+    Legacy text is retained byte-for-byte; unlike the surrounding new wire its
+    original JSON serialization is not rewritten or required to be canonical.
+    """
+    text = _text(encoded)
+    if len(text) > _MAX_JSON or len(text.encode("utf-8")) > _MAX_JSON:
+        raise InvalidIdentity("ownership_budget")
+    try:
+        value = cast(
+            object, json.loads(text, object_pairs_hook=_pairs, parse_constant=_constant)
+        )
+    except (ValueError, TypeError, RecursionError) as exc:
+        raise InvalidIdentity("ownership_wire") from exc
+    _ = _successor_size(value)
+    record = _object(
+        value,
+        {
+            "version",
+            "owner_token",
+            "parent_dev",
+            "parent_ino",
+            "root_path",
+            "root_dev",
+            "root_ino",
+            "marker_fingerprint",
+            "creation_boundary",
+        },
+    )
+    _ = _integer(record["version"], 2, 2)
+    _ = _hex(record["owner_token"], 32)
+    _ = _path(record["root_path"])
+    for name in ("parent_dev", "parent_ino", "root_dev", "root_ino"):
+        _ = _integer(record[name])
+    marker = _object(
+        record["marker_fingerprint"], {"dev", "inode", "size", "mtime_ns", "sha256"}
+    )
+    for name in ("dev", "inode", "size", "mtime_ns"):
+        _ = _integer(marker[name], -(2**63) if name == "mtime_ns" else 0)
+    _ = _hex(marker["sha256"])
+    boundary = _object(
+        record["creation_boundary"], {"kind", "parent_uid", "parent_mode"}
+    )
+    mode = _integer(boundary["parent_mode"], 0, 0o7777)
+    _ = _integer(boundary["parent_uid"])
+    if boundary["kind"] != "exclusive_parent" or mode & 0o022:
+        raise InvalidIdentity("ownership_wire")
+    return record
+
+
 def _constraints(encoded: str, role: RoleKey) -> dict[str, object]:
     value = _version(_load(encoded), {"legacy", "binding", "policy", "non_device"})
     if value["legacy"] is not None:
@@ -551,6 +683,1243 @@ def _ordered_unique(values: list[str]) -> None:
         raise InvalidIdentity("identity requirements duplicate or unordered")
 
 
+def _provision_profile(value: object) -> dict[str, object]:
+    profile = _version(
+        value,
+        {
+            "profile_id",
+            "revision",
+            "qualification_sha256",
+            "client_contract",
+            "server_contract",
+        },
+    )
+    _ = _text(profile["profile_id"])
+    _ = _integer(profile["revision"], 1)
+    _ = _hex(profile["qualification_sha256"])
+    client = _object(profile["client_contract"], {"platforms", "mount"})
+    platforms = _list(client["platforms"])
+    if not platforms:
+        raise InvalidIdentity("ownership_wire")
+    _ordered_unique([_encode(p) for p in platforms])
+    for platform in platforms:
+        for field in _object(
+            platform, {"arch", "kernel_release", "libc_version", "encoder_revision"}
+        ).values():
+            _ = _text(field)
+    mount = _object(
+        client["mount"], {"filesystem", "nfs_version", "transport", "security", "hard"}
+    )
+    if type(mount["hard"]) is not bool:
+        raise InvalidIdentity("ownership_wire")
+    for name in ("filesystem", "nfs_version", "transport", "security"):
+        _ = _text(mount[name])
+    server = _object(
+        profile["server_contract"],
+        {
+            "vendor",
+            "version",
+            "filesystem",
+            "exporter",
+            "handle_contract",
+            "allowed_transitions",
+            "recovery_transitions",
+        },
+    )
+    for name in ("vendor", "version", "filesystem", "exporter", "handle_contract"):
+        _ = _text(server[name])
+    for name in ("allowed_transitions", "recovery_transitions"):
+        _ordered_unique([_text(v) for v in _list(server[name])])
+    return profile
+
+
+def _historical_role(value: object) -> dict[str, object]:
+    """Validate RoleSpec wire leaves without reconstructing live consumers."""
+    spec = _object(
+        value,
+        {"owner", "role", "path", "parent_role", "legacy_json", "presence", "policy"},
+    )
+    _ = _owner_from(spec["owner"])
+    role = _role_from(spec["role"])
+    _ = _path(spec["path"])
+    parent = None if spec["parent_role"] is None else _role_from(spec["parent_role"])
+    if (parent is None) != (role.relative is None) or (
+        parent is not None and parent.kind != "directory"
+    ):
+        raise InvalidIdentity("ownership_wire")
+    presence = _text(spec["presence"])
+    policies = {
+        "file": {"file"},
+        "marker": {"marker"},
+        "directory": {"private_directory", "parent_identity", "exclusive_parent"},
+    }
+    if (
+        presence not in {"proof", "expectation", "intent"}
+        or _text(spec["policy"]) not in policies[role.kind]
+    ):
+        raise InvalidIdentity("ownership_wire")
+    legacy = spec["legacy_json"]
+    if legacy is None:
+        if presence == "proof":
+            raise InvalidIdentity("ownership_wire")
+    else:
+        # RoleSpec legacy text is bounded JSON, not necessarily canonical JSON.
+        # Validate its value without rewriting the persisted receipt bytes.
+        text = _text(legacy)
+        _ = _successor_size(text)
+        try:
+            decoded = cast(
+                object,
+                json.loads(text, object_pairs_hook=_pairs, parse_constant=_constant),
+            )
+        except (ValueError, TypeError, RecursionError) as exc:
+            raise InvalidIdentity("ownership_wire") from exc
+        _ = _successor_size(decoded)
+    return spec
+
+
+def _historical_raw_row(value: object) -> None:
+    """Match complete RawRow grammar, not the narrower SQL authority projection."""
+    record = _object(value, {"table", "key", "values"})
+    table = _text(record["table"])
+    primary_keys = (
+        _PKS
+        | _PROVISION_PKS
+        | {
+            "series": "id",
+            "volumes": "id",
+            "chapters": "id",
+            "chapter_quarantine": "id",
+            "root_folders": "id",
+            "series_tags": "series_id",
+            "file_identity_authorities": "authority_id",
+            "file_identity_sets": "set_id",
+            "file_identity_events": "id",
+        }
+    )
+    if table not in primary_keys:
+        raise InvalidIdentity("ownership_wire")
+    expected = (
+        ("series_id", "tag") if table == "series_tags" else (primary_keys[table],)
+    )
+    key = _list(record["key"])
+    if len(key) != len(expected):
+        raise InvalidIdentity("ownership_wire")
+    for column, scalar in zip(expected, key, strict=True):
+        if column in {"parent_path", "tombstone_path"}:
+            _ = _path(scalar)
+        elif column in {"download_identity_key", "tag"}:
+            _ = _text(scalar)
+        elif table.startswith("file_identity_") and column != "id":
+            _ = _hex(scalar, 32)
+        else:
+            _ = _integer(scalar, 1)
+    columns: dict[str, object] = {}
+    names: list[str] = []
+    for value in _list(record["values"]):
+        pair = _list(value)
+        if len(pair) != 2:
+            raise InvalidIdentity("ownership_wire")
+        name, scalar = _text(pair[0]), pair[1]
+        if scalar is not None and type(scalar) not in {str, int, float}:
+            raise InvalidIdentity("ownership_wire")
+        _finite(scalar)
+        names.append(name)
+        columns[name] = scalar
+    if names != sorted(set(names)) or [columns.get(c) for c in expected] != key:
+        raise InvalidIdentity("ownership_wire")
+
+
+def _historical_observation(value: object) -> None:
+    """Validate readonly-observation wire, never acquire or authorize evidence."""
+    observation = _object(value, {"spec", "native", "constraints_json", "outcome"})
+    spec = _historical_role(observation["spec"])
+    role = _role_from(spec["role"])
+    outcomes = {
+        "observed",
+        "absent",
+        "native_unsupported",
+        "policy_mismatch",
+        "boundary_unknown",
+        "cross_device",
+        "unsafe_path",
+        "changed",
+        "unreadable",
+        "budget_exceeded",
+        "unknown_children",
+        "unreachable_below_absent_root",
+    }
+    outcome = _text(observation["outcome"])
+    if outcome not in outcomes:
+        raise InvalidIdentity("ownership_wire")
+    native = observation["native"]
+    if native is not None:
+        _ = NativeHandle.from_value(native)
+    document = _load(observation["constraints_json"])
+    if type(document) is not dict:
+        raise InvalidIdentity("ownership_wire")
+    constraints = cast(dict[str, object], document)
+    version = _integer(constraints.get("version"), 1, 2)
+    fields = _object(
+        constraints,
+        {
+            "version",
+            "kind",
+            "current",
+            "content",
+            "expected",
+            "policy",
+            "boundary",
+            "children",
+        }
+        | ({"ancestor"} if version == 2 else set()),
+    )
+    if version == 2:
+        ancestor = _object(fields["ancestor"], {"owner", "role", "observation_sha256"})
+        _ = _owner_from(ancestor["owner"])
+        _ = _role_from(ancestor["role"])
+        _ = _hex(ancestor["observation_sha256"])
+    if fields["kind"] != "readonly_observation" or fields["expected"] != (
+        "unverified_legacy" if spec["legacy_json"] is not None else "undeclared"
+    ):
+        raise InvalidIdentity("ownership_wire")
+    policy, boundary = _text(fields["policy"]), _text(fields["boundary"])
+    if policy not in {"satisfied", "mismatch", "not_checked"} or boundary not in {
+        "verified",
+        "unknown",
+        "cross_device",
+    }:
+        raise InvalidIdentity("ownership_wire")
+    current, content = fields["current"], fields["content"]
+    info: dict[str, object] | None = None
+    if current is not None:
+        info = _object(
+            current,
+            {"dev", "inode", "uid", "mode", "nlink", "size", "mtime_ns", "ctime_ns"},
+        )
+        for name in ("dev", "inode"):
+            _ = _integer(info[name], 0, (1 << 64) - 1)
+        _ = _integer(info["uid"])
+        _ = _integer(info["mode"], 0, 0o7777)
+        for name in ("nlink", "size", "mtime_ns", "ctime_ns"):
+            if role.kind == "directory":
+                if info[name] is not None:
+                    raise InvalidIdentity("ownership_wire")
+            else:
+                _ = _integer(info[name], -(1 << 63) if name.endswith("_ns") else 0)
+    if content is not None:
+        if role.kind == "directory" or info is None:
+            raise InvalidIdentity("ownership_wire")
+        data = _object(content, {"size", "sha256"})
+        _ = _integer(data["size"])
+        _ = _hex(data["sha256"])
+        if info["size"] != data["size"]:
+            raise InvalidIdentity("ownership_wire")
+    children = _list(fields["children"])
+    paths: list[str] = []
+    for child in children:
+        item = _object(child, {"path", "outcome"})
+        path = _path(item["path"])
+        if (
+            not _within(path, _path(spec["path"]))
+            or path == spec["path"]
+            or _text(item["outcome"])
+            not in outcomes - {"unreachable_below_absent_root"}
+        ):
+            raise InvalidIdentity("ownership_wire")
+        paths.append(path)
+    if paths != sorted(set(paths)) or (version == 2) != (
+        outcome == "unreachable_below_absent_root"
+    ):
+        raise InvalidIdentity("ownership_wire")
+    if outcome == "unreachable_below_absent_root":
+        valid = (
+            native is None
+            and current is None
+            and content is None
+            and not children
+            and policy == "not_checked"
+            and boundary == "verified"
+        )
+    elif outcome in {"observed", "absent", "native_unsupported"}:
+        valid = boundary == "verified" and policy == "satisfied" and not children
+        if outcome == "absent":
+            valid = valid and current is None and content is None and native is None
+        else:
+            valid = (
+                valid
+                and current is not None
+                and (role.kind == "directory" or content is not None)
+                and ((outcome == "observed") == (native is not None))
+            )
+    elif outcome == "unknown_children":
+        valid = (
+            role.kind == "directory"
+            and current is not None
+            and content is None
+            and policy == "satisfied"
+            and boundary == "verified"
+            and bool(children)
+        )
+    else:
+        valid = (
+            native is None
+            and current is None
+            and content is None
+            and not children
+            and policy
+            in (
+                {"mismatch"}
+                if outcome == "policy_mismatch"
+                else {"not_checked", "satisfied"}
+            )
+            and boundary
+            in (
+                {"cross_device"}
+                if outcome == "cross_device"
+                else {"unknown", "verified"}
+            )
+        )
+    if not valid:
+        raise InvalidIdentity("ownership_wire")
+
+
+def _prior_plan(encoded: str) -> dict[str, object]:
+    """Validate a historical wire/digest, never execute or freshly approve P.
+
+    In particular this does not import the planner, traverse nested historical
+    intents, consult a qualification registry, or perform any current-state I/O.
+    """
+    plan = _object(
+        _load(encoded),
+        {
+            "version",
+            "inventory",
+            "decisions",
+            "declaration_json",
+            "backup_receipt_json",
+            "epoch_bindings_json",
+            "sha256",
+        },
+    )
+    _ = _integer(plan["version"], 2, 2)
+    if _hex(plan["sha256"]) != _digest(
+        _encode({k: v for k, v in plan.items() if k != "sha256"})
+    ):
+        raise InvalidIdentity("ownership_binding")
+    inventory = _object(
+        plan["inventory"],
+        {"version", "parent", "closure", "observed", "unresolved", "budget", "sha256"},
+    )
+    _ = _integer(inventory["version"], 1, 2)
+    _ = _path(inventory["parent"])
+    if _hex(inventory["sha256"]) != _digest(
+        _encode({k: v for k, v in inventory.items() if k != "sha256"})
+    ):
+        raise InvalidIdentity("ownership_binding")
+    limits = _object(inventory["budget"], {"max_rows", "max_objects", "max_hash_bytes"})
+    for scalar in limits.values():
+        _ = _integer(scalar, 1)
+    closure = _object(
+        inventory["closure"], {"snapshots", "roles", "dependencies", "raw_rows"}
+    )
+    for item in _list(closure["snapshots"]):
+        snapshot = _object(item, {"owner", "rows_json", "sha256"})
+        owner = _owner_from(snapshot["owner"])
+        text = _text(snapshot["rows_json"])
+        document = _object(_load(text), {"version", "owner", "root", "related"})
+        version = _integer(document["version"], 1, 2)
+        if _owner_from(document["owner"]) != owner or _hex(
+            snapshot["sha256"]
+        ) != _digest(text):
+            raise InvalidIdentity("ownership_binding")
+        _ = _row(document["root"], {_DOMAINS[owner.domain]})
+        for record in _list(document["related"]):
+            _ = _row(
+                record,
+                set(_PROJECTIONS) | (set(_PROVISION_ROWS) if version == 2 else set()),
+                version=version,
+            )
+    for item in _list(closure["roles"]):
+        _ = _historical_role(item)
+    for item in _list(closure["dependencies"]):
+        dependency = _object(item, {"owner", "requires", "reason"})
+        _ = _owner_from(dependency["owner"])
+        _ = _owner_from(dependency["requires"])
+        _ = _text(dependency["reason"])
+    for item in _list(closure["raw_rows"]):
+        _historical_raw_row(item)
+    for item in _list(inventory["observed"]):
+        _historical_observation(item)
+    for item in _list(inventory["unresolved"]):
+        _ = _text(item)
+    for item in _list(plan["decisions"]):
+        decision = _object(
+            item, {"owner", "action", "roles", "destination", "retained_roles"}
+        )
+        _ = _owner_from(decision["owner"])
+        if decision["action"] not in {
+            "cancel-unmutated",
+            "restore-original",
+            "resume-commit",
+            "keep-current",
+            "cleanup-committed",
+            "retain-blocked",
+        }:
+            raise InvalidIdentity("ownership_wire")
+        if decision["destination"] is not None:
+            _ = _path(decision["destination"])
+        for name in ("roles", "retained_roles"):
+            for role in _list(decision[name]):
+                _ = _role_from(role)
+    epoch = _object(
+        _load(plan["epoch_bindings_json"]),
+        {
+            "version",
+            "role_bindings",
+            "existing",
+            "provision",
+            "rollback_outputs",
+            "linked_effects",
+            "allocation_capabilities",
+        },
+    )
+    _ = _integer(epoch["version"], 2, 2)
+    declaration = _object(
+        _load(plan["declaration_json"]),
+        {
+            "version",
+            "inventory_sha256",
+            "selection_sha256",
+            "authorities",
+            "owner_reviews",
+            "role_reviews",
+            "linked_reviews",
+        },
+    )
+    receipt = _object(
+        _load(plan["backup_receipt_json"]),
+        {
+            "version",
+            "inventory_sha256",
+            "selection_sha256",
+            "declaration_sha256",
+            "archive",
+            "owner_snapshots",
+            "media",
+        },
+    )
+    selection = {
+        "version": 2,
+        "inventory_sha256": inventory["sha256"],
+        "decisions": plan["decisions"],
+        "epoch_bindings": epoch,
+    }
+    for document in (declaration, receipt):
+        _ = _integer(document["version"], 2, 2)
+        if document["inventory_sha256"] != inventory["sha256"] or document[
+            "selection_sha256"
+        ] != _digest(_encode(selection)):
+            raise InvalidIdentity("ownership_binding")
+    if receipt["declaration_sha256"] != _digest(_encode(declaration)):
+        raise InvalidIdentity("ownership_binding")
+    # Closed record shapes are checked independently of historical action policy.
+    shapes = (
+        (
+            epoch,
+            "role_bindings",
+            {"owner", "role", "namespace_owner", "epoch_id", "authority_id"},
+        ),
+        (
+            epoch,
+            "existing",
+            {
+                "epoch_id",
+                "authority_id",
+                "origin_path",
+                "allocation_path",
+                "root_path",
+                "birth_json",
+            },
+        ),
+        (
+            epoch,
+            "provision",
+            {
+                "epoch_id",
+                "authority_id",
+                "origin_parent",
+                "allocation_parent",
+                "root_path",
+                "old_namespace_owners",
+                "handling",
+            },
+        ),
+        (
+            epoch,
+            "rollback_outputs",
+            {
+                "version",
+                "owner",
+                "original_role",
+                "publication_role",
+                "epoch_id",
+                "carrier_token",
+                "handling",
+            },
+        ),
+        (
+            epoch,
+            "allocation_capabilities",
+            {"epoch_id", "owner", "set_id", "event_id", "event_sha256", "birth_sha256"},
+        ),
+        (
+            declaration,
+            "authorities",
+            {
+                "authority_id",
+                "incarnation_token",
+                "scope",
+                "profile",
+                "original_storage_statement",
+                "administration_statement",
+            },
+        ),
+        (
+            declaration,
+            "owner_reviews",
+            {"owner", "snapshot_sha256", "intended_original_authority_id"},
+        ),
+        (
+            declaration,
+            "role_reviews",
+            {"owner", "role", "observation_sha256", "authority_id", "assertion"},
+        ),
+        (declaration, "linked_reviews", {"effect_sha256", "authority_id"}),
+        (receipt, "owner_snapshots", {"owner", "sha256"}),
+        (
+            receipt,
+            "media",
+            {"owner", "role", "observation_sha256", "handling", "recovery_reference"},
+        ),
+    )
+    for document, name, keys in shapes:
+        order: list[tuple[str, str]] = []
+        for item in _list(document[name]):
+            record = _object(item, keys)
+            for field, scalar in record.items():
+                if field in {"owner", "namespace_owner"}:
+                    if scalar is not None or field == "owner":
+                        _ = _owner_from(scalar)
+                elif field in {"role", "original_role", "publication_role"}:
+                    _ = _role_from(scalar)
+                elif field.endswith("sha256"):
+                    _ = _hex(scalar)
+                elif field in {
+                    "authority_id",
+                    "epoch_id",
+                    "set_id",
+                    "intended_original_authority_id",
+                    "incarnation_token",
+                    "carrier_token",
+                }:
+                    if scalar is None and (
+                        field == "intended_original_authority_id"
+                        or name in {"role_bindings", "role_reviews"}
+                    ):
+                        continue
+                    _ = _hex(scalar, 32)
+                elif field in {"event_id", "version"}:
+                    _ = _integer(scalar, 1, 1 if field == "version" else 2**63 - 1)
+                elif field in {
+                    "origin_path",
+                    "allocation_path",
+                    "origin_parent",
+                    "allocation_parent",
+                    "root_path",
+                }:
+                    _ = _path(scalar)
+                elif field == "birth_json":
+                    _ = _epoch_birth(_text(scalar))
+                elif field == "scope":
+                    scope = _version(scalar, {"scope_path", "scope_token"})
+                    _ = _path(scope["scope_path"])
+                    _ = _hex(scope["scope_token"], 32)
+                elif field == "profile":
+                    _ = _provision_profile(scalar)
+                elif field == "old_namespace_owners":
+                    owners = [_owner_from(o) for o in _list(scalar)]
+                    if any(o.domain != "namespace" for o in owners):
+                        raise InvalidIdentity("ownership_wire")
+                    _ordered_unique([_encode(_owner_value(o)) for o in owners])
+                elif field == "assertion":
+                    if scalar not in {
+                        "retain-only",
+                        "reviewed-recovery-subject",
+                        "reviewed-linked-reference",
+                    }:
+                        raise InvalidIdentity("ownership_wire")
+                elif field == "handling":
+                    allowed = (
+                        {"retain-old-disable-new-allocation"}
+                        if name == "provision"
+                        else {"retain-non-replayable"}
+                        if name == "rollback_outputs"
+                        else {
+                            "snapshot",
+                            "retain-in-place",
+                            "observed-absent",
+                            "observed-unreachable",
+                        }
+                    )
+                    if scalar not in allowed:
+                        raise InvalidIdentity("ownership_wire")
+                elif field == "recovery_reference" and scalar is None:
+                    continue
+                else:
+                    _ = _text(scalar)
+            if name in {"existing", "provision", "allocation_capabilities"}:
+                identity = (_text(record["epoch_id"]), "")
+            elif name == "authorities":
+                identity = (_text(record["authority_id"]), "")
+            elif name == "linked_reviews":
+                identity = (_text(record["effect_sha256"]), "")
+            else:
+                role_field = (
+                    "publication_role" if name == "rollback_outputs" else "role"
+                )
+                identity = (
+                    _encode(record["owner"]),
+                    _encode(record[role_field]) if role_field in record else "",
+                )
+            order.append(identity)
+        if order != sorted(set(order)):
+            raise InvalidIdentity("ownership_wire")
+    _ordered_unique([_encode(e) for e in _list(epoch["linked_effects"])])
+    for item in _list(epoch["linked_effects"]):
+        effect = _object(
+            item,
+            {
+                "decision_sha256",
+                "original_role",
+                "affected_owner",
+                "affected_role",
+                "observation_sha256",
+                "relationship",
+                "effect",
+                "handling",
+            },
+        )
+        _ = _hex(effect["decision_sha256"])
+        _ = _hex(effect["observation_sha256"])
+        _ = _role_from(effect["original_role"])
+        _ = _role_from(effect["affected_role"])
+        _ = _owner_from(effect["affected_owner"])
+        if (
+            effect["effect"] not in {"create-name", "replace-acknowledged-name"}
+            or effect["handling"] != "retain-reference-non-replayable"
+        ):
+            raise InvalidIdentity("ownership_wire")
+        _prior_relationship(effect["relationship"])
+    archive = _object(
+        receipt["archive"],
+        {
+            "path",
+            "sha256",
+            "format",
+            "format_version",
+            "schema_version",
+            "self_contained",
+            "components",
+            "source_image_digest",
+        },
+    )
+    _ = _path(archive["path"])
+    _ = _hex(archive["sha256"])
+    _ = _integer(archive["format_version"], 1, 1)
+    _ = _integer(archive["schema_version"], 7, 7)
+    components = _object(archive["components"], {"database", "configuration", "key"})
+    image = _text(archive["source_image_digest"])
+    if (
+        archive["format"] != "mangarr-backup"
+        or archive["self_contained"] is not True
+        or any(v is not True for v in components.values())
+        or not image.startswith("sha256:")
+    ):
+        raise InvalidIdentity("ownership_wire")
+    _ = _hex(image[7:])
+    return plan
+
+
+def _prior_relationship(value: object) -> None:
+    if type(value) is not dict:
+        raise InvalidIdentity("ownership_wire")
+    fields = cast(dict[str, object], value)
+    kind = _text(fields.get("kind"))
+    shapes = {
+        "publication-destination": {
+            "kind",
+            "publication_id",
+            "publication_file_id",
+            "queue_id",
+            "file_id",
+        },
+        "frozen-pack-origin": {
+            "kind",
+            "publication_id",
+            "queue_id",
+            "file_id",
+            "identity_key",
+            "artifact_owner_token",
+            "origin_sha256",
+            "origin_ownership_sha256",
+            "relative",
+        },
+        "pack-source-file": {
+            "kind",
+            "queue_id",
+            "queue_file_id",
+            "identity_key",
+            "artifact_owner_token",
+            "relative",
+            "origin_ownership_sha256",
+        },
+        "pack-source-root": {
+            "kind",
+            "queue_id",
+            "queue_file_id",
+            "identity_key",
+            "artifact_owner_token",
+            "relative",
+            "origin_ownership_sha256",
+        },
+        "transferred-pack-claim-source-file": {
+            "kind",
+            "claim_owner",
+            "claim_role",
+            "claim_snapshot_sha256",
+            "claim_sha256",
+            "queue_snapshot_sha256",
+            "queue_id",
+            "identity_key",
+            "artifact_owner_token",
+            "queue_file_id",
+            "relative",
+            "source_fingerprint",
+        },
+        "transferred-pack-claim-source-root": {
+            "kind",
+            "claim_owner",
+            "claim_role",
+            "claim_snapshot_sha256",
+            "claim_sha256",
+            "queue_snapshot_sha256",
+            "queue_id",
+            "identity_key",
+            "artifact_owner_token",
+            "queue_file_id",
+            "relative",
+            "source_fingerprint",
+        },
+    }
+    if kind not in shapes:
+        raise InvalidIdentity("ownership_wire")
+    fields = _object(fields, shapes[kind])
+    for name, scalar in fields.items():
+        if name.endswith("sha256"):
+            _ = _hex(scalar)
+        elif name in {
+            "publication_id",
+            "publication_file_id",
+            "queue_id",
+            "queue_file_id",
+            "file_id",
+        }:
+            if scalar is not None or name not in {"publication_id", "queue_file_id"}:
+                _ = _integer(scalar, 1)
+        elif name == "artifact_owner_token":
+            label = _text(scalar)
+            if label in {".", ".."} or "/" in label or "\\" in label:
+                raise InvalidIdentity("ownership_wire")
+        elif name == "claim_owner":
+            _ = _owner_from(scalar)
+        elif name == "claim_role":
+            _ = _role_from(scalar)
+        elif name == "source_fingerprint":
+            if scalar is not None:
+                fingerprint = _object(
+                    scalar, {"dev", "inode", "size", "mtime_ns", "sha256"}
+                )
+                for column in ("dev", "inode", "size", "mtime_ns"):
+                    _ = _integer(
+                        fingerprint[column], -(2**63) if column == "mtime_ns" else 0
+                    )
+                _ = _hex(fingerprint["sha256"])
+        elif name == "relative":
+            if scalar is not None:
+                relative = _text(scalar)
+                if (
+                    relative.startswith("/")
+                    or "\\" in relative
+                    or any(p in {"", ".", ".."} for p in relative.split("/"))
+                ):
+                    raise InvalidIdentity("ownership_wire")
+        else:
+            _ = _text(scalar)
+    if kind.endswith("-root") and any(
+        fields[name] is not None for name in ("queue_file_id", "relative")
+    ):
+        raise InvalidIdentity("ownership_wire")
+    if kind.endswith("-file") and (
+        fields["queue_file_id"] is None or fields["relative"] is None
+    ):
+        raise InvalidIdentity("ownership_wire")
+
+
+def _provision_intent(encoded: str) -> dict[str, object]:
+    try:
+        _ = _text(encoded)
+        if len(encoded) > _MAX_JSON or len(encoded.encode("utf-8")) > _MAX_JSON:
+            raise InvalidIdentity("ownership_budget")
+        value = _version(
+            _load(encoded),
+            {
+                "kind",
+                "plan_json",
+                "plan_sha256",
+                "inventory_sha256",
+                "epoch_id",
+                "authority_id",
+                "authority_incarnation",
+                "scope",
+                "profile",
+                "origin_path",
+                "allocation_path",
+                "root_path",
+                "namespace_owner",
+                "allocation_token",
+            },
+        )
+        if value["kind"] != "epoch-provision-intent":
+            raise InvalidIdentity("ownership_wire")
+        for name in (
+            "epoch_id",
+            "authority_id",
+            "authority_incarnation",
+            "allocation_token",
+        ):
+            _ = _hex(value[name], 32)
+        scope = _version(value["scope"], {"scope_path", "scope_token"})
+        _ = _hex(scope["scope_token"], 32)
+        _ = _provision_profile(value["profile"])
+        origin, allocation, root = (
+            _path(value[n]) for n in ("origin_path", "allocation_path", "root_path")
+        )
+        if (
+            allocation
+            != origin.rstrip("/") + "/.mangarr-epoch-" + _text(value["epoch_id"])
+            or root != allocation + "/.mangarr-claims"
+            or not _within(origin, _path(scope["scope_path"]))
+            or _owner_from(value["namespace_owner"])
+            != OwnerRef("namespace", (allocation,))
+        ):
+            raise InvalidIdentity("ownership_binding")
+        plan = _prior_plan(_text(value["plan_json"]))
+        inventory = cast(dict[str, object], plan["inventory"])
+        closure = cast(dict[str, object], inventory["closure"])
+        if any(
+            _owner_from(cast(dict[str, object], item)["owner"])
+            == _owner_from(value["namespace_owner"])
+            for item in _list(closure["snapshots"])
+        ) or any(
+            _within(_path(cast(dict[str, object], item)["path"]), allocation)
+            for item in _list(closure["roles"])
+        ):
+            raise InvalidIdentity("ownership_binding")
+        for item in _list(closure["raw_rows"]):
+            raw = cast(dict[str, object], item)
+            columns = {
+                _text(_list(pair)[0]): _list(pair)[1] for pair in _list(raw["values"])
+            }
+            if (
+                raw["table"] in {"file_identity_epochs", "file_identity_sets"}
+                and columns.get("epoch_id") == value["epoch_id"]
+            ):
+                raise InvalidIdentity("ownership_binding")
+            if raw["table"] == "file_identity_provision_intents":
+                parsed = _load(columns.get("payload_json"))
+                if type(parsed) is not dict:
+                    raise InvalidIdentity("ownership_wire")
+                reserved = cast(dict[str, object], parsed)
+                if (
+                    reserved.get("epoch_id") == value["epoch_id"]
+                    or _within(allocation, _path(reserved.get("allocation_path")))
+                    or _within(_path(reserved.get("allocation_path")), allocation)
+                ):
+                    raise InvalidIdentity("ownership_binding")
+            if raw["table"] == "file_identity_events":
+                parsed = _load(columns.get("payload_json"))
+                if type(parsed) is not dict:
+                    raise InvalidIdentity("ownership_wire")
+                payload = cast(dict[str, object], parsed)
+                if payload.get("epoch_id") == value["epoch_id"]:
+                    raise InvalidIdentity("ownership_binding")
+        if (
+            value["plan_sha256"] != plan["sha256"]
+            or value["inventory_sha256"] != inventory["sha256"]
+        ):
+            raise InvalidIdentity("ownership_binding")
+        epochs = cast(dict[str, object], _load(plan["epoch_bindings_json"]))
+        matches = [
+            cast(dict[str, object], i)
+            for i in _list(epochs["provision"])
+            if cast(dict[str, object], i)["epoch_id"] == value["epoch_id"]
+        ]
+        if len(matches) != 1:
+            raise InvalidIdentity("ownership_binding")
+        selected = matches[0]
+        if (
+            selected["authority_id"] != value["authority_id"]
+            or selected["origin_parent"] != origin
+            or selected["allocation_parent"] != allocation
+            or selected["root_path"] != root
+            or selected["handling"] != "retain-old-disable-new-allocation"
+        ):
+            raise InvalidIdentity("ownership_binding")
+        declaration = cast(dict[str, object], _load(plan["declaration_json"]))
+        authorities = [
+            cast(dict[str, object], a)
+            for a in _list(declaration["authorities"])
+            if cast(dict[str, object], a)["authority_id"] == value["authority_id"]
+        ]
+        if len(authorities) != 1 or any(
+            authorities[0][key] != value[field]
+            for key, field in (
+                ("incarnation_token", "authority_incarnation"),
+                ("scope", "scope"),
+                ("profile", "profile"),
+            )
+        ):
+            raise InvalidIdentity("ownership_authority")
+        if any(
+            cast(dict[str, object], e)["epoch_id"] == value["epoch_id"]
+            for name in ("existing", "allocation_capabilities")
+            for e in _list(epochs[name])
+        ):
+            raise InvalidIdentity("ownership_binding")
+        return value
+    except InvalidIdentity as exc:
+        if str(exc).startswith("ownership_"):
+            raise
+        raise InvalidIdentity("ownership_wire") from exc
+    except (KeyError, TypeError, ValueError, RecursionError) as exc:
+        raise InvalidIdentity("ownership_wire") from exc
+
+
+def _epoch_birth(encoded: str) -> dict[str, object]:
+    value = _object(
+        _load(encoded),
+        {"version", "layout", "enrollment", "legacy_namespace", "controlled_birth"},
+    )
+    version = _integer(value["version"], 1, 2)
+    if version == 1:
+        if value["layout"] not in {"same_parent", "dedicated_parent"} or value[
+            "enrollment"
+        ] not in {"birth", "exact_legacy", "recovery"}:
+            raise InvalidIdentity("invalid epoch enrollment or layout")
+        legacy, controlled = value["legacy_namespace"], value["controlled_birth"]
+        if legacy is not None:
+            _ = _legacy(legacy, namespace=True)
+        if controlled is not None:
+            old = _object(
+                controlled,
+                {
+                    "authority_incarnation",
+                    "allocation_token",
+                    "root_native",
+                    "marker_native",
+                    "receipt_sha256",
+                },
+            )
+            _ = _hex(old["authority_incarnation"], 32)
+            _ = _hex(old["allocation_token"], 32)
+            _ = _hex(old["receipt_sha256"])
+            _ = NativeHandle.from_value(old["root_native"])
+            _ = NativeHandle.from_value(old["marker_native"])
+        if (
+            (
+                value["enrollment"] == "birth"
+                and (controlled is None or legacy is not None)
+            )
+            or (
+                value["enrollment"] == "exact_legacy"
+                and (legacy is None or controlled is not None)
+            )
+            or (legacy is None and controlled is None)
+        ):
+            raise InvalidIdentity("epoch receipt/enrollment mismatch")
+        return value
+    if (
+        value["layout"] != "dedicated_parent"
+        or value["enrollment"] != "birth"
+        or value["legacy_namespace"] is not None
+    ):
+        raise InvalidIdentity("ownership_wire")
+    receipt = _object(
+        value["controlled_birth"],
+        {
+            "version",
+            "authority_incarnation",
+            "allocation_token",
+            "namespace_owner",
+            "intent_id",
+            "plan_sha256",
+            "epoch_id",
+            "authority_id",
+            "origin_path",
+            "allocation_path",
+            "root_path",
+            "objects",
+            "receipt_sha256",
+        },
+    )
+    _ = _integer(receipt["version"], 2, 2)
+    for name in (
+        "authority_incarnation",
+        "allocation_token",
+        "intent_id",
+        "epoch_id",
+        "authority_id",
+    ):
+        _ = _hex(receipt[name], 32)
+    _ = _hex(receipt["plan_sha256"])
+    origin, allocation, root = (
+        _path(receipt[n]) for n in ("origin_path", "allocation_path", "root_path")
+    )
+    owner = OwnerRef("namespace", (allocation,))
+    if (
+        receipt["allocation_token"] != receipt["intent_id"]
+        or _owner_from(receipt["namespace_owner"]) != owner
+        or allocation
+        != origin.rstrip("/") + "/.mangarr-epoch-" + _text(receipt["epoch_id"])
+        or root != allocation + "/.mangarr-claims"
+    ):
+        raise InvalidIdentity("ownership_binding")
+    objects = [_object_from(o) for o in _list(receipt["objects"])]
+    keys = [_encode(_role_value(o.role)) for o in objects]
+    _ordered_unique(keys)
+    parent = RoleKey(None, "namespace_parent", "directory", None)
+    root_role = RoleKey(None, "namespace_root", "directory", ".mangarr-claims")
+    expected = {
+        RoleKey(None, "epoch_origin_parent", "directory", None): (
+            origin,
+            None,
+            "parent_identity",
+        ),
+        parent: (allocation, None, "exclusive_parent"),
+        root_role: (root, parent, "private_directory"),
+        RoleKey(None, "namespace_marker", "marker", "owner.json"): (
+            root + "/owner.json",
+            root_role,
+            "marker",
+        ),
+    }
+    if {o.role for o in objects} != set(expected) or len(objects) != 4:
+        raise InvalidIdentity("ownership_binding")
+    legacy_text: set[str] = set()
+    uids: set[int] = set()
+    for obj in objects:
+        path, parent_role, policy = expected[obj.role]
+        constraints = _constraints(obj.constraints_json, obj.role)
+        binding = cast(dict[str, object], constraints["binding"])
+        fields = cast(dict[str, object], constraints["non_device"])
+        if (
+            obj.canonical_path != path
+            or obj.parent_role != parent_role
+            or constraints["policy"] != policy
+            or _owner_from(binding["owner"]) != owner
+            or binding["operation_key"] != receipt["epoch_id"]
+            or binding["owner_token"] != receipt["intent_id"]
+        ):
+            raise InvalidIdentity("ownership_binding")
+        if policy == "parent_identity":
+            if constraints["legacy"] is not None:
+                raise InvalidIdentity("ownership_binding")
+        else:
+            legacy = _legacy(constraints["legacy"])
+            if legacy["kind"] != "namespace_v2" or fields["mode"] != (
+                0o600 if policy == "marker" else 0o700
+            ):
+                raise InvalidIdentity("ownership_binding")
+            legacy_text.add(_text(legacy["json"]))
+            uids.add(_integer(fields["uid"]))
+    if len(legacy_text) != 1 or len(uids) != 1:
+        raise InvalidIdentity("ownership_binding")
+    registry = _birth_namespace(next(iter(legacy_text)))
+    boundary = cast(dict[str, object], registry["creation_boundary"])
+    if (
+        registry["owner_token"] != receipt["intent_id"]
+        or registry["root_path"] != root
+        or boundary["parent_uid"] not in uids
+        or boundary["parent_mode"] != 0o700
+    ):
+        raise InvalidIdentity("ownership_binding")
+    fingerprint = cast(dict[str, object], registry["marker_fingerprint"])
+    marker_fields = {
+        name: fingerprint[name] for name in ("inode", "size", "mtime_ns", "sha256")
+    }
+    for obj in objects:
+        fields = cast(
+            dict[str, object],
+            _constraints(obj.constraints_json, obj.role)["non_device"],
+        )
+        if obj.role.purpose == "namespace_marker" and any(
+            fields[name] != scalar for name, scalar in marker_fields.items()
+        ):
+            raise InvalidIdentity("ownership_binding")
+        if obj.role.purpose in {"namespace_parent", "namespace_root"} and fields[
+            "inode"
+        ] != (
+            registry["parent_ino"]
+            if obj.role.purpose == "namespace_parent"
+            else registry["root_ino"]
+        ):
+            raise InvalidIdentity("ownership_binding")
+    if _hex(receipt["receipt_sha256"]) != _digest(
+        _encode({k: v for k, v in receipt.items() if k != "receipt_sha256"})
+    ):
+        raise InvalidIdentity("ownership_binding")
+    return value
+
+
+def _provision_snapshot(
+    value: dict[str, object],
+) -> tuple[dict[str, object], dict[str, object]]:
+    records = [
+        _row(r, set(_PROVISION_ROWS), version=2) for r in _list(value["related"])
+    ]
+    if [r["table"] for r in records] != [
+        "file_identity_epochs",
+        "file_identity_provision_intents",
+    ]:
+        raise InvalidIdentity("ownership_wire")
+    epoch, row = (cast(dict[str, object], r["row"]) for r in records)
+    intent = _provision_intent(_text(row["payload_json"]))
+    birth = _epoch_birth(_text(epoch["birth_json"]))
+    if birth["version"] != 2:
+        raise InvalidIdentity("ownership_wire")
+    receipt = cast(dict[str, object], birth["controlled_birth"])
+    if (
+        row["intent_id"] != intent["allocation_token"]
+        or row["intent_id"] != receipt["intent_id"]
+        or row["payload_sha256"] != _digest(_encode(intent))
+        or row["authority_id"] != intent["authority_id"]
+    ):
+        raise InvalidIdentity("ownership_binding")
+    for name in (
+        "epoch_id",
+        "authority_id",
+        "origin_path",
+        "allocation_path",
+        "root_path",
+    ):
+        if epoch[name] != intent[name] or epoch[name] != receipt[name]:
+            raise InvalidIdentity("ownership_binding")
+    for name in (
+        "authority_incarnation",
+        "namespace_owner",
+        "plan_sha256",
+        "allocation_token",
+    ):
+        if receipt[name] != intent[name]:
+            raise InvalidIdentity("ownership_binding")
+    root = cast(dict[str, object], cast(dict[str, object], value["root"])["row"])
+    if (
+        value["owner"] != intent["namespace_owner"]
+        or root["parent_path"] != intent["allocation_path"]
+    ):
+        raise InvalidIdentity("ownership_binding")
+    legacy = _birth_namespace(_text(root["ownership_json"]))
+    if (
+        legacy["owner_token"] != row["intent_id"]
+        or legacy["root_path"] != epoch["root_path"]
+    ):
+        raise InvalidIdentity("ownership_binding")
+    for item in _list(receipt["objects"]):
+        obj = _object_from(item)
+        constraints = _constraints(obj.constraints_json, obj.role)
+        if (
+            obj.role.purpose != "epoch_origin_parent"
+            and cast(dict[str, object], constraints["legacy"])["json"]
+            != root["ownership_json"]
+        ):
+            raise InvalidIdentity("ownership_binding")
+    return intent, receipt
+
+
+def _allocation_payload(encoded: str) -> dict[str, object]:
+    _ = _text(encoded)
+    if len(encoded) > _MAX_JSON or len(encoded.encode("utf-8")) > _MAX_JSON:
+        raise InvalidIdentity("ownership_budget")
+    value = _object(
+        _load(encoded),
+        {
+            "version",
+            "kind",
+            "before_snapshot_json",
+            "before_snapshot_sha256",
+            "plan_sha256",
+            "intent_id",
+            "activation_event_id",
+            "epoch_id",
+            "authority_id",
+            "authority_incarnation",
+            "origin_path",
+            "allocation_path",
+            "root_path",
+            "birth_sha256",
+            "state",
+            "prior_capability_event_id",
+            "consumer_contract_sha256",
+        },
+    )
+    _ = _integer(value["version"], 2, 2)
+    if value["kind"] != "allocation-capability" or value["state"] not in {
+        "grant",
+        "revoke",
+    }:
+        raise InvalidIdentity("ownership_wire")
+    for name in ("intent_id", "epoch_id", "authority_id", "authority_incarnation"):
+        _ = _hex(value[name], 32)
+    for name in (
+        "before_snapshot_sha256",
+        "plan_sha256",
+        "birth_sha256",
+        "consumer_contract_sha256",
+    ):
+        _ = _hex(value[name])
+    for name in ("origin_path", "allocation_path", "root_path"):
+        _ = _path(value[name])
+    if (
+        type(value["activation_event_id"]) is not int
+        or not 1 <= cast(int, value["activation_event_id"]) <= 2**63 - 1
+    ):
+        raise InvalidIdentity("ownership_wire")
+    prior = value["prior_capability_event_id"]
+    if prior is not None:
+        if type(prior) is not int or not 1 <= cast(int, prior) <= 2**63 - 1:
+            raise InvalidIdentity("ownership_wire")
+    if (value["state"] == "grant") != (prior is None):
+        raise InvalidIdentity("ownership_phase")
+    snapshot = _object(
+        _load(value["before_snapshot_json"]), {"version", "owner", "root", "related"}
+    )
+    _ = _integer(snapshot["version"], 2, 2)
+    if _digest(_text(value["before_snapshot_json"])) != value["before_snapshot_sha256"]:
+        raise InvalidIdentity("ownership_binding")
+    return value
+
+
 def _acyclic(edges: dict[str, list[str]]) -> None:
     # Iterative topological traversal avoids recursion limits on large packs.
     incoming = dict.fromkeys(edges, 0)
@@ -583,7 +1952,9 @@ def _dependencies(manifest: dict[str, object], owner: OwnerRef) -> list[OwnerSna
     for item in _list(manifest["dependencies"]):
         dep = _object(item, {"snapshot_json", "sha256", "requires"})
         text = _text(dep["snapshot_json"])
-        value = _version(_load(text), {"owner", "root", "related"})
+        value = _object(_load(text), {"version", "owner", "root", "related"})
+        if manifest.get("version") == 1 and value["version"] != 1:
+            raise InvalidIdentity("ownership_wire")
         snapshot = OwnerSnapshot(_owner_from(value["owner"]), text, _hex(dep["sha256"]))
         key = _encode(_owner_value(snapshot.owner))
         if key in edges or snapshot.owner == owner:
@@ -601,9 +1972,10 @@ def _dependencies(manifest: dict[str, object], owner: OwnerRef) -> list[OwnerSna
 
 
 def _manifest(proof: ProofSet) -> dict[str, object]:
-    value = _version(
+    value = _object(
         _load(proof.manifest_json),
         {
+            "version",
             "snapshot_sha256",
             "phase",
             "required_roles",
@@ -614,6 +1986,11 @@ def _manifest(proof: ProofSet) -> dict[str, object]:
             "intent",
         },
     )
+    version = _integer(value["version"], 1, 2)
+    snapshot_value = cast(dict[str, object], _load(proof.snapshot.rows_json))
+    if version != snapshot_value["version"]:
+        raise InvalidIdentity("ownership_wire")
+    provision = _provision_snapshot(snapshot_value) if version == 2 else None
     if _hex(value["snapshot_sha256"]) != proof.snapshot.sha256:
         raise InvalidIdentity("manifest snapshot mismatch")
     _text(value["phase"])
@@ -661,7 +2038,19 @@ def _manifest(proof: ProofSet) -> dict[str, object]:
         if type(intent) is not dict:
             raise InvalidIdentity("invalid tagged intent")
         tag = cast(dict[str, object], intent).get("kind")
-        if tag == "journal":
+        if version == 2:
+            tagged = _object(
+                cast(dict[str, object], intent),
+                {"kind", "snapshot_sha256", "intent_id", "plan_sha256"},
+            )
+            if provision is None or tagged != {
+                "kind": "epoch-provision",
+                "snapshot_sha256": proof.snapshot.sha256,
+                "intent_id": provision[1]["intent_id"],
+                "plan_sha256": provision[0]["plan_sha256"],
+            }:
+                raise InvalidIdentity("ownership_binding")
+        elif tag == "journal":
             journal = _object(
                 intent,
                 {
@@ -715,7 +2104,32 @@ def _manifest(proof: ProofSet) -> dict[str, object]:
     _ordered_unique(absent_keys)
     if set(keys) & set(absent_keys) or sorted(keys + absent_keys) != required:
         raise InvalidIdentity("role evidence differs from declared requirements")
-    _dependencies(value, proof.owner)
+    dependencies = _dependencies(value, proof.owner)
+    if provision is not None:
+        intent, birth = provision
+        if (
+            proof.origin != "birth"
+            or proof.epoch_id != intent["epoch_id"]
+            or proof.authority_id != intent["authority_id"]
+            or value["phase"] != "epoch-provisioned"
+            or value["intent"] is None
+            or value["absent_roles"]
+            or [_object_from(o) for o in _list(birth["objects"])] != list(proof.roles)
+        ):
+            raise InvalidIdentity("ownership_binding")
+        prior = _prior_plan(_text(intent["plan_json"]))
+        protected = cast(
+            dict[str, object], cast(dict[str, object], prior["inventory"])["closure"]
+        )
+        expected = {
+            _owner_from(cast(dict[str, object], s)["owner"]): (
+                cast(dict[str, object], s)["rows_json"],
+                cast(dict[str, object], s)["sha256"],
+            )
+            for s in _list(protected["snapshots"])
+        }
+        if {s.owner: (s.rows_json, s.sha256) for s in dependencies} != expected:
+            raise InvalidIdentity("ownership_binding")
     return value
 
 
