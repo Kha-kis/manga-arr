@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
+from contextlib import closing
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 import pytest
 
@@ -34,9 +37,88 @@ def ledger_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def ledger_db(ledger_path: Path) -> Iterator[sqlite3.Connection]:
-    with sqlite3.connect(ledger_path) as db:
+    with closing(sqlite3.connect(ledger_path)) as db, db:
         db.execute("PRAGMA foreign_keys=ON")
         yield db
+
+
+# Pytest exposes __wrapped__ dynamically, beyond its published wrapper type.
+@runtime_checkable
+class _LedgerDbFixture(Protocol):
+    def __wrapped__(
+        self, ledger_path: Path
+    ) -> Generator[sqlite3.Connection, None, None]: ...
+
+
+@pytest.mark.parametrize("exceptional", [False, True], ids=["commit", "rollback"])
+def test_ledger_db_closes_before_teardown_returns(
+    ledger_path: Path, exceptional: bool
+) -> None:
+    before_fds = set(os.listdir("/proc/self/fd"))
+    assert isinstance(ledger_db, _LedgerDbFixture)
+    fixture = ledger_db.__wrapped__(ledger_path)
+    db = next(fixture)
+    error = RuntimeError("fixture body failed")
+    try:
+        assert db.execute("PRAGMA foreign_keys").fetchone() == (1,)
+        _ = db.execute("CREATE TABLE fixture_lifetime (value INTEGER NOT NULL)")
+        db.commit()
+        _ = db.execute("INSERT INTO fixture_lifetime VALUES (7)")
+        assert db.in_transaction
+        if exceptional:
+            with pytest.raises(RuntimeError) as raised:
+                _ = fixture.throw(error)
+            assert raised.value is error
+        else:
+            with pytest.raises(StopIteration):
+                _ = next(fixture)
+
+        # Keep db alive: resource release must not depend on object destruction.
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            _ = db.execute("SELECT 1")
+        assert set(os.listdir("/proc/self/fd")) == before_fds
+        with closing(sqlite3.connect(ledger_path)) as reopened:
+            rows = reopened.execute("SELECT value FROM fixture_lifetime").fetchall()
+            assert rows == ([] if exceptional else [(7,)])
+    finally:
+        try:
+            fixture.close()
+        finally:
+            db.close()
+
+
+def test_ledger_db_closes_when_transaction_setup_fails(
+    ledger_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    error = RuntimeError("transaction setup failed")
+
+    class SetupFailureConnection(sqlite3.Connection):
+        def __enter__(self) -> sqlite3.Connection:
+            _ = super().__enter__()
+            raise error
+
+    before_fds = set(os.listdir("/proc/self/fd"))
+    db = sqlite3.connect(ledger_path, factory=SetupFailureConnection)
+    try:
+
+        def connect(path: Path) -> sqlite3.Connection:
+            assert path == ledger_path
+            return db
+
+        monkeypatch.setattr(sqlite3, "connect", connect)
+        assert isinstance(ledger_db, _LedgerDbFixture)
+        fixture = ledger_db.__wrapped__(ledger_path)
+        try:
+            with pytest.raises(RuntimeError) as raised:
+                _ = next(fixture)
+            assert raised.value is error
+            with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+                _ = db.execute("SELECT 1")
+            assert set(os.listdir("/proc/self/fd")) == before_fds
+        finally:
+            fixture.close()
+    finally:
+        db.close()
 
 
 def insert_rescan(db: sqlite3.Connection, row_id: int = 1) -> None:
