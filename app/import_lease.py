@@ -6,6 +6,8 @@ import math
 import sqlite3
 from typing import Literal, cast
 
+from file_identity_store import unresolved_rescan_sql
+
 from download_identity import (
     DownloadIdentity,
     DownloadProtocol,
@@ -120,6 +122,7 @@ def claim_import_queue_row(
           AND NOT EXISTS (
               SELECT 1 FROM rescan_file_operations rescan_operation
               WHERE rescan_operation.series_id=import_queue.series_id
+                AND {unresolved_rescan_sql("rescan_operation")}
                 AND rescan_operation.state IN
                     ('prepared','published','db_committed','rollback')
           )

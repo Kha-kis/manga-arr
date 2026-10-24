@@ -12,6 +12,42 @@ VALID_IMPORT_KINDS = frozenset(
 )
 
 
+_PUBLICATION_ROW_FIELDS = (
+    "id",
+    "series_id",
+    "status",
+    "grabbed_at",
+    "imported_at",
+    "import_path",
+    "quality",
+    "size_bytes",
+    "download_id",
+    "download_client_id",
+    "protocol",
+    "torrent_name",
+    "indexer",
+    "client",
+    "release_group",
+)
+_PUBLICATION_VOLUME_FIELDS = _PUBLICATION_ROW_FIELDS + (
+    "volume_num",
+    "chapter_num",
+    "is_special",
+    "pack_type",
+    "vol_range_start",
+    "vol_range_end",
+    "edition_type",
+    "language",
+    "source_url",
+)
+_PUBLICATION_CHAPTER_FIELDS = _PUBLICATION_ROW_FIELDS + (
+    "volume_id",
+    "chapter_num",
+    "chapter_range_end",
+    "torrent_url",
+)
+
+
 def infer_import_kind(
     *,
     file_type: str | None,

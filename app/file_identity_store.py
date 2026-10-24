@@ -668,6 +668,13 @@ def _constraints(encoded: str, role: RoleKey) -> dict[str, object]:
     ):
         raise InvalidIdentity("constraint policy does not match role kind")
     for name, scalar in observed.items():
+        if policy == "file" and name in {"uid", "mode", "nlink"} and scalar is not None:
+            _integer(
+                scalar,
+                1 if name == "nlink" else 0,
+                0o7777 if name == "mode" else 2**63 - 1,
+            )
+            continue
         if name not in policies[policy]:
             if scalar is not None:
                 raise InvalidIdentity("inapplicable constraint must be null")
@@ -2154,17 +2161,40 @@ def _manifest(proof: ProofSet) -> dict[str, object]:
         if cast(dict[str, object], intent)["snapshot_sha256"] != proof.snapshot.sha256:
             raise InvalidIdentity("intent snapshot mismatch")
     absent_keys: list[str] = []
-    for item in _list(value["absent_roles"]):
-        absent = _object(
-            item, {"role", "canonical_path", "parent_role", "intent_sha256"}
-        )
+    absent_records = [
+        _object(item, {"role", "canonical_path", "parent_role", "intent_sha256"})
+        for item in _list(value["absent_roles"])
+    ]
+    # Discarded carriers can have absent descendants and an absent root after
+    # GC. Validate the entire intended graph, not only parents still present.
+    absent_parents = {
+        _encode(_role_value(_role_from(a["role"]))): a for a in absent_records
+    }
+    for absent in absent_records:
         role = _role_from(absent["role"])
-        relationship(
-            role, _path(absent["canonical_path"]), _role_from(absent["parent_role"])
+        path = _path(absent["canonical_path"])
+        parent = (
+            None if absent["parent_role"] is None else _role_from(absent["parent_role"])
         )
+        key = _encode(_role_value(role))
+        if parent is not None and _encode(_role_value(parent)) in absent_parents:
+            ancestor = absent_parents[_encode(_role_value(parent))]
+            if (
+                parent.kind != "directory"
+                or role.relative is None
+                or path
+                != _path(ancestor["canonical_path"]).rstrip("/") + "/" + role.relative
+                or path in paths
+            ):
+                raise InvalidIdentity("absent role parent/path mismatch")
+            paths.add(path)
+        else:
+            relationship(role, path, parent)
+        edges[key] = [] if parent is None else [_encode(_role_value(parent))]
         if intent is None or _hex(absent["intent_sha256"]) != _digest(_encode(intent)):
             raise InvalidIdentity("absence lacks bound action intent")
         absent_keys.append(_encode(_role_value(role)))
+    _acyclic(edges)
     _ordered_unique(absent_keys)
     if set(keys) & set(absent_keys) or sorted(keys + absent_keys) != required:
         raise InvalidIdentity("role evidence differs from declared requirements")
@@ -2291,10 +2321,13 @@ def _validate_epoch(db: sqlite3.Connection, proof: ProofSet) -> None:
     scope = _path(declaration["scope_path"])
     _hex(declaration["scope_token"], 32)
     incarnation = _hex(row["incarnation_token"], 32)
-    birth = _version(
+    birth = _object(
         _load(row["birth_json"]),
-        {"layout", "enrollment", "legacy_namespace", "controlled_birth"},
+        {"version", "layout", "enrollment", "legacy_namespace", "controlled_birth"},
     )
+    birth_version = _integer(birth["version"], 1, 2)
+    if birth_version == 2:
+        birth = _epoch_birth(_text(row["birth_json"]))
     if _text(birth["enrollment"]) not in {"birth", "exact_legacy", "recovery"}:
         raise InvalidIdentity("invalid epoch enrollment")
     origin, allocation, root = (
@@ -2313,7 +2346,19 @@ def _validate_epoch(db: sqlite3.Connection, proof: ProofSet) -> None:
     legacy, controlled = birth["legacy_namespace"], birth["controlled_birth"]
     if legacy is not None:
         _legacy(legacy, namespace=True)
-    if controlled is not None:
+    if controlled is not None and birth_version == 2:
+        receipt = cast(dict[str, object], controlled)
+        if (
+            receipt["authority_incarnation"] != incarnation
+            or receipt["epoch_id"] != proof.epoch_id
+            or receipt["authority_id"] != proof.authority_id
+            or any(
+                receipt[name] != row[name]
+                for name in ("origin_path", "allocation_path", "root_path")
+            )
+        ):
+            raise InvalidIdentity("epoch incarnation/receipt binding mismatch")
+    elif controlled is not None:
         receipt = _object(
             controlled,
             {
@@ -2477,9 +2522,10 @@ def _load_set(db: sqlite3.Connection, set_id: object) -> ProofSet:
     manifest_json = _text(row["manifest_json"])
     if _digest(manifest_json) != _hex(row["manifest_sha256"]):
         raise InvalidIdentity("stored manifest digest mismatch")
-    manifest = _version(
+    manifest = _object(
         _load(manifest_json),
         {
+            "version",
             "snapshot_sha256",
             "phase",
             "required_roles",
@@ -2490,6 +2536,7 @@ def _load_set(db: sqlite3.Connection, set_id: object) -> ProofSet:
             "intent",
         },
     )
+    _integer(manifest["version"], 1, 2)
     return ProofSet(
         _hex(row["set_id"], 32),
         owner,
@@ -2535,6 +2582,32 @@ def read_active(db: sqlite3.Connection, owner: OwnerRef) -> ActiveProofSet | Non
         if _data_version(db) != version:
             raise IdentityMismatch("identity history changed during readback")
         return None
+    capability: dict[str, object] | None = None
+    if latest["kind"] == "recovery_step" and owner.domain == "namespace":
+        step = _load(_text(latest["payload_json"]))
+        if type(step) is dict and cast(dict[str, object], step).get("version") == 1:
+            _ = _version(
+                step, {"before_snapshot_json", "before_snapshot_sha256", "plan_sha256"}
+            )
+            raise IdentityMismatch("latest identity history is not an activated set")
+        capability = _allocation_payload(_text(latest["payload_json"]))
+        activations = _dict_rows(
+            db.execute(
+                "SELECT * FROM file_identity_events WHERE id=? AND kind='activated' "
+                "AND owner_domain=? AND owner_key_json=? AND set_id=?",
+                (
+                    capability["activation_event_id"],
+                    owner.domain,
+                    _key_json(owner),
+                    latest["set_id"],
+                ),
+            )
+        )
+        if len(activations) != 1:
+            raise IdentityMismatch(
+                "allocation capability lacks its committed activation"
+            )
+        latest = activations[0]
     if latest["kind"] != "activated":
         raise IdentityMismatch("latest identity history is not an activated set")
     proof = _load_set(db, latest["set_id"])
@@ -2565,6 +2638,96 @@ def read_active(db: sqlite3.Connection, owner: OwnerRef) -> ActiveProofSet | Non
     ):
         raise InvalidIdentity("activation predecessor mismatch")
     _validate_current(db, proof)
+    if capability is not None:
+        snapshot = cast(dict[str, object], _load(proof.snapshot.rows_json))
+        if snapshot["version"] != 2:
+            raise IdentityMismatch(
+                "allocation capability references a legacy activation"
+            )
+        intent, receipt = _provision_snapshot(snapshot)
+        if (
+            capability["before_snapshot_json"] != proof.snapshot.rows_json
+            or capability["before_snapshot_sha256"] != proof.snapshot.sha256
+            or capability["birth_sha256"]
+            != _digest(
+                _encode(
+                    {
+                        "version": 2,
+                        "layout": "dedicated_parent",
+                        "enrollment": "birth",
+                        "legacy_namespace": None,
+                        "controlled_birth": receipt,
+                    }
+                )
+            )
+            or any(
+                capability[name] != intent[name]
+                for name in (
+                    "epoch_id",
+                    "authority_id",
+                    "authority_incarnation",
+                    "origin_path",
+                    "allocation_path",
+                    "root_path",
+                )
+            )
+            or capability["intent_id"] != intent["allocation_token"]
+        ):
+            raise IdentityMismatch(
+                "allocation capability differs from complete activation"
+            )
     if _data_version(db) != version:
         raise IdentityMismatch("identity changed during readback")
     return ActiveProofSet(proof, _integer(latest["id"], 1))
+
+
+def unresolved_rescan_sql(alias: str = "rescan_file_operations") -> str:
+    """SQL-only reciprocal fence: a nullable flag alone never releases ownership.
+
+    The immutable event, exact projected preimage, canonical owner, and latest
+    revision must all agree. Malformed JSON remains fenced, never evaluated.
+    """
+    if alias not in {"rescan_file_operations", "rescan_operation"}:
+        raise ValueError("unsupported rescan selector alias")
+    columns = sorted(_PROJECTIONS["rescan_file_operations"])
+    matches = " AND ".join(
+        "json_type(s.snapshot_json,'$.root.row.recovery_event_id')='null'"
+        if column == "recovery_event_id"
+        else f"json_type(s.snapshot_json,'$.root.row.{column}') IS "
+        f"CASE typeof({alias}.{column}) WHEN 'null' THEN 'null' "
+        "WHEN 'integer' THEN 'integer' WHEN 'real' THEN 'real' ELSE 'text' END "
+        f"AND json_extract(s.snapshot_json,'$.root.row.{column}') IS {alias}.{column}"
+        for column in columns
+    )
+    return f"""NOT EXISTS (
+        SELECT 1 FROM file_identity_events e JOIN file_identity_sets s USING(set_id)
+        WHERE e.id={alias}.recovery_event_id
+        AND CASE WHEN json_valid(e.payload_json) AND json_valid(s.snapshot_json)
+        AND json_valid(e.owner_key_json) THEN
+            e.kind='superseded' AND e.owner_domain='rescan'
+            AND s.owner_domain=e.owner_domain AND s.owner_key_json=e.owner_key_json
+            AND e.owner_key_json=json_object('key',json_array({alias}.id),'version',1)
+            AND e.id=(SELECT id FROM file_identity_events newer
+                      WHERE newer.owner_domain=e.owner_domain
+                      AND newer.owner_key_json=e.owner_key_json ORDER BY revision DESC LIMIT 1)
+            AND json_type(e.payload_json,'$.version')='integer'
+            AND json_extract(e.payload_json,'$.version')=1
+            AND (SELECT count(*) FROM json_each(e.payload_json))=4
+            AND length(json_extract(e.payload_json,'$.plan_sha256'))=64
+            AND json_extract(e.payload_json,'$.plan_sha256') NOT GLOB '*[^0123456789abcdef]*'
+            AND json_extract(e.payload_json,'$.before_snapshot_json') IS s.snapshot_json
+            AND json_extract(e.payload_json,'$.before_snapshot_sha256') IS s.snapshot_sha256
+            AND json_type(s.snapshot_json,'$.version')='integer'
+            AND json_extract(s.snapshot_json,'$.version')=1
+            AND json_extract(s.snapshot_json,'$.owner.domain')='rescan'
+            AND json_array_length(s.snapshot_json,'$.owner.key')=1
+            AND json_type(s.snapshot_json,'$.owner.key[0]')='integer'
+            AND json_extract(s.snapshot_json,'$.owner.key[0]') IS {alias}.id
+            AND json_extract(s.snapshot_json,'$.root.table')='rescan_file_operations'
+            AND json_array_length(s.snapshot_json,'$.root.key')=1
+            AND json_type(s.snapshot_json,'$.root.key[0]')='integer'
+            AND json_extract(s.snapshot_json,'$.root.key[0]') IS {alias}.id
+            AND (SELECT count(*) FROM json_each(s.snapshot_json,'$.root.row'))={len(columns)}
+            AND {matches}
+        ELSE 0 END
+    )"""

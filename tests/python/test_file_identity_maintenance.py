@@ -105,6 +105,42 @@ def _lock_path(db_path: str | Path) -> Path:
     return path.with_name(f".{path.name}.ownership-maintenance.lock")
 
 
+def test_exact_enrollment_requires_live_same_thread_exclusive(tmp_path: Path) -> None:
+    from maintenance_lock import (
+        MaintenanceLockError,
+        _assert_exclusive_maintenance,
+        service_maintenance_guard,
+    )
+
+    path = str(tmp_path / "local.db")
+    with pytest.raises(MaintenanceLockError):
+        _assert_exclusive_maintenance(path)
+    with service_maintenance_guard(path, exclusive=False) as result:
+        assert result is None
+        with pytest.raises(MaintenanceLockError):
+            _assert_exclusive_maintenance(path)
+    failures: list[BaseException] = []
+    with service_maintenance_guard(path, exclusive=True) as result:
+        assert result is None
+        _assert_exclusive_maintenance(path)
+        with pytest.raises(MaintenanceLockError):
+            _assert_exclusive_maintenance(str(tmp_path / "other.db"))
+
+        def transferred() -> None:
+            try:
+                _assert_exclusive_maintenance(path)
+            except BaseException as exc:
+                failures.append(exc)
+
+        thread = threading.Thread(target=transferred)
+        thread.start()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert len(failures) == 1 and isinstance(failures[0], MaintenanceLockError)
+    with pytest.raises(MaintenanceLockError):
+        _assert_exclusive_maintenance(path)
+
+
 @pytest.mark.parametrize("exists", [False, True])
 def test_shared_services_coexist_and_last_exit_allows_recovery(
     tmp_path: Path, exists: bool

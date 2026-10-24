@@ -11,11 +11,27 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from typing import cast
 
+from download_identity import DownloadIdentity, download_identity_key
 from private_file_claim import CarrierRecord, FullFileFingerprint
 
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 # Existing safe_join_under strips the leading dot from the legacy marker name.
 OWNER_MARKER = "mangarr-pack-owner"
+
+
+def _pack_owner_marker_payload(
+    identity: DownloadIdentity,
+    owner_token: str,
+) -> bytes:
+    if not owner_token:
+        raise ValueError("owner_token must be non-empty")
+    identity_key = download_identity_key(identity)
+    if not identity_key:
+        raise ValueError("download identity must be non-empty")
+    digest = hashlib.sha256(
+        f"{identity_key}\0{owner_token}".encode("utf-8")
+    ).hexdigest()
+    return f"mangarr-pack-owner-v1:{digest}\n".encode()
 
 
 class PackProofError(OSError):

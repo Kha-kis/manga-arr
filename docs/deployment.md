@@ -613,6 +613,29 @@ rows, or edit ownership markers. Native qualification and the recovery executor
 remain separate work; no new provisioning or recovery-application command is
 enabled by this migration.
 
+### Enrolled rescan contexts (unreleased)
+
+Unreleased source adds complete ownership contexts for rescan operations. An
+enrolled operation must verify its active proof set, every required object role,
+the storage profile and the current descriptor/name relationships. Unenrolled
+operations retain their existing exact legacy checks; matching paths or file
+contents do not establish remount continuity. Stored legacy proof strings are
+not rewritten to the current device identity.
+
+Exact legacy enrollment is an offline administrative operation: maintenance
+exclusion must already be held exclusively before taking the mutation guard.
+It is not startup adoption, a repair switch or permission to enroll an operation
+after its historical proof has drifted. A new journal phase becomes authoritative
+only with its matching committed proof revision. A valid rescan supersession
+releases only that operation's fence; unrelated operations remain blocked.
+
+No storage profile is enabled by this work. Native Synology/NFS qualification,
+the other ownership consumers and the reviewed recovery executor remain separate
+requirements. No live enrollment or recovery command is made available here;
+keep the original operation, namespace and files intact until an exact qualified
+build and reviewed procedure are provided. The schema 8 upgrade/rollback
+precautions above still apply; this consumer integration adds no migration.
+
 ### Version pins
 
 Operators who value reproducibility over automatic stable-channel updates can
