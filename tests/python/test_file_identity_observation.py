@@ -31,7 +31,11 @@ from file_identity_consumers import (
     RoleSpec,
     collect_references,
 )
-from file_mutation_lock import FileMutationLockError, file_mutation_guard
+from file_mutation_lock import (
+    FileMutationGuard,
+    FileMutationLockError,
+    file_mutation_guard,
+)
 from test_file_identity_schema import ledger_path as ledger_path
 from test_pack_publication_integration import (
     other_uid_python_image as other_uid_python_image,
@@ -1249,7 +1253,13 @@ def producer_deletion(env: ProducerMedia, phase: str) -> int:
     return journal_id
 
 
-def producer_publication(env: ProducerMedia, queue_id: int, state: str) -> int:
+def producer_publication(
+    env: ProducerMedia,
+    queue_id: int,
+    state: str,
+    *,
+    _guard: FileMutationGuard | None = None,
+) -> int:
     import import_publication as publication
     from import_plan import _FilePlan, _ImportPlan
 
@@ -1298,7 +1308,11 @@ def producer_publication(env: ProducerMedia, queue_id: int, state: str) -> int:
     plan = _ImportPlan(
         queue, series, [], str(env.library), "copy", None, [file_plan], 7
     )
-    stage_dir, _ = publication.initialize_publication_filesystem(plan, owner)
+    stage_dir, _ = (
+        publication.initialize_publication_filesystem(plan, owner)
+        if _guard is None
+        else publication._initialize_publication_filesystem_owned(plan, owner, _guard)
+    )
     db = sqlite3.connect(env.db_path)
     try:
         publication_id = int(
@@ -1364,7 +1378,12 @@ def producer_publication(env: ProducerMedia, queue_id: int, state: str) -> int:
 
 
 def producer_pack(
-    env: ProducerMedia, phase: str, *, tombstone: bool = False
+    env: ProducerMedia,
+    phase: str,
+    *,
+    tombstone: bool = False,
+    nested: bool = False,
+    frozen: bool = False,
 ) -> tuple[str, int | None]:
     import import_pack_cleanup as packs
     import private_file_claim as claims
@@ -1398,6 +1417,10 @@ def producer_pack(
             if phase == "building":
                 return reservation.download_identity_key, None
             write_archive(Path(proof.path) / "Matrix v02.cbz", b"generated pack source")
+            if nested:
+                directory = Path(proof.path) / "nested" / "deeper"
+                directory.mkdir(parents=True)
+                write_archive(directory / "extra.cbz", b"nested captured bytes")
             inventory = inventory_tree(fd)
         finally:
             os.close(fd)
@@ -1492,6 +1515,8 @@ def producer_pack(
                 ),
             )
         if tombstone:
+            if frozen:
+                producer_publication(env, queue_id, "finalized", _guard=guard)
             db = sqlite3.connect(env.db_path)
             try:
                 db.execute(

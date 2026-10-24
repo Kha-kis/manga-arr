@@ -78,6 +78,8 @@ _TABLES = (
     }
     | _LEDGER_KEYS
 )
+_PURE_LEDGER_KEYS = _LEDGER_KEYS | {"file_identity_provision_intents": "intent_id"}
+_PURE_TABLES = _TABLES | _PURE_LEDGER_KEYS
 _REQUIRED_RAW = {
     **{table: frozenset(columns) for table, columns in _store._PROJECTIONS.items()},
     "series": frozenset("id title root_folder_id".split()),
@@ -103,6 +105,9 @@ _REQUIRED_RAW = {
         "id owner_domain owner_key_json revision predecessor_event_id set_id kind payload_json".split()
     ),
 }
+_REQUIRED_RAW["file_identity_provision_intents"] = frozenset(
+    "intent_id authority_id payload_json payload_sha256".split()
+)
 _VOLUME_FIELDS = frozenset(
     "id series_id volume_num status import_path download_id download_client_id torrent_name indexer protocol client grabbed_at imported_at source_url release_group size_bytes quality".split()
 )
@@ -345,7 +350,7 @@ class RawRow:
     def __post_init__(self) -> None:
         _text(self.table)
         if (
-            self.table not in _TABLES
+            self.table not in _PURE_TABLES
             or type(self.key) is not tuple
             or not self.key
             or type(self.values) is not tuple
@@ -354,7 +359,7 @@ class RawRow:
         expected_key = (
             ("series_id", "tag")
             if self.table == "series_tags"
-            else (_TABLES[self.table],)
+            else (_PURE_TABLES[self.table],)
         )
         if len(self.key) != len(expected_key):
             raise InvalidIdentity("invalid raw row key length")
@@ -363,7 +368,7 @@ class RawRow:
                 _path(value)
             elif column in {"download_identity_key", "tag"}:
                 _text(value)
-            elif self.table in _LEDGER_KEYS and column != "id":
+            elif self.table in _PURE_LEDGER_KEYS and column != "id":
                 _hex(value)
             else:
                 _integer(value, 1)
@@ -1715,6 +1720,12 @@ def _inventory(
         domain = snapshot.owner.domain
         if domain == "namespace":
             _namespace_roles(roles, root)
+            document = _mapping(roles.evidence.load(snapshot.rows_json))
+            if document["version"] == 2:
+                intent, _ = _store._provision_snapshot(document)
+                roles.add(
+                    "epoch_origin_parent", _path(intent["origin_path"]), "directory"
+                )
         elif domain == "rescan":
             _rescan_roles(roles, root)
         elif domain == "deletion":
@@ -1788,6 +1799,575 @@ def _inventory(
 def roles_for(snapshot: OwnerSnapshot) -> tuple[RoleSpec, ...]:
     """Validate fixed producer fields and describe only their persisted intent."""
     return tuple(sorted(_inventory(snapshot).values.values(), key=_role_order))
+
+
+def _claim_origin_matches(
+    claim: PackDirectoryClaim, origin: dict[str, object], evidence: _Evidence
+) -> bool:
+    if origin.get("kind") != "pack":
+        return False
+    proof = evidence.pack(_text(origin["ownership_json"]))
+    relative = _relative(origin["relative_path"])
+    return (
+        proof.artifact_owner_token == claim.artifact_owner_token
+        and proof.canonical_directory == claim.source_directory
+        and proof.inventory == claim.inventory
+        and proof.inventory is not None
+        and proof.inventory.files.get(relative)
+        == _fingerprint(origin["source_fingerprint"])
+        and _join(claim.source_directory.path, relative) == origin["src_path"]
+    )
+
+
+def _pack_restore_references(
+    closure: ReferenceClosure,
+    owner: OwnerRef,
+    claim: PackDirectoryClaim,
+    ownership_json: str | None,
+) -> tuple[tuple[RoleSpec, dict[str, object]], ...]:
+    """Project exact current/frozen source references of one original claim."""
+    evidence = _Evidence()
+    roots = {s.owner: _snapshot_records(s, evidence)[0] for s in closure.snapshots}
+    inventories = {s.owner: _inventory(s, evidence=evidence) for s in closure.snapshots}
+    if owner.domain not in {"pack_tombstone", "pack_reservation"} or owner not in roots:
+        raise InvalidIdentity("ownership_context")
+    row = roots[owner]
+    queue_id = row["queue_id"]
+    if queue_id is None:
+        if ownership_json is None:
+            return _transferred_claim_restore_references(closure, owner, claim)
+        return ()
+    identity = _identity(row)
+    source = claim.source_directory.path
+    result: list[tuple[RoleSpec, dict[str, object]]] = []
+    frozen_sources: dict[int, set[str]] = {}
+    for snapshot in closure.snapshots:
+        if snapshot.owner.domain not in {"publication", "queue_source"}:
+            continue
+        root, related = _snapshot_records(snapshot, evidence)
+        publications = (
+            [root]
+            if snapshot.owner.domain == "publication"
+            else [
+                _mapping(r["row"])
+                for r in related
+                if r["table"] == "import_publications"
+            ]
+        )
+        for publication in publications:
+            frozen = _mapping(evidence.load(publication["queue_snapshot_json"]))
+            if frozen["id"] != queue_id:
+                continue
+            origins = frozen.get("_pack_source_origins")
+            if origins is None:
+                continue
+            for file_id, value in _mapping(_mapping(origins)["files"]).items():
+                origin = _mapping(value)
+                applicable = origin.get("kind") == "pack" and (
+                    origin["logical_pack_path"] == source
+                    or _within(_path(origin["src_path"]), source)
+                )
+                if applicable and (
+                    _identity(frozen, "download_protocol") != identity
+                    or not _claim_origin_matches(claim, origin, evidence)
+                ):
+                    raise InvalidIdentity("ownership_context")
+                if _identity(frozen, "download_protocol") != identity:
+                    continue
+                if not _claim_origin_matches(claim, origin, evidence):
+                    continue
+                fid = _integer(origin["file_id"], 1)
+                raw = _text(origin["ownership_json"])
+                frozen_sources.setdefault(fid, set()).add(raw)
+                prefix = (
+                    "origin_"
+                    if snapshot.owner.domain == "publication"
+                    else f"origin_{publication['id']}_"
+                ) + file_id
+                canonical = RoleKey(None, prefix + "_canonical", "directory", None)
+                for spec in inventories[snapshot.owner].values.values():
+                    projected = (
+                        spec.role
+                        in {
+                            canonical,
+                            RoleKey(None, prefix + "_logical", "directory", None),
+                        }
+                        or spec.parent_role == canonical
+                    )
+                    if (
+                        snapshot.owner.domain == "publication"
+                        and spec.role.file_id == fid
+                        and spec.role.purpose in {"source", "admission_source"}
+                        and spec.path == origin["src_path"]
+                    ):
+                        projected = True
+                    if not projected or not _within(spec.path, source):
+                        continue
+                    result.append(
+                        (
+                            spec,
+                            {
+                                "kind": "frozen-pack-origin",
+                                "publication_id": _integer(publication["id"], 1)
+                                if snapshot.owner.domain == "publication"
+                                else None,
+                                "queue_id": _integer(queue_id, 1),
+                                "file_id": fid,
+                                "identity_key": download_identity_key(identity),
+                                "artifact_owner_token": claim.artifact_owner_token,
+                                "origin_sha256": hashlib.sha256(
+                                    _encode(origin).encode()
+                                ).hexdigest(),
+                                "origin_ownership_sha256": hashlib.sha256(
+                                    raw.encode()
+                                ).hexdigest(),
+                                "relative": spec.role.relative,
+                            },
+                        )
+                    )
+    queue_owner = OwnerRef("queue_source", (_integer(queue_id, 1),))
+    queue = roots.get(queue_owner)
+    if queue is not None:
+        if _identity(queue, "download_protocol") != identity:
+            raise InvalidIdentity("ownership_context")
+        _, related = _snapshot_records(
+            next(s for s in closure.snapshots if s.owner == queue_owner), evidence
+        )
+        files = [
+            _mapping(r["row"]) for r in related if r["table"] == "import_queue_files"
+        ]
+        raw_sources: set[str] = set()
+        if ownership_json is not None:
+            raw_sources.add(ownership_json)
+        else:
+            for strings in frozen_sources.values():
+                raw_sources.update(strings)
+        if ownership_json is None and not raw_sources:
+            return _transferred_claim_restore_references(closure, owner, claim)
+        if len(raw_sources) != 1:
+            raise InvalidIdentity("ownership_phase")
+        raw = next(iter(raw_sources))
+        proof = evidence.pack(raw)
+        if (
+            proof.artifact_owner_token != claim.artifact_owner_token
+            or proof.canonical_directory != claim.source_directory
+            or proof.inventory != claim.inventory
+        ):
+            raise InvalidIdentity("ownership_context")
+        for file in files:
+            path = _path(file["src_path"])
+            if not _within(path, source) or path == source:
+                continue
+            relative = path[len(source.rstrip("/")) + 1 :]
+            if relative not in claim.inventory.files:
+                raise InvalidIdentity("ownership_context")
+            fid = _integer(file["id"], 1)
+            if ownership_json is None and raw not in frozen_sources.get(fid, set()):
+                raise InvalidIdentity("ownership_context")
+            spec = inventories[queue_owner].values[RoleKey(fid, "source", "file", None)]
+            result.append(
+                (
+                    spec,
+                    {
+                        "kind": "pack-source-file",
+                        "queue_id": _integer(queue_id, 1),
+                        "queue_file_id": fid,
+                        "identity_key": download_identity_key(identity),
+                        "artifact_owner_token": claim.artifact_owner_token,
+                        "relative": relative,
+                        "origin_ownership_sha256": hashlib.sha256(
+                            raw.encode()
+                        ).hexdigest(),
+                    },
+                )
+            )
+        if queue["src_dir"] == source:
+            spec = inventories[queue_owner].values[
+                RoleKey(None, "source_directory", "directory", None)
+            ]
+            result.append(
+                (
+                    spec,
+                    {
+                        "kind": "pack-source-root",
+                        "queue_id": _integer(queue_id, 1),
+                        "queue_file_id": None,
+                        "identity_key": download_identity_key(identity),
+                        "artifact_owner_token": claim.artifact_owner_token,
+                        "relative": None,
+                        "origin_ownership_sha256": hashlib.sha256(
+                            raw.encode()
+                        ).hexdigest(),
+                    },
+                )
+            )
+    elif ownership_json is None and not frozen_sources:
+        return _transferred_claim_restore_references(closure, owner, claim)
+    return tuple(result)
+
+
+def _transferred_claim_restore_references(
+    closure: ReferenceClosure,
+    owner: OwnerRef,
+    claim: PackDirectoryClaim,
+) -> tuple[tuple[RoleSpec, dict[str, object]], ...]:
+    """Bind retained queue names to opaque transferred claim bytes, not ownership."""
+    from import_pack_cleanup import _pack_owner_marker_payload
+
+    _owner(owner)
+    snapshots = {snapshot.owner: snapshot for snapshot in closure.snapshots}
+    if owner.domain != "pack_tombstone" or owner not in snapshots:
+        raise InvalidIdentity("ownership_context")
+    evidence = _Evidence()
+    snapshot = snapshots[owner]
+    projection = _inventory(snapshot, evidence=evidence)
+    row, _ = _snapshot_records(snapshot, evidence)
+    raw = _text(row["carrier_json"])
+    source = _path(row["pack_path"])
+    token = claim.artifact_owner_token
+    primary = RoleKey(None, "tombstone_captured", "directory", None)
+    if (
+        evidence.claim(raw) != claim
+        or token is None
+        or claim.carrier.binding != ClaimBinding("pack", token, None, "pack_cleanup")
+        or claim.carrier.artifact_fingerprint is not None
+        or claim.carrier.restore_receipt is not None
+        or claim.source_directory.path != source
+        or row["tombstone_path"] != _join(claim.carrier.carrier_path, "artifact")
+        or projection.values[primary] not in closure.roles
+        or not claim.inventory.files
+    ):
+        raise InvalidIdentity("ownership_context")
+    if claim.carrier.phase != "claimed":
+        raise InvalidIdentity("ownership_phase")
+    identity = _identity(row)
+    _ = _pack_paths(source, identity, token)
+    marker = claim.source_directory.marker_fingerprint
+    payload = _pack_owner_marker_payload(identity, token)
+    if (
+        marker is None
+        or marker.size != len(payload)
+        or marker.sha256 != hashlib.sha256(payload).hexdigest()
+    ):
+        raise InvalidIdentity("ownership_context")
+    # A current owner of this logical generation is not a lost-document case.
+    for other in closure.snapshots:
+        if other.owner.domain != "pack_reservation":
+            continue
+        current, _ = _snapshot_records(other, evidence)
+        if (
+            current["pack_path"] == source
+            or current["download_identity_key"] == row["download_identity_key"]
+        ):
+            raise InvalidIdentity("ownership_context")
+    queue_id = _integer(row["queue_id"], 1)
+    queue_owner = OwnerRef("queue_source", (queue_id,))
+    queue_snapshot = snapshots.get(queue_owner)
+    if queue_snapshot is None:
+        raise InvalidIdentity("ownership_context")
+    queue_projection = _inventory(queue_snapshot, evidence=evidence)
+    queue, related = _snapshot_records(queue_snapshot, evidence)
+    if (
+        _integer(queue["id"], 1) != queue_id
+        or _identity(queue, "download_protocol") != identity
+        or queue["status"] not in _TERMINAL
+        or queue["lease_owner"] is not None
+    ):
+        raise InvalidIdentity("ownership_context")
+    common: dict[str, object] = {
+        "claim_owner": {"domain": owner.domain, "key": list(owner.key)},
+        "claim_role": asdict(primary),
+        "claim_snapshot_sha256": snapshot.sha256,
+        "claim_sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        "queue_snapshot_sha256": queue_snapshot.sha256,
+        "queue_id": queue_id,
+        "identity_key": download_identity_key(identity),
+        "artifact_owner_token": token,
+    }
+    result: list[tuple[RoleSpec, dict[str, object]]] = []
+    for record in related:
+        if record["table"] != "import_queue_files":
+            continue
+        file = _mapping(record["row"])
+        if _integer(file["queue_id"], 1) != queue_id:
+            raise InvalidIdentity("ownership_context")
+        path = _path(file["src_path"])
+        if not _within(path, source):
+            continue
+        relative = _relative(path[len(source.rstrip("/")) + 1 :])
+        fingerprint = claim.inventory.files.get(relative)
+        fid = _integer(file["id"], 1)
+        spec = queue_projection.values.get(RoleKey(fid, "source", "file", None))
+        if (
+            fingerprint is None
+            or spec is None
+            or spec not in closure.roles
+            or spec.path != path
+        ):
+            raise InvalidIdentity("ownership_context")
+        result.append(
+            (
+                spec,
+                {
+                    **common,
+                    "kind": "transferred-pack-claim-source-file",
+                    "queue_file_id": fid,
+                    "relative": relative,
+                    "source_fingerprint": asdict(fingerprint),
+                },
+            )
+        )
+    if not result:
+        raise InvalidIdentity("ownership_context")
+    if queue["src_dir"] == source:
+        spec = queue_projection.values.get(
+            RoleKey(None, "source_directory", "directory", None)
+        )
+        if spec is None or spec not in closure.roles or spec.path != source:
+            raise InvalidIdentity("ownership_context")
+        result.append(
+            (
+                spec,
+                {
+                    **common,
+                    "kind": "transferred-pack-claim-source-root",
+                    "queue_file_id": None,
+                    "relative": None,
+                    "source_fingerprint": None,
+                },
+            )
+        )
+    return tuple(sorted(result, key=lambda item: _role_order(item[0])))
+
+
+def _location_cohorts(closure: ReferenceClosure) -> tuple[frozenset[RoleSpec], ...]:
+    """Closed producer relationships for location only, never action consent."""
+    evidence = _Evidence()
+    inventories = {s.owner: _inventory(s, evidence=evidence) for s in closure.snapshots}
+    roots = {s.owner: _snapshot_records(s, evidence)[0] for s in closure.snapshots}
+    cohorts: list[frozenset[RoleSpec]] = []
+    sources: list[tuple[OwnerRef, PackDirectoryClaim, frozenset[RoleSpec]]] = []
+
+    def tree(inventory: _Roles, purpose: str) -> frozenset[RoleSpec]:
+        key = RoleKey(None, purpose, "directory", None)
+        return frozenset(
+            r
+            for r in inventory.values.values()
+            if r.role == key or r.parent_role == key
+        )
+
+    def carrier_tree(inventory: _Roles, purpose: str) -> frozenset[RoleSpec]:
+        return tree(inventory, purpose + "_carrier") | tree(
+            inventory, purpose + "_captured"
+        )
+
+    for owner, inventory in inventories.items():
+        row = roots[owner]
+        if owner.domain == "pack_tombstone" and row["carrier_json"] is not None:
+            claims = [("tombstone", evidence.claim(_text(row["carrier_json"])))]
+        elif (
+            owner.domain == "pack_reservation"
+            and row["directory_ownership_json"] is not None
+        ):
+            proof = evidence.pack(_text(row["directory_ownership_json"]))
+            claims = [
+                (f"pack_claim_{i}", claim) for i, claim in enumerate(proof.claims)
+            ]
+            if (
+                proof.phase == "attaching"
+                and proof.private_directory is not None
+                and proof.canonical_directory is not None
+                and proof.inventory is not None
+            ):
+                private, canonical = proof.private_directory, proof.canonical_directory
+                if (private.dev, private.inode, private.marker_fingerprint) == (
+                    canonical.dev,
+                    canonical.inode,
+                    canonical.marker_fingerprint,
+                ):
+                    cohorts.append(tree(inventory, "pack_private"))
+            placement = proof.placement_carrier
+            if placement is not None and placement.phase in {"discarding", "discarded"}:
+                physical = _join(placement.carrier_path, "artifact")
+                group = (
+                    tree(inventory, "pack_placement_carrier")
+                    if placement.phase == "discarded"
+                    else frozenset[RoleSpec]()
+                )
+                for purpose, directory in (
+                    ("pack_private", proof.private_directory),
+                    ("pack_canonical", proof.canonical_directory),
+                ):
+                    if directory is not None and directory.path == physical:
+                        group |= tree(inventory, purpose)
+                        if row["queue_id"] is not None and proof.inventory is not None:
+                            queue_owner = OwnerRef(
+                                "queue_source", (_integer(row["queue_id"], 1),)
+                            )
+                            queue = roots.get(queue_owner)
+                            if queue is not None and _identity(
+                                queue, "download_protocol"
+                            ) == _identity(row):
+                                files = {
+                                    _join(physical, relative)
+                                    for relative in proof.inventory.files
+                                }
+                                group |= frozenset(
+                                    r
+                                    for r in inventories[queue_owner].values.values()
+                                    if (r.role.purpose == "source" and r.path in files)
+                                    or (
+                                        r.role
+                                        == RoleKey(
+                                            None, "source_directory", "directory", None
+                                        )
+                                        and r.path == physical
+                                    )
+                                )
+                if group:
+                    cohorts.append(group)
+        else:
+            continue
+        for purpose, claim in claims:
+            phase = claim.carrier.phase
+            if phase in {"claimed", "discarding", "discarded"}:
+                group = tree(inventory, purpose + "_source")
+                if owner.domain == "pack_reservation":
+                    proof = evidence.pack(_text(row["directory_ownership_json"]))
+                    if (
+                        proof.canonical_directory == claim.source_directory
+                        and proof.inventory == claim.inventory
+                    ):
+                        group |= tree(inventory, "pack_canonical")
+                cohorts.append(group)
+                sources.append((owner, claim, group))
+            if phase in {"discarding", "discarded"}:
+                group = (
+                    carrier_tree(inventory, purpose)
+                    if phase == "discarded"
+                    else tree(inventory, purpose + "_captured")
+                )
+                if phase == "discarded":
+                    group |= frozenset(
+                        r
+                        for r in inventory.values.values()
+                        if r.role == RoleKey(None, "tombstone_path", "directory", None)
+                        and r.path == _join(claim.carrier.carrier_path, "artifact")
+                    )
+                cohorts.append(group)
+
+    # Join aliases only through the captured queue and exact original generation.
+    for owner, claim, source in sources:
+        row = roots[owner]
+        queue_id = row["queue_id"]
+        if queue_id is None:
+            continue
+        identity = _identity(row)
+        queue_owner = OwnerRef("queue_source", (_integer(queue_id, 1),))
+        queue = roots.get(queue_owner)
+        if queue is not None and _identity(queue, "download_protocol") == identity:
+            aliases = set(source)
+            if queue["src_dir"] == claim.source_directory.path:
+                aliases.update(
+                    r
+                    for r in inventories[queue_owner].values.values()
+                    if r.role == RoleKey(None, "source_directory", "directory", None)
+                )
+            for snapshot in closure.snapshots:
+                if snapshot.owner != queue_owner:
+                    continue
+                _, related = _snapshot_records(snapshot, evidence)
+                files = {
+                    _integer(_mapping(r["row"])["id"], 1): _mapping(r["row"])
+                    for r in related
+                    if r["table"] == "import_queue_files"
+                }
+                paths = {
+                    _join(claim.source_directory.path, relative)
+                    for relative in claim.inventory.files
+                }
+                for role in inventories[queue_owner].values.values():
+                    file = (
+                        files.get(role.role.file_id)
+                        if role.role.file_id is not None
+                        else None
+                    )
+                    if (
+                        role.role.purpose == "source"
+                        and file is not None
+                        and file["queue_id"] == queue_id
+                        and file["src_path"] == role.path
+                        and role.path in paths
+                    ):
+                        aliases.add(role)
+            cohorts.append(frozenset(aliases))
+        for snapshot in closure.snapshots:
+            _, related = _snapshot_records(snapshot, evidence)
+            publications = (
+                [roots[snapshot.owner]]
+                if snapshot.owner.domain == "publication"
+                else [
+                    _mapping(r["row"])
+                    for r in related
+                    if r["table"] == "import_publications"
+                ]
+                if snapshot.owner == queue_owner
+                else []
+            )
+            for publication in publications:
+                frozen = _mapping(evidence.load(publication["queue_snapshot_json"]))
+                origins = frozen.get("_pack_source_origins")
+                if (
+                    frozen["id"] != queue_id
+                    or _identity(frozen, "download_protocol") != identity
+                    or origins is None
+                ):
+                    continue
+                for file_id, raw in _mapping(_mapping(origins)["files"]).items():
+                    origin = _mapping(raw)
+                    if origin["kind"] != "pack":
+                        continue
+                    admitted = evidence.pack(_text(origin["ownership_json"]))
+                    if (
+                        admitted.artifact_owner_token != claim.artifact_owner_token
+                        or admitted.canonical_directory != claim.source_directory
+                        or admitted.inventory != claim.inventory
+                        or origin["relative_path"] not in claim.inventory.files
+                        or _fingerprint(origin["source_fingerprint"])
+                        != claim.inventory.files[_text(origin["relative_path"])]
+                    ):
+                        continue
+                    prefix = (
+                        "origin_"
+                        if snapshot.owner.domain == "publication"
+                        else f"origin_{publication['id']}_"
+                    ) + file_id
+                    group = tree(inventories[snapshot.owner], prefix + "_canonical")
+                    if snapshot.owner.domain == "publication":
+                        values = inventories[snapshot.owner].values
+                        fid = _integer(origin["file_id"], 1)
+                        role = values.get(RoleKey(fid, "source", "file", None))
+                        if role is not None and role.path == origin["src_path"]:
+                            group |= frozenset({role})
+                        protocol = _mapping(frozen.get("_file_publication", {}))
+                        admission = protocol.get("admission")
+                        if admission is not None:
+                            files = _mapping(_mapping(admission)["files"])
+                            mapping = _mapping(_mapping(files[file_id])["mapping"])
+                            role = values.get(
+                                RoleKey(fid, "admission_source", "file", None)
+                            )
+                            if (
+                                role is not None
+                                and mapping.get("queue_id") == queue_id
+                                and mapping.get("id") == fid
+                                and mapping.get("src_path")
+                                == role.path
+                                == origin["src_path"]
+                            ):
+                                group |= frozenset({role})
+                    cohorts.append(source | group)
+    return tuple(group for group in cohorts if group)
 
 
 def snapshot_owner(db: sqlite3.Connection, owner: OwnerRef) -> OwnerSnapshot:
@@ -1954,11 +2534,41 @@ def _snapshot_from_rows(raw: dict[str, list[RawRow]], owner: OwnerRef) -> OwnerS
         return {
             "table": record.table,
             "key": list(record.key),
-            "row": {c: values[c] for c in sorted(_store._PROJECTIONS[record.table])},
+            "row": {
+                c: values[c]
+                for c in sorted(
+                    _store._PROVISION_ROWS[record.table]
+                    if record.table in _store._PROVISION_ROWS
+                    else _store._PROJECTIONS[record.table]
+                )
+            },
         }
 
     root = matches[0]
     related: list[RawRow] = []
+    version = 1
+    if owner.domain == "namespace":
+        epochs = [
+            r
+            for r in raw["file_identity_epochs"]
+            if dict(r.values)["allocation_path"] == owner.key[0]
+            and _mapping(_load(dict(r.values)["birth_json"]))["version"] == 2
+        ]
+        if len(epochs) > 1:
+            raise InvalidIdentity("ownership_binding")
+        if epochs:
+            version = 2
+            epoch = epochs[0]
+            birth = _store._epoch_birth(_text(dict(epoch.values)["birth_json"]))
+            iid = _mapping(birth["controlled_birth"])["intent_id"]
+            intents = [
+                r
+                for r in raw.get("file_identity_provision_intents", [])
+                if r.key == (iid,)
+            ]
+            if len(intents) != 1:
+                raise InvalidIdentity("ownership_binding")
+            related = [epoch, *intents]
     if owner.domain in {"publication", "queue_source"}:
         queue_id = (
             dict(root.values)["queue_id"]
@@ -1990,7 +2600,7 @@ def _snapshot_from_rows(raw: dict[str, list[RawRow]], owner: OwnerRef) -> OwnerS
         ]
     encoded = _encode(
         {
-            "version": 1,
+            "version": version,
             "owner": {"domain": owner.domain, "key": list(owner.key)},
             "root": project(root),
             "related": [project(r) for r in sorted(related, key=_raw_order)],
@@ -2009,7 +2619,8 @@ class _Ledger:
         self.evidence = evidence
         self.counter = counter
         self.index = {
-            table: {r.key[0]: r for r in raw[table]} for table in _LEDGER_KEYS
+            table: {r.key[0]: r for r in raw.get(table, [])}
+            for table in _PURE_LEDGER_KEYS
         }
         self.sets: dict[OwnerRef, list[str]] = {}
         self.events: dict[OwnerRef, list[dict[str, object]]] = {}
@@ -2021,6 +2632,57 @@ class _Ledger:
         self.dependencies: dict[OwnerRef, set[OwnerRef]] = {}
         self.links: dict[OwnerRef, set[OwnerRef]] = {}
         self.frozen_dependencies: dict[str, tuple[OwnerSnapshot, ...]] = {}
+        self.intents: dict[str, dict[str, object]] = {}
+        reservations: list[tuple[str, str]] = []
+        for record in raw.get("file_identity_provision_intents", []):
+            row = dict(record.values)
+            if set(row) != _REQUIRED_RAW[record.table]:
+                raise InvalidIdentity("ownership_wire")
+            intent = _store._provision_intent(_text(row["payload_json"]))
+            iid, eid = _hex(row["intent_id"]), _hex(intent["epoch_id"])
+            if (
+                iid != intent["allocation_token"]
+                or row["authority_id"] != intent["authority_id"]
+                or row["payload_sha256"]
+                != hashlib.sha256(_encode(intent).encode()).hexdigest()
+            ):
+                raise InvalidIdentity("ownership_binding")
+            authority_record = self.index["file_identity_authorities"].get(
+                _hex(row["authority_id"])
+            )
+            if authority_record is None:
+                raise InvalidIdentity("ownership_authority")
+            authority = dict(authority_record.values)
+            if (
+                authority["incarnation_token"] != intent["authority_incarnation"]
+                or self.evidence.load(authority["profile_json"]) != intent["profile"]
+                or self.evidence.load(authority["declaration_json"]) != intent["scope"]
+                or authority["qualification_sha256"]
+                != _mapping(intent["profile"])["qualification_sha256"]
+            ):
+                raise InvalidIdentity("ownership_authority")
+            allocation = _path(intent["allocation_path"])
+            if any(
+                old_eid == eid or _within(allocation, path) or _within(path, allocation)
+                for old_eid, path in reservations
+            ):
+                raise InvalidIdentity("ownership_binding")
+            for epoch_record in raw["file_identity_epochs"]:
+                epoch = dict(epoch_record.values)
+                if epoch["epoch_id"] == eid:
+                    birth = _store._epoch_birth(_text(epoch["birth_json"]))
+                    if (
+                        birth["version"] != 2
+                        or _mapping(birth["controlled_birth"])["intent_id"] != iid
+                    ):
+                        raise InvalidIdentity("ownership_binding")
+                elif _within(allocation, _path(epoch["root_path"])) or allocation in {
+                    epoch["allocation_path"],
+                    epoch["root_path"],
+                }:
+                    raise InvalidIdentity("ownership_binding")
+            reservations.append((eid, allocation))
+            self.intents[iid] = intent
         for record in raw["file_identity_sets"]:
             row = dict(record.values)
             owner = self.owner(row)
@@ -2112,6 +2774,42 @@ class _Ledger:
         scope = _path(declaration["scope_path"])
         _hex(declaration["scope_token"])
         incarnation = _hex(authority["incarnation_token"])
+        birth = _store._epoch_birth(_text(epoch["birth_json"]))
+        if birth["version"] == 2:
+            receipt = _mapping(birth["controlled_birth"])
+            intent_row = self.require(
+                "file_identity_provision_intents", _hex(receipt["intent_id"])
+            )
+            intent = _store._provision_intent(_text(intent_row["payload_json"]))
+            if (
+                intent_row["intent_id"] != intent["allocation_token"]
+                or intent_row["payload_sha256"]
+                != hashlib.sha256(_encode(intent).encode()).hexdigest()
+            ):
+                raise InvalidIdentity("ownership_binding")
+            if (
+                intent["authority_id"] != authority_id
+                or intent_row["authority_id"] != authority_id
+                or intent["authority_incarnation"] != incarnation
+                or intent["profile"] != profile
+                or intent["scope"] != declaration
+            ):
+                raise InvalidIdentity("ownership_authority")
+            for name in (
+                "epoch_id",
+                "authority_id",
+                "origin_path",
+                "allocation_path",
+                "root_path",
+            ):
+                if epoch[name] != intent[name] or epoch[name] != receipt[name]:
+                    raise InvalidIdentity("ownership_binding")
+            if (
+                snapshot.owner != _store._owner_from(intent["namespace_owner"])
+                or _mapping(_load(snapshot.rows_json))["version"] != 2
+            ):
+                raise InvalidIdentity("ownership_binding")
+            return epoch_id, authority_id
         birth = self.document(
             epoch["birth_json"],
             {"layout", "enrollment", "legacy_namespace", "controlled_birth"},
@@ -2216,6 +2914,11 @@ class _Ledger:
         _store._acyclic(prior_edges)
         previous: dict[str, object] | None = None
         seen: set[tuple[str, str]] = set()
+        capabilities: dict[str, tuple[int, dict[str, object]]] = {}
+        provisioned = any(
+            _mapping(self.evidence.load(self.snapshots[s].rows_json))["version"] == 2
+            for s in self.sets.get(owner, [])
+        )
         events = sorted(
             self.events.get(owner, []), key=lambda r: _integer(r["revision"], 1)
         )
@@ -2224,6 +2927,8 @@ class _Ledger:
             if _integer(event["revision"], 1) != revision or event[
                 "predecessor_event_id"
             ] != (None if previous is None else previous["id"]):
+                if provisioned:
+                    raise InvalidIdentity("ownership_phase")
                 raise InvalidIdentity("identity event predecessor/revision mismatch")
             set_id = _hex(event["set_id"])
             proof = self.proofs.get(set_id)
@@ -2254,6 +2959,8 @@ class _Ledger:
                     or previous["kind"] != "prepared"
                     or previous["set_id"] != set_id
                 ):
+                    if provisioned:
+                        raise InvalidIdentity("ownership_phase")
                     raise InvalidIdentity("identity activation predecessor mismatch")
             elif kind in {
                 "recovery_intent",
@@ -2262,6 +2969,16 @@ class _Ledger:
                 "retained",
                 "retired",
             }:
+                version = _mapping(self.evidence.load(event["payload_json"])).get(
+                    "version"
+                )
+                if type(version) is int and version == 2:
+                    payload = _store._allocation_payload(_text(event["payload_json"]))
+                    if kind != "recovery_step":
+                        raise InvalidIdentity("ownership_wire")
+                    self.capability(event, previous, payload, proof, capabilities)
+                    previous = event
+                    continue
                 payload = self.document(
                     event["payload_json"],
                     {"before_snapshot_json", "before_snapshot_sha256", "plan_sha256"},
@@ -2301,6 +3018,82 @@ class _Ledger:
         self.validated.add(owner)
         return dependencies
 
+    def capability(
+        self,
+        event: dict[str, object],
+        previous: dict[str, object] | None,
+        payload: dict[str, object],
+        proof: _store.ProofSet,
+        transitions: dict[str, tuple[int, dict[str, object]]],
+    ) -> None:
+        snapshot = _mapping(_load(proof.snapshot.rows_json))
+        if snapshot["version"] != 2:
+            raise InvalidIdentity("ownership_phase")
+        intent, birth = _store._provision_snapshot(snapshot)
+        epoch = self.require("file_identity_epochs", proof.epoch_id)
+        if (
+            payload["before_snapshot_json"] != proof.snapshot.rows_json
+            or payload["before_snapshot_sha256"] != proof.snapshot.sha256
+            or payload["epoch_id"] != proof.epoch_id
+            or payload["intent_id"] != birth["intent_id"]
+            or payload["birth_sha256"]
+            != hashlib.sha256(
+                _store._encode(_store._epoch_birth(_text(epoch["birth_json"]))).encode()
+            ).hexdigest()
+        ):
+            raise InvalidIdentity("ownership_binding")
+        for name in (
+            "authority_id",
+            "authority_incarnation",
+            "origin_path",
+            "allocation_path",
+            "root_path",
+        ):
+            if payload[name] != intent[name]:
+                raise InvalidIdentity("ownership_authority")
+        activation = self.require(
+            "file_identity_events", _integer(payload["activation_event_id"], 1)
+        )
+        if (
+            activation["kind"] != "activated"
+            or activation["set_id"] != proof.set_id
+            or self.owner(activation) != proof.owner
+        ):
+            raise InvalidIdentity("ownership_phase")
+        prepared = self.require(
+            "file_identity_events", _integer(activation["predecessor_event_id"], 1)
+        )
+        if (
+            prepared["kind"] != "prepared"
+            or prepared["set_id"] != proof.set_id
+            or self.owner(prepared) != proof.owner
+            or _integer(activation["revision"], 1)
+            != _integer(prepared["revision"], 1) + 1
+        ):
+            raise InvalidIdentity("ownership_phase")
+        prior = transitions.get(proof.epoch_id)
+        if payload["state"] == "grant":
+            if (
+                prior is not None
+                or previous != activation
+                or payload["plan_sha256"] != intent["plan_sha256"]
+            ):
+                raise InvalidIdentity("ownership_phase")
+        else:
+            if (
+                prior is None
+                or prior[1]["state"] != "grant"
+                or payload["prior_capability_event_id"] != prior[0]
+            ):
+                raise InvalidIdentity("ownership_phase")
+            if any(
+                payload[name] != prior[1][name]
+                for name in payload
+                if name not in {"state", "prior_capability_event_id", "plan_sha256"}
+            ):
+                raise InvalidIdentity("ownership_binding")
+        transitions[proof.epoch_id] = _integer(event["id"], 1), payload
+
     def recovery_flag(self, owner: OwnerRef, row: dict[str, object]) -> None:
         if owner.domain not in {"rescan", "deletion"}:
             return
@@ -2329,7 +3122,7 @@ class _Ledger:
 def _validate_closure(
     closure: ReferenceClosure, parent: str, budget: InventoryBudget
 ) -> None:
-    raw: dict[str, list[RawRow]] = {table: [] for table in _TABLES}
+    raw: dict[str, list[RawRow]] = {table: [] for table in _PURE_TABLES}
     for row in closure.raw_rows:
         row.__post_init__()
         raw[row.table].append(row)
@@ -2359,6 +3152,12 @@ def _bind_references(
     budget.__post_init__()
     counter = counter or _Counter(budget)
     evidence = _Evidence()
+    raw = {
+        **raw,
+        "file_identity_provision_intents": raw.get(
+            "file_identity_provision_intents", []
+        ),
+    }
     try:
         for table, records in raw.items():
             if len({r.key for r in records}) != len(records):
@@ -2367,6 +3166,12 @@ def _bind_references(
                 if not _REQUIRED_RAW[table] <= dict(record.values).keys():
                     raise InvalidIdentity("inventory raw row omits required columns")
         ledger = _Ledger(raw, evidence, counter)
+        for iid, intent in ledger.intents.items():
+            if _within(_path(intent["origin_path"]), parent):
+                _ = ledger.require("file_identity_provision_intents", iid)
+                _ = ledger.require(
+                    "file_identity_authorities", _hex(intent["authority_id"])
+                )
         snapshots: dict[OwnerRef, OwnerSnapshot] = {}
         roles: dict[OwnerRef, tuple[RoleSpec, ...]] = {}
         roots: dict[OwnerRef, dict[str, object]] = {}

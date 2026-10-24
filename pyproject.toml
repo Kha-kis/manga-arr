@@ -31,7 +31,13 @@ mangarr = "cli:main"
 
 [tool.setuptools]
 package-dir = { "" = "app" }
-py-modules = ["auth", "backups", "cli", "qbit_auth", "release_identity", "release_selections", "shared", "version"]
+py-modules = [
+  "auth", "backups", "cli", "qbit_auth", "release_identity", "release_selections", "shared", "version",
+  "file_identity_cli", "file_identity_recovery", "file_identity_consumers", "file_identity_store",
+  "file_identity", "file_mutation_lock", "download_identity", "private_file_claim", "private_pack_claim",
+  "import_plan", "acquisition_policy", "events", "parsing", "files", "import_kinds", "import_lease",
+  "rescan", "comicinfo", "helpers", "import_pack_cleanup",
+]
 
 [tool.setuptools.dynamic]
 version = { file = ["app/VERSION"] }

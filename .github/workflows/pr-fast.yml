@@ -35,8 +35,27 @@ jobs:
 
       - name: Validate package metadata and CLI
         run: |
-          python -m pip install --no-deps .
-          mangarr --version
+          set -euo pipefail
+          umask 0022
+          qualification="$(mktemp -d "${RUNNER_TEMP}/mangarr-operator.XXXXXXXX")"
+          mkdir -m 700 "$qualification/wheels" "$qualification/home" "$qualification/config" "$qualification/cache" "$qualification/tmp"
+          export HOME="$qualification/home" XDG_CONFIG_HOME="$qualification/config"
+          export XDG_CACHE_HOME="$qualification/cache" TMPDIR="$qualification/tmp"
+          export PYTHONDONTWRITEBYTECODE=1 PYTEST_ADDOPTS="-p no:cacheprovider" GIT_OPTIONAL_LOCKS=0
+          unset PYTHONPATH PYTHONHOME
+          python -m pip wheel --no-deps . --wheel-dir "$qualification/wheels"
+          shopt -s nullglob
+          wheels=("$qualification/wheels/"*.whl)
+          test "${#wheels[@]}" -eq 1
+          python scripts/verify_operator_wheel.py "$qualification/wheels" pyproject.toml
+          python -m pip install --no-deps "${wheels[0]}"
+          export MANGARR_INSTALLED_CLI="$(command -v mangarr)"
+          export MANGARR_OPERATOR_WHEEL="${wheels[0]}"
+          test -n "$MANGARR_INSTALLED_CLI"
+          python -m pytest -p no:cacheprovider --basetemp "$qualification/pytest" \
+            tests/python/test_operator_cli_packaging.py \
+            tests/python/test_operator_ownership_cli.py \
+            tests/python/test_operator_cli.py -q
 
       - name: Run fast gate
         run: MANGARR_INSTALLED_CLI="$(command -v mangarr)" make test-fast
