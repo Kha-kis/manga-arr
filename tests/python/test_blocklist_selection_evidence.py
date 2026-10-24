@@ -564,7 +564,7 @@ def test_staged_restore_cannot_resurrect_consumed_handle(
 
 @pytest.mark.parametrize(
     "version,missing,accepted",
-    [(6, True, True), (7, True, False), (8, True, False), (8, False, False)],
+    [(6, True, True), (7, True, False), (8, True, False), (9, False, False)],
 )
 def test_restore_legacy_missing_and_future_schema(
     tmp_path: Path, version: int, missing: bool, accepted: bool
@@ -593,6 +593,148 @@ def test_restore_legacy_missing_and_future_schema(
         with pytest.raises(backups.BackupArchiveError):
             backups.restore_backup_archive(str(archive), config_dir=str(target))
         assert sentinel.read_bytes() == b"previous database"
+
+
+@pytest.mark.parametrize("version", [7, 8])
+@pytest.mark.parametrize("allow_legacy", [False, True])
+def test_clear_selection_real_schema_preserves_transaction_and_durable_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: int, allow_legacy: bool
+) -> None:
+    import schema
+    from file_identity_schema7 import initialize_schema7
+    from release_identity import ReleaseIdentity, SourceContext, add_block
+
+    path = tmp_path / "selections.db"
+    monkeypatch.setattr(shared, "DB_PATH", str(path))
+    if version == 7:
+        initialize_schema7(path, monkeypatch)
+    else:
+        schema.init_db()
+    with closing(sqlite3.connect(path)) as db:
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys=ON")
+        assert db.execute("PRAGMA user_version").fetchone()[0] == version
+        scope = "bs1:d:" + "a" * 64
+        db.execute("INSERT INTO series(id,title,search_pattern) VALUES(1,'one','one')")
+        db.execute("INSERT INTO volumes(id,series_id,volume_num) VALUES(1,1,1)")
+        db.execute(
+            "INSERT INTO indexers(id,name,type,release_source_scope) VALUES(1,'direct','torznab',?)",
+            (scope,),
+        )
+        add_block(
+            db,
+            series_id=1,
+            url="https://blocked.test/one",
+            title="one",
+            reason="fixture",
+            indexer="direct",
+            protocol="torrent",
+            size_bytes=1,
+            identities=[ReleaseIdentity(1, scope, "torrent", "Guid")],
+        )
+        handles = selections.issue_selections(
+            db,
+            issuer=selections.SelectionIssuer("api", None),
+            now=100,
+            snapshots=[
+                selections.SelectionSnapshot(
+                    1,
+                    1,
+                    SourceContext(
+                        1, scope, "torznab", None, "torrent", "interactive", 1
+                    ),
+                    {
+                        "url": f"https://download.test/{i}",
+                        "guid": f"Guid-{i}",
+                        "protocol": "torrent",
+                        "title": "one",
+                        "indexer": "direct",
+                        "size_bytes": 1,
+                        "seeders": 1,
+                    },
+                )
+                for i in range(2)
+            ],
+        )
+        assert len(handles) == 2
+        db.commit()
+        before = tuple(db.iterdump())
+        durable = tuple(
+            line for line in before if "release_selection_evidence" not in line
+        )
+        db.execute("BEGIN IMMEDIATE")
+        selections.clear_selection_evidence(db, allow_legacy=allow_legacy)
+        assert db.in_transaction
+        assert (
+            db.execute("SELECT count(*) FROM release_selection_evidence").fetchone()[0]
+            == 0
+        )
+        assert (
+            tuple(
+                line
+                for line in db.iterdump()
+                if "release_selection_evidence" not in line
+            )
+            == durable
+        )
+        db.rollback()
+        assert tuple(db.iterdump()) == before
+        db.execute("BEGIN IMMEDIATE")
+        selections.clear_selection_evidence(db, allow_legacy=allow_legacy)
+        selections.clear_selection_evidence(db, allow_legacy=allow_legacy)
+        assert db.in_transaction
+        db.commit()
+        assert (
+            db.execute("SELECT count(*) FROM release_selection_evidence").fetchone()[0]
+            == 0
+        )
+        assert (
+            tuple(
+                line
+                for line in db.iterdump()
+                if "release_selection_evidence" not in line
+            )
+            == durable
+        )
+        assert db.execute("PRAGMA user_version").fetchone()[0] == version
+        assert db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+
+
+@pytest.mark.parametrize("version", [6, 7, 8, 9])
+@pytest.mark.parametrize("missing", [False, True])
+@pytest.mark.parametrize("allow_legacy", [False, True])
+def test_clear_selection_schema_fences_conserve_state(
+    version: int, missing: bool, allow_legacy: bool
+) -> None:
+    with closing(sqlite3.connect(":memory:")) as db:
+        db.execute("CREATE TABLE durable_state(value TEXT)")
+        db.execute("INSERT INTO durable_state VALUES('retained')")
+        if not missing:
+            db.execute("CREATE TABLE release_selection_evidence(handle_digest TEXT)")
+            db.execute("INSERT INTO release_selection_evidence VALUES('one-use')")
+        db.execute(f"PRAGMA user_version={version}")
+        db.commit()
+        before = tuple(db.iterdump())
+        db.execute("BEGIN IMMEDIATE")
+        accepted = version <= 8 and (not missing or (version < 7 and allow_legacy))
+        if accepted:
+            selections.clear_selection_evidence(db, allow_legacy=allow_legacy)
+            if not missing:
+                assert (
+                    db.execute(
+                        "SELECT count(*) FROM release_selection_evidence"
+                    ).fetchone()[0]
+                    == 0
+                )
+        else:
+            with pytest.raises(sqlite3.DatabaseError):
+                selections.clear_selection_evidence(db, allow_legacy=allow_legacy)
+            assert tuple(db.iterdump()) == before
+        assert db.in_transaction
+        assert db.execute("SELECT value FROM durable_state").fetchone()[0] == "retained"
+        assert db.execute("PRAGMA user_version").fetchone()[0] == version
+        db.rollback()
+        assert tuple(db.iterdump()) == before
 
 
 @pytest.mark.parametrize("global_cap", [False, True])

@@ -122,8 +122,7 @@ _PKS = {
     for table in _PROJECTIONS
 }
 
-# Pure wire metadata only. Never add these to _PROJECTIONS: schema7 SQL guards
-# and acquisition intentionally continue using that unchanged table inventory.
+# Versioned projections, separate from the unchanged legacy preimage guards.
 _PROVISION_ROWS = {
     "file_identity_epochs": _columns(
         "epoch_id authority_id origin_path allocation_path root_path birth_json", ""
@@ -433,18 +432,24 @@ class OwnerSnapshot:
 def _select(
     db: sqlite3.Connection, table: str, where: str, params: tuple[object, ...]
 ) -> list[dict[str, object]]:
-    columns = sorted(_PROJECTIONS[table])
+    columns = sorted(
+        _PROVISION_ROWS[table] if table in _PROVISION_ROWS else _PROJECTIONS[table]
+    )
+    primary = _PROVISION_PKS[table] if table in _PROVISION_PKS else _PKS[table]
     cursor = db.execute(
         f"SELECT {','.join(columns)} FROM {table} WHERE {where} LIMIT {_MAX_RECORDS + 1}",
         params,
     )
-    rows = cursor.fetchmany(_MAX_RECORDS + 1)
+    try:
+        rows = cursor.fetchmany(_MAX_RECORDS + 1)
+    finally:
+        cursor.close()
     if len(rows) > _MAX_RECORDS:
         raise InvalidIdentity("snapshot row count exceeds bound")
     return [
         {
             "table": table,
-            "key": [row[columns.index(_PKS[table])]],
+            "key": [row[columns.index(primary)]],
             "row": dict(zip(columns, row, strict=True)),
         }
         for row in rows
@@ -465,6 +470,37 @@ def capture_owner_snapshot(db: sqlite3.Connection, owner: OwnerRef) -> OwnerSnap
         raise IdentityMismatch("owner root does not exist")
     root = roots[0]
     related: list[dict[str, object]] = []
+    snapshot_version = 1
+    if (
+        owner.domain == "namespace"
+        and db.execute("PRAGMA user_version").fetchone()[0] == 8
+    ):
+        epochs = _select(
+            db, "file_identity_epochs", "allocation_path=?", (owner.key[0],)
+        )
+        born = [
+            row
+            for row in epochs
+            if _epoch_birth(_text(cast(dict[str, object], row["row"])["birth_json"]))[
+                "version"
+            ]
+            == 2
+        ]
+        if len(born) > 1:
+            raise InvalidIdentity("ownership_binding")
+        if born:
+            snapshot_version = 2
+            epoch = born[0]
+            birth = _epoch_birth(
+                _text(cast(dict[str, object], epoch["row"])["birth_json"])
+            )
+            intent_id = cast(dict[str, object], birth["controlled_birth"])["intent_id"]
+            intents = _select(
+                db, "file_identity_provision_intents", "intent_id=?", (intent_id,)
+            )
+            if len(intents) != 1:
+                raise IdentityMismatch("identity ledger reference is dangling")
+            related.extend((epoch, intents[0]))
     if owner.domain in {"publication", "queue_source"}:
         root_row = cast(dict[str, object], root["row"])
         queue_id = (
@@ -487,7 +523,12 @@ def capture_owner_snapshot(db: sqlite3.Connection, owner: OwnerRef) -> OwnerSnap
     if len(related) + 1 > _MAX_RECORDS:
         raise InvalidIdentity("snapshot row count exceeds bound")
     encoded = _encode(
-        {"version": 1, "owner": _owner_value(owner), "root": root, "related": related}
+        {
+            "version": snapshot_version,
+            "owner": _owner_value(owner),
+            "root": root,
+            "related": related,
+        }
     )
     if _data_version(db) != version:
         raise IdentityMismatch("snapshot changed during capture")
@@ -778,7 +819,7 @@ def _historical_role(value: object) -> dict[str, object]:
     return spec
 
 
-def _historical_raw_row(value: object) -> None:
+def _historical_raw_row(value: object) -> tuple[str, dict[str, object]]:
     """Match complete RawRow grammar, not the narrower SQL authority projection."""
     record = _object(value, {"table", "key", "values"})
     table = _text(record["table"])
@@ -828,6 +869,7 @@ def _historical_raw_row(value: object) -> None:
         columns[name] = scalar
     if names != sorted(set(names)) or [columns.get(c) for c in expected] != key:
         raise InvalidIdentity("ownership_wire")
+    return table, columns
 
 
 def _historical_observation(value: object) -> None:
@@ -1023,12 +1065,14 @@ def _prior_plan(encoded: str) -> dict[str, object]:
     closure = _object(
         inventory["closure"], {"snapshots", "roles", "dependencies", "raw_rows"}
     )
+    new_ledger = False
     for item in _list(closure["snapshots"]):
         snapshot = _object(item, {"owner", "rows_json", "sha256"})
         owner = _owner_from(snapshot["owner"])
         text = _text(snapshot["rows_json"])
         document = _object(_load(text), {"version", "owner", "root", "related"})
         version = _integer(document["version"], 1, 2)
+        new_ledger |= version == 2
         if _owner_from(document["owner"]) != owner or _hex(
             snapshot["sha256"]
         ) != _digest(text):
@@ -1048,7 +1092,23 @@ def _prior_plan(encoded: str) -> dict[str, object]:
         _ = _owner_from(dependency["requires"])
         _ = _text(dependency["reason"])
     for item in _list(closure["raw_rows"]):
-        _historical_raw_row(item)
+        table, columns = _historical_raw_row(item)
+        new_ledger |= table == "file_identity_provision_intents"
+        for ledger_table, column in (
+            ("file_identity_epochs", "birth_json"),
+            ("file_identity_sets", "snapshot_json"),
+            ("file_identity_sets", "manifest_json"),
+            ("file_identity_events", "payload_json"),
+        ):
+            if table == ledger_table and type(columns.get(column)) is str:
+                # Historical RawRow scalars remain opaque. Recognize ledger2
+                # for the receipt floor without reapproving old row semantics.
+                try:
+                    document = _load(columns[column])
+                except InvalidIdentity:
+                    continue
+                if type(document) is dict:
+                    new_ledger |= cast(dict[str, object], document).get("version") == 2
     for item in _list(inventory["observed"]):
         _historical_observation(item)
     for item in _list(inventory["unresolved"]):
@@ -1337,7 +1397,11 @@ def _prior_plan(encoded: str) -> dict[str, object]:
     _ = _path(archive["path"])
     _ = _hex(archive["sha256"])
     _ = _integer(archive["format_version"], 1, 1)
-    _ = _integer(archive["schema_version"], 7, 7)
+    _ = _integer(
+        archive["schema_version"],
+        8 if new_ledger else 7,
+        8 if inventory["version"] == 2 else 7,
+    )
     components = _object(archive["components"], {"database", "configuration", "key"})
     image = _text(archive["source_image_digest"])
     if (

@@ -15,6 +15,7 @@ import sys
 import textwrap
 import threading
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -234,7 +235,23 @@ def _assert_one_completed(env, pid, sid):
 
 
 @pytest.fixture
-def journal_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def journal_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[dict[str, Path]]:
+    yield from _journal_environment(tmp_path, monkeypatch, schema7_predecessor=False)
+
+
+@pytest.fixture
+def pre_provisioning_journal_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[dict[str, Path]]:
+    """Bootstrap only tests that deliberately reconstruct historical journals."""
+    yield from _journal_environment(tmp_path, monkeypatch, schema7_predecessor=True)
+
+
+def _journal_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, schema7_predecessor: bool
+) -> Iterator[dict[str, Path]]:
     import import_download
     import import_execute
     import main
@@ -259,8 +276,21 @@ def journal_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     shared.DB_PATH = str(db_path)
     security._SECRET_CIPHER = None
     security.load_or_create_secret_cipher(str(key_root))
-    main.init_db()
+    if schema7_predecessor:
+        from file_identity_schema7 import initialize_schema7
+
+        initialize_schema7(db_path, monkeypatch)
+    else:
+        main.init_db()
     with sqlite3.connect(db_path) as db:
+        assert db.execute("PRAGMA user_version").fetchone() == (
+            7 if schema7_predecessor else 8,
+        )
+        assert db.execute(
+            "SELECT name FROM sqlite_master WHERE name='file_identity_provision_intents'"
+        ).fetchall() == (
+            [] if schema7_predecessor else [("file_identity_provision_intents",)]
+        )
         db.execute(
             "INSERT OR REPLACE INTO root_folders(id,path,label,is_default)"
             " VALUES(1,?,'Test',1)",
@@ -2469,12 +2499,13 @@ def test_fresh_schema_has_per_connection_notification_delivery_state(
     } <= columns
     assert "settings" not in columns
     assert "idx_import_publication_notification_deliveries_due" in indexes
-    assert version == 7
+    assert version == 8
 
 
 def test_v3_notification_migration_snapshots_ids_and_display_metadata_only(
-    journal_env: dict[str, Path],
+    pre_provisioning_journal_env: dict[str, Path],
 ) -> None:
+    journal_env = pre_provisioning_journal_env
     publication_id = _seed_minimal_publications(
         journal_env,
         ["deleted"],
@@ -2534,7 +2565,7 @@ def test_v3_notification_migration_snapshots_ids_and_display_metadata_only(
     assert delivery["state"] == "pending"
     assert "settings" not in delivery
     assert secret_canary not in repr(delivery)
-    assert version == 7
+    assert version == 8
 
 
 def test_startup_drain_ignores_terminal_work_and_pages_past_blocked_ids(

@@ -443,6 +443,7 @@ def follow_on(
     declaration["authorities"] = parse_document(graph.prior.declaration_json)[
         "authorities"
     ]
+    wire_object(receipt["archive"])["schema_version"] = 8
     for item in wire_array(declaration["owner_reviews"]):
         wire_object(item)["intended_original_authority_id"] = "a" * 32
     for item in wire_array(declaration["role_reviews"]):
@@ -831,7 +832,11 @@ def test_intent_only_history_is_inventory2_evidence_not_birth_or_permission(
         "file_identity_authorities",
     }
     assert inventory.closure.roles == graph.prior.inventory.closure.roles
-    inputs = linked_documents(review_documents(inventory), [])
+    selection, declaration, receipt = (
+        parse_document(s) for s in linked_documents(review_documents(inventory), [])
+    )
+    wire_object(receipt["archive"])["schema_version"] = 8
+    inputs = resign_documents(selection, declaration, receipt)
     with transferred_plan_conservation(producer_media, monkeypatch, inventory):
         plan = recovery.build_recovery_plan(inventory, *inputs)
         assert recovery.RecoveryPlan.from_json(plan.to_json()) == plan
@@ -1387,7 +1392,11 @@ def test_pending_intent_reservation_is_not_fresh_provisioning_permission(
         ),
     )
     inventory = graph_inventory(history)
-    inputs = linked_documents(provision_documents(inventory), [])
+    selection, declaration, receipt = (
+        parse_document(s) for s in linked_documents(provision_documents(inventory), [])
+    )
+    wire_object(receipt["archive"])["schema_version"] = 8
+    inputs = resign_documents(selection, declaration, receipt)
     if entry == "builder":
         with pytest.raises(InvalidIdentity, match="^ownership_binding$"):
             _ = recovery.build_recovery_plan(inventory, *inputs)

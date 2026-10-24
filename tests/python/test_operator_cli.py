@@ -208,7 +208,9 @@ def _durable_evidence(
     )
 
 
-@pytest.mark.parametrize("schema_version", [7, 6], ids=["current", "legacy"])
+@pytest.mark.parametrize(
+    "schema_version", [8, 7, 6], ids=["current8", "legacy7", "legacy6"]
+)
 def test_operator_restore_clears_selection_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, schema_version: int
 ) -> None:
@@ -219,14 +221,24 @@ def test_operator_restore_clears_selection_evidence(
     (source / SECRET_KEY_ENTRY).write_bytes(key)
     archive = tmp_path / "fixture.zip"
     now = int(time.time())
-    if schema_version == 7:
+    durable: tuple[list[tuple[object, ...]], list[tuple[object, ...]]] | None = None
+    identity_catalog: list[tuple[object, ...]] | None = None
+    if schema_version in {7, 8}:
         import schema
         import shared
+        from file_identity_schema7 import initialize_schema7
 
         monkeypatch.setattr(shared, "DB_PATH", str(source_db))
-        schema.init_db()
+        if schema_version == 8:
+            schema.init_db()
+        else:
+            initialize_schema7(source_db, monkeypatch)
         direct, parent = "bs1:d:" + "a" * 64, "bs1:p:" + "b" * 64
         with closing(sqlite3.connect(source_db)) as db, db:
+            assert db.execute("PRAGMA user_version").fetchone() == (schema_version,)
+            identity_catalog = db.execute(
+                "SELECT type,name,sql FROM sqlite_master WHERE name LIKE 'file_identity_%' ORDER BY type,name"
+            ).fetchall()
             db.execute("PRAGMA foreign_keys=ON")
             db.execute("BEGIN IMMEDIATE")
             db.execute(
@@ -295,7 +307,7 @@ def test_operator_restore_clears_selection_evidence(
         with zipfile.ZipFile(archive) as zf:
             snapshot.write_bytes(zf.read(DATABASE_ENTRY))
         with closing(sqlite3.connect(snapshot)) as db:
-            assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+            assert db.execute("PRAGMA user_version").fetchone()[0] == schema_version
             assert (
                 db.execute(
                     "SELECT count(*) FROM release_selection_evidence WHERE issued_at=? AND expires_at>?",
@@ -351,7 +363,8 @@ def test_operator_restore_clears_selection_evidence(
         assert db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
         assert db.execute("PRAGMA user_version").fetchone()[0] == schema_version
-        if schema_version == 7:
+        if schema_version in {7, 8}:
+            assert durable is not None and identity_catalog is not None
             assert (
                 db.execute(
                     "SELECT count(*) FROM release_selection_evidence"
@@ -359,6 +372,18 @@ def test_operator_restore_clears_selection_evidence(
                 == 0
             )
             assert _durable_evidence(db) == durable
+            assert (
+                db.execute(
+                    "SELECT type,name,sql FROM sqlite_master WHERE name LIKE 'file_identity_%' ORDER BY type,name"
+                ).fetchall()
+                == identity_catalog
+            )
+            intent_table = db.execute(
+                "SELECT name FROM sqlite_master WHERE name='file_identity_provision_intents'"
+            ).fetchall()
+            assert intent_table == (
+                [("file_identity_provision_intents",)] if schema_version == 8 else []
+            )
         else:
             assert db.execute("SELECT value FROM legacy_state").fetchone() == (
                 "legacy",
@@ -369,7 +394,7 @@ def test_operator_restore_clears_selection_evidence(
                 ).fetchall()
                 == []
             )
-    expected_key = key if schema_version == 7 else previous_key
+    expected_key = key if schema_version in {7, 8} else previous_key
     assert (target / SECRET_KEY_ENTRY).read_bytes().strip() == expected_key
     rollback = list(target.glob(f"{DATABASE_ENTRY}.pre-restore-*"))
     assert len(rollback) == 1 and rollback[0].read_bytes() == previous_db

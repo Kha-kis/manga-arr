@@ -37,7 +37,8 @@ _SCHEMA_VERSION_DURABLE_PUBLICATION_SAFETY = 4
 _SCHEMA_VERSION_HISTORY_DOWNLOAD_OWNERSHIP = 5
 _SCHEMA_VERSION_FILE_IDENTITY = 6
 _SCHEMA_VERSION_BLOCKLIST_SOURCES = 7
-_SUPPORTED_SCHEMA_VERSION = _SCHEMA_VERSION_BLOCKLIST_SOURCES
+_SCHEMA_VERSION_FILE_IDENTITY_PROVISIONING = 8
+_SUPPORTED_SCHEMA_VERSION = _SCHEMA_VERSION_FILE_IDENTITY_PROVISIONING
 
 
 @contextmanager
@@ -1851,6 +1852,7 @@ def _migrate_schema_constraints_locked(db: sqlite3.Connection) -> None:
         _ensure_pack_ownership_schema(db)
         _ensure_file_identity_schema(db)
         _ensure_blocklist_source_schema(db)
+        _migrate_file_identity_provisioning(db)
         return
 
     if version < _SCHEMA_VERSION_FK_CONSTRAINTS:
@@ -1877,6 +1879,7 @@ def _migrate_schema_constraints_locked(db: sqlite3.Connection) -> None:
     _ensure_pack_ownership_schema(db)
     _ensure_file_identity_schema(db)
     _ensure_blocklist_source_schema(db)
+    _migrate_file_identity_provisioning(db)
 
 
 def _ensure_blocklist_source_schema(db: sqlite3.Connection) -> None:
@@ -1975,7 +1978,80 @@ def _ensure_blocklist_source_schema(db: sqlite3.Connection) -> None:
             verified_parent=verified,
             sub_id=sub if verified else None,
         )
-    db.execute(f"PRAGMA user_version={_SCHEMA_VERSION_BLOCKLIST_SOURCES}")
+    if _validate_schema_version(db) < _SCHEMA_VERSION_BLOCKLIST_SOURCES:
+        db.execute(f"PRAGMA user_version={_SCHEMA_VERSION_BLOCKLIST_SOURCES}")
+
+
+def _file_identity_event_guards(capability: str | None = None) -> str:
+    """Share v1/common guards while preserving genuine7's exact generated SQL."""
+    standard = (
+        "(SELECT count(*) FROM json_each(NEW.payload_json))=3"
+        " AND NOT EXISTS(SELECT 1 FROM json_each(NEW.payload_json)"
+        " WHERE key NOT IN ('version','snapshot_sha256','manifest_sha256'))"
+        " AND json_extract(NEW.payload_json,'$.snapshot_sha256') IS s.snapshot_sha256"
+        " AND json_extract(NEW.payload_json,'$.manifest_sha256') IS s.manifest_sha256"
+    )
+    recovery = (
+        "(SELECT count(*) FROM json_each(NEW.payload_json))=4"
+        " AND NOT EXISTS(SELECT 1 FROM json_each(NEW.payload_json) WHERE key NOT IN"
+        " ('version','before_snapshot_json','before_snapshot_sha256','plan_sha256'))"
+        " AND json_extract(NEW.payload_json,'$.before_snapshot_json') IS s.snapshot_json"
+        " AND json_extract(NEW.payload_json,'$.before_snapshot_sha256') IS s.snapshot_sha256"
+        " AND json_type(NEW.payload_json,'$.plan_sha256')='text'"
+        " AND length(json_extract(NEW.payload_json,'$.plan_sha256'))=64"
+        " AND json_extract(NEW.payload_json,'$.plan_sha256') NOT GLOB '*[^0-9a-f]*'"
+    )
+    payload = f"""json_extract(NEW.payload_json,'$.version')=1
+                AND CASE WHEN NEW.kind IN ('prepared','activated') THEN ({standard})
+                    ELSE ({recovery}) END"""
+    declaration = (
+        "CREATE TRIGGER IF NOT EXISTS file_identity_events_validate\n"
+        "        BEFORE INSERT ON file_identity_events BEGIN"
+    )
+    end = "END"
+    if capability is not None:
+        payload = f"(({payload})\n                    OR ({capability}))"
+        declaration = "CREATE TRIGGER file_identity_events_validate BEFORE INSERT ON file_identity_events BEGIN"
+        end = "END;"
+    return f"""
+        {declaration}
+            SELECT RAISE(ABORT,'invalid identity owner key') WHERE NOT COALESCE(
+                json_type(NEW.owner_key_json)='object'
+                AND (SELECT count(*) FROM json_each(NEW.owner_key_json))=2
+                AND json_type(NEW.owner_key_json,'$.version')='integer'
+                AND json_extract(NEW.owner_key_json,'$.version')=1
+                AND json_type(NEW.owner_key_json,'$.key')='array'
+                AND json_array_length(NEW.owner_key_json,'$.key')=1
+                AND CASE WHEN NEW.owner_domain IN ('rescan','publication','deletion','queue_source')
+                    THEN json_type(NEW.owner_key_json,'$.key[0]')='integer'
+                         AND json_extract(NEW.owner_key_json,'$.key[0]')>0
+                    ELSE json_type(NEW.owner_key_json,'$.key[0]')='text'
+                         AND length(json_extract(NEW.owner_key_json,'$.key[0]'))>0 END,0);
+            SELECT RAISE(ABORT,'stale identity predecessor') WHERE
+                NEW.predecessor_event_id IS NOT (SELECT id FROM file_identity_events
+                    WHERE owner_domain=NEW.owner_domain AND owner_key_json=NEW.owner_key_json
+                    ORDER BY revision DESC LIMIT 1)
+                OR NEW.revision != COALESCE((SELECT revision+1 FROM file_identity_events
+                    WHERE owner_domain=NEW.owner_domain AND owner_key_json=NEW.owner_key_json
+                    ORDER BY revision DESC LIMIT 1),1);
+            SELECT RAISE(ABORT,'invalid identity event set/payload') WHERE NOT EXISTS(
+                SELECT 1 FROM file_identity_sets s WHERE s.set_id=NEW.set_id
+                AND s.owner_domain=NEW.owner_domain AND s.owner_key_json=NEW.owner_key_json
+                AND json_type(NEW.payload_json)='object'
+                AND json_type(NEW.payload_json,'$.version')='integer'
+                AND {payload}
+            );
+            SELECT RAISE(ABORT,'invalid identity preparation predecessor')
+                WHERE NEW.kind='prepared' AND NOT EXISTS(
+                    SELECT 1 FROM file_identity_sets s WHERE s.set_id=NEW.set_id
+                    AND s.prior_set_id IS (SELECT set_id FROM file_identity_events
+                        WHERE id=NEW.predecessor_event_id));
+            SELECT RAISE(ABORT,'invalid identity activation predecessor')
+                WHERE NEW.kind='activated' AND NOT EXISTS(
+                    SELECT 1 FROM file_identity_events p WHERE p.id=NEW.predecessor_event_id
+                    AND p.kind='prepared' AND p.set_id=NEW.set_id);
+        {end}
+    """
 
 
 def _ensure_file_identity_schema(db: sqlite3.Connection) -> None:
@@ -2077,67 +2153,7 @@ def _ensure_file_identity_schema(db: sqlite3.Connection) -> None:
             f" WHEN {duplicate} BEGIN SELECT RAISE(ABORT,'immutable identity replacement'); END"
         )
 
-    # Exact top-level payload keys/types and equality to the immutable set.
-    # No user-defined SQLite hashing function or imaginary commit marker.
-    standard = (
-        "(SELECT count(*) FROM json_each(NEW.payload_json))=3"
-        " AND NOT EXISTS(SELECT 1 FROM json_each(NEW.payload_json)"
-        " WHERE key NOT IN ('version','snapshot_sha256','manifest_sha256'))"
-        " AND json_extract(NEW.payload_json,'$.snapshot_sha256') IS s.snapshot_sha256"
-        " AND json_extract(NEW.payload_json,'$.manifest_sha256') IS s.manifest_sha256"
-    )
-    recovery = (
-        "(SELECT count(*) FROM json_each(NEW.payload_json))=4"
-        " AND NOT EXISTS(SELECT 1 FROM json_each(NEW.payload_json) WHERE key NOT IN"
-        " ('version','before_snapshot_json','before_snapshot_sha256','plan_sha256'))"
-        " AND json_extract(NEW.payload_json,'$.before_snapshot_json') IS s.snapshot_json"
-        " AND json_extract(NEW.payload_json,'$.before_snapshot_sha256') IS s.snapshot_sha256"
-        " AND json_type(NEW.payload_json,'$.plan_sha256')='text'"
-        " AND length(json_extract(NEW.payload_json,'$.plan_sha256'))=64"
-        " AND json_extract(NEW.payload_json,'$.plan_sha256') NOT GLOB '*[^0-9a-f]*'"
-    )
-    db.execute(f"""
-        CREATE TRIGGER IF NOT EXISTS file_identity_events_validate
-        BEFORE INSERT ON file_identity_events BEGIN
-            SELECT RAISE(ABORT,'invalid identity owner key') WHERE NOT COALESCE(
-                json_type(NEW.owner_key_json)='object'
-                AND (SELECT count(*) FROM json_each(NEW.owner_key_json))=2
-                AND json_type(NEW.owner_key_json,'$.version')='integer'
-                AND json_extract(NEW.owner_key_json,'$.version')=1
-                AND json_type(NEW.owner_key_json,'$.key')='array'
-                AND json_array_length(NEW.owner_key_json,'$.key')=1
-                AND CASE WHEN NEW.owner_domain IN ('rescan','publication','deletion','queue_source')
-                    THEN json_type(NEW.owner_key_json,'$.key[0]')='integer'
-                         AND json_extract(NEW.owner_key_json,'$.key[0]')>0
-                    ELSE json_type(NEW.owner_key_json,'$.key[0]')='text'
-                         AND length(json_extract(NEW.owner_key_json,'$.key[0]'))>0 END,0);
-            SELECT RAISE(ABORT,'stale identity predecessor') WHERE
-                NEW.predecessor_event_id IS NOT (SELECT id FROM file_identity_events
-                    WHERE owner_domain=NEW.owner_domain AND owner_key_json=NEW.owner_key_json
-                    ORDER BY revision DESC LIMIT 1)
-                OR NEW.revision != COALESCE((SELECT revision+1 FROM file_identity_events
-                    WHERE owner_domain=NEW.owner_domain AND owner_key_json=NEW.owner_key_json
-                    ORDER BY revision DESC LIMIT 1),1);
-            SELECT RAISE(ABORT,'invalid identity event set/payload') WHERE NOT EXISTS(
-                SELECT 1 FROM file_identity_sets s WHERE s.set_id=NEW.set_id
-                AND s.owner_domain=NEW.owner_domain AND s.owner_key_json=NEW.owner_key_json
-                AND json_type(NEW.payload_json)='object'
-                AND json_type(NEW.payload_json,'$.version')='integer'
-                AND json_extract(NEW.payload_json,'$.version')=1
-                AND CASE WHEN NEW.kind IN ('prepared','activated') THEN ({standard})
-                    ELSE ({recovery}) END
-            );
-            SELECT RAISE(ABORT,'invalid identity preparation predecessor')
-                WHERE NEW.kind='prepared' AND NOT EXISTS(
-                    SELECT 1 FROM file_identity_sets s WHERE s.set_id=NEW.set_id
-                    AND s.prior_set_id IS (SELECT set_id FROM file_identity_events
-                        WHERE id=NEW.predecessor_event_id));
-            SELECT RAISE(ABORT,'invalid identity activation predecessor')
-                WHERE NEW.kind='activated' AND NOT EXISTS(
-                    SELECT 1 FROM file_identity_events p WHERE p.id=NEW.predecessor_event_id
-                    AND p.kind='prepared' AND p.set_id=NEW.set_id);
-        END
-    """)
+    _ = db.execute(_file_identity_event_guards())
 
     for table, domain in (("rescan_file_operations", "rescan"), ("volume_file_deletions", "deletion")):
         columns = {str(row[1]) for row in db.execute(f"PRAGMA table_info({table})")}
@@ -2221,7 +2237,472 @@ def _ensure_file_identity_schema(db: sqlite3.Connection) -> None:
         if existing is not None and "recovery_event_id IS NULL" not in existing[0]:
             db.execute(f"DROP INDEX {name}")
         db.execute(f"CREATE {'UNIQUE ' if unique else ''}INDEX IF NOT EXISTS {name} ON {table}({indexed}) WHERE {predicate} AND recovery_event_id IS NULL")
-    db.execute(f"PRAGMA user_version={_SCHEMA_VERSION_FILE_IDENTITY}")
+    if _validate_schema_version(db) < _SCHEMA_VERSION_FILE_IDENTITY:
+        db.execute(f"PRAGMA user_version={_SCHEMA_VERSION_FILE_IDENTITY}")
+
+
+def _migrate_file_identity_provisioning(db: sqlite3.Connection) -> None:
+    """Persist intent1/capability2 without changing legacy evidence or authority.
+
+    Called only inside the schema writer transaction. SQL checks structure and
+    immutable bindings; the typed readers independently recompute all digests.
+    """
+    if _validate_schema_version(db) >= _SCHEMA_VERSION_FILE_IDENTITY_PROVISIONING:
+        return
+
+    def extract(document: str, name: str) -> str:
+        return f"json_extract({document},'$.{name}')"
+
+    def typed(document: str, name: str, kind: str) -> str:
+        return f"json_type({document},'$.{name}')='{kind}'"
+
+    def hex_value(value: str, length: int) -> str:
+        return (
+            f"typeof({value})='text' AND length({value})={length}"
+            f" AND {value} NOT GLOB '*[^0-9a-f]*'"
+        )
+
+    def keys(document: str, names: str) -> str:
+        fields = names.split()
+        allowed = ",".join(f"'{name}'" for name in fields)
+        return (
+            f"json_type({document})='object'"
+            f" AND (SELECT count(*) FROM json_each({document}))={len(fields)}"
+            f" AND (SELECT count(DISTINCT key) FROM json_each({document}))={len(fields)}"
+            f" AND NOT EXISTS(SELECT 1 FROM json_each({document}) WHERE key NOT IN ({allowed}))"
+        )
+
+    def text(document: str, name: str) -> str:
+        return f"{typed(document, name, 'text')} AND length(trim({extract(document, name)}))>0"
+
+    def version(document: str, number: int) -> str:
+        return f"{typed(document, 'version', 'integer')} AND {extract(document, 'version')}={number}"
+
+    p = "NEW.payload_json"
+    scope, profile = extract(p, "scope"), extract(p, "profile")
+    client, server = (
+        extract(profile, "client_contract"),
+        extract(profile, "server_contract"),
+    )
+    mount = extract(client, "mount")
+    plan = extract(p, "plan_json")
+    epochs = extract(plan, "epoch_bindings_json")
+    declaration = extract(plan, "declaration_json")
+    checks = [
+        keys(
+            p,
+            "version kind plan_json plan_sha256 inventory_sha256 epoch_id authority_id "
+            "authority_incarnation scope profile origin_path allocation_path root_path namespace_owner allocation_token",
+        ),
+        version(p, 1),
+        f"{extract(p, 'kind')} IS 'epoch-provision-intent'",
+        *[
+            hex_value(extract(p, name), 32)
+            for name in (
+                "epoch_id",
+                "authority_id",
+                "authority_incarnation",
+                "allocation_token",
+            )
+        ],
+        *[
+            hex_value(extract(p, name), 64)
+            for name in ("plan_sha256", "inventory_sha256")
+        ],
+        *[
+            text(p, name)
+            for name in ("plan_json", "origin_path", "allocation_path", "root_path")
+        ],
+        f"{extract(p, 'allocation_token')} IS NEW.intent_id",
+        f"{extract(p, 'authority_id')} IS NEW.authority_id",
+        keys(extract(p, "namespace_owner"), "domain key"),
+        f"{extract(p, 'namespace_owner.domain')} IS 'namespace'",
+        typed(p, "namespace_owner.key", "array"),
+        f"json_array_length({p},'$.namespace_owner.key')=1",
+        f"{extract(p, 'namespace_owner.key[0]')} IS {extract(p, 'allocation_path')}",
+        typed(p, "scope", "object"),
+        keys(scope, "version scope_path scope_token"),
+        version(scope, 1),
+        text(scope, "scope_path"),
+        hex_value(extract(scope, "scope_token"), 32),
+        typed(p, "profile", "object"),
+        keys(
+            profile,
+            "version profile_id revision qualification_sha256 client_contract server_contract",
+        ),
+        version(profile, 1),
+        text(profile, "profile_id"),
+        typed(profile, "revision", "integer"),
+        f"{extract(profile, 'revision')}>0",
+        hex_value(extract(profile, "qualification_sha256"), 64),
+        typed(profile, "client_contract", "object"),
+        keys(client, "platforms mount"),
+        typed(client, "platforms", "array"),
+        f"json_array_length({client},'$.platforms')>0",
+        typed(client, "mount", "object"),
+        keys(mount, "filesystem nfs_version transport security hard"),
+        *[
+            text(mount, name)
+            for name in ("filesystem", "nfs_version", "transport", "security")
+        ],
+        f"json_type({mount},'$.hard') IN ('true','false')",
+        typed(profile, "server_contract", "object"),
+        keys(
+            server,
+            "vendor version filesystem exporter handle_contract allowed_transitions recovery_transitions",
+        ),
+        *[
+            text(server, name)
+            for name in (
+                "vendor",
+                "version",
+                "filesystem",
+                "exporter",
+                "handle_contract",
+            )
+        ],
+    ]
+    platform = "platform.value"
+    platform_checks = [
+        "platform.type='object'",
+        keys(platform, "arch kernel_release libc_version encoder_revision"),
+        *[
+            text(platform, name)
+            for name in ("arch", "kernel_release", "libc_version", "encoder_revision")
+        ],
+    ]
+    checks.append(
+        f"NOT EXISTS(SELECT 1 FROM json_each({client},'$.platforms') platform"
+        f" WHERE NOT COALESCE(({' AND '.join(platform_checks)}),0)"
+        f" OR EXISTS(SELECT 1 FROM json_each({client},'$.platforms') earlier"
+        " WHERE earlier.key<platform.key AND earlier.value>=platform.value))"
+    )
+    for name in ("allowed_transitions", "recovery_transitions"):
+        checks.extend(
+            [
+                typed(server, name, "array"),
+                f"NOT EXISTS(SELECT 1 FROM json_each({server},'$.{name}') item"
+                " WHERE item.type!='text' OR length(trim(item.value))=0"
+                f" OR EXISTS(SELECT 1 FROM json_each({server},'$.{name}') earlier"
+                " WHERE earlier.key<item.key AND earlier.value>=item.value))",
+            ]
+        )
+    origin, allocation, root = (
+        extract(p, n) for n in ("origin_path", "allocation_path", "root_path")
+    )
+    scope_path = extract(scope, "scope_path")
+    checks.extend(
+        [
+            f"({origin}={scope_path} OR substr({origin},1,length(rtrim({scope_path},'/'))+1)=rtrim({scope_path},'/')||'/')",
+            f"{allocation} IS rtrim({origin},'/')||'/.mangarr-epoch-'||{extract(p, 'epoch_id')}",
+            f"{root} IS {allocation}||'/.mangarr-claims'",
+            "EXISTS(SELECT 1 FROM file_identity_authorities a WHERE a.authority_id=NEW.authority_id"
+            f" AND a.incarnation_token IS {extract(p, 'authority_incarnation')}"
+            f" AND a.declaration_json IS {scope} AND a.profile_json IS {profile}"
+            f" AND a.qualification_sha256 IS {extract(profile, 'qualification_sha256')})",
+            f"json_valid({plan})",
+            f"json_type({plan})='object'",
+            version(plan, 2),
+            f"{extract(plan, 'sha256')} IS {extract(p, 'plan_sha256')}",
+            f"{extract(plan, 'inventory.sha256')} IS {extract(p, 'inventory_sha256')}",
+            typed(plan, "inventory", "object"),
+            f"json_valid({epochs})",
+            f"json_type({epochs})='object'",
+            version(epochs, 2),
+            typed(epochs, "provision", "array"),
+            typed(epochs, "existing", "array"),
+            typed(epochs, "allocation_capabilities", "array"),
+            f"(SELECT count(*) FROM json_each({epochs},'$.provision') entry"
+            f" WHERE json_extract(entry.value,'$.epoch_id') IS {extract(p, 'epoch_id')})=1",
+            f"EXISTS(SELECT 1 FROM json_each({epochs},'$.provision') entry WHERE"
+            f" json_extract(entry.value,'$.epoch_id') IS {extract(p, 'epoch_id')}"
+            f" AND json_extract(entry.value,'$.authority_id') IS NEW.authority_id"
+            f" AND json_extract(entry.value,'$.origin_parent') IS {origin}"
+            f" AND json_extract(entry.value,'$.allocation_parent') IS {allocation}"
+            f" AND json_extract(entry.value,'$.root_path') IS {root}"
+            " AND json_extract(entry.value,'$.handling') IS 'retain-old-disable-new-allocation')",
+            f"NOT EXISTS(SELECT 1 FROM json_each({epochs},'$.existing') entry"
+            f" WHERE json_extract(entry.value,'$.epoch_id') IS {extract(p, 'epoch_id')})",
+            f"NOT EXISTS(SELECT 1 FROM json_each({epochs},'$.allocation_capabilities') entry"
+            f" WHERE json_extract(entry.value,'$.epoch_id') IS {extract(p, 'epoch_id')})",
+            f"json_valid({declaration})",
+            f"json_type({declaration})='object'",
+            version(declaration, 2),
+            typed(declaration, "authorities", "array"),
+            f"(SELECT count(*) FROM json_each({declaration},'$.authorities') a"
+            " WHERE json_extract(a.value,'$.authority_id') IS NEW.authority_id)=1",
+            f"EXISTS(SELECT 1 FROM json_each({declaration},'$.authorities') a"
+            " WHERE json_extract(a.value,'$.authority_id') IS NEW.authority_id"
+            f" AND json_extract(a.value,'$.incarnation_token') IS {extract(p, 'authority_incarnation')}"
+            f" AND json_extract(a.value,'$.scope') IS {scope}"
+            f" AND json_extract(a.value,'$.profile') IS {profile})",
+        ]
+    )
+    birth_tuple = " AND ".join(
+        f"json_extract(NEW.birth_json,'$.controlled_birth.{name}') IS json_extract(i.payload_json,'$.{name}')"
+        for name in (
+            "epoch_id",
+            "authority_id",
+            "authority_incarnation",
+            "origin_path",
+            "allocation_path",
+            "root_path",
+            "namespace_owner",
+            "plan_sha256",
+        )
+    )
+    _execute_script_in_transaction(
+        db,
+        f"""
+        CREATE TABLE file_identity_provision_intents (
+            intent_id TEXT PRIMARY KEY NOT NULL CHECK({hex_value("intent_id", 32)}),
+            authority_id TEXT NOT NULL REFERENCES file_identity_authorities(authority_id)
+                CHECK({hex_value("authority_id", 32)}),
+            payload_json TEXT NOT NULL CHECK(typeof(payload_json)='text' AND json_valid(payload_json)),
+            payload_sha256 TEXT NOT NULL CHECK({hex_value("payload_sha256", 64)})
+        );
+        CREATE UNIQUE INDEX file_identity_provision_epoch ON file_identity_provision_intents(json_extract(payload_json,'$.epoch_id'));
+        CREATE UNIQUE INDEX file_identity_provision_allocation ON file_identity_provision_intents(json_extract(payload_json,'$.allocation_path'));
+        CREATE UNIQUE INDEX file_identity_provision_root ON file_identity_provision_intents(json_extract(payload_json,'$.root_path'));
+        CREATE TRIGGER file_identity_provision_intents_validate BEFORE INSERT ON file_identity_provision_intents BEGIN
+            SELECT RAISE(ABORT,'invalid provisioning intent') WHERE NOT COALESCE(({" AND ".join(checks)}),0);
+            SELECT RAISE(ABORT,'reserved provisioning tuple') WHERE EXISTS(
+                SELECT 1 FROM file_identity_epochs e WHERE e.epoch_id IS {extract(p, "epoch_id")}
+                OR e.allocation_path IN ({allocation},{root}) OR e.root_path IN ({allocation},{root}));
+        END;
+        CREATE TRIGGER file_identity_provision_intents_no_update BEFORE UPDATE ON file_identity_provision_intents BEGIN
+            SELECT RAISE(ABORT,'immutable file identity row');
+        END;
+        CREATE TRIGGER file_identity_provision_intents_no_delete BEFORE DELETE ON file_identity_provision_intents BEGIN
+            SELECT RAISE(ABORT,'immutable file identity row');
+        END;
+        CREATE TRIGGER file_identity_provision_intents_no_replace BEFORE INSERT ON file_identity_provision_intents
+            WHEN EXISTS(SELECT 1 FROM file_identity_provision_intents WHERE intent_id=NEW.intent_id
+                OR json_extract(payload_json,'$.epoch_id') IS {extract(p, "epoch_id")}
+                OR json_extract(payload_json,'$.allocation_path') IS {allocation}
+                OR json_extract(payload_json,'$.root_path') IS {root}) BEGIN
+            SELECT RAISE(ABORT,'immutable identity replacement');
+        END;
+        CREATE TRIGGER file_identity_provision_epoch_validate BEFORE INSERT ON file_identity_epochs BEGIN
+            SELECT RAISE(ABORT,'foreign provisioning reservation') WHERE EXISTS(
+                SELECT 1 FROM file_identity_provision_intents i WHERE
+                (json_extract(i.payload_json,'$.epoch_id') IS NEW.epoch_id
+                    OR json_extract(i.payload_json,'$.allocation_path') IN (NEW.allocation_path,NEW.root_path)
+                    OR json_extract(i.payload_json,'$.root_path') IN (NEW.allocation_path,NEW.root_path))
+                AND NOT COALESCE((json_type(NEW.birth_json,'$.version')='integer'
+                    AND json_extract(NEW.birth_json,'$.version')=2
+                    AND json_type(NEW.birth_json,'$.controlled_birth.version')='integer'
+                    AND json_extract(NEW.birth_json,'$.controlled_birth.version')=2
+                    AND {birth_tuple}
+                    AND json_extract(NEW.birth_json,'$.controlled_birth.intent_id') IS i.intent_id
+                    AND json_extract(NEW.birth_json,'$.controlled_birth.allocation_token') IS i.intent_id
+                    AND json_extract(i.payload_json,'$.epoch_id') IS NEW.epoch_id
+                    AND i.authority_id IS NEW.authority_id
+                    AND json_extract(i.payload_json,'$.origin_path') IS NEW.origin_path
+                    AND json_extract(i.payload_json,'$.allocation_path') IS NEW.allocation_path
+                    AND json_extract(i.payload_json,'$.root_path') IS NEW.root_path),0));
+            SELECT RAISE(ABORT,'missing provisioning reservation') WHERE
+                json_extract(NEW.birth_json,'$.version')=2 AND NOT EXISTS(
+                    SELECT 1 FROM file_identity_provision_intents WHERE
+                    intent_id IS json_extract(NEW.birth_json,'$.controlled_birth.intent_id')
+                    AND json_extract(payload_json,'$.epoch_id') IS NEW.epoch_id);
+        END;
+    """,
+    )
+
+    capability = [
+        "NEW.kind='recovery_step'",
+        "NEW.owner_domain='namespace'",
+        version(p, 2),
+        keys(
+            p,
+            "version kind before_snapshot_json before_snapshot_sha256 plan_sha256 intent_id activation_event_id "
+            "epoch_id authority_id authority_incarnation origin_path allocation_path root_path birth_sha256 state "
+            "prior_capability_event_id consumer_contract_sha256",
+        ),
+        f"{extract(p, 'kind')} IS 'allocation-capability'",
+        *[
+            hex_value(extract(p, n), 32)
+            for n in ("intent_id", "epoch_id", "authority_id", "authority_incarnation")
+        ],
+        *[
+            hex_value(extract(p, n), 64)
+            for n in (
+                "before_snapshot_sha256",
+                "plan_sha256",
+                "birth_sha256",
+                "consumer_contract_sha256",
+            )
+        ],
+        *[
+            text(p, n)
+            for n in (
+                "origin_path",
+                "allocation_path",
+                "root_path",
+                "before_snapshot_json",
+            )
+        ],
+        typed(p, "activation_event_id", "integer"),
+        f"{extract(p, 'activation_event_id')}>0",
+        f"{extract(p, 'state')} IN ('grant','revoke')",
+        f"({typed(p, 'prior_capability_event_id', 'null')} OR ({typed(p, 'prior_capability_event_id', 'integer')} AND {extract(p, 'prior_capability_event_id')}>0))",
+        f"{extract(p, 'before_snapshot_json')} IS s.snapshot_json",
+        f"{extract(p, 'before_snapshot_sha256')} IS s.snapshot_sha256",
+    ]
+    birth = "e.birth_json"
+    cb = extract(birth, "controlled_birth")
+    manifest, snapshot = "s.manifest_json", "s.snapshot_json"
+    tuple_checks = [
+        "s.epoch_id=e.epoch_id",
+        "s.origin='birth'",
+        "e.authority_id=i.authority_id",
+        f"e.epoch_id IS {extract(p, 'epoch_id')}",
+        f"e.authority_id IS {extract(p, 'authority_id')}",
+        f"i.intent_id IS {extract(p, 'intent_id')}",
+        f"a.incarnation_token IS {extract(p, 'authority_incarnation')}",
+        "a.authority_id=e.authority_id",
+        version(birth, 2),
+        version(cb, 2),
+        f"{extract(birth, 'layout')} IS 'dedicated_parent'",
+        f"{extract(birth, 'enrollment')} IS 'birth'",
+        typed(birth, "legacy_namespace", "null"),
+        version(snapshot, 2),
+        f"{extract(snapshot, 'owner.domain')} IS 'namespace'",
+        f"{extract(snapshot, 'owner.key')} IS json_extract(NEW.owner_key_json,'$.key')",
+        f"{extract(snapshot, 'root.table')} IS 'file_claim_namespaces'",
+        f"{extract(snapshot, 'root.key')} IS json_extract(NEW.owner_key_json,'$.key')",
+        f"{extract(snapshot, 'root.row.parent_path')} IS e.allocation_path",
+        version(manifest, 2),
+        f"{extract(manifest, 'phase')} IS 'epoch-provisioned'",
+        f"{extract(manifest, 'snapshot_sha256')} IS s.snapshot_sha256",
+        keys(extract(manifest, "intent"), "kind snapshot_sha256 intent_id plan_sha256"),
+        f"{extract(manifest, 'intent.kind')} IS 'epoch-provision'",
+        f"{extract(manifest, 'intent.intent_id')} IS i.intent_id",
+        f"{extract(manifest, 'intent.plan_sha256')} IS json_extract(i.payload_json,'$.plan_sha256')",
+        f"{extract(manifest, 'intent.snapshot_sha256')} IS s.snapshot_sha256",
+        f"{extract(cb, 'intent_id')} IS i.intent_id",
+        f"{extract(cb, 'allocation_token')} IS i.intent_id",
+        f"{extract(cb, 'namespace_owner')} IS json_extract(i.payload_json,'$.namespace_owner')",
+        f"{extract(cb, 'plan_sha256')} IS json_extract(i.payload_json,'$.plan_sha256')",
+        "json_extract(i.payload_json,'$.scope') IS a.declaration_json",
+        "json_extract(i.payload_json,'$.profile') IS a.profile_json",
+        "json_extract(i.payload_json,'$.profile.qualification_sha256') IS a.qualification_sha256",
+        "json_extract(NEW.owner_key_json,'$.key[0]') IS e.allocation_path",
+    ]
+    for name in (
+        "epoch_id",
+        "authority_id",
+        "authority_incarnation",
+        "origin_path",
+        "allocation_path",
+        "root_path",
+    ):
+        tuple_checks.extend(
+            [
+                f"{extract(p, name)} IS json_extract(i.payload_json,'$.{name}')",
+                f"{extract(cb, name)} IS {extract(p, name)}",
+            ]
+        )
+        if name.endswith("_path"):
+            tuple_checks.append(f"e.{name} IS {extract(p, name)}")
+    tuple_checks.extend(
+        [
+            typed(snapshot, "related", "array"),
+            f"json_array_length({snapshot},'$.related')=2",
+        ]
+    )
+    for table, alias, primary, columns in (
+        (
+            "file_identity_epochs",
+            "e",
+            "epoch_id",
+            "epoch_id authority_id origin_path allocation_path root_path birth_json",
+        ),
+        (
+            "file_identity_provision_intents",
+            "i",
+            "intent_id",
+            "intent_id authority_id payload_json payload_sha256",
+        ),
+    ):
+        record_checks = [
+            "json_extract(record.value,'$.table') IS '" + table + "'",
+            "json_type(record.value,'$.key')='array'",
+            "json_array_length(record.value,'$.key')=1",
+            f"json_extract(record.value,'$.key[0]') IS {alias}.{primary}",
+            keys("json_extract(record.value,'$.row')", columns),
+            *[
+                f"json_extract(record.value,'$.row.{column}') IS {alias}.{column}"
+                for column in columns.split()
+            ],
+        ]
+        tuple_checks.append(
+            f"EXISTS(SELECT 1 FROM json_each({snapshot},'$.related') record WHERE "
+            + " AND ".join(record_checks)
+            + ")"
+        )
+    capability.append(
+        "EXISTS(SELECT 1 FROM file_identity_epochs e JOIN file_identity_provision_intents i"
+        " ON i.intent_id=json_extract(e.birth_json,'$.controlled_birth.intent_id')"
+        " JOIN file_identity_authorities a ON a.authority_id=e.authority_id WHERE "
+        + " AND ".join(tuple_checks)
+        + ")"
+    )
+    capability.append(
+        "EXISTS(SELECT 1 FROM file_identity_events activation JOIN file_identity_events prepared"
+        " ON prepared.id=activation.predecessor_event_id WHERE"
+        f" activation.id IS {extract(p, 'activation_event_id')}"
+        " AND activation.kind='activated' AND activation.set_id=NEW.set_id"
+        " AND activation.owner_domain=NEW.owner_domain AND activation.owner_key_json=NEW.owner_key_json"
+        " AND prepared.kind='prepared' AND prepared.set_id=NEW.set_id"
+        " AND prepared.owner_domain=NEW.owner_domain AND prepared.owner_key_json=NEW.owner_key_json)"
+    )
+    unchanged = " AND ".join(
+        f"json_extract(prior.payload_json,'$.{name}') IS {extract(p, name)}"
+        for name in (
+            "intent_id",
+            "activation_event_id",
+            "epoch_id",
+            "authority_id",
+            "authority_incarnation",
+            "origin_path",
+            "allocation_path",
+            "root_path",
+            "birth_sha256",
+            "consumer_contract_sha256",
+            "before_snapshot_json",
+            "before_snapshot_sha256",
+        )
+    )
+    capability.append(f"""(
+        ({extract(p, "state")}='grant'
+            AND {typed(p, "prior_capability_event_id", "null")}
+            AND {extract(p, "activation_event_id")} IS NEW.predecessor_event_id
+            AND {extract(p, "plan_sha256")} IS (SELECT json_extract(payload_json,'$.plan_sha256')
+                FROM file_identity_provision_intents WHERE intent_id IS {extract(p, "intent_id")})
+            AND NOT EXISTS(SELECT 1 FROM file_identity_events prior
+                WHERE json_extract(prior.payload_json,'$.version')=2
+                AND json_extract(prior.payload_json,'$.kind')='allocation-capability'
+                AND json_extract(prior.payload_json,'$.epoch_id') IS {extract(p, "epoch_id")}))
+        OR ({extract(p, "state")}='revoke' AND EXISTS(
+            SELECT 1 FROM file_identity_events prior WHERE prior.id IS {extract(p, "prior_capability_event_id")}
+            AND prior.kind='recovery_step' AND prior.set_id=NEW.set_id
+            AND prior.owner_domain=NEW.owner_domain AND prior.owner_key_json=NEW.owner_key_json
+            AND json_extract(prior.payload_json,'$.version')=2
+            AND json_extract(prior.payload_json,'$.kind')='allocation-capability'
+            AND json_extract(prior.payload_json,'$.state')='grant' AND {unchanged}
+            AND NOT EXISTS(SELECT 1 FROM file_identity_events later WHERE later.id!=prior.id
+                AND json_extract(later.payload_json,'$.version')=2
+                AND json_extract(later.payload_json,'$.kind')='allocation-capability'
+                AND json_extract(later.payload_json,'$.epoch_id') IS {extract(p, "epoch_id")})))
+    )""")
+    _ = db.execute("DROP TRIGGER file_identity_events_validate")
+    _execute_script_in_transaction(
+        db,
+        _file_identity_event_guards(" AND ".join(capability)),
+    )
+    _ = db.execute(f"PRAGMA user_version={_SCHEMA_VERSION_FILE_IDENTITY_PROVISIONING}")
 
 
 def _ensure_rescan_file_operations_schema(db: sqlite3.Connection) -> None:

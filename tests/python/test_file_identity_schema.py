@@ -26,12 +26,13 @@ def digest(encoded: str) -> str:
 
 @pytest.fixture
 def ledger_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    import schema
+    """Legacy protocol tests use a genuine schema7, not downgraded schema8."""
+    from file_identity_schema7 import initialize_schema7
     import shared
 
     path = tmp_path / "identity.db"
     monkeypatch.setattr(shared, "DB_PATH", str(path))
-    schema.init_db()
+    initialize_schema7(path, monkeypatch)
     return path
 
 
@@ -194,7 +195,7 @@ def test_v5_upgrade_and_idempotent_v6_preserve_legacy_bytes(ledger_path: Path) -
             " FROM rescan_file_operations"
         ).fetchall()
         assert after_legacy_json == before_legacy_json
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 8
         assert db.execute(
             "SELECT recovery_event_id FROM rescan_file_operations"
         ).fetchall() == [(None,)]
@@ -204,7 +205,7 @@ def test_v5_upgrade_and_idempotent_v6_preserve_legacy_bytes(ledger_path: Path) -
         assert db.execute("SELECT * FROM file_identity_events").fetchall() == []
         # The idempotent old helper must not downgrade the current stamp.
         schema._migrate_history_download_ownership(db)
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 8
 
 
 # Frozen verbatim from schema.py at a4010b42b400bbbfffdb76936f0fed8e7f2a4ed8.

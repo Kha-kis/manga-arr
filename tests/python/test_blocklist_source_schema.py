@@ -31,12 +31,12 @@ ROOT = "bs1:p:" + "b" * 64
 
 @pytest.fixture
 def path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    import schema
+    from file_identity_schema7 import initialize_schema7
     import shared
 
     path = tmp_path / "foundation.db"
     monkeypatch.setattr(shared, "DB_PATH", str(path))
-    schema.init_db()
+    initialize_schema7(path, monkeypatch)
     with closing(sqlite3.connect(path)) as db, db:
         db.execute(
             "INSERT INTO series(id,title,search_pattern) VALUES(1,'one','one'),(2,'two','two')"
@@ -416,7 +416,7 @@ def test_real_rebuild_and_additive_upgrade_preserve_all_evidence(path, version):
     schema.init_db()
     schema._migrate_schema_constraints()
     with closing(sqlite3.connect(path)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 8
         assert (
             db.execute("SELECT release_source_scope FROM indexers").fetchone()[0]
             == DIRECT
@@ -525,7 +525,7 @@ def test_future_version_refusal_is_non_mutating(path):
     import schema
 
     with closing(sqlite3.connect(path)) as db, db:
-        db.execute("PRAGMA user_version=8")
+        db.execute("PRAGMA user_version=9")
         before = tuple(db.iterdump())
     with pytest.raises(RuntimeError, match="refusing to modify"):
         schema.init_db()

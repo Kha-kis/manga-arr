@@ -14,6 +14,7 @@ import sqlite3
 import tempfile
 import threading
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
@@ -36,6 +37,7 @@ EXPECTED_TABLES = {
     "import_publications",
     "import_publication_files",
     "import_publication_notifications",
+    "file_identity_provision_intents",
     "import_pack_cleanup_reservations",
     "import_pack_cleanup_tombstones",
     "volume_file_deletions",
@@ -542,6 +544,7 @@ def test_init_db_succeeds_on_fresh_database(fresh_db):
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()
         actual = {r[0] for r in rows}
+        assert conn.execute("PRAGMA user_version").fetchone() == (8,)
     finally:
         conn.close()
 
@@ -704,7 +707,7 @@ def test_v4_history_ownership_migration_rebuilds_queue_with_protocol_check(
     assert "download_client_id" in reservation_columns
     assert "protocol" in reservation_columns
     assert queue_row == ("Legacy Queue", None)
-    assert version == 7
+    assert version == 8
 
 
 def test_v4_invalid_download_protocol_blocks_migration_and_rolls_back(
@@ -768,7 +771,7 @@ def test_existing_history_only_v5_gets_qualified_pack_journals(
         "protocol",
     } <= columns
     assert queue_row == ("Keep V5 Queue", None)
-    assert version == 7
+    assert version == 8
 
 
 @pytest.mark.parametrize("journal", ("reservation", "tombstone"))
@@ -924,7 +927,7 @@ def test_init_db_migrates_true_historical_v2_database(fresh_db: str) -> None:
         _assert_download_protocol_check(conn)
     assert {"lease_owner", "lease_expires_at", "download_client_id"} <= columns
     assert row == ("Keep Me", None, None)
-    assert version == 7
+    assert version == 8
 
 
 def test_init_db_creates_durable_publication_precondition_columns(fresh_db):
@@ -991,7 +994,7 @@ def test_init_db_creates_replayable_volume_deletion_journal(fresh_db):
     } <= columns.keys()
     assert "idx_volume_file_deletions_active_volume" in indexes
     assert "idx_volume_file_deletions_active_series" in indexes
-    assert version == 7
+    assert version == 8
 
 
 @pytest.mark.parametrize("terminal_state", (None, "finalized", "deleted"))
@@ -1035,7 +1038,7 @@ def test_v3_terminal_or_empty_database_migrates_publication_safety_and_outbox(
     assert "queue_download_client_id" in publication_columns
     assert outbox == (1,)
     assert deletion_journal == (1,)
-    assert version == 7
+    assert version == 8
 
 
 @pytest.mark.parametrize(
@@ -1099,12 +1102,14 @@ def test_init_db_is_idempotent(fresh_db):
     # Insert a sentinel row so we can verify init_db doesn't drop or wipe
     # data on the second pass.
     with sqlite3.connect(fresh_db) as c:
+        assert c.execute("PRAGMA user_version").fetchone() == (8,)
         c.execute("INSERT INTO settings(key,value) VALUES('sentinel','keep-me')")
         c.commit()
 
     main.init_db()  # second pass — must not raise, must not lose data
 
     with sqlite3.connect(fresh_db) as c:
+        assert c.execute("PRAGMA user_version").fetchone() == (8,)
         row = c.execute("SELECT value FROM settings WHERE key='sentinel'").fetchone()
     assert row is not None and row[0] == "keep-me"
 
@@ -1190,9 +1195,18 @@ def test_direct_migration_serializes_future_schema_writer(
 ):
     """Direct migration must hold its writer lock through version updates."""
     import main
+    from file_identity_schema7 import initialize_schema7
 
-    main.init_db()
+    # Reconstruct the old migration input without leaving schema8-only objects.
+    initialize_schema7(Path(fresh_db), monkeypatch)
     with sqlite3.connect(fresh_db) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone() == (7,)
+        assert (
+            conn.execute(
+                "SELECT name FROM sqlite_master WHERE name='file_identity_provision_intents'"
+            ).fetchone()
+            is None
+        )
         actual_mode = conn.execute(
             f"PRAGMA journal_mode={journal_mode}"
         ).fetchone()[0]
