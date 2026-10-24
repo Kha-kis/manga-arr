@@ -14,12 +14,26 @@ connection's process-owned record locks. Raw fork inheritance is unsupported.
 
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 import errno
 import fcntl
 import os
 import stat
+import threading
+
+_exclusive_holds: dict[tuple[int, int, str], tuple[object, Callable[[], None]]] = {}
+
+
+def _assert_exclusive_maintenance(db_path: str) -> None:
+    """Private same-worker assertion, not a transferable lock capability."""
+    key = os.getpid(), threading.get_ident(), os.path.abspath(db_path)
+    held = _exclusive_holds.get(key)
+    if held is None:
+        raise MaintenanceLockError(
+            "exact enrollment requires held exclusive maintenance"
+        )
+    held[1]()
 
 
 class MaintenanceLockError(RuntimeError):
@@ -97,6 +111,8 @@ def service_maintenance_guard(
         parent_path, f".{os.path.basename(path)}.ownership-maintenance.lock"
     )
     descriptor, existing = _open_sidecar(lock_path, database_identity)
+    key = os.getpid(), threading.get_ident(), path
+    token = object()
     try:
         identity = existing if existing is not None else os.fstat(descriptor)
         lock_identity = identity.st_dev, identity.st_ino
@@ -148,7 +164,12 @@ def service_maintenance_guard(
             finally:
                 os.close(parent_fd)
             verify()
+        if exclusive:
+            _exclusive_holds[key] = token, verify
         yield
         verify()
     finally:
+        held = _exclusive_holds.get(key)
+        if held is not None and held[0] is token:
+            del _exclusive_holds[key]
         os.close(descriptor)

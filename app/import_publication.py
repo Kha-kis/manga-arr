@@ -225,12 +225,14 @@ def active_publication_exists(db: sqlite3.Connection, queue_id: int) -> bool:
 
 def assert_library_file_mutation_available(db: sqlite3.Connection, series_id: int, source_path: str | None = None) -> None:
     """SQL-only reciprocal fence for manual and DDL filesystem actors."""
+    from file_identity_store import unresolved_rescan_sql
+
     row = db.execute(
         "SELECT 1 FROM import_publications WHERE series_id=? AND state IN "
         "('staging','prepared','publishing','published','db_committed','cleaning') "
         "UNION ALL SELECT 1 FROM volume_file_deletions WHERE series_id=? AND state='active' "
         "UNION ALL SELECT 1 FROM rescan_file_operations WHERE series_id=? AND state IN "
-        "('prepared','published','db_committed','rollback') "
+        f"('prepared','published','db_committed','rollback') AND {unresolved_rescan_sql()} "
         "UNION ALL SELECT 1 FROM import_queue WHERE series_id=? AND "
         "(status='importing' OR lease_owner IS NOT NULL) "
         "UNION ALL SELECT 1 FROM chapter_quarantine WHERE series_id=? AND state IN "
@@ -618,8 +620,10 @@ def create_publication(
         " WHERE queue_id=? AND state IN ('finalized','deleted')",
         (queue_id,),
     )
+    from file_identity_store import unresolved_rescan_sql
+
     cur = db.execute(
-        """
+        f"""
         INSERT INTO import_publications(
             queue_id, state, owner_token, series_id, dst_dir, import_mode,
             staging_dir, queue_snapshot_json, series_snapshot_json,
@@ -639,6 +643,7 @@ def create_publication(
               SELECT 1 FROM rescan_file_operations rescan_operation
               WHERE (rescan_operation.series_id=current_queue.series_id
                      OR rescan_operation.series_id=?)
+                AND {unresolved_rescan_sql("rescan_operation")}
                 AND rescan_operation.state IN
                     ('prepared','published','db_committed','rollback')
           )

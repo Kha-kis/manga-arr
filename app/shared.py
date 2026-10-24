@@ -343,12 +343,13 @@ def get_secret_health_summary(db=None) -> dict:
     key no longer matches the DB, not just backend log lines.
     """
     from security import (
+        NOTIFICATION_SECRET_KEYS_BY_TYPE,
+        SETTINGS_SECRET_KEYS,
         SecretCipherUnavailable,
         SecretDecryptionError,
         decrypt_secret,
         is_encrypted_secret,
     )
-    from main import NOTIFICATION_SECRET_KEYS_BY_TYPE, SETTINGS_SECRET_KEYS
 
     owns_db = db is None
     if owns_db:

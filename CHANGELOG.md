@@ -29,6 +29,13 @@ All notable changes to this project. Format roughly follows
 
 ### Changed
 
+- Rescan ownership contexts verify complete enrolled role sets and committed
+  phase revisions without rewriting legacy proof strings. Exact enrollment
+  requires offline maintenance exclusion, and only a validated rescan
+  supersession releases that operation's fence. Storage profiles remain
+  disabled; this does not yet provide qualified remount continuity or live
+  recovery for existing blocked operations
+  ([#474](https://github.com/Kha-kis/manga-arr/issues/474)).
 - Recovery evidence uses database schema 8, with immutable provisioning intents
   and versioned event validation. Stop Mangarr database writers before upgrading;
   rollback requires the matching pre-upgrade backup. The migration preserves

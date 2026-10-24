@@ -27,6 +27,31 @@ logger = logging.getLogger(__name__)
 
 ALLOWED_SCHEMES = frozenset({"http", "https"})
 
+# Credential-field declarations are shared by config and standalone health reads.
+# Keep them below both modules so health inspection never imports application boot.
+SETTINGS_SECRET_KEYS: frozenset[str] = frozenset(
+    {
+        "api_key",
+        "komga_user",
+        "komga_pass",
+        "google_books_api_key",
+    }
+)
+
+# URL credentials remain secrets; this move does not change classification.
+NOTIFICATION_SECRET_KEYS_BY_TYPE: dict[str, tuple[str, ...]] = {
+    "discord": ("webhook_url",),
+    "slack": ("webhook_url",),
+    "telegram": ("bot_token",),
+    "ntfy": ("token",),
+    "gotify": ("app_token",),
+    "pushover": ("user_key", "api_token"),
+    "webhook": ("url",),
+    "email": ("password",),
+    "apprise": ("url", "config_key"),
+    "pushbullet": ("access_token",),
+}
+
 
 class UnsafeURLError(ValueError):
     """Raised when an outbound URL fails SSRF validation.

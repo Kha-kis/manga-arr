@@ -1,22 +1,31 @@
 """Owned rescan protocol controls with actual SQLite and filesystem actions."""
 
+from __future__ import annotations
+
 from pathlib import Path
+from collections.abc import Mapping
 import sqlite3
 import os
 import zipfile
+from typing import TYPE_CHECKING
 
 import pytest
 
 from test_rescan_transactions import _insert_volume, rescan_env as rescan_env
 
+if TYPE_CHECKING:
+    from rescan import _EnrichmentContext, _EnrichmentTarget
 
-def _fixture(env):
+
+def _fixture(
+    env: Mapping[str, object],
+) -> tuple[Path, int, _EnrichmentTarget, _EnrichmentContext]:
     import rescan
 
-    path = Path(env["series_dir"]) / "Race Manga v01.cbz"
+    path = Path(str(env["series_dir"])) / "Race Manga v01.cbz"
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("001.jpg", b"original")
-    volume_id = _insert_volume(env["db_path"], 1, "wanted")
+    volume_id = _insert_volume(str(env["db_path"]), 1, "wanted")
     with rescan.get_db() as db:
         snapshot = rescan.snapshot_series_rescan(db, 7)
     assert snapshot is not None

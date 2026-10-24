@@ -29,6 +29,10 @@ from __future__ import annotations
 import logging
 
 from shared import get_db
+from security import (
+    NOTIFICATION_SECRET_KEYS_BY_TYPE as NOTIFICATION_SECRET_KEYS_BY_TYPE,
+    SETTINGS_SECRET_KEYS as SETTINGS_SECRET_KEYS,
+)
 
 
 # ── ENV defaults ─────────────────────────────────────────────────────────────
@@ -108,21 +112,6 @@ ENV_ALIASES = {
 
 # ── Encryption-at-rest config ────────────────────────────────────────────────
 
-# Settings-table keys whose values are credentials and must be encrypted
-# at rest (H4 PR #2). Values for these keys are decrypted on the way into
-# CONFIG by load_config and encrypted on the way to the DB by the
-# settings-form handlers and migrate_encrypt_settings_secrets().
-#
-# komga_user is included as a pair with komga_pass — usernames aren't
-# strictly secrets but treating credentials atomically avoids partial
-# leakage if the DB dump is exposed.
-SETTINGS_SECRET_KEYS = frozenset({
-    "api_key",
-    "komga_user",
-    "komga_pass",
-    "google_books_api_key",
-})
-
 # Per-table secret columns encrypted at rest (H4 PR #3).
 # Structure: {table_name: (secret_column, label_column_for_logs)}
 # Label column is used only for WARNING log context when a row fails to
@@ -132,29 +121,6 @@ TABLE_SECRET_COLUMNS = {
     "indexers":         ("api_key",  "name"),
     "download_clients": ("password", "name"),
 }
-
-# Per-provider secret keys that live INSIDE the JSON blob stored in
-# notification_connections.settings (H4 PR #4). For each row we parse
-# the JSON, encrypt the keys listed for that row's type, preserve
-# everything else unchanged, and re-serialize. Keys not in this map
-# (server/host/port/chat_id/method/etc.) stay plaintext.
-#
-# URL-shaped credentials (Discord/Slack webhooks, Apprise, generic
-# webhook) are included because the URL IS the bearer token for those
-# providers — anyone who reads the URL can post to it.
-NOTIFICATION_SECRET_KEYS_BY_TYPE: dict[str, tuple[str, ...]] = {
-    "discord":    ("webhook_url",),
-    "slack":      ("webhook_url",),
-    "telegram":   ("bot_token",),
-    "ntfy":       ("token",),
-    "gotify":     ("app_token",),
-    "pushover":   ("user_key", "api_token"),
-    "webhook":    ("url",),
-    "email":      ("password",),
-    "apprise":    ("url", "config_key"),
-    "pushbullet": ("access_token",),
-}
-
 
 # ── Settings-value validation ────────────────────────────────────────────────
 

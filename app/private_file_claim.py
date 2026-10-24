@@ -18,7 +18,7 @@ import stat
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from typing import cast
+from typing import Protocol, cast
 
 from file_mutation_lock import FileMutationGuard
 from shared import get_db
@@ -121,6 +121,19 @@ class FullFileFingerprint:
             _signed_integer(fields["mtime_ns"]),
             digest,
         )
+
+
+class _IdentityContext(Protocol):
+    """Borrowed claim verification without importing the higher-level resolver."""
+
+    @property
+    def guard(self) -> FileMutationGuard: ...
+
+    def verify_path(self, path: str, fd: int | None = None) -> None: ...
+
+    def saved_fingerprint(self, path: str) -> FullFileFingerprint | None: ...
+
+    def assert_allocation_supported(self) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,9 +313,18 @@ def _write_marker(fd: int, payload: dict[str, object]) -> FullFileFingerprint:
 
 
 def _verify_marker(
-    fd: int, expected: FullFileFingerprint, payload: dict[str, object]
+    fd: int,
+    expected: FullFileFingerprint,
+    payload: dict[str, object],
+    *,
+    identity_context: _IdentityContext | None = None,
 ) -> None:
-    if _fingerprint_at(fd, _MARKER, marker=True) != expected:
+    actual = _fingerprint_at(fd, _MARKER, marker=True)
+    if identity_context is not None:
+        _verify_identity_fd(
+            identity_context, os.path.join(os.readlink(f"/proc/self/fd/{fd}"), _MARKER)
+        )
+    if not _same_fingerprint(actual, expected, identity_context):
         raise PrivateClaimError("private claim marker evidence changed")
     descriptor = os.open(_MARKER, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
     try:
@@ -313,6 +335,32 @@ def _verify_marker(
         raise PrivateClaimError("private claim marker is not ASCII") from exc
     finally:
         os.close(descriptor)
+
+
+def _same_fingerprint(
+    actual: FullFileFingerprint,
+    expected: FullFileFingerprint,
+    context: _IdentityContext | None,
+) -> bool:
+    if context is None:
+        return actual == expected
+    return (actual.inode, actual.size, actual.mtime_ns, actual.sha256) == (
+        expected.inode,
+        expected.size,
+        expected.mtime_ns,
+        expected.sha256,
+    )
+
+
+def _verify_identity_fd(
+    context: _IdentityContext, path: str, fd: int | None = None
+) -> None:
+    from file_identity import FileIdentityError
+
+    try:
+        context.verify_path(path, fd)
+    except FileIdentityError as exc:
+        raise PrivateClaimError(str(exc)) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -423,6 +471,7 @@ class NamespaceHandle:
     parent_path: str
     proof: _NamespaceProof
     _active: bool = True
+    _context: _IdentityContext | None = None
 
     @property
     def path(self) -> str:
@@ -432,6 +481,21 @@ class NamespaceHandle:
         self.guard.verify()
         if not self._active:
             raise PrivateClaimError("closed private namespace handle")
+        if self._context is not None:
+            if self._context.guard is not self.guard:
+                raise PrivateClaimError(
+                    "private namespace borrowed another identity guard"
+                )
+            _verify_identity_fd(self._context, self.parent_path, self.parent_fd)
+            _verify_identity_fd(self._context, self.path, self.fd)
+            _private_dir(os.fstat(self.fd))
+            _verify_marker(
+                self.fd,
+                self.proof.marker_fingerprint,
+                self.proof.marker_payload(),
+                identity_context=self._context,
+            )
+            return
         expected_parent = self.proof.parent_dev, self.proof.parent_ino
         if (
             _identity(os.fstat(self.parent_fd)) != expected_parent
@@ -453,7 +517,11 @@ class NamespaceHandle:
 
 @contextmanager
 def open_namespace(
-    guard: FileMutationGuard, parent_path: str, ownership_json: str
+    guard: FileMutationGuard,
+    parent_path: str,
+    ownership_json: str,
+    *,
+    identity_context: _IdentityContext | None = None,
 ) -> Generator[NamespaceHandle, None, None]:
     guard.verify()
     parent_path = _path(parent_path)
@@ -464,7 +532,9 @@ def open_namespace(
     handle: NamespaceHandle | None = None
     try:
         root_fd = os.open(_ROOT, _DIR_FLAGS, dir_fd=parent_fd)
-        handle = NamespaceHandle(guard, root_fd, parent_fd, parent_path, proof)
+        handle = NamespaceHandle(
+            guard, root_fd, parent_fd, parent_path, proof, _context=identity_context
+        )
         handle.verify()
         yield handle
     finally:
@@ -476,7 +546,10 @@ def open_namespace(
 
 @contextmanager
 def ensure_namespace(
-    guard: FileMutationGuard, parent_path: str
+    guard: FileMutationGuard,
+    parent_path: str,
+    *,
+    identity_context: _IdentityContext | None = None,
 ) -> Generator[NamespaceHandle, None, None]:
     """Ensure one namespace for the configured DB; no FS inside a SQL writer.
 
@@ -558,7 +631,9 @@ def ensure_namespace(
             )
             if updated.rowcount != 1:
                 raise PrivateClaimError("private namespace registry ownership changed")
-    with open_namespace(guard, parent_path, ownership) as handle:
+    with open_namespace(
+        guard, parent_path, ownership, identity_context=identity_context
+    ) as handle:
         yield handle
 
 
@@ -598,6 +673,7 @@ class CarrierHandle:
     record: CarrierRecord
     binding: ClaimBinding
     _active: bool = True
+    _context: _IdentityContext | None = None
 
     @property
     def artifact_path(self) -> str:
@@ -612,6 +688,19 @@ class CarrierHandle:
         current = os.stat(name, dir_fd=self.namespace.fd, follow_symlinks=False)
         _private_dir(held)
         _private_dir(current)
+        if self._context is not None:
+            if self._context.guard is not self.namespace.guard:
+                raise PrivateClaimError(
+                    "private carrier borrowed another identity guard"
+                )
+            _verify_identity_fd(self._context, self.record.carrier_path, self.fd)
+            _verify_marker(
+                self.fd,
+                self.record.marker_fingerprint,
+                _carrier_payload(self.record),
+                identity_context=self._context,
+            )
+            return
         if _identity(held) != (self.record.dir_dev, self.record.dir_ino) or _identity(
             current
         ) != _identity(held):
@@ -629,6 +718,13 @@ def allocate_carrier(
     artifact_fingerprint: FullFileFingerprint | None = None,
 ) -> Generator[CarrierHandle, None, None]:
     namespace.verify()
+    if namespace._context is not None:
+        from file_identity import FileIdentityError
+
+        try:
+            namespace._context.assert_allocation_supported()
+        except FileIdentityError as exc:
+            raise PrivateClaimError(str(exc)) from exc
     if namespace.proof.creation_boundary is None:
         _exclusive_parent(namespace.parent_fd, namespace.parent_path)
     origin_path = _path(origin_path)
@@ -686,12 +782,16 @@ def allocate_carrier(
 
 @contextmanager
 def open_carrier(
-    namespace: NamespaceHandle, binding: ClaimBinding, record: CarrierRecord
+    namespace: NamespaceHandle,
+    binding: ClaimBinding,
+    record: CarrierRecord,
+    *,
+    identity_context: _IdentityContext | None = None,
 ) -> Generator[CarrierHandle, None, None]:
     namespace.verify()
     name = _carrier_name(namespace, binding, record)
     fd = os.open(name, _DIR_FLAGS, dir_fd=namespace.fd)
-    carrier = CarrierHandle(namespace, fd, record, binding)
+    carrier = CarrierHandle(namespace, fd, record, binding, _context=identity_context)
     try:
         carrier.verify()
         yield carrier
@@ -731,6 +831,14 @@ def claim_into_empty(
         pass
     else:
         raise PrivateClaimError("private capture child is occupied")
+    if carrier._context is not None:
+        _verify_identity_fd(carrier._context, carrier.record.origin_path)
+        import file_identity as native
+
+        with open(carrier.record.origin_path, "rb") as source:
+            source_native = native.capture_native(source.fileno())
+    else:
+        source_native = None
     # Emptiness is stable under the borrowed nonreentrant owner guard and the
     # fresh, owned private boundary; ordinary rename never targets public data.
     os.rename(
@@ -739,18 +847,50 @@ def claim_into_empty(
     os.fsync(carrier.fd)
     os.fsync(source_parent_fd)
     carrier.verify()
-    if (
-        carrier.record.artifact_fingerprint is not None
-        and fingerprint_regular(carrier) != carrier.record.artifact_fingerprint
-    ):
-        raise PrivateClaimError(
-            "captured source differs from recorded full fingerprint; retained"
+    if source_native is not None:
+        import file_identity as native
+
+        fd = os.open(
+            _ARTIFACT, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=carrier.fd
         )
+        try:
+            if native.capture_native(fd) != source_native:
+                raise PrivateClaimError("captured native source changed; retained")
+        finally:
+            os.close(fd)
+    if carrier.record.artifact_fingerprint is not None:
+        actual = (
+            fingerprint_regular(carrier)
+            if carrier._context is None
+            else _fingerprint_at(carrier.fd, _ARTIFACT)
+        )
+        if not _same_fingerprint(
+            actual, carrier.record.artifact_fingerprint, carrier._context
+        ):
+            raise PrivateClaimError(
+                "captured source differs from recorded full fingerprint; retained"
+            )
 
 
 def fingerprint_regular(carrier: CarrierHandle) -> FullFileFingerprint:
     carrier.verify()
     result = _fingerprint_at(carrier.fd, _ARTIFACT)
+    if carrier._context is not None:
+        from file_identity import FileIdentityError
+
+        context = carrier._context
+        try:
+            expected = context.saved_fingerprint(carrier.artifact_path)
+        except FileIdentityError as exc:
+            raise PrivateClaimError(str(exc)) from exc
+        if expected is not None:
+            _verify_identity_fd(context, carrier.artifact_path)
+            result = expected
+        elif carrier.record.phase != "allocated" or carrier.binding.purpose not in {
+            "stage",
+            "publication",
+        }:
+            raise PrivateClaimError("private artifact lacks complete identity evidence")
     carrier.verify()
     return result
 
@@ -771,6 +911,8 @@ def link_private_regular(
     if _identity(os.lstat(parent_path)) != parent_identity:
         raise PrivateClaimError("private restore destination parent changed")
     # Every EEXIST refuses, even if the existing public name has the same inode.
+    if carrier._context is not None:
+        _verify_identity_fd(carrier._context, carrier.artifact_path)
     os.link(
         _ARTIFACT,
         destination_name,
@@ -781,9 +923,10 @@ def link_private_regular(
     os.fsync(destination_parent_fd)
     os.fsync(carrier.fd)
     carrier.verify()
-    if (
-        _identity(os.lstat(parent_path)) != parent_identity
-        or _fingerprint_at(destination_parent_fd, destination_name) != expected
+    if _identity(os.lstat(parent_path)) != parent_identity or not _same_fingerprint(
+        _fingerprint_at(destination_parent_fd, destination_name),
+        expected,
+        carrier._context,
     ):
         raise PrivateClaimError(
             "private restore destination changed after link; retained"
@@ -805,13 +948,19 @@ def discard_private_regular(
         if actual != expected:
             raise PrivateClaimError("private discard fingerprint changed; retained")
         carrier.verify()
+        if carrier._context is not None:
+            _verify_identity_fd(carrier._context, carrier.artifact_path)
         os.unlink(_ARTIFACT, dir_fd=carrier.fd)
     os.fsync(carrier.fd)
     carrier.verify()
 
 
 def gc_discarded_carrier(
-    namespace: NamespaceHandle, binding: ClaimBinding, record: CarrierRecord
+    namespace: NamespaceHandle,
+    binding: ClaimBinding,
+    record: CarrierRecord,
+    *,
+    identity_context: _IdentityContext | None = None,
 ) -> None:
     namespace.verify()
     name = _carrier_name(namespace, binding, record)
@@ -826,7 +975,9 @@ def gc_discarded_carrier(
     try:
         held = os.fstat(fd)
         _private_dir(held)
-        if _identity(held) != (record.dir_dev, record.dir_ino):
+        if identity_context is not None:
+            _verify_identity_fd(identity_context, record.carrier_path, fd)
+        elif _identity(held) != (record.dir_dev, record.dir_ino):
             raise PrivateClaimError("private GC carrier identity changed")
         entries = os.listdir(fd)
         if entries not in ([], [_MARKER]):
@@ -834,7 +985,12 @@ def gc_discarded_carrier(
                 "private GC carrier contains undiscarded/unexpected children"
             )
         if entries:
-            _verify_marker(fd, record.marker_fingerprint, _carrier_payload(record))
+            _verify_marker(
+                fd,
+                record.marker_fingerprint,
+                _carrier_payload(record),
+                identity_context=identity_context,
+            )
         namespace.verify()
         if _identity(
             os.stat(name, dir_fd=namespace.fd, follow_symlinks=False)

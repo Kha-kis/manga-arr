@@ -1251,7 +1251,7 @@ def _admission_roles(
 ) -> None:
     if value is None:
         return
-    from import_plan import _PUBLICATION_CHAPTER_FIELDS, _PUBLICATION_VOLUME_FIELDS
+    from import_kinds import _PUBLICATION_CHAPTER_FIELDS, _PUBLICATION_VOLUME_FIELDS
 
     admission = _mapping(
         value,
@@ -1801,6 +1801,50 @@ def roles_for(snapshot: OwnerSnapshot) -> tuple[RoleSpec, ...]:
     return tuple(sorted(_inventory(snapshot).values.values(), key=_role_order))
 
 
+def claim_roles_for(snapshot: OwnerSnapshot) -> tuple[RoleSpec, ...]:
+    """Closed claim adapter; leave historical inventory/plan role keys unchanged."""
+    specs = list(roles_for(snapshot))
+    if snapshot.owner.domain == "rescan":
+        source = next(s for s in specs if s.role.purpose == "source")
+        parent = RoleSpec(
+            RoleKey(None, "operation_parent", "directory", None),
+            _parent(source.path),
+            None,
+            snapshot.rows_json,
+            "proof",
+            "parent_identity",
+            snapshot.owner,
+        )
+        specs.append(parent)
+        # A CBZ replacement has one public name, not two independently mutable
+        # objects. Its source role binds the phase-specific publication receipt.
+        specs = [
+            s
+            for s in specs
+            if not (s.role.purpose == "destination" and s.path == source.path)
+        ]
+        specs = [
+            RoleSpec(
+                RoleKey(
+                    s.role.file_id,
+                    s.role.purpose,
+                    s.role.kind,
+                    s.path.rsplit("/", 1)[-1],
+                ),
+                s.path,
+                parent.role,
+                s.legacy_json,
+                s.presence,
+                s.policy,
+                s.owner,
+            )
+            if s.role.purpose in {"source", "destination"}
+            else s
+            for s in specs
+        ]
+    return tuple(sorted(specs, key=lambda s: _encode(_store._role_value(s.role))))
+
+
 def _claim_origin_matches(
     claim: PackDirectoryClaim, origin: dict[str, object], evidence: _Evidence
 ) -> bool:
@@ -2012,7 +2056,7 @@ def _transferred_claim_restore_references(
     claim: PackDirectoryClaim,
 ) -> tuple[tuple[RoleSpec, dict[str, object]], ...]:
     """Bind retained queue names to opaque transferred claim bytes, not ownership."""
-    from import_pack_cleanup import _pack_owner_marker_payload
+    from private_pack_claim import _pack_owner_marker_payload
 
     _owner(owner)
     snapshots = {snapshot.owner: snapshot for snapshot in closure.snapshots}
@@ -3152,9 +3196,16 @@ def _bind_references(
     budget: InventoryBudget,
     counter: _Counter | None = None,
     expected: dict[OwnerRef, OwnerSnapshot] | None = None,
+    *,
+    _parents: tuple[str, ...] | None = None,
 ) -> ReferenceClosure:
     """Pure fixed-schema binding shared by SQL acquisition and wire validation."""
     parent = _path(parent)
+    parents = tuple(_path(p) for p in _parents) if _parents is not None else (parent,)
+
+    def selected_path(path: str) -> bool:
+        return any(_within(path, extent) for extent in parents)
+
     if type(budget) is not InventoryBudget:
         raise InvalidIdentity("expected inventory budget")
     budget.__post_init__()
@@ -3175,7 +3226,7 @@ def _bind_references(
                     raise InvalidIdentity("inventory raw row omits required columns")
         ledger = _Ledger(raw, evidence, counter)
         for iid, intent in ledger.intents.items():
-            if _within(_path(intent["origin_path"]), parent):
+            if selected_path(_path(intent["origin_path"])):
                 _ = ledger.require("file_identity_provision_intents", iid)
                 _ = ledger.require(
                     "file_identity_authorities", _hex(intent["authority_id"])
@@ -3404,14 +3455,14 @@ def _bind_references(
                 for field in fields:
                     if row[field] not in {None, ""}:
                         path = _path(row[field])
-                        if table != "root_folders" and _within(path, parent):
+                        if table != "root_folders" and selected_path(path):
                             path_series.add(_integer(row["series_id"], 1))
         selected = {
-            o
-            for o, specs in roles.items()
-            if any(_within(r.path, parent) for r in specs)
+            o for o, specs in roles.items() if any(selected_path(r.path) for r in specs)
         }
-        relevant_history = ledger.seeds(parent)
+        relevant_history: set[OwnerRef] = set()
+        for extent in parents:
+            relevant_history.update(ledger.seeds(extent))
         selected.update(relevant_history.intersection(snapshots))
         # Only declared objects close an external path reference. These three
         # directory roles are context/parents, not claims on arbitrary children.
@@ -3540,7 +3591,39 @@ def collect_references(
     db: sqlite3.Connection, parent: str, budget: InventoryBudget
 ) -> ReferenceClosure:
     """Capture a coherent bounded graph, releasing only our DEFERRED read view."""
-    parent = _path(parent)
+    return _collect_references(db, (parent,), budget)
+
+
+def _capture_references(
+    db: sqlite3.Connection, parents: tuple[str, ...], budget: InventoryBudget
+) -> ReferenceClosure:
+    """SQL-only complete view with one budget, also usable under the enrollment CAS."""
+    if not parents or len(parents) > _LIMIT:
+        raise InvalidIdentity("invalid inventory extents")
+    if type(budget) is not InventoryBudget:
+        raise InvalidIdentity("expected inventory budget")
+    budget.__post_init__()
+    parents = tuple(sorted({_path(parent) for parent in parents}))
+    counter = _Counter(budget)
+    raw = _scan(db, counter)
+    expected: dict[OwnerRef, OwnerSnapshot] = {}
+    for domain, (table, _pk) in _ROOTS.items():
+        for row in raw[table]:
+            owner = OwnerRef(domain, row.key)
+            snapshot = capture_owner_snapshot(db, owner)
+            counter.charge(hash_bytes=len(snapshot.rows_json.encode("utf-8")))
+            _, related = _snapshot_records(snapshot, _Evidence())
+            counter.charge(rows=1 + len(related))
+            expected[owner] = snapshot
+    return _bind_references(
+        raw, parents[0], budget, counter, expected, _parents=parents
+    )
+
+
+def _collect_references(
+    db: sqlite3.Connection, parents: tuple[str, ...], budget: InventoryBudget
+) -> ReferenceClosure:
+    """Inventory filters are not authority; capture all extents in one SQL view."""
     if type(budget) is not InventoryBudget:
         raise InvalidIdentity("expected inventory budget")
     budget.__post_init__()
@@ -3551,20 +3634,8 @@ def collect_references(
         db.execute("BEGIN DEFERRED")
     except sqlite3.Error as exc:
         raise InvalidIdentity("SQL inventory read view could not be opened") from exc
-    counter = _Counter(budget)
     try:
-        raw = _scan(db, counter)
-        expected: dict[OwnerRef, OwnerSnapshot] = {}
-        for domain, (table, _pk) in _ROOTS.items():
-            for row in raw[table]:
-                owner = OwnerRef(domain, row.key)
-                snapshot = capture_owner_snapshot(db, owner)
-                # Admit each capture before retaining the expectation collection.
-                counter.charge(hash_bytes=len(snapshot.rows_json.encode("utf-8")))
-                _, related = _snapshot_records(snapshot, _Evidence())
-                counter.charge(rows=1 + len(related))
-                expected[owner] = snapshot
-        result = _bind_references(raw, parent, budget, counter, expected)
+        result = _capture_references(db, parents, budget)
         if db.total_changes != changes:
             raise IdentityMismatch("same-connection SQL drift during inventory")
     except sqlite3.Error as exc:

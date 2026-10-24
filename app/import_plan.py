@@ -29,6 +29,11 @@ from files import (
     safe_join_under,
 )
 from import_kinds import normalize_import_kind
+from import_kinds import (
+    _PUBLICATION_ROW_FIELDS as _PUBLICATION_ROW_FIELDS,
+    _PUBLICATION_VOLUME_FIELDS as _PUBLICATION_VOLUME_FIELDS,
+    _PUBLICATION_CHAPTER_FIELDS as _PUBLICATION_CHAPTER_FIELDS,
+)
 from import_lease import (
     has_import_sibling_that_may_use_download,
     refresh_import_queue_lease,
@@ -135,18 +140,6 @@ def _automatic_grab_import(db: sqlite3.Connection, queue: Mapping[str, Any]) -> 
     ) != 0
 
 
-_PUBLICATION_ROW_FIELDS = (
-    "id", "series_id", "status", "grabbed_at", "imported_at", "import_path",
-    "quality", "size_bytes", "download_id", "download_client_id", "protocol",
-    "torrent_name", "indexer", "client", "release_group",
-)
-_PUBLICATION_VOLUME_FIELDS = _PUBLICATION_ROW_FIELDS + (
-    "volume_num", "chapter_num", "is_special", "pack_type", "vol_range_start",
-    "vol_range_end", "edition_type", "language", "source_url",
-)
-_PUBLICATION_CHAPTER_FIELDS = _PUBLICATION_ROW_FIELDS + (
-    "volume_id", "chapter_num", "chapter_range_end", "torrent_url",
-)
 _PUBLICATION_MAPPING_FIELDS = (
     "id", "queue_id", "src_path", "filename", "proposed_volume", "file_type",
     "proposed_chapter", "proposed_chapter_range_end", "proposed_volume_range_start",

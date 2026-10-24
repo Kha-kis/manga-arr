@@ -11,7 +11,7 @@ import errno
 from contextlib import contextmanager
 from collections.abc import Callable
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 import hashlib
 import json
 import os
@@ -24,6 +24,9 @@ import threading
 from typing import Any, TYPE_CHECKING, TypeVar, cast
 
 import private_file_claim as claims
+import file_identity_claims as identities
+from file_identity import FileIdentityError, OwnerRef
+import file_identity_store as identity_store
 import shared
 from file_mutation_lock import (
     FileMutationBusy,
@@ -53,7 +56,8 @@ def rescan_cancel_requested() -> bool:
 def active_for_series(db: sqlite3.Connection, series_id: int) -> bool:
     return (
         db.execute(
-            f"SELECT 1 FROM rescan_file_operations WHERE series_id=? AND state IN {ACTIVE_STATES} LIMIT 1",
+            f"SELECT 1 FROM rescan_file_operations WHERE series_id=? AND state IN {ACTIVE_STATES} "
+            f"AND {identity_store.unresolved_rescan_sql()} LIMIT 1",
             (series_id,),
         ).fetchone()
         is not None
@@ -64,6 +68,7 @@ def active_for_path(db: sqlite3.Connection, path: str) -> bool:
     return (
         db.execute(
             f"SELECT 1 FROM rescan_file_operations WHERE state IN {ACTIVE_STATES} "
+            f"AND {identity_store.unresolved_rescan_sql()} "
             "AND (substr(source_path,1,length(?)+1)=?||'/' "
             "OR substr(destination_path,1,length(?)+1)=?||'/') LIMIT 1",
             (path, path, path, path),
@@ -144,11 +149,146 @@ def fingerprint_path(path: str) -> claims.FullFileFingerprint:
         os.close(fd)
 
 
+def _owned_fingerprint(operation: Operation, path: str) -> claims.FullFileFingerprint:
+    context = operation._identity
+    if context is None:
+        return fingerprint_path(path)
+    try:
+        with identities._opened(path) as (fd, parent, name):
+            identities.verify_role(
+                context, identities.role_at(context, path), fd, parent, name
+            )
+        specs = identities.claim_roles_for(context.active.proof.snapshot)
+        spec = next(s for s in specs if s.path == path)
+        expected = identities._legacy_fingerprint(spec, context.active.proof.snapshot)
+        if not isinstance(expected, claims.FullFileFingerprint):
+            raise claims.PrivateClaimError("rescan public role lacks a content receipt")
+        return expected
+    except FileIdentityError as exc:
+        raise claims.PrivateClaimError(str(exc)) from exc
+
+
 @dataclass
 class Operation:
     row: dict[str, Any]
     fingerprints: dict[str, Any]
     carriers: dict[str, Any]
+    _identity: identities.IdentityContext | None = field(default=None, repr=False)
+
+
+def _bind_identity(
+    operation: Operation, guard: FileMutationGuard, *, reconcile: bool = False
+) -> None:
+    guard.verify()
+    try:
+        with get_db() as db:
+            context = identities.resolve_context(
+                db, guard, OwnerRef("rescan", (operation.row["id"],))
+            )
+        if context is not None:
+            try:
+                identities.verify_complete(context)
+            except (FileIdentityError, FileNotFoundError):
+                if not reconcile:
+                    raise
+                proof = identities.capture_set(
+                    context.active.proof.snapshot,
+                    context.active.proof.authority_id,
+                    context.active.proof.epoch_id,
+                    guard,
+                    previous=context,
+                    dependencies=tuple(
+                        c.active.proof.snapshot for c in context._dependencies
+                    ),
+                )
+                guard.verify()
+                with get_db() as db:
+                    db.execute("PRAGMA synchronous=FULL")
+                    db.execute("BEGIN IMMEDIATE")
+                    prepared = identity_store.prepare_set(
+                        db, proof, context.active.event_id
+                    )
+                    identity_store.activate_set(db, proof, proof.snapshot, prepared)
+                with get_db() as db:
+                    context = identities.resolve_context(db, guard, proof.owner)
+                if context is None:
+                    raise claims.PrivateClaimError(
+                        "rescan replay activation disappeared"
+                    )
+                identities.verify_complete(context)
+        operation._identity = context
+    except FileIdentityError as exc:
+        raise claims.PrivateClaimError(str(exc)) from exc
+
+
+def _namespace_context(operation: Operation) -> identities.IdentityContext | None:
+    context = operation._identity
+    return context._dependencies[0] if context is not None else None
+
+
+def _next_snapshot(operation: Operation, state: str) -> identity_store.OwnerSnapshot:
+    context = operation._identity
+    if context is None:
+        raise claims.PrivateClaimError("rescan phase lacks an identity context")
+    snapshot = context.active.proof.snapshot
+    value = identities._document(snapshot.rows_json)
+    row = cast(dict[str, object], cast(dict[str, object], value["root"])["row"])
+    row.update(
+        state=state,
+        fingerprints_json=_encode(operation.fingerprints),
+        carriers_json=_encode(operation.carriers),
+        publication_receipt_json=operation.row["publication_receipt_json"],
+    )
+    encoded = identities._encode(value)
+    return identity_store.OwnerSnapshot(
+        snapshot.owner, encoded, identities._digest(encoded)
+    )
+
+
+def _capture_decision(
+    operation: Operation, state: str
+) -> identity_store.ProofSet | None:
+    context = operation._identity
+    if context is None:
+        return None
+    try:
+        return identities.capture_set(
+            _next_snapshot(operation, state),
+            context.active.proof.authority_id,
+            context.active.proof.epoch_id,
+            context.guard,
+            previous=context,
+            dependencies=tuple(c.active.proof.snapshot for c in context._dependencies),
+        )
+    except FileIdentityError as exc:
+        raise claims.PrivateClaimError(str(exc)) from exc
+
+
+def _write_identity_decision(
+    db: sqlite3.Connection, operation: Operation, proof: identity_store.ProofSet | None
+) -> None:
+    if proof is not None:
+        context = operation._identity
+        if context is None:
+            raise claims.PrivateClaimError("rescan phase lost its identity context")
+        prepared = identity_store.prepare_set(db, proof, context.active.event_id)
+        identity_store.activate_set(db, proof, proof.snapshot, prepared)
+
+
+def _read_identity_decision(operation: Operation) -> None:
+    if operation._identity is not None:
+        guard = operation._identity.guard
+        with get_db() as db:
+            context = identities.resolve_context(
+                db, guard, operation._identity.active.proof.owner
+            )
+        if context is None:
+            raise claims.PrivateClaimError("rescan phase activation disappeared")
+        try:
+            identities.verify_complete(context)
+        except FileIdentityError as exc:
+            raise claims.PrivateClaimError(str(exc)) from exc
+        operation._identity = context
 
 
 def load_operation(operation_id: int) -> Operation | None:
@@ -267,9 +407,38 @@ def _store(
 ) -> None:
     previous = operation.row["state"]
     next_state = state or previous
+    proof = _capture_decision(operation, next_state)
     with get_db() as db:
         db.execute("PRAGMA synchronous=FULL")
         db.execute("BEGIN IMMEDIATE")
+        if operation._identity is not None:
+            identities.assert_database(db, operation._identity.guard)
+            identity_store.assert_snapshot(
+                db, operation._identity.active.proof.snapshot
+            )
+        elif (
+            identity_store._latest(db, OwnerRef("rescan", (operation.row["id"],)))
+            is not None
+        ):
+            durable = db.execute(
+                "SELECT state,fingerprints_json,carriers_json,publication_receipt_json "
+                "FROM rescan_file_operations WHERE id=? AND operation_token=?",
+                (operation.row["id"], operation.row["operation_token"]),
+            ).fetchone()
+            if durable is None or (
+                next_state,
+                _encode(operation.fingerprints),
+                _encode(operation.carriers),
+                operation.row["publication_receipt_json"],
+            ) != (
+                durable["state"],
+                durable["fingerprints_json"],
+                durable["carriers_json"],
+                durable["publication_receipt_json"],
+            ):
+                raise claims.PrivateClaimError(
+                    "enrolled rescan decision lacks complete context"
+                )
         updated = db.execute(
             "UPDATE rescan_file_operations SET state=?,fingerprints_json=?,carriers_json=?,"
             "publication_receipt_json=?,diagnostic=?,updated_at=CURRENT_TIMESTAMP "
@@ -287,8 +456,12 @@ def _store(
         )
         if updated.rowcount != 1:
             raise claims.PrivateClaimError("rescan journal decision changed")
+        _write_identity_decision(db, operation, proof)
     operation.row["state"] = next_state
     operation.row["diagnostic"] = diagnostic
+    operation.row["fingerprints_json"] = _encode(operation.fingerprints)
+    operation.row["carriers_json"] = _encode(operation.carriers)
+    _read_identity_decision(operation)
 
 
 def _save_record(
@@ -300,19 +473,26 @@ def _save_record(
 
 @contextmanager
 def _open(operation: Operation, guard: FileMutationGuard, purpose: str):
+    _bind_identity(operation, guard)
     record = _record(operation, purpose)
     if record is None:
         raise claims.PrivateClaimError("rescan carrier lacks durable allocation")
     with claims.ensure_namespace(
-        guard, os.path.dirname(record.origin_path)
+        guard,
+        os.path.dirname(record.origin_path),
+        identity_context=_namespace_context(operation),
     ) as namespace:
         with claims.open_carrier(
-            namespace, _binding(operation, purpose), record
+            namespace,
+            _binding(operation, purpose),
+            record,
+            identity_context=operation._identity,
         ) as carrier:
             yield carrier
 
 
 def _allocate(operation: Operation, guard: FileMutationGuard, purpose: str) -> None:
+    _bind_identity(operation, guard)
     origin = (
         operation.row["source_path"]
         if purpose == "source"
@@ -325,7 +505,11 @@ def _allocate(operation: Operation, guard: FileMutationGuard, purpose: str) -> N
     )
     _store(operation, diagnostic=f"allocating:{purpose}")
     try:
-        with claims.ensure_namespace(guard, os.path.dirname(origin)) as namespace:
+        with claims.ensure_namespace(
+            guard,
+            os.path.dirname(origin),
+            identity_context=_namespace_context(operation),
+        ) as namespace:
             with claims.allocate_carrier(
                 namespace, _binding(operation, purpose), origin, expected
             ) as carrier:
@@ -334,7 +518,10 @@ def _allocate(operation: Operation, guard: FileMutationGuard, purpose: str) -> N
         try:
             # A failed save may have changed only in-memory carrier authority.
             durable = load_operation(operation.row["id"])
-            if durable is not None and durable.row["diagnostic"] == f"allocating:{purpose}":
+            if (
+                durable is not None
+                and durable.row["diagnostic"] == f"allocating:{purpose}"
+            ):
                 cause = f"{type(exc).__name__}: {exc}"[:_ALLOCATION_CAUSE_LIMIT]
                 _store(durable, diagnostic=f"allocating:{purpose}; cause={cause}")
         except Exception:
@@ -356,6 +543,7 @@ def _phase(
         restore_receipt=receipt or carrier.record.restore_receipt,
     )
     _save_record(operation, purpose, carrier.record)
+    carrier._context = operation._identity
 
 
 def _reserve(
@@ -467,7 +655,8 @@ def _publish(operation: Operation, guard: FileMutationGuard) -> claims.LinkRecei
             os.fsync(carrier.fd)
             os.fsync(carrier.namespace.parent_fd)
             carrier.verify()
-            if fingerprint_path(operation.row["destination_path"]) != expected:
+            actual = fingerprint_path(operation.row["destination_path"])
+            if not claims._same_fingerprint(actual, expected, operation._identity):
                 raise claims.PrivateClaimError("native publication changed; retained")
             receipt = claims.LinkReceipt(operation.row["destination_path"], expected)
         operation.row["publication_receipt_json"] = _encode(asdict(receipt))
@@ -478,7 +667,7 @@ def _publish(operation: Operation, guard: FileMutationGuard) -> claims.LinkRecei
 def _commit(operation: Operation, guard: FileMutationGuard) -> bool:
     import rescan
 
-    guard.verify()
+    _bind_identity(operation, guard)
     receipt_json = operation.row["publication_receipt_json"]
     if receipt_json is None:
         return False
@@ -490,7 +679,10 @@ def _commit(operation: Operation, guard: FileMutationGuard) -> bool:
                     operation, purpose
                 ):
                     return False
-        if fingerprint_path(receipt.destination_path) != receipt.fingerprint:
+        if (
+            _owned_fingerprint(operation, receipt.destination_path)
+            != receipt.fingerprint
+        ):
             return False
     except (OSError, claims.PrivateClaimError):
         return False
@@ -507,9 +699,15 @@ def _commit(operation: Operation, guard: FileMutationGuard) -> bool:
         operation.row["source_path"],
         rescan.FileFingerprint(source.size, source.mtime_ns, source.dev, source.inode),
     )
+    proof = _capture_decision(operation, "db_committed")
     with get_db() as db:
         db.execute("PRAGMA synchronous=FULL")
         db.execute("BEGIN IMMEDIATE")
+        if operation._identity is not None:
+            identities.assert_database(db, operation._identity.guard)
+            identity_store.assert_snapshot(
+                db, operation._identity.active.proof.snapshot
+            )
         if rescan._current_enrichment_context(target, db) != context:
             return False
         if operation.row["destination_path"] != operation.row["source_path"]:
@@ -530,7 +728,9 @@ def _commit(operation: Operation, guard: FileMutationGuard) -> bool:
         )
         if updated.rowcount != 1:
             raise claims.PrivateClaimError("rescan publication decision lost")
+        _write_identity_decision(db, operation, proof)
     operation.row["state"] = "db_committed"
+    _read_identity_decision(operation)
     return True
 
 
@@ -571,9 +771,21 @@ def _discard(operation: Operation, guard: FileMutationGuard, purpose: str) -> No
     record = _record(operation, purpose)
     assert record is not None
     with claims.ensure_namespace(
-        guard, os.path.dirname(record.origin_path)
+        guard,
+        os.path.dirname(record.origin_path),
+        identity_context=_namespace_context(operation),
     ) as namespace:
-        claims.gc_discarded_carrier(namespace, _binding(operation, purpose), record)
+        if operation._identity is None:
+            claims.gc_discarded_carrier(namespace, _binding(operation, purpose), record)
+        else:
+            claims.gc_discarded_carrier(
+                namespace,
+                _binding(operation, purpose),
+                record,
+                identity_context=operation._identity,
+            )
+    if operation._identity is not None:
+        _store(operation)
 
 
 def _remove_publication(operation: Operation, guard: FileMutationGuard) -> None:
@@ -593,7 +805,10 @@ def _remove_publication(operation: Operation, guard: FileMutationGuard) -> None:
         return
     receipt = claims.LinkReceipt.from_value(_decode(receipt_json))
     if record is None:
-        if fingerprint_path(receipt.destination_path) != receipt.fingerprint:
+        if (
+            _owned_fingerprint(operation, receipt.destination_path)
+            != receipt.fingerprint
+        ):
             raise claims.PrivateClaimError("publication changed; retained")
         _allocate(operation, guard, "rollback")
     with _open(operation, guard, "rollback") as carrier:
@@ -607,6 +822,8 @@ def _remove_publication(operation: Operation, guard: FileMutationGuard) -> None:
                 carrier.namespace.parent_fd,
                 os.path.basename(receipt.destination_path),
             )
+            if operation._identity is not None:
+                _phase(operation, "rollback", carrier, "claimed")
             captured = claims.fingerprint_regular(carrier)
         if captured != receipt.fingerprint:
             raise claims.PrivateClaimError("rollback capture changed; retained")
@@ -626,7 +843,8 @@ def _restore_source(operation: Operation, guard: FileMutationGuard) -> None:
             if (
                 receipt is None
                 or receipt.destination_path != operation.row["source_path"]
-                or fingerprint_path(receipt.destination_path) != receipt.fingerprint
+                or _owned_fingerprint(operation, receipt.destination_path)
+                != receipt.fingerprint
             ):
                 raise claims.PrivateClaimError(
                     "source restore receipt changed; retained"
@@ -635,8 +853,8 @@ def _restore_source(operation: Operation, guard: FileMutationGuard) -> None:
             try:
                 actual = claims.fingerprint_regular(carrier)
             except FileNotFoundError:
-                if record.phase not in {"allocated", "claiming"} or fingerprint_path(
-                    record.origin_path
+                if record.phase not in {"allocated", "claiming"} or _owned_fingerprint(
+                    operation, record.origin_path
                 ) != _fingerprint(operation, "source"):
                     raise claims.PrivateClaimError(
                         "source capture result is ambiguous; retained"
@@ -669,6 +887,7 @@ def _restore_source(operation: Operation, guard: FileMutationGuard) -> None:
 
 
 def _settle(operation: Operation, guard: FileMutationGuard) -> str:
+    _bind_identity(operation, guard, reconcile=True)
     if operation.row["state"] in {"completed", "rolled_back"}:
         return operation.row["state"]
     diagnostic = str(operation.row.get("diagnostic") or "")
@@ -685,7 +904,10 @@ def _settle(operation: Operation, guard: FileMutationGuard) -> str:
         if receipt_json is None:
             raise claims.PrivateClaimError("committed publication lacks receipt")
         receipt = claims.LinkReceipt.from_value(_decode(receipt_json))
-        if fingerprint_path(receipt.destination_path) != receipt.fingerprint:
+        if (
+            _owned_fingerprint(operation, receipt.destination_path)
+            != receipt.fingerprint
+        ):
             raise claims.PrivateClaimError(
                 "committed publication changed; original retained"
             )
@@ -714,6 +936,15 @@ def _settle_safely(operation: Operation, guard: FileMutationGuard) -> str:
     if durable is None:
         return "blocked"
     operation = durable
+    with get_db() as db:
+        if (
+            db.execute(
+                f"SELECT 1 FROM rescan_file_operations WHERE id=? AND NOT ({identity_store.unresolved_rescan_sql()})",
+                (operation.row["id"],),
+            ).fetchone()
+            is not None
+        ):
+            return "superseded"
     try:
         return _settle(operation, guard)
     except Exception as exc:
@@ -840,6 +1071,7 @@ def active_operation_ids(
     with get_db() as db:
         rows = db.execute(
             f"SELECT id FROM rescan_file_operations WHERE state IN {ACTIVE_STATES} AND id>? "
+            f"AND {identity_store.unresolved_rescan_sql()} "
             "AND (? IS NULL OR series_id=?) ORDER BY id LIMIT ?",
             (after_id, series_id, series_id, limit),
         ).fetchall()

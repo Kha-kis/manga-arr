@@ -47,6 +47,7 @@ from private_file_claim import (
     gc_discarded_carrier,
 )
 from private_pack_claim import (
+    _pack_owner_marker_payload as _pack_owner_marker_payload,
     DIR_FLAGS,
     OWNER_MARKER,
     DirectoryProof,
@@ -1080,21 +1081,6 @@ def _fsync_tree(
         if checkpoint is not None:
             checkpoint()
         _fsync_directory(directory)
-
-
-def _pack_owner_marker_payload(
-    identity: DownloadIdentity,
-    owner_token: str,
-) -> bytes:
-    if not owner_token:
-        raise ValueError("owner_token must be non-empty")
-    identity_key = download_identity_key(identity)
-    if not identity_key:
-        raise ValueError("download identity must be non-empty")
-    digest = hashlib.sha256(
-        f"{identity_key}\0{owner_token}".encode("utf-8")
-    ).hexdigest()
-    return f"mangarr-pack-owner-v1:{digest}\n".encode()
 
 
 def _pack_tree_has_owner_marker(
