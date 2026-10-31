@@ -18,6 +18,11 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from typing import Literal, cast
 
+from file_identity import FileIdentityError, OwnerRef
+import file_identity_claims as identities
+import file_identity_store as identity_store
+from file_identity_store import unresolved_deletion_sql
+
 import shared
 import private_file_claim as private_claim
 from events import add_history, log_event
@@ -154,6 +159,10 @@ class _DeletionJournal:
     original_import_path: str
     diagnostic: str
     claim_carrier_json: str | None
+    _identity: identities.IdentityContext | None = field(
+        default=None, repr=False, compare=False
+    )
+    _creation_event_id: int | None = field(default=None, repr=False, compare=False)
 
 
 _SNAPSHOT_COLUMNS = (
@@ -338,10 +347,11 @@ def _active_journal_id(series_id: int, volume_id: int) -> int | None:
     """Read an existing fence without starting a writer transaction."""
     with get_db() as db:
         row = db.execute(
-            """
+            f"""
             SELECT id
             FROM volume_file_deletions
             WHERE series_id=? AND volume_id=? AND state='active'
+              AND {unresolved_deletion_sql()}
             ORDER BY id
             LIMIT 1
             """,
@@ -536,6 +546,35 @@ def reserve_volume_file_deletion(
     series_id: int,
     volume_id: int,
 ) -> DeletionReservation:
+    existing = _active_journal_id(series_id, volume_id)
+    if existing is not None:
+        return DeletionReservation("existing", existing)
+    try:
+        with file_mutation_guard(shared.DB_PATH) as guard:
+            result = _reserve_volume_file_deletion_owned(series_id, volume_id)
+            if result.status == "reserved" and result.journal_id is not None:
+                journal = _load_journal(result.journal_id)
+                if journal is None:
+                    raise private_claim.PrivateClaimError("deletion intent disappeared")
+                _bind_identity(journal, guard, birth=True)
+            return result
+    except FileMutationLockError:
+        return DeletionReservation("import_in_progress")
+    except (FileIdentityError, private_claim.PrivateClaimError) as exc:
+        return DeletionReservation("unsafe", diagnostic=str(exc))
+    except sqlite3.Error as exc:
+        # A lost commit acknowledgement is resolved only by durable readback;
+        # an existing intent is never automatically re-enrolled on replay.
+        existing = _active_journal_id(series_id, volume_id)
+        return DeletionReservation(
+            "existing" if existing is not None else "unsafe", existing, str(exc)
+        )
+
+
+def _reserve_volume_file_deletion_owned(
+    series_id: int,
+    volume_id: int,
+) -> DeletionReservation:
     """Fingerprint first, then atomically fence imports and reset DB state."""
     existing = _active_journal_id(series_id, volume_id)
     if existing is not None:
@@ -553,10 +592,11 @@ def reserve_volume_file_deletion(
         db.execute("PRAGMA synchronous=FULL")
         db.execute("BEGIN IMMEDIATE")
         existing_row = db.execute(
-            """
+            f"""
             SELECT id
             FROM volume_file_deletions
             WHERE series_id=? AND volume_id=? AND state='active'
+              AND {unresolved_deletion_sql()}
             ORDER BY id
             LIMIT 1
             """,
@@ -736,6 +776,17 @@ def _load_journal(journal_id: int) -> _DeletionJournal | None:
     )
 
 
+def _unresolved_journal(journal_id: int) -> bool:
+    with get_db() as db:
+        return (
+            db.execute(
+                f"SELECT 1 FROM volume_file_deletions WHERE id=? AND {unresolved_deletion_sql()}",
+                (journal_id,),
+            ).fetchone()
+            is not None
+        )
+
+
 def _same_fingerprint(actual: FileFingerprint, expected: FileFingerprint) -> bool:
     return actual == expected
 
@@ -832,6 +883,183 @@ def _full_fingerprint(
     )
 
 
+def _identity_snapshot(
+    journal: _DeletionJournal, **changes: object
+) -> identity_store.OwnerSnapshot:
+    context = journal._identity
+    if context is None:
+        raise private_claim.PrivateClaimError(
+            "deletion phase lacks an identity context"
+        )
+    value = identities._document(context.active.proof.snapshot.rows_json)
+    row = cast(dict[str, object], cast(dict[str, object], value["root"])["row"])
+    row.update(changes)
+    encoded = identities._encode(value)
+    return identity_store.OwnerSnapshot(
+        context.active.proof.owner, encoded, identities._digest(encoded)
+    )
+
+
+def _capture_identity(
+    journal: _DeletionJournal, **changes: object
+) -> identity_store.ProofSet | None:
+    context = journal._identity
+    if context is None:
+        return None
+    try:
+        proof = identities.capture_set(
+            _identity_snapshot(journal, **changes),
+            context.active.proof.authority_id,
+            context.active.proof.epoch_id,
+            context.guard,
+            previous=context,
+            dependencies=tuple(c.active.proof.snapshot for c in context._dependencies),
+        )
+        return replace(proof, origin=context.active.proof.origin)
+    except FileIdentityError as exc:
+        raise private_claim.PrivateClaimError(str(exc)) from exc
+
+
+def _activate_identity(
+    db: sqlite3.Connection,
+    proof: identity_store.ProofSet | None,
+    previous: identities.IdentityContext | None,
+    *,
+    creation_event_id: int | None = None,
+) -> None:
+    if proof is not None:
+        prepared = identity_store.prepare_set(
+            db,
+            proof,
+            creation_event_id
+            if creation_event_id is not None
+            else (previous.active.event_id if previous else None),
+        )
+        identity_store.activate_set(db, proof, proof.snapshot, prepared)
+
+
+def _begin_carrier_creation(
+    journal: _DeletionJournal, guard: FileMutationGuard
+) -> _DeletionJournal:
+    """A prepared-only proposal fences an interrupted, unrecorded creation."""
+    guard.verify()
+    proof = _capture_identity(journal)
+    if proof is None:
+        return journal
+    context = journal._identity
+    if context is None:
+        raise private_claim.PrivateClaimError("carrier creation lacks prior authority")
+    with get_db() as db:
+        db.execute("PRAGMA synchronous=FULL")
+        db.execute("BEGIN IMMEDIATE")
+        event = identity_store.prepare_set(db, proof, context.active.event_id)
+    with get_db() as db:
+        latest = identity_store._event_cas(db, proof.owner, event)
+        if (
+            latest is None
+            or latest["kind"] != "prepared"
+            or latest["set_id"] != proof.set_id
+            or identity_store._load_set(db, proof.set_id) != proof
+        ):
+            raise private_claim.PrivateClaimError("carrier creation fence changed")
+    guard.verify()
+    return replace(journal, _creation_event_id=event)
+
+
+def _bind_identity(
+    journal: _DeletionJournal, guard: FileMutationGuard, *, birth: bool = False
+) -> _DeletionJournal:
+    try:
+        owner = OwnerRef("deletion", (journal.journal_id,))
+        with get_db() as db:
+            context = identities.resolve_context(db, guard, owner)
+            namespace = (
+                identities.resolve_context(
+                    db, guard, OwnerRef("namespace", (journal.parent_path,))
+                )
+                if journal.parent_path
+                else None
+            )
+            if context is not None or namespace is not None:
+                from file_identity_consumers import InventoryBudget, collect_references
+                from file_identity import IdentityUnavailable
+
+                closure = collect_references(db, journal.parent_path, InventoryBudget())
+                if any(
+                    s.owner.domain not in {"namespace", "rescan", "deletion"}
+                    for s in closure.snapshots
+                ):
+                    raise IdentityUnavailable(
+                        "deletion reference closure has an unintegrated domain"
+                    )
+        if namespace is not None:
+            identities.verify_complete(namespace)
+        if context is None and namespace is not None:
+            if not birth:
+                raise private_claim.PrivateClaimError(
+                    "enrolled namespace deletion lacks activated birth; retained"
+                )
+            namespace.assert_allocation_supported()
+            with get_db() as db:
+                snapshot = identity_store.capture_owner_snapshot(db, owner)
+            proof = replace(
+                identities.capture_set(
+                    snapshot,
+                    namespace.active.proof.authority_id,
+                    namespace.active.proof.epoch_id,
+                    guard,
+                    dependencies=(namespace.active.proof.snapshot,),
+                    birth_namespace=namespace,
+                ),
+                origin="birth",
+            )
+            with get_db() as db:
+                db.execute("BEGIN IMMEDIATE")
+                _activate_identity(db, proof, None)
+            with get_db() as db:
+                context = identities.resolve_context(db, guard, owner)
+            if context is None:
+                raise private_claim.PrivateClaimError(
+                    "deletion birth activation disappeared"
+                )
+        if context is not None:
+            try:
+                identities.verify_complete(context)
+            except FileIdentityError:
+                candidate = replace(journal, _identity=context)
+                proof = _capture_identity(candidate)
+                with get_db() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    _activate_identity(db, proof, context)
+                with get_db() as db:
+                    context = identities.resolve_context(db, guard, owner)
+                if context is None:
+                    raise private_claim.PrivateClaimError(
+                        "deletion replay activation disappeared"
+                    )
+                identities.verify_complete(context)
+        return replace(journal, _identity=context)
+    except FileIdentityError as exc:
+        raise private_claim.PrivateClaimError(str(exc)) from exc
+
+
+def _owned_fingerprint(
+    journal: _DeletionJournal, path: str
+) -> private_claim.FullFileFingerprint:
+    if journal._identity is None:
+        return _full_fingerprint(_regular_fingerprint(path))
+    try:
+        journal._identity.verify_path(path)
+        expected = journal._identity.saved_fingerprint(path)
+        if expected is None:
+            raise private_claim.PrivateClaimError(
+                "deletion role lacks a content receipt"
+            )
+        return expected
+    except FileIdentityError as exc:
+        raise private_claim.PrivateClaimError(str(exc)) from exc
+
+
 def _store_carrier(
     journal: _DeletionJournal,
     guard: FileMutationGuard,
@@ -840,19 +1068,32 @@ def _store_carrier(
     """Commit the exact carrier/intent before FS; never hold the writer across IO."""
     guard.verify()
     encoded = record.to_json()
+    proof = _capture_identity(journal, claim_carrier_json=encoded)
     with get_db() as db:
         db.execute("PRAGMA synchronous=FULL")
         db.execute("BEGIN IMMEDIATE")
+        if journal._identity is not None:
+            identity_store.assert_snapshot(db, journal._identity.active.proof.snapshot)
         updated = db.execute(
             "UPDATE volume_file_deletions SET claim_carrier_json=?,"
             " updated_at=CURRENT_TIMESTAMP WHERE id=? AND state='active'"
-            " AND claim_carrier_json IS ?",
+            f" AND claim_carrier_json IS ? AND {unresolved_deletion_sql()}",
             (encoded, journal.journal_id, journal.claim_carrier_json),
         )
         if updated.rowcount != 1:
             raise RuntimeError("private deletion carrier lost journal CAS")
+        _activate_identity(
+            db, proof, journal._identity, creation_event_id=journal._creation_event_id
+        )
     guard.verify()
-    return replace(journal, claim_carrier_json=encoded)
+    updated_journal = replace(
+        journal, claim_carrier_json=encoded, _creation_event_id=None
+    )
+    return (
+        _bind_identity(updated_journal, guard)
+        if journal._identity is not None
+        else updated_journal
+    )
 
 
 def _verify_restore_receipt(
@@ -864,10 +1105,7 @@ def _verify_restore_receipt(
         raise UnsafeDeletionTarget(
             "private restoration has no durable matching receipt"
         )
-    if (
-        _full_fingerprint(_regular_fingerprint(journal.target_path))
-        != receipt.fingerprint
-    ):
+    if _owned_fingerprint(journal, journal.target_path) != receipt.fingerprint:
         raise UnsafeDeletionTarget(
             "restored public file changed; private claim retained"
         )
@@ -888,7 +1126,11 @@ def _replay_private_claim(
         )
     expected_target = _full_fingerprint(journal.fingerprint)
     binding = _private_binding(journal)
-    with private_claim.ensure_namespace(guard, journal.parent_path) as namespace:
+    context = journal._identity
+    namespace_context = context._dependencies[0] if context is not None else None
+    with private_claim.ensure_namespace(
+        guard, journal.parent_path, identity_context=namespace_context
+    ) as namespace:
         with ExitStack() as stack:
             if journal.claim_carrier_json is None:
                 selected = fingerprint or journal.fingerprint
@@ -896,6 +1138,7 @@ def _replay_private_claim(
                     raise UnsafeDeletionTarget(
                         "private deletion has no full fingerprint"
                     )
+                journal = _begin_carrier_creation(journal, guard)
                 carrier = stack.enter_context(
                     private_claim.allocate_carrier(
                         namespace,
@@ -904,9 +1147,13 @@ def _replay_private_claim(
                         _full_fingerprint(selected),
                     )
                 )
-                record = replace(carrier.record, phase="claiming")
+                record = replace(
+                    carrier.record,
+                    phase="allocated" if context is not None else "claiming",
+                )
                 journal = _store_carrier(journal, guard, record)
                 carrier.record = record
+                carrier._context = journal._identity
             else:
                 record = private_claim.CarrierRecord.from_json(
                     journal.claim_carrier_json
@@ -933,7 +1180,9 @@ def _replay_private_claim(
                 if record.phase == "discarded":
                     if record.restore_receipt is not None:
                         _verify_restore_receipt(journal, record)
-                    private_claim.gc_discarded_carrier(namespace, binding, record)
+                    private_claim.gc_discarded_carrier(
+                        namespace, binding, record, identity_context=journal._identity
+                    )
                     if record.restore_receipt is not None:
                         raise UnsafeDeletionTarget(
                             "changed claim restored without replacing another path"
@@ -945,7 +1194,9 @@ def _replay_private_claim(
                         else "terminal"
                     )
                 carrier = stack.enter_context(
-                    private_claim.open_carrier(namespace, binding, record)
+                    private_claim.open_carrier(
+                        namespace, binding, record, identity_context=journal._identity
+                    )
                 )
 
             def persist(updated: private_claim.CarrierRecord) -> None:
@@ -953,6 +1204,7 @@ def _replay_private_claim(
                 journal = _store_carrier(journal, guard, updated)
                 record = updated
                 carrier.record = updated
+                carrier._context = journal._identity
 
             if record.phase == "allocated":
                 persist(replace(record, phase="claiming"))
@@ -1016,7 +1268,9 @@ def _replay_private_claim(
                 persist(replace(record, phase="discarding"))
             private_claim.discard_private_regular(guard, carrier, expected)
             persist(replace(record, phase="discarded"))
-        private_claim.gc_discarded_carrier(namespace, binding, record)
+        private_claim.gc_discarded_carrier(
+            namespace, binding, record, identity_context=journal._identity
+        )
     if restoring:
         raise UnsafeDeletionTarget(
             "changed claim restored without replacing another path"
@@ -1030,10 +1284,11 @@ def _record_blocked(journal: _DeletionJournal, diagnostic: str) -> None:
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
         update = db.execute(
-            """
+            f"""
             UPDATE volume_file_deletions
             SET diagnostic=?, updated_at=CURRENT_TIMESTAMP
             WHERE id=? AND state='active' AND diagnostic IS NOT ?
+              AND {unresolved_deletion_sql()}
             """,
             (diagnostic, journal.journal_id, diagnostic),
         )
@@ -1054,14 +1309,18 @@ def _complete_journal(journal: _DeletionJournal, *, deleted: bool) -> bool:
         if deleted
         else f"Reset {volume_label} to wanted (file not found)"
     )
+    proof = _capture_identity(journal, state="completed")
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
+        if journal._identity is not None:
+            identity_store.assert_snapshot(db, journal._identity.active.proof.snapshot)
         update = db.execute(
-            """
+            f"""
             UPDATE volume_file_deletions
             SET state='completed', diagnostic='', completed_at=CURRENT_TIMESTAMP,
                 updated_at=CURRENT_TIMESTAMP
             WHERE id=? AND state='active'
+              AND {unresolved_deletion_sql()}
             """,
             (journal.journal_id,),
         )
@@ -1080,6 +1339,9 @@ def _complete_journal(journal: _DeletionJournal, *, deleted: bool) -> bool:
             },
         )
         log_event("delete", message, journal.series_id, db=db)
+        _activate_identity(db, proof, journal._identity)
+    if journal._identity is not None:
+        _bind_identity(replace(journal, state="completed"), journal._identity.guard)
     return True
 
 
@@ -1114,11 +1376,39 @@ def _replay_volume_file_deletion_owned(
     guard.verify()
     journal = _load_journal(journal_id)
     guard.verify()
-    if journal is None or journal.state != "active":
+    if (
+        journal is None
+        or journal.state != "active"
+        or not _unresolved_journal(journal_id)
+    ):
         return "terminal"
 
     try:
         _validate_journal_paths(journal)
+        journal = _bind_identity(journal, guard)
+        if (
+            journal._identity is not None
+            and journal.target_present
+            and journal.claim_carrier_json is None
+        ):
+            origin = (
+                journal.target_path
+                if _path_exists(journal.target_path)
+                else journal.claim_path
+            )
+            expected = _owned_fingerprint(journal, origin)
+            return _replay_private_claim(
+                journal,
+                guard,
+                origin=origin,
+                fingerprint=FileFingerprint(
+                    expected.dev,
+                    expected.inode,
+                    expected.size,
+                    expected.mtime_ns,
+                    expected.sha256,
+                ),
+            )
         if journal.claim_carrier_json is not None:
             return _replay_private_claim(journal, guard)
         target_exists = _path_exists(journal.target_path)
@@ -1183,7 +1473,7 @@ def _replay_volume_file_deletion_owned(
         )
     except FileMutationLockError:
         raise
-    except (OSError, RuntimeError) as exc:
+    except (OSError, RuntimeError, sqlite3.Error) as exc:
         guard.verify()
         _record_blocked(journal, str(exc))
         guard.verify()
@@ -1233,10 +1523,11 @@ def active_deletion_journal_ids(
         return []
     with get_db() as db:
         rows = db.execute(
-            """
+            f"""
             SELECT id
             FROM volume_file_deletions
             WHERE state='active' AND id>?
+              AND {unresolved_deletion_sql()}
             ORDER BY id
             LIMIT ?
             """,

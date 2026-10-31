@@ -1,0 +1,1507 @@
+[
+  {
+    "path": "app/file_identity_consumers.py",
+    "symbol": "<module>",
+    "text": "\"rescan\": (\"rescan_file_operations\", \"id\"),",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_consumers.py",
+    "symbol": "<module>",
+    "text": "\"publication\": (\"import_publications\", \"id\"),",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_consumers.py",
+    "symbol": "<module>",
+    "text": "\"deletion\": (\"volume_file_deletions\", \"id\"),",
+    "category": "mutation/eligibility",
+    "policy": "projection"
+  },
+  {
+    "path": "app/file_identity_consumers.py",
+    "symbol": "_inventory",
+    "text": "if record[\"table\"] == \"import_publications\":",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_consumers.py",
+    "symbol": "_pack_restore_references",
+    "text": "if r[\"table\"] == \"import_publications\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_consumers.py",
+    "symbol": "_location_cohorts",
+    "text": "if r[\"table\"] == \"import_publications\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_consumers.py",
+    "symbol": "_snapshot_from_rows",
+    "text": "for r in raw[\"import_publications\"]",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_consumers.py",
+    "symbol": "_snapshot_from_rows",
+    "text": "\"import_publications\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_consumers.py",
+    "symbol": "_bind_references",
+    "text": "if r[\"table\"] == \"import_publications\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_recovery.py",
+    "symbol": "_pack_committed_missing",
+    "text": "for p in _raw_records(owner, \"import_publications\")",
+    "category": "reporting",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_recovery.py",
+    "symbol": "_pack_terminal_context",
+    "text": "publications = _raw_records(owner, \"import_publications\")",
+    "category": "reporting",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_recovery.py",
+    "symbol": "_pack_queue_plan",
+    "text": "for p in _raw_records(owner, \"import_publications\")",
+    "category": "reporting",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_recovery.py",
+    "symbol": "<module>",
+    "text": "\"rescan_file_operations\": \"id version operation_token series_id volume_id \"",
+    "category": "reporting",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_recovery.py",
+    "symbol": "<module>",
+    "text": "\"volume_file_deletions\": \"id volume_id series_id state target_path parent_path \"",
+    "category": "reporting",
+    "policy": "projection"
+  },
+  {
+    "path": "app/file_identity_recovery.py",
+    "symbol": "<module>",
+    "text": "\"import_publications\": \"id queue_id series_id queue_download_client_id result_ok \"",
+    "category": "reporting",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_store.py",
+    "symbol": "<module>",
+    "text": "\"rescan\": \"rescan_file_operations\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_store.py",
+    "symbol": "<module>",
+    "text": "\"publication\": \"import_publications\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_store.py",
+    "symbol": "<module>",
+    "text": "\"deletion\": \"volume_file_deletions\",",
+    "category": "mutation/eligibility",
+    "policy": "projection"
+  },
+  {
+    "path": "app/file_identity_store.py",
+    "symbol": "<module>",
+    "text": "\"rescan_file_operations\": _columns(",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_store.py",
+    "symbol": "<module>",
+    "text": "\"volume_file_deletions\": _columns(",
+    "category": "mutation/eligibility",
+    "policy": "projection"
+  },
+  {
+    "path": "app/file_identity_store.py",
+    "symbol": "<module>",
+    "text": "\"import_publications\": _columns(",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_store.py",
+    "symbol": "__post_init__",
+    "text": "\"import_publications\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_store.py",
+    "symbol": "capture_owner_snapshot",
+    "text": "related.extend(_select(db, \"import_publications\", \"queue_id=?\", (queue_id,)))",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_store.py",
+    "symbol": "capture_owner_snapshot",
+    "text": "\"publication_id IN (SELECT id FROM import_publications WHERE queue_id=?)\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_store.py",
+    "symbol": "unresolved_rescan_sql",
+    "text": "def unresolved_rescan_sql(alias: str = \"rescan_file_operations\") -> str:",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_store.py",
+    "symbol": "unresolved_rescan_sql",
+    "text": "if alias not in {\"rescan_file_operations\", \"rescan_operation\"}:",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_store.py",
+    "symbol": "unresolved_rescan_sql",
+    "text": "return _unresolved_journal_sql(\"rescan_file_operations\", \"rescan\", alias)",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/file_identity_store.py",
+    "symbol": "unresolved_deletion_sql",
+    "text": "def unresolved_deletion_sql(alias: str = \"volume_file_deletions\") -> str:",
+    "category": "mutation/eligibility",
+    "policy": "projection"
+  },
+  {
+    "path": "app/file_identity_store.py",
+    "symbol": "unresolved_deletion_sql",
+    "text": "if alias not in {\"volume_file_deletions\", \"deletion\"}:",
+    "category": "mutation/eligibility",
+    "policy": "projection"
+  },
+  {
+    "path": "app/file_identity_store.py",
+    "symbol": "unresolved_deletion_sql",
+    "text": "return _unresolved_journal_sql(\"volume_file_deletions\", \"deletion\", alias)",
+    "category": "mutation/eligibility",
+    "policy": "projection"
+  },
+  {
+    "path": "app/import_commit.py",
+    "symbol": "_commit_import",
+    "text": "\"SELECT state FROM import_publications WHERE id=?\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_commit.py",
+    "symbol": "_commit_import",
+    "text": "\"UPDATE import_publications SET queue_snapshot_json=? WHERE id=? AND state='published' AND operation_owner=?\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_commit.py",
+    "symbol": "_commit_import",
+    "text": "\"UPDATE import_publications SET queue_snapshot_json=? WHERE id=? AND state='published' AND operation_owner=?\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_discovery.py",
+    "symbol": "_reserve_orphan_cleanup",
+    "text": "SELECT 1 FROM import_publications publication",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_discovery.py",
+    "symbol": "_check_download_status_impl",
+    "text": "\"    SELECT 1 FROM import_publications publication\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_discovery.py",
+    "symbol": "_check_download_status_impl",
+    "text": "\"   SELECT 1 FROM import_publications publication\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_discovery.py",
+    "symbol": "_check_download_status_impl",
+    "text": "\"          OR EXISTS (SELECT 1 FROM import_publications publication\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_discovery.py",
+    "symbol": "_check_download_status_impl",
+    "text": "\"   SELECT 1 FROM import_publications publication\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_execute.py",
+    "symbol": "_guarded_execute_import",
+    "text": "\"SELECT id FROM import_publications\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_lease.py",
+    "symbol": "claim_import_queue_row",
+    "text": "SELECT 1 FROM import_publications publication",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_lease.py",
+    "symbol": "claim_import_queue_row",
+    "text": "SELECT 1 FROM volume_file_deletions deletion",
+    "category": "mutation/eligibility",
+    "policy": "shared-predicate"
+  },
+  {
+    "path": "app/import_lease.py",
+    "symbol": "claim_import_queue_row",
+    "text": "SELECT 1 FROM rescan_file_operations rescan_operation",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_lease.py",
+    "symbol": "transition_import_queue_row",
+    "text": "SELECT 1 FROM import_publications publication",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_lease.py",
+    "symbol": "has_import_sibling_that_may_use_download",
+    "text": "SELECT 1 FROM import_publications publication",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_lease.py",
+    "symbol": "recover_expired_import_leases",
+    "text": "SELECT 1 FROM import_publications publication",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_lease.py",
+    "symbol": "recover_expired_import_leases",
+    "text": "SELECT 1 FROM import_publications publication",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_lease.py",
+    "symbol": "fail_stale_pending_import_queue_row",
+    "text": "SELECT 1 FROM import_publications publication",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_pack_cleanup.py",
+    "symbol": "_active_publication_exists",
+    "text": "FROM import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_pack_cleanup.py",
+    "symbol": "_terminal_cleanup_eligible",
+    "text": "FROM import_publications AS publication",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_pack_cleanup.py",
+    "symbol": "_sql_queue_authority",
+    "text": "\"SELECT 1 FROM import_publications WHERE queue_id=? LIMIT 1\", (queue_id,)",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_pack_cleanup.py",
+    "symbol": "_committed_missing",
+    "text": "\" JOIN import_publications p ON p.id=f.publication_id\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_pack_cleanup.py",
+    "symbol": "_mark_publication_cleanup_complete_in_db",
+    "text": "UPDATE import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_pack_cleanup.py",
+    "symbol": "_mark_publication_cleanup_complete_in_db",
+    "text": "\"SELECT pack_cleanup_state FROM import_publications WHERE id=?\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_pack_cleanup.py",
+    "symbol": "_capture_proven_legacy_tombstone",
+    "text": "\" FROM import_publication_files f JOIN import_publications p ON p.id=f.publication_id\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "active_publication_exists",
+    "text": "FROM import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "assert_library_file_mutation_available",
+    "text": "\"SELECT 1 FROM import_publications WHERE series_id=? AND state IN \"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "assert_library_file_mutation_available",
+    "text": "\"UNION ALL SELECT 1 FROM volume_file_deletions WHERE series_id=? AND state='active' \"",
+    "category": "mutation/eligibility",
+    "policy": "shared-predicate"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "assert_library_file_mutation_available",
+    "text": "\"UNION ALL SELECT 1 FROM rescan_file_operations WHERE series_id=? AND state IN \"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "assert_library_file_mutation_available",
+    "text": "\"UNION ALL SELECT 1 FROM import_publication_files f JOIN import_publications p ON p.id=f.publication_id \"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_initialize_publication_filesystem_owned",
+    "text": "db.execute(\"UPDATE import_publications SET queue_snapshot_json=? WHERE id=?\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_initialize_publication_filesystem_owned",
+    "text": "\"UPDATE import_publications SET staging_dir=?,queue_snapshot_json=?\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_initialize_publication_filesystem_owned",
+    "text": "\" AND EXISTS (SELECT 1 FROM import_queue WHERE id=import_publications.queue_id\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "create_publication",
+    "text": "existing = db.execute(\"SELECT id,owner_token,staging_dir,queue_snapshot_json FROM import_publications\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "create_publication",
+    "text": "\"DELETE FROM import_publications\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "create_publication",
+    "text": "INSERT INTO import_publications(",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "create_publication",
+    "text": "SELECT 1 FROM rescan_file_operations rescan_operation",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "commit_prepared_barrier",
+    "text": "UPDATE import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "load_publication",
+    "text": "\"SELECT * FROM import_publications WHERE id=?\",",
+    "category": "reporting",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "load_publication",
+    "text": "\"SELECT * FROM import_publications WHERE queue_id=?\",",
+    "category": "reporting",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_set_publication_diagnostic",
+    "text": "\"   SELECT 1 FROM import_publications\"",
+    "category": "reporting",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_set_publication_diagnostic",
+    "text": "\"UPDATE import_publications\"",
+    "category": "reporting",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_claim_publication_operation",
+    "text": "UPDATE import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_refresh_publication_operation",
+    "text": "UPDATE import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_store_file_protocol",
+    "text": "\"UPDATE import_publications SET queue_snapshot_json=?,updated_at=CURRENT_TIMESTAMP\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_save_stage_record",
+    "text": "\"UPDATE import_publications SET queue_snapshot_json=?,updated_at=CURRENT_TIMESTAMP\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_compensate_publication",
+    "text": "\"UPDATE import_publications SET state='finalized',result_ok=0,result_imported_count=0,\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_retain_unproven_manual_publication",
+    "text": "\"UPDATE import_publications SET diagnostic=?,updated_at=CURRENT_TIMESTAMP\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_publish_publication_owned",
+    "text": "\"SELECT state FROM import_publications WHERE id=?\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_publish_publication_owned",
+    "text": "SELECT 1 FROM import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_publish_publication_owned",
+    "text": "UPDATE import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "claim_publication_phase3",
+    "text": "UPDATE import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_resolve_removal_client_identity",
+    "text": "FROM import_publications AS publication",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_remove_completed_is_eligible",
+    "text": "\"SELECT queue_id FROM import_publications WHERE id=?\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_configured_success_effects",
+    "text": "\" FROM import_publications WHERE id=?\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "mark_publication_db_committed",
+    "text": "UPDATE import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "claim_publication_cleanup",
+    "text": "UPDATE import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_cleanup_move_source",
+    "text": "\"SELECT 1 FROM import_publications WHERE id=? AND state='cleaning'\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "finalize_publication",
+    "text": "\"SELECT 1 FROM import_publications\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "finalize_publication",
+    "text": "\"UPDATE import_publications\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "finalize_publication",
+    "text": "\"SELECT queue_id, result_queue_status FROM import_publications\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "finalize_publication",
+    "text": "UPDATE import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_claim_staging_recovery",
+    "text": "UPDATE import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_claim_staging_recovery",
+    "text": "WHERE queue.id=import_publications.queue_id",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_release_staging_recovery",
+    "text": "UPDATE import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "abort_staging_publication",
+    "text": "FROM import_publications AS publication",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "abort_staging_publication",
+    "text": "DELETE FROM import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "pending_publication_ids",
+    "text": "FROM import_publications AS p",
+    "category": "replay",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_has_live_operation_owner",
+    "text": "\"SELECT 1 FROM import_publications\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_refresh_notification_parent",
+    "text": "\"UPDATE import_publications SET notification_state='dispatched',\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_complete_publication_unit",
+    "text": "\"UPDATE import_publications SET diagnostic=?,operation_owner=NULL,operation_expires_at=NULL,updated_at=CURRENT_TIMESTAMP\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "_has_proven_live_staging_owner",
+    "text": "\"SELECT 1 FROM import_publications AS publication\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "replay_import_publications",
+    "text": "async def replay_import_publications(",
+    "category": "replay",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "drain_active_import_publications",
+    "text": "async def drain_active_import_publications(",
+    "category": "replay",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/import_publication.py",
+    "symbol": "drain_active_import_publications",
+    "text": "page = await replay_import_publications(",
+    "category": "replay",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/main.py",
+    "symbol": "<module>",
+    "text": "from import_publication import drain_active_import_publications  # noqa: F401",
+    "category": "replay",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/main.py",
+    "symbol": "<module>",
+    "text": "from rescan_file_recovery import drain_active_rescan_file_operations",
+    "category": "replay",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/main.py",
+    "symbol": "<module>",
+    "text": "drain_active_volume_file_deletions,",
+    "category": "replay",
+    "policy": "delegated-replay"
+  },
+  {
+    "path": "app/main.py",
+    "symbol": "_recover_startup_files",
+    "text": "_rescan_replay = await drain_active_rescan_file_operations(page_size=100)",
+    "category": "replay",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/main.py",
+    "symbol": "_recover_startup_files",
+    "text": "_deletion_replay = await drain_active_volume_file_deletions(page_size=100)",
+    "category": "replay",
+    "policy": "delegated-replay"
+  },
+  {
+    "path": "app/main.py",
+    "symbol": "_recover_startup_files",
+    "text": "_publication_replay = await drain_active_import_publications(page_size=100)",
+    "category": "replay",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/private_pack_source.py",
+    "symbol": "_pack_file_cleanup_delegated",
+    "text": "\"queue_download_client_id,pack_cleanup_state FROM import_publications WHERE id=?\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/rescan.py",
+    "symbol": "<module>",
+    "text": "\" FROM volume_file_deletions WHERE series_id=?\"",
+    "category": "mutation/eligibility",
+    "policy": "historical"
+  },
+  {
+    "path": "app/rescan.py",
+    "symbol": "SeriesRescanSnapshot",
+    "text": "completed_volume_file_deletions: tuple[dict[str, Any], ...] = ()",
+    "category": "mutation/eligibility",
+    "policy": "historical"
+  },
+  {
+    "path": "app/rescan.py",
+    "symbol": "snapshot_series_rescan",
+    "text": "completed_volume_file_deletions=tuple(",
+    "category": "mutation/eligibility",
+    "policy": "historical"
+  },
+  {
+    "path": "app/rescan.py",
+    "symbol": "_completed_volume_alias",
+    "text": "for journal in snapshot.completed_volume_file_deletions:",
+    "category": "mutation/eligibility",
+    "policy": "historical"
+  },
+  {
+    "path": "app/rescan.py",
+    "symbol": "reconcile_series_inventory",
+    "text": ") != snapshot.completed_volume_file_deletions:",
+    "category": "mutation/eligibility",
+    "policy": "historical"
+  },
+  {
+    "path": "app/rescan_file_recovery.py",
+    "symbol": "active_for_series",
+    "text": "f\"SELECT 1 FROM rescan_file_operations WHERE series_id=? AND state IN {ACTIVE_STATES} \"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/rescan_file_recovery.py",
+    "symbol": "active_for_path",
+    "text": "f\"SELECT 1 FROM rescan_file_operations WHERE state IN {ACTIVE_STATES} \"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/rescan_file_recovery.py",
+    "symbol": "competing_for_series",
+    "text": "\"SELECT 1 FROM volume_file_deletions WHERE series_id=? AND state='active' \"",
+    "category": "mutation/eligibility",
+    "policy": "shared-predicate"
+  },
+  {
+    "path": "app/rescan_file_recovery.py",
+    "symbol": "competing_for_series",
+    "text": "\"UNION ALL SELECT 1 FROM import_publications WHERE series_id=? AND state IN \"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/rescan_file_recovery.py",
+    "symbol": "load_operation",
+    "text": "\"SELECT * FROM rescan_file_operations WHERE id=?\", (operation_id,)",
+    "category": "reporting",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/rescan_file_recovery.py",
+    "symbol": "_store",
+    "text": "\"FROM rescan_file_operations WHERE id=? AND operation_token=?\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/rescan_file_recovery.py",
+    "symbol": "_store",
+    "text": "\"UPDATE rescan_file_operations SET state=?,fingerprints_json=?,carriers_json=?,\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/rescan_file_recovery.py",
+    "symbol": "_reserve",
+    "text": "\"INSERT INTO rescan_file_operations(operation_token,series_id,volume_id,source_path,destination_path,\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/rescan_file_recovery.py",
+    "symbol": "_commit",
+    "text": "\"UPDATE rescan_file_operations SET state='db_committed',diagnostic=NULL,updated_at=CURRENT_TIMESTAMP \"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/rescan_file_recovery.py",
+    "symbol": "_settle_safely",
+    "text": "f\"SELECT 1 FROM rescan_file_operations WHERE id=? AND NOT ({identity_store.unresolved_rescan_sql()})\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/rescan_file_recovery.py",
+    "symbol": "active_operation_ids",
+    "text": "f\"SELECT id FROM rescan_file_operations WHERE state IN {ACTIVE_STATES} AND id>? \"",
+    "category": "replay",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/rescan_file_recovery.py",
+    "symbol": "replay_rescan_file_operations",
+    "text": "async def replay_rescan_file_operations(",
+    "category": "replay",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/rescan_file_recovery.py",
+    "symbol": "drain_active_rescan_file_operations",
+    "text": "async def drain_active_rescan_file_operations(",
+    "category": "replay",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/rescan_file_recovery.py",
+    "symbol": "drain_active_rescan_file_operations",
+    "text": "page = await replay_rescan_file_operations(after_id=after, limit=page_size)",
+    "category": "replay",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/routers/history_.py",
+    "symbol": "mark_history_failed",
+    "text": "FROM import_publications AS publication",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/routers/import_.py",
+    "symbol": "_active_import_uses_download",
+    "text": "FROM import_publications publication",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/routers/import_.py",
+    "symbol": "_queue_action_failure",
+    "text": "\"SELECT 1 FROM import_publications\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/routers/import_.py",
+    "symbol": "dismiss_import_queue_entry",
+    "text": "\"SELECT 1 FROM import_publications WHERE queue_id=?\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/routers/import_.py",
+    "symbol": "skip_import_queue_entry",
+    "text": "\"   SELECT 1 FROM import_publications publication\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/routers/import_.py",
+    "symbol": "clear_inactive_import_queue_entries",
+    "text": "\"    SELECT 1 FROM import_publications publication\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/routers/import_.py",
+    "symbol": "clear_inactive_import_queue_entries",
+    "text": "\"   SELECT 1 FROM import_publications publication\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/routers/import_.py",
+    "symbol": "retry_import_queue_entry",
+    "text": "\"   SELECT 1 FROM import_publications publication\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/routers/import_.py",
+    "symbol": "process_import",
+    "text": "\"   SELECT 1 FROM import_publications publication\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/routers/queue_.py",
+    "symbol": "_reserve_manual_download_cleanup",
+    "text": "\"SELECT 1 FROM import_publications WHERE queue_id=?\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/routers/queue_.py",
+    "symbol": "_reserve_manual_download_cleanup",
+    "text": "\"SELECT 1 FROM import_publications WHERE queue_id=?\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/routers/series_.py",
+    "symbol": "_prepare_hard_delete_series",
+    "text": "\"     SELECT 1 FROM import_publications publication\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/routers/series_.py",
+    "symbol": "_prepare_hard_delete_series",
+    "text": "\"   SELECT 1 FROM volume_file_deletions deletion\"",
+    "category": "mutation/eligibility",
+    "policy": "shared-predicate"
+  },
+  {
+    "path": "app/routers/series_.py",
+    "symbol": "_prepare_hard_delete_series",
+    "text": "\"   SELECT 1 FROM rescan_file_operations rescan_operation\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/routers/system.py",
+    "symbol": "_active_import_uses_identity",
+    "text": "FROM import_publications publication",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "init_db",
+    "text": "CREATE TABLE IF NOT EXISTS import_publications (",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "init_db",
+    "text": "REFERENCES import_publications(id)",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "init_db",
+    "text": "CREATE TABLE IF NOT EXISTS volume_file_deletions (",
+    "category": "mutation/eligibility",
+    "policy": "schema"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "init_db",
+    "text": "CREATE UNIQUE INDEX IF NOT EXISTS idx_volume_file_deletions_active_volume",
+    "category": "mutation/eligibility",
+    "policy": "schema"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "init_db",
+    "text": "ON volume_file_deletions(volume_id) WHERE state='active';",
+    "category": "mutation/eligibility",
+    "policy": "schema"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "init_db",
+    "text": "CREATE INDEX IF NOT EXISTS idx_volume_file_deletions_active_series",
+    "category": "mutation/eligibility",
+    "policy": "schema"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "init_db",
+    "text": "ON volume_file_deletions(series_id, id) WHERE state='active';",
+    "category": "mutation/eligibility",
+    "policy": "schema"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "init_db",
+    "text": "\"import_publications\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "init_db",
+    "text": "\"import_publications\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "init_db",
+    "text": "\"import_publications\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "init_db",
+    "text": "UPDATE import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "init_db",
+    "text": "UPDATE import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "init_db",
+    "text": "\"CREATE INDEX IF NOT EXISTS idx_import_publications_state\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "init_db",
+    "text": "\" ON import_publications(state, id)\",",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "init_db",
+    "text": "\"CREATE INDEX IF NOT EXISTS idx_volume_file_deletions_active_series\"",
+    "category": "mutation/eligibility",
+    "policy": "schema"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "init_db",
+    "text": "\" ON volume_file_deletions(series_id, id) WHERE state='active'\",",
+    "category": "mutation/eligibility",
+    "policy": "schema"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_migrate_schema_constraints_locked",
+    "text": "_ensure_rescan_file_operations_schema(db)",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_migrate_schema_constraints_locked",
+    "text": "_ensure_rescan_file_operations_schema(db)",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_ensure_file_identity_schema",
+    "text": "for table, domain in ((\"rescan_file_operations\", \"rescan\"), (\"volume_file_deletions\", \"deletion\")):",
+    "category": "mutation/eligibility",
+    "policy": "schema"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_ensure_file_identity_schema",
+    "text": "if table == \"rescan_file_operations\":",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_ensure_file_identity_schema",
+    "text": "(\"rescan_file_operations_active_volume\", \"rescan_file_operations\", \"volume_id\", True,",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_ensure_file_identity_schema",
+    "text": "(\"rescan_file_operations_active_series\", \"rescan_file_operations\", \"series_id,id\", False,",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_ensure_file_identity_schema",
+    "text": "(\"rescan_file_operations_active_keyset\", \"rescan_file_operations\", \"id\", False,",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_ensure_file_identity_schema",
+    "text": "(\"idx_volume_file_deletions_active_volume\", \"volume_file_deletions\", \"volume_id\", True, \"state='active'\"),",
+    "category": "mutation/eligibility",
+    "policy": "schema"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_ensure_file_identity_schema",
+    "text": "(\"idx_volume_file_deletions_active_series\", \"volume_file_deletions\", \"series_id,id\", False, \"state='active'\"),",
+    "category": "mutation/eligibility",
+    "policy": "schema"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_ensure_rescan_file_operations_schema",
+    "text": "def _ensure_rescan_file_operations_schema(db: sqlite3.Connection) -> None:",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_ensure_rescan_file_operations_schema",
+    "text": "CREATE TABLE IF NOT EXISTS rescan_file_operations (",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_ensure_rescan_file_operations_schema",
+    "text": "CREATE UNIQUE INDEX IF NOT EXISTS rescan_file_operations_active_volume",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_ensure_rescan_file_operations_schema",
+    "text": "ON rescan_file_operations(volume_id)",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_ensure_rescan_file_operations_schema",
+    "text": "CREATE INDEX IF NOT EXISTS rescan_file_operations_active_series",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_ensure_rescan_file_operations_schema",
+    "text": "ON rescan_file_operations(series_id,id)",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_ensure_rescan_file_operations_schema",
+    "text": "CREATE INDEX IF NOT EXISTS rescan_file_operations_active_keyset",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_ensure_rescan_file_operations_schema",
+    "text": "ON rescan_file_operations(id)",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_ensure_private_file_claim_schema",
+    "text": "(\"volume_file_deletions\", \"claim_carrier_json\"),",
+    "category": "mutation/eligibility",
+    "policy": "schema"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_migrate_history_download_ownership",
+    "text": "UPDATE import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_backfill_import_notification_deliveries",
+    "text": "UPDATE import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_backfill_import_notification_deliveries",
+    "text": "WHERE notification.publication_id=import_publications.id",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_migrate_import_publication_journal",
+    "text": "CREATE TABLE IF NOT EXISTS import_publications (",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_migrate_import_publication_journal",
+    "text": "REFERENCES import_publications(id)",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_migrate_import_publication_journal",
+    "text": "CREATE INDEX IF NOT EXISTS idx_import_publications_state",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_migrate_import_publication_journal",
+    "text": "ON import_publications(state, id);",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_migrate_durable_publication_safety",
+    "text": "FROM import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_migrate_durable_publication_safety",
+    "text": "\"PRAGMA table_info(import_publications)\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_migrate_durable_publication_safety",
+    "text": "f\"ALTER TABLE import_publications ADD COLUMN {column} {typedef}\"",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_migrate_durable_publication_safety",
+    "text": "CREATE TABLE IF NOT EXISTS volume_file_deletions (",
+    "category": "mutation/eligibility",
+    "policy": "schema"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_migrate_durable_publication_safety",
+    "text": "CREATE UNIQUE INDEX IF NOT EXISTS idx_volume_file_deletions_active_volume",
+    "category": "mutation/eligibility",
+    "policy": "schema"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_migrate_durable_publication_safety",
+    "text": "ON volume_file_deletions(volume_id) WHERE state='active';",
+    "category": "mutation/eligibility",
+    "policy": "schema"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_migrate_durable_publication_safety",
+    "text": "CREATE INDEX IF NOT EXISTS idx_volume_file_deletions_active_series",
+    "category": "mutation/eligibility",
+    "policy": "schema"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_migrate_durable_publication_safety",
+    "text": "ON volume_file_deletions(series_id, id) WHERE state='active';",
+    "category": "mutation/eligibility",
+    "policy": "schema"
+  },
+  {
+    "path": "app/schema.py",
+    "symbol": "_migrate_durable_publication_safety",
+    "text": "FROM import_publications",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/tasks.py",
+    "symbol": "publication_replay_loop",
+    "text": "from import_publication import replay_import_publications",
+    "category": "replay",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/tasks.py",
+    "symbol": "publication_replay_loop",
+    "text": "summary = await replay_import_publications(",
+    "category": "replay",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/tasks.py",
+    "symbol": "publication_replay_loop",
+    "text": "# replay_import_publications settles only its one in-flight journal",
+    "category": "replay",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/tasks.py",
+    "symbol": "volume_deletion_replay_loop",
+    "text": "from volume_file_deletion import replay_volume_file_deletions",
+    "category": "replay",
+    "policy": "delegated-replay"
+  },
+  {
+    "path": "app/tasks.py",
+    "symbol": "volume_deletion_replay_loop",
+    "text": "summary = await replay_volume_file_deletions(",
+    "category": "replay",
+    "policy": "delegated-replay"
+  },
+  {
+    "path": "app/tasks.py",
+    "symbol": "rescan_replay_loop",
+    "text": "from rescan_file_recovery import replay_rescan_file_operations",
+    "category": "replay",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/tasks.py",
+    "symbol": "rescan_replay_loop",
+    "text": "summary = await replay_rescan_file_operations(after_id=cursor, limit=100)",
+    "category": "replay",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/volume_file_deletion.py",
+    "symbol": "_active_journal_id",
+    "text": "FROM volume_file_deletions",
+    "category": "mutation/eligibility",
+    "policy": "shared-predicate"
+  },
+  {
+    "path": "app/volume_file_deletion.py",
+    "symbol": "_active_publication_targets_inspection",
+    "text": "FROM import_publications AS publication",
+    "category": "mutation/eligibility",
+    "policy": "other-domain"
+  },
+  {
+    "path": "app/volume_file_deletion.py",
+    "symbol": "_reserve_volume_file_deletion_owned",
+    "text": "FROM volume_file_deletions",
+    "category": "mutation/eligibility",
+    "policy": "shared-predicate"
+  },
+  {
+    "path": "app/volume_file_deletion.py",
+    "symbol": "_reserve_volume_file_deletion_owned",
+    "text": "INSERT INTO volume_file_deletions(",
+    "category": "mutation/eligibility",
+    "policy": "shared-predicate"
+  },
+  {
+    "path": "app/volume_file_deletion.py",
+    "symbol": "_load_journal",
+    "text": "\"SELECT * FROM volume_file_deletions WHERE id=?\",",
+    "category": "reporting",
+    "policy": "historical"
+  },
+  {
+    "path": "app/volume_file_deletion.py",
+    "symbol": "_unresolved_journal",
+    "text": "f\"SELECT 1 FROM volume_file_deletions WHERE id=? AND {unresolved_deletion_sql()}\",",
+    "category": "mutation/eligibility",
+    "policy": "shared-predicate"
+  },
+  {
+    "path": "app/volume_file_deletion.py",
+    "symbol": "_store_carrier",
+    "text": "\"UPDATE volume_file_deletions SET claim_carrier_json=?,\"",
+    "category": "mutation/eligibility",
+    "policy": "shared-predicate"
+  },
+  {
+    "path": "app/volume_file_deletion.py",
+    "symbol": "_record_blocked",
+    "text": "UPDATE volume_file_deletions",
+    "category": "reporting",
+    "policy": "shared-predicate"
+  },
+  {
+    "path": "app/volume_file_deletion.py",
+    "symbol": "_complete_journal",
+    "text": "UPDATE volume_file_deletions",
+    "category": "mutation/eligibility",
+    "policy": "shared-predicate"
+  },
+  {
+    "path": "app/volume_file_deletion.py",
+    "symbol": "active_deletion_journal_ids",
+    "text": "FROM volume_file_deletions",
+    "category": "replay",
+    "policy": "shared-predicate"
+  },
+  {
+    "path": "app/volume_file_deletion.py",
+    "symbol": "replay_volume_file_deletions",
+    "text": "async def replay_volume_file_deletions(",
+    "category": "replay",
+    "policy": "delegated-replay"
+  },
+  {
+    "path": "app/volume_file_deletion.py",
+    "symbol": "drain_active_volume_file_deletions",
+    "text": "async def drain_active_volume_file_deletions(",
+    "category": "replay",
+    "policy": "delegated-replay"
+  },
+  {
+    "path": "app/volume_file_deletion.py",
+    "symbol": "drain_active_volume_file_deletions",
+    "text": "page = await replay_volume_file_deletions(",
+    "category": "replay",
+    "policy": "delegated-replay"
+  }
+]

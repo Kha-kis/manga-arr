@@ -71,8 +71,16 @@ def test_exact_enrollment_refuses_other_domains_as_a_whole(
     monkeypatch.setattr("file_identity.capture_native", no_native)
     with service_maintenance_guard(str(ledger_path), exclusive=True):
         with file_mutation_guard(str(ledger_path)) as guard:
-            with pytest.raises(IdentityUnavailable, match="unintegrated domain"):
-                contexts.enroll_exact_legacy(guard, closure, "a" * 32)
+            if domain == "deletion":
+                # Deletion is integrated, but this synthetic closure has no
+                # authority. It must still refuse before native acquisition.
+                with pytest.raises(
+                    IdentityMismatch, match="exact enrollment authority is missing"
+                ):
+                    contexts.enroll_exact_legacy(guard, closure, "a" * 32)
+            else:
+                with pytest.raises(IdentityUnavailable, match="unintegrated domain"):
+                    contexts.enroll_exact_legacy(guard, closure, "a" * 32)
     assert all_rows(ledger_db) == before
 
 
