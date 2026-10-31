@@ -49,6 +49,7 @@ from import_pack_cleanup import (
     _prepare_pack_private_directory,
     _read_reservation,
     _ownership,
+    _pack_root,
 )
 from import_pack_cleanup import (
     _commit_generated_pack_queue,
@@ -623,6 +624,42 @@ def _queue_import(
                     f"into CBZs: {torrent_name}",
                 )
                 scan_paths = packed_paths
+                # Generated paths borrow an FD alias. Never rediscover their
+                # backing cache/claim trees as ordinary incoming payloads.
+                pack_root = os.path.realpath(_pack_root())
+                for root, dirs, files in os.walk(content_path):
+                    heartbeat.checkpoint()
+                    resolved_root = os.path.realpath(root)
+                    in_pack_root = (
+                        os.path.commonpath((resolved_root, pack_root)) == pack_root
+                    )
+                    in_claim_tree = any(
+                        ".mangarr-claims" in path.split(os.sep)
+                        for path in (os.path.abspath(root), resolved_root)
+                    )
+                    if in_pack_root or in_claim_tree:
+                        dirs.clear()
+                        continue
+                    dirs[:] = sorted(name for name in dirs if name != ".mangarr-claims")
+                    candidate_names: list[str] = []
+                    for name in sorted(files):
+                        heartbeat.checkpoint()
+                        extension = os.path.splitext(name)[1].lower()
+                        path = os.path.join(root, name)
+                        if extension in MANGA_EXTENSIONS and os.path.isfile(path):
+                            candidate_names.append(name)
+                    wrapped_paths = {
+                        path
+                        for parts in _find_zip_wrapped_split_rar_groups(
+                            root, heartbeat.checkpoint, candidate_names=candidate_names
+                        )
+                        for path, _ in parts
+                    }
+                    for name in candidate_names:
+                        heartbeat.checkpoint()
+                        path = os.path.join(root, name)
+                        if path not in wrapped_paths:
+                            scan_paths.append(path)
                 generated_pack_artifacts = True
         if scan_paths is None:
             heartbeat.checkpoint(force=True)
@@ -1256,29 +1293,22 @@ def _find_image_only_chapter_dirs(
     return result
 
 
-def _extract_zip_wrapped_split_rars(
+def _find_zip_wrapped_split_rar_groups(
     content_path: str,
-    pack_dir: str,
-    defer_event,
-    heartbeat: _PackQueueHeartbeat,
-) -> list[str] | None:
-    """Extract scene-style ZIP wrapped split RAR payloads.
-
-    Some DDL/tracker releases contain files like ``abc1.zip``/``abc2.zip``.
-    Each outer ZIP contains one split RAR part (``abc.rar``, ``abc.r00``...),
-    and the real manga payload is inside the reconstructed RAR. Treating the
-    outer ZIPs as manga archives misclassifies opaque scene filenames as
-    chapters, so queue the extracted payload instead.
-    """
-    checkpoint = heartbeat.checkpoint
+    checkpoint: Callable[[], None],
+    *,
+    candidate_names: list[str] | None = None,
+) -> list[list[tuple[str, str]]]:
+    """Recognize the same scene wrapper groups for extraction and exclusion."""
     checkpoint()
     zip_paths: list[str] = []
-    for name in sorted(os.listdir(content_path)):
+    names = os.listdir(content_path) if candidate_names is None else candidate_names
+    for name in sorted(names):
         checkpoint()
         if name.lower().endswith(".zip"):
             zip_paths.append(os.path.join(content_path, name))
     if len(zip_paths) < 2:
-        return None
+        return []
 
     groups: dict[str, list[tuple[str, str]]] = {}
     for zip_path in zip_paths:
@@ -1301,12 +1331,30 @@ def _extract_zip_wrapped_split_rars(
         except zipfile.BadZipFile:
             continue
 
-    selected = [
+    return [
         parts
         for parts in groups.values()
         if any(name.lower().endswith(".rar") for _, name in parts)
         and any(re.search(r"\.r\d{2}$", name, re.IGNORECASE) for _, name in parts)
     ]
+
+
+def _extract_zip_wrapped_split_rars(
+    content_path: str,
+    pack_dir: str,
+    defer_event,
+    heartbeat: _PackQueueHeartbeat,
+) -> list[str] | None:
+    """Extract scene-style ZIP wrapped split RAR payloads.
+
+    Some DDL/tracker releases contain files like ``abc1.zip``/``abc2.zip``.
+    Each outer ZIP contains one split RAR part (``abc.rar``, ``abc.r00``...),
+    and the real manga payload is inside the reconstructed RAR. Treating the
+    outer ZIPs as manga archives misclassifies opaque scene filenames as
+    chapters, so queue the extracted payload instead.
+    """
+    checkpoint = heartbeat.checkpoint
+    selected = _find_zip_wrapped_split_rar_groups(content_path, checkpoint)
     if not selected:
         return None
 
