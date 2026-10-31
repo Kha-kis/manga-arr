@@ -66,15 +66,6 @@ def _generated_queue(
         )
     assert queue_id is not None
     with sqlite3.connect(env["db_path"]) as db:
-        if ordinary is not None:
-            # Image discovery queues generated leaves only. This internal-local
-            # manual builder explicitly selects its regular sibling before plan.
-            db.execute(
-                "INSERT INTO import_queue_files(queue_id,filename,src_path,"
-                "proposed_chapter,file_type,proposed_import_kind,status)"
-                " VALUES(?,?,?,2,'chapter','chapter','pending')",
-                (queue_id, ordinary.name, str(ordinary)),
-            )
         rows = db.execute("SELECT src_path FROM import_queue_files WHERE queue_id=?",
                           (queue_id,)).fetchall()
     generated = [Path(row[0]) for row in rows if Path(row[0]) != ordinary]
