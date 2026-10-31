@@ -26,6 +26,14 @@ MODULES = frozenset(
 )
 
 
+def test_build_backend_has_reviewed_security_pin() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    build_system = cast(dict[str, object], project["build-system"])
+    # GHSA-xmj3-9gf7-h52w: 84.1.0 is the first patched setuptools release.
+    assert build_system["requires"] == ["setuptools==84.1.0"]
+    assert build_system["build-backend"] == "setuptools.build_meta"
+
+
 def test_explicit_operator_module_graph() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
     modules = cast(list[str], project["tool"]["setuptools"]["py-modules"])
