@@ -1804,6 +1804,38 @@ def roles_for(snapshot: OwnerSnapshot) -> tuple[RoleSpec, ...]:
 def claim_roles_for(snapshot: OwnerSnapshot) -> tuple[RoleSpec, ...]:
     """Closed claim adapter; leave historical inventory/plan role keys unchanged."""
     specs = list(roles_for(snapshot))
+    if snapshot.owner.domain == "deletion":
+        root, _ = _snapshot_records(snapshot, _Evidence())
+        target = _path(root["target_path"])
+        parent = RoleSpec(
+            RoleKey(None, "operation_parent", "directory", None),
+            _parent(target),
+            None,
+            snapshot.rows_json,
+            "proof",
+            "parent_identity",
+            snapshot.owner,
+        )
+        specs.append(parent)
+        specs = [
+            RoleSpec(
+                RoleKey(
+                    s.role.file_id,
+                    s.role.purpose,
+                    s.role.kind,
+                    s.path.rsplit("/", 1)[-1],
+                ),
+                s.path,
+                parent.role,
+                snapshot.rows_json,
+                s.presence,
+                s.policy,
+                s.owner,
+            )
+            if s.role.purpose in {"target", "claim"}
+            else s
+            for s in specs
+        ]
     if snapshot.owner.domain == "rescan":
         source = next(s for s in specs if s.role.purpose == "source")
         parent = RoleSpec(
@@ -3146,6 +3178,119 @@ class _Ledger:
                 raise InvalidIdentity("ownership_binding")
         transitions[proof.epoch_id] = _integer(event["id"], 1), payload
 
+    def deletion_session_binding(
+        self,
+        snapshot: OwnerSnapshot,
+        namespace: OwnerSnapshot,
+    ) -> bool:
+        """SQL projection only: bind different legacy sessions to exact activations.
+
+        This does not verify live objects or grant claim authority. The claim
+        consumer must still resolve and verify every role outside SQL writers.
+        """
+        if snapshot.owner.domain != "deletion":
+            return False
+        proofs: list[_store.ProofSet] = []
+        namespace_row = _mapping(
+            _mapping(self.evidence.load(namespace.rows_json))["root"]
+        )
+        namespace_proof = self.evidence.namespace(
+            _text(_mapping(namespace_row["row"])["ownership_json"])
+        )
+        for current in (snapshot, namespace):
+            self.validate(current.owner)
+            events = self.events.get(current.owner, [])
+            if not events:
+                return False
+            event = max(events, key=lambda item: _integer(item["revision"], 1))
+            if event["kind"] != "activated":
+                return False
+            proof = self.proofs[_hex(event["set_id"])]
+            if proof.snapshot != current:
+                return False
+            manifest = _mapping(self.evidence.load(proof.manifest_json))
+            specs = claim_roles_for(current)
+            if manifest["version"] != 1 or manifest["required_roles"] != [
+                asdict(s.role) for s in specs
+            ]:
+                return False
+            present = {obj.role: obj for obj in proof.roles}
+            absent = {
+                _store._role_from(_mapping(item)["role"]): _mapping(item)
+                for item in _list(manifest["absent_roles"])
+            }
+            row = _mapping(_mapping(self.evidence.load(current.rows_json))["root"])[
+                "row"
+            ]
+            record = (
+                None
+                if current.owner.domain == "namespace"
+                else (
+                    self.evidence.carrier(_mapping(row)["claim_carrier_json"])
+                    if _mapping(row)["claim_carrier_json"] is not None
+                    else None
+                )
+            )
+            for spec in specs:
+                obj = present.get(spec.role)
+                if obj is None:
+                    item = absent.get(spec.role)
+                    if (
+                        item is None
+                        or item["canonical_path"] != spec.path
+                        or item["parent_role"]
+                        != (asdict(spec.parent_role) if spec.parent_role else None)
+                    ):
+                        return False
+                    if spec.presence == "proof" and not (
+                        record is not None
+                        and record.phase == "discarded"
+                        and spec.role.purpose.startswith("delete_")
+                    ):
+                        return False
+                    continue
+                constraints = _mapping(self.evidence.load(obj.constraints_json))
+                legacy = _mapping(constraints["legacy"])
+                binding = _mapping(constraints["binding"])
+                if spec.policy == "file" and any(
+                    _mapping(constraints["non_device"])[key] is None
+                    for key in ("uid", "mode", "nlink")
+                ):
+                    return False
+                token = (
+                    record.owner_token
+                    if record is not None and spec.role.purpose.startswith("delete_")
+                    else namespace_proof.owner_token
+                )
+                if (
+                    obj.canonical_path != spec.path
+                    or obj.parent_role != spec.parent_role
+                    or constraints["policy"] != spec.policy
+                    or legacy["json"] != spec.legacy_json
+                    or binding["operation_key"] != str(current.owner.key[0])
+                    or binding["owner_token"] != token
+                ):
+                    return False
+            proofs.append(proof)
+        deletion, parent = proofs
+        if (
+            deletion.authority_id != parent.authority_id
+            or deletion.epoch_id != parent.epoch_id
+            or self.frozen_dependencies[deletion.set_id] != (namespace,)
+        ):
+            return False
+        operation_parent = next(
+            (o for o in deletion.roles if o.role.purpose == "operation_parent"), None
+        )
+        namespace_parent = next(
+            (o for o in parent.roles if o.role.purpose == "namespace_parent"), None
+        )
+        return (
+            operation_parent is not None
+            and namespace_parent is not None
+            and operation_parent.native == namespace_parent.native
+        )
+
     def recovery_flag(self, owner: OwnerRef, row: dict[str, object]) -> None:
         if owner.domain not in {"rescan", "deletion"}:
             return
@@ -3325,7 +3470,12 @@ def _bind_references(
                 namespace = evidence.namespace(
                     _text(roots[namespace_owner]["ownership_json"])
                 )
-                if namespace.root_dev != record.dir_dev:
+                if (
+                    namespace.root_dev != record.dir_dev
+                    and not ledger.deletion_session_binding(
+                        snapshots[owner], snapshots[namespace_owner]
+                    )
+                ):
                     raise IdentityMismatch(
                         "carrier and namespace device evidence differs"
                     )

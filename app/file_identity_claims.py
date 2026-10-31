@@ -327,6 +327,12 @@ def _validate_manifest(active: ActiveProofSet) -> None:
                 or parent_role != spec.parent_role
             ):
                 raise IdentityMismatch("claim role absence/path differs")
+            if proof.owner.domain == "deletion" and not _absent_allowed(
+                spec, proof.snapshot
+            ):
+                raise IdentityMismatch(
+                    "deletion role lacks a phase-specific absence intent"
+                )
             continue
         fields = _document(obj.constraints_json)
         if provisioned:
@@ -348,8 +354,18 @@ def _validate_manifest(active: ActiveProofSet) -> None:
             or obj.parent_role != spec.parent_role
             or fields["policy"] != spec.policy
             or legacy["json"] != spec.legacy_json
-            or binding["operation_key"] != _binding_for(spec, proof.snapshot)[0]
-            or binding["owner_token"] != _binding_for(spec, proof.snapshot)[1]
+            or binding["operation_key"]
+            != _binding_for(
+                spec,
+                proof.snapshot,
+                namespace=next(iter(store._dependencies(manifest, proof.owner)), None),
+            )[0]
+            or binding["owner_token"]
+            != _binding_for(
+                spec,
+                proof.snapshot,
+                namespace=next(iter(store._dependencies(manifest, proof.owner)), None),
+            )[1]
         ):
             raise IdentityMismatch("claim role legacy/binding differs")
         if spec.policy == "file" and any(
@@ -369,12 +385,13 @@ def resolve_context(
     active = store.read_active(db, owner)
     if active is None:
         return None
-    if owner.domain not in {"namespace", "rescan"}:
+    if owner.domain not in {"namespace", "rescan", "deletion"}:
         raise IdentityUnavailable("claim consumer domain is not integrated")
     _validate_manifest(active)
     dependencies: list[IdentityContext] = []
-    if owner.domain == "rescan":
-        parent = os.path.dirname(cast(str, _row(active.proof.snapshot)["source_path"]))
+    if owner.domain in {"rescan", "deletion"}:
+        path_column = "source_path" if owner.domain == "rescan" else "target_path"
+        parent = os.path.dirname(cast(str, _row(active.proof.snapshot)[path_column]))
         namespace = resolve_context(db, guard, OwnerRef("namespace", (parent,)))
         if namespace is None:
             raise IdentityMismatch("enrolled rescan has an unenrolled namespace")
@@ -447,6 +464,90 @@ def verify_path_fd(context: IdentityContext, path: str, fd: int) -> None:
         verify_role(context, role_at(context, path), fd, parent, name)
 
 
+def _deletion_record(row: dict[str, object]) -> claims.CarrierRecord | None:
+    encoded = row["claim_carrier_json"]
+    return (
+        None if encoded is None else claims.CarrierRecord.from_json(cast(str, encoded))
+    )
+
+
+def _deletion_transition(
+    previous: IdentityContext,
+    spec: RoleSpec,
+    snapshot: OwnerSnapshot,
+    captured: native.NativeHandle,
+    constraints: str,
+    absent: set[str],
+) -> None:
+    prior = {obj.role.purpose: obj for obj in previous.active.proof.roles}
+    before, current = _row(previous.active.proof.snapshot), _row(snapshot)
+    old_record, record = _deletion_record(before), _deletion_record(current)
+    purpose = spec.role.purpose
+    candidates = [prior[purpose]] if purpose in prior else []
+    if (
+        purpose == "delete_artifact"
+        and old_record is not None
+        and old_record.phase == "claiming"
+    ):
+        source = (
+            "target" if old_record.origin_path == before["target_path"] else "claim"
+        )
+        if source in prior:
+            candidates.append(prior[source])
+    if (
+        purpose == "target"
+        and old_record is not None
+        and record is not None
+        and (
+            old_record.phase == "restoring"
+            and record.phase == "restored"
+            and old_record.restore_receipt is None
+            and record.restore_receipt is not None
+        )
+        and "delete_artifact" in prior
+    ):
+        candidates.append(prior["delete_artifact"])
+    matched = next((obj for obj in candidates if obj.native == captured), None)
+    if matched is None:
+        if (
+            purpose in {"delete_carrier", "delete_marker"}
+            and old_record is None
+            and record is not None
+            and record.phase == "allocated"
+        ):
+            return
+        raise IdentityMismatch(
+            "deletion phase lacks controlled native movement or birth"
+        )
+    old_fields = cast(
+        dict[str, object], _document(matched.constraints_json)["non_device"]
+    )
+    fields = cast(dict[str, object], _document(constraints)["non_device"])
+    for key, value in old_fields.items():
+        if value is None or fields[key] == value:
+            continue
+        if key == "nlink" and old_record is not None and record is not None:
+            acknowledged_link = (
+                old_record.phase == "restoring"
+                and record.phase == "restored"
+                and old_record.restore_receipt is None
+                and record.restore_receipt is not None
+                and fields[key] == cast(int, value) + 1
+            )
+            acknowledged_unlink = (
+                purpose == "target"
+                and "delete_artifact" in absent
+                and old_record.phase == "discarding"
+                and record.phase in {"discarding", "discarded"}
+                and record.restore_receipt is not None
+                and record.restore_receipt == old_record.restore_receipt
+                and fields[key] == cast(int, value) - 1
+            )
+            if acknowledged_link or acknowledged_unlink:
+                continue
+        raise IdentityMismatch("deletion phase changed enrolled non-device constraints")
+
+
 def _legacy_fingerprint(
     spec: RoleSpec, snapshot: OwnerSnapshot
 ) -> claims.FullFileFingerprint | tuple[int, int] | None:
@@ -461,6 +562,32 @@ def _legacy_fingerprint(
         return proof.marker_fingerprint
     if purpose == "operation_parent":
         return None
+    if snapshot.owner.domain == "deletion":
+        record = _deletion_record(row)
+        if purpose in {"target", "claim"}:
+            if (
+                purpose == "target"
+                and record is not None
+                and record.restore_receipt is not None
+            ):
+                return record.restore_receipt.fingerprint
+            if not row["target_present"]:
+                return None
+            return claims.FullFileFingerprint.from_value(
+                {
+                    key: row["target_" + key]
+                    for key in ("dev", "inode", "size", "mtime_ns", "sha256")
+                }
+            )
+        if record is None:
+            raise IdentityMismatch("deletion carrier evidence is missing")
+        if purpose == "delete_carrier":
+            return record.dir_dev, record.dir_ino
+        if purpose == "delete_marker":
+            return record.marker_fingerprint
+        if purpose == "delete_artifact":
+            return record.artifact_fingerprint
+        raise InvalidIdentity("unknown deletion claim role")
     fingerprints = _document(cast(str, row["fingerprints_json"]))
     if purpose in {"source", "destination"}:
         key = "source" if purpose == "source" else "publication"
@@ -501,6 +628,8 @@ def _constraints(
     snapshot: OwnerSnapshot,
     info: os.stat_result,
     fingerprint: claims.FullFileFingerprint | None,
+    *,
+    namespace: OwnerSnapshot | None = None,
 ) -> str:
     fields: dict[str, object] = {
         key: None
@@ -520,7 +649,7 @@ def _constraints(
     legacy = spec.legacy_json
     if legacy is None:
         raise IdentityMismatch("exact enrollment lacks legacy evidence")
-    operation_key, owner_token = _binding_for(spec, snapshot)
+    operation_key, owner_token = _binding_for(spec, snapshot, namespace=namespace)
     return _encode(
         {
             "version": 1,
@@ -537,11 +666,25 @@ def _constraints(
     )
 
 
-def _binding_for(spec: RoleSpec, snapshot: OwnerSnapshot) -> tuple[str, str]:
+def _binding_for(
+    spec: RoleSpec, snapshot: OwnerSnapshot, *, namespace: OwnerSnapshot | None = None
+) -> tuple[str, str]:
     row = _row(snapshot)
     if snapshot.owner.domain == "namespace":
         proof = claims._NamespaceProof.from_json(cast(str, row["ownership_json"]))
         return str(snapshot.owner.key[0]), proof.owner_token
+    if snapshot.owner.domain == "deletion":
+        key = str(snapshot.owner.key[0])
+        record = _deletion_record(row)
+        if spec.role.purpose.startswith("delete_") and record is not None:
+            return key, record.owner_token
+        if namespace is None or namespace.owner != OwnerRef(
+            "namespace", (cast(str, row["parent_path"]),)
+        ):
+            raise IdentityMismatch("deletion binding lacks its namespace dependency")
+        return key, claims._NamespaceProof.from_json(
+            cast(str, _row(namespace)["ownership_json"])
+        ).owner_token
     operation_key = cast(str, row["operation_token"])
     purpose = spec.role.purpose
     if purpose in {"operation_parent", "source", "destination"}:
@@ -610,6 +753,9 @@ def _transition(
     constraints: str,
     absent: set[str],
 ) -> None:
+    if snapshot.owner.domain == "deletion":
+        _deletion_transition(previous, spec, snapshot, captured, constraints, absent)
+        return
     prior = {o.role.purpose: o for o in previous.active.proof.roles}
     old = prior.get(spec.role.purpose)
     current = _row(snapshot)
@@ -703,6 +849,28 @@ def _transition(
 
 
 def _absent_allowed(spec: RoleSpec, snapshot: OwnerSnapshot) -> bool:
+    if snapshot.owner.domain == "deletion":
+        row = _row(snapshot)
+        record = _deletion_record(row)
+        purpose = spec.role.purpose
+        if purpose == "claim":
+            return True
+        if purpose == "target":
+            return (
+                not row["target_present"]
+                or row["state"] == "completed"
+                or (
+                    record is not None
+                    and record.phase
+                    in {"claiming", "claimed", "restoring", "discarding", "discarded"}
+                )
+            )
+        if record is not None:
+            return record.phase == "discarded" or (
+                purpose == "delete_artifact"
+                and record.phase in {"allocated", "claiming", "discarding"}
+            )
+        return False
     if snapshot.owner.domain != "rescan":
         return False
     row = _row(snapshot)
@@ -758,6 +926,7 @@ def capture_set(
     *,
     previous: IdentityContext | None = None,
     dependencies: tuple[OwnerSnapshot, ...] = (),
+    birth_namespace: IdentityContext | None = None,
     _budget: _CaptureBudget | None = None,
 ) -> ProofSet:
     """Capture complete phase evidence before the caller's SQL writer begins."""
@@ -768,17 +937,45 @@ def capture_set(
     absent: list[dict[str, object]] = []
     absent_purposes: set[str] = set()
     row = _row(snapshot)
+    if birth_namespace is not None:
+        parent_proof = birth_namespace.active.proof
+        if (
+            snapshot.owner.domain != "deletion"
+            or previous is not None
+            or row["state"] != "active"
+            or row["claim_carrier_json"] is not None
+            or birth_namespace.guard is not guard
+            or parent_proof.owner
+            != OwnerRef("namespace", (cast(str, row["parent_path"]),))
+            or dependencies != (parent_proof.snapshot,)
+            or (authority_id, epoch_id)
+            != (parent_proof.authority_id, parent_proof.epoch_id)
+        ):
+            raise IdentityMismatch("deletion birth namespace binding differs")
+        birth_namespace.assert_allocation_supported()
+        verify_complete(birth_namespace)
     phase = (
-        cast(str, row["state"]) if snapshot.owner.domain == "rescan" else "namespace"
+        cast(str, row["state"])
+        if snapshot.owner.domain in {"rescan", "deletion"}
+        else "namespace"
     )
     intent: dict[str, object] | None = None
-    if snapshot.owner.domain == "rescan":
-        journal = cast(str, row["carriers_json"])
+    if snapshot.owner.domain in {"rescan", "deletion"}:
+        column = (
+            "carriers_json"
+            if snapshot.owner.domain == "rescan"
+            else (
+                "claim_carrier_json"
+                if row["claim_carrier_json"] is not None
+                else "target_path"
+            )
+        )
+        journal = cast(str, row[column])
         intent = {
             "kind": "journal",
             "snapshot_sha256": snapshot.sha256,
             "phase": phase,
-            "column": "carriers_json",
+            "column": column,
             "evidence_json": journal,
             "evidence_sha256": _digest(journal),
         }
@@ -829,6 +1026,17 @@ def capture_set(
                         cast(str, _row(dependencies[0])["ownership_json"])
                     )
                     expected = namespace.parent_dev, namespace.parent_ino
+                    if birth_namespace is not None:
+                        parent_role = role_at(birth_namespace, spec.path)
+                        live = verify_role(
+                            birth_namespace, parent_role, fd, parent, name
+                        )
+                        if captured != _object(birth_namespace, parent_role).native:
+                            raise IdentityMismatch(
+                                "deletion birth parent native differs"
+                            )
+                        verify_live(live, birth_namespace)
+                        expected = info.st_dev, info.st_ino
                 if expected is not None:
                     actual = (
                         (info.st_dev, info.st_ino)
@@ -864,12 +1072,23 @@ def capture_set(
                     raise IdentityMismatch(
                         "present claim role lacks an acknowledged fingerprint"
                     )
-                constraints = _constraints(spec, snapshot, info, fingerprint)
+                constraints = _constraints(
+                    spec,
+                    snapshot,
+                    info,
+                    fingerprint,
+                    namespace=dependencies[0] if dependencies else None,
+                )
                 if previous is None and spec.role.kind == "marker":
                     if snapshot.owner.domain == "namespace":
                         payload = claims._NamespaceProof.from_json(
                             cast(str, row["ownership_json"])
                         ).marker_payload()
+                    elif snapshot.owner.domain == "deletion":
+                        record = _deletion_record(row)
+                        if record is None:
+                            raise IdentityMismatch("deletion marker lacks its carrier")
+                        payload = claims._carrier_payload(record)
                     else:
                         key = spec.role.purpose.removesuffix("_marker")
                         record = claims.CarrierRecord.from_json(
@@ -936,6 +1155,16 @@ def capture_set(
                     obj.constraints_json,
                     absent_purposes,
                 )
+    if snapshot.owner.domain == "deletion":
+        present = {o.role.purpose for o in objects}
+        record = _deletion_record(row)
+        if (
+            row["target_present"]
+            and row["state"] != "completed"
+            and not present.intersection({"target", "claim", "delete_artifact"})
+            and (record is None or record.phase not in {"discarding", "discarded"})
+        ):
+            raise IdentityMismatch("complete deletion phase has lost its target")
     if snapshot.owner.domain == "rescan":
         present = {o.role.purpose for o in objects}
         carriers = _document(cast(str, row["carriers_json"]))
@@ -1019,7 +1248,8 @@ def enroll_exact_legacy(
     guard.verify()
     closure.__post_init__()
     if not closure.snapshots or any(
-        s.owner.domain not in {"namespace", "rescan"} for s in closure.snapshots
+        s.owner.domain not in {"namespace", "rescan", "deletion"}
+        for s in closure.snapshots
     ):
         raise IdentityUnavailable("exact enrollment closure has an unintegrated domain")
     namespaces = [s for s in closure.snapshots if s.owner.domain == "namespace"]
@@ -1032,7 +1262,16 @@ def enroll_exact_legacy(
         parent = (
             cast(str, snapshot.owner.key[0])
             if snapshot.owner.domain == "namespace"
-            else os.path.dirname(cast(str, _row(snapshot)["source_path"]))
+            else os.path.dirname(
+                cast(
+                    str,
+                    _row(snapshot)[
+                        "target_path"
+                        if snapshot.owner.domain == "deletion"
+                        else "source_path"
+                    ],
+                )
+            )
         )
         namespace = by_parent.get(parent)
         if namespace is None:

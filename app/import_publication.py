@@ -225,12 +225,13 @@ def active_publication_exists(db: sqlite3.Connection, queue_id: int) -> bool:
 
 def assert_library_file_mutation_available(db: sqlite3.Connection, series_id: int, source_path: str | None = None) -> None:
     """SQL-only reciprocal fence for manual and DDL filesystem actors."""
-    from file_identity_store import unresolved_rescan_sql
+    from file_identity_store import unresolved_deletion_sql, unresolved_rescan_sql
 
     row = db.execute(
         "SELECT 1 FROM import_publications WHERE series_id=? AND state IN "
         "('staging','prepared','publishing','published','db_committed','cleaning') "
         "UNION ALL SELECT 1 FROM volume_file_deletions WHERE series_id=? AND state='active' "
+        f"AND {unresolved_deletion_sql()} "
         "UNION ALL SELECT 1 FROM rescan_file_operations WHERE series_id=? AND state IN "
         f"('prepared','published','db_committed','rollback') AND {unresolved_rescan_sql()} "
         "UNION ALL SELECT 1 FROM import_queue WHERE series_id=? AND "

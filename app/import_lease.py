@@ -6,7 +6,7 @@ import math
 import sqlite3
 from typing import Literal, cast
 
-from file_identity_store import unresolved_rescan_sql
+from file_identity_store import unresolved_deletion_sql, unresolved_rescan_sql
 
 from download_identity import (
     DownloadIdentity,
@@ -118,6 +118,7 @@ def claim_import_queue_row(
               SELECT 1 FROM volume_file_deletions deletion
               WHERE deletion.series_id=import_queue.series_id
                 AND deletion.state='active'
+                AND {unresolved_deletion_sql("deletion")}
           )
           AND NOT EXISTS (
               SELECT 1 FROM rescan_file_operations rescan_operation

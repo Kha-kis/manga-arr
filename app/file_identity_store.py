@@ -2689,7 +2689,18 @@ def unresolved_rescan_sql(alias: str = "rescan_file_operations") -> str:
     """
     if alias not in {"rescan_file_operations", "rescan_operation"}:
         raise ValueError("unsupported rescan selector alias")
-    columns = sorted(_PROJECTIONS["rescan_file_operations"])
+    return _unresolved_journal_sql("rescan_file_operations", "rescan", alias)
+
+
+def unresolved_deletion_sql(alias: str = "volume_file_deletions") -> str:
+    """Keep a deletion fenced unless its own exact committed event resolves it."""
+    if alias not in {"volume_file_deletions", "deletion"}:
+        raise ValueError("unsupported deletion selector alias")
+    return _unresolved_journal_sql("volume_file_deletions", "deletion", alias)
+
+
+def _unresolved_journal_sql(table: str, domain: str, alias: str) -> str:
+    columns = sorted(_PROJECTIONS[table])
     matches = " AND ".join(
         "json_type(s.snapshot_json,'$.root.row.recovery_event_id')='null'"
         if column == "recovery_event_id"
@@ -2704,7 +2715,7 @@ def unresolved_rescan_sql(alias: str = "rescan_file_operations") -> str:
         WHERE e.id={alias}.recovery_event_id
         AND CASE WHEN json_valid(e.payload_json) AND json_valid(s.snapshot_json)
         AND json_valid(e.owner_key_json) THEN
-            e.kind='superseded' AND e.owner_domain='rescan'
+            e.kind='superseded' AND e.owner_domain='{domain}'
             AND s.owner_domain=e.owner_domain AND s.owner_key_json=e.owner_key_json
             AND e.owner_key_json=json_object('key',json_array({alias}.id),'version',1)
             AND e.id=(SELECT id FROM file_identity_events newer
@@ -2719,11 +2730,11 @@ def unresolved_rescan_sql(alias: str = "rescan_file_operations") -> str:
             AND json_extract(e.payload_json,'$.before_snapshot_sha256') IS s.snapshot_sha256
             AND json_type(s.snapshot_json,'$.version')='integer'
             AND json_extract(s.snapshot_json,'$.version')=1
-            AND json_extract(s.snapshot_json,'$.owner.domain')='rescan'
+            AND json_extract(s.snapshot_json,'$.owner.domain')='{domain}'
             AND json_array_length(s.snapshot_json,'$.owner.key')=1
             AND json_type(s.snapshot_json,'$.owner.key[0]')='integer'
             AND json_extract(s.snapshot_json,'$.owner.key[0]') IS {alias}.id
-            AND json_extract(s.snapshot_json,'$.root.table')='rescan_file_operations'
+            AND json_extract(s.snapshot_json,'$.root.table')='{table}'
             AND json_array_length(s.snapshot_json,'$.root.key')=1
             AND json_type(s.snapshot_json,'$.root.key[0]')='integer'
             AND json_extract(s.snapshot_json,'$.root.key[0]') IS {alias}.id

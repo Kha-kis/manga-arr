@@ -78,9 +78,12 @@ def active_for_path(db: sqlite3.Connection, path: str) -> bool:
 
 
 def competing_for_series(db: sqlite3.Connection, series_id: int) -> bool:
+    from file_identity_store import unresolved_deletion_sql
+
     return (
         db.execute(
             "SELECT 1 FROM volume_file_deletions WHERE series_id=? AND state='active' "
+            f"AND {unresolved_deletion_sql()} "
             "UNION ALL SELECT 1 FROM import_publications WHERE series_id=? AND state IN "
             "('staging','prepared','publishing','published','db_committed','cleaning') "
             "UNION ALL SELECT 1 FROM import_queue WHERE series_id=? AND "

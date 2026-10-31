@@ -1871,7 +1871,7 @@ def _prepare_hard_delete_series(
     remove_files: bool = False,
 ) -> _HardDeleteSeriesResult:
     """Reserve the writer and atomically remove an eligible series from SQLite."""
-    from file_identity_store import unresolved_rescan_sql
+    from file_identity_store import unresolved_deletion_sql, unresolved_rescan_sql
     # This must precede the eligibility reads. It makes a worker claim and a
     # purge mutually exclusive across separate SQLite connections.
     if db.in_transaction:
@@ -1912,6 +1912,7 @@ def _prepare_hard_delete_series(
         " ) OR EXISTS ("
         "   SELECT 1 FROM volume_file_deletions deletion"
         "   WHERE deletion.series_id=? AND deletion.state='active'"
+        f"     AND {unresolved_deletion_sql('deletion')}"
         " ) OR EXISTS ("
         "   SELECT 1 FROM rescan_file_operations rescan_operation"
         "   WHERE rescan_operation.series_id=? AND rescan_operation.state IN"
