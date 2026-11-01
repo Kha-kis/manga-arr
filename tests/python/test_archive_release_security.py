@@ -101,12 +101,32 @@ def test_bounded_comment_positive_control(payload: bytes) -> None:
         assert max(reader.requests) <= COMMENT_LIMIT
 
 
+def _runtime_package_step(dockerfile: str) -> str:
+    instructions = [
+        line.strip()
+        for line in dockerfile.replace("\\\n", " ").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    stage_start = max(
+        index
+        for index, instruction in enumerate(instructions)
+        if instruction.startswith("FROM ")
+    )
+    package_steps = [
+        instruction[4:]
+        for instruction in instructions[stage_start + 1 :]
+        if instruction.startswith("RUN ") and "apt-get update" in instruction
+    ]
+    assert len(package_steps) == 1, "expected one final-stage package instruction"
+    return package_steps[0]
+
+
 @pytest.mark.parametrize("components", ["main", "main non-free", "main contrib", ""])
 def test_debian_component_edit_is_exact_and_preserves_signed_sources(
     tmp_path: Path, components: str
 ) -> None:
     dockerfile = (ROOT / "Dockerfile").read_text()
-    package_step = dockerfile.split("RUN ", 1)[1].split("\n\n", 1)[0]
+    package_step = _runtime_package_step(dockerfile)
     assert "sed -i" in package_step, (
         "signed Debian sources must gain the RAR codec component"
     )
@@ -141,3 +161,47 @@ def test_debian_component_edit_is_exact_and_preserves_signed_sources(
 
 def test_runtime_requirement_pins_reviewed_security_release() -> None:
     assert "rarfile==4.5" in (ROOT / "requirements.txt").read_text().splitlines()
+
+
+@pytest.mark.parametrize(
+    "builder_step", ["sed -i builder-decoy && apt-get update", "echo builder-decoy"]
+)
+def test_runtime_package_step_ignores_builder_decoy(builder_step: str) -> None:
+    runtime_step = "sed -i runtime-edit && apt-get update"
+    dockerfile = (
+        f"FROM python AS builder\nRUN {builder_step}\n\n"
+        "FROM python AS runtime\nRUN echo unrelated-runtime-step\n"
+        f"RUN {runtime_step}\n\nRUN python -V\n"
+    )
+    assert _runtime_package_step(dockerfile) == runtime_step
+
+
+def test_runtime_package_step_requires_final_stage_package_instruction() -> None:
+    dockerfile = (
+        "FROM python AS builder\nRUN sed -i builder-decoy && apt-get update\n\n"
+        "FROM python AS runtime\nRUN python -V\n"
+    )
+    with pytest.raises(AssertionError, match="one final-stage package instruction"):
+        _runtime_package_step(dockerfile)
+
+
+def test_runtime_package_step_keeps_single_stage_selection() -> None:
+    step = "sed -i runtime-edit && apt-get update"
+    assert _runtime_package_step(f"FROM python\nRUN {step}\n\n") == step
+
+
+def test_runtime_component_edit_cannot_borrow_signed_builder_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text()
+    runtime = dockerfile.rsplit("\nFROM ", 1)[1]
+    signed_step = runtime.split("RUN ", 1)[1].split("\n\n", 1)[0]
+    (tmp_path / "Dockerfile").write_text(
+        f"FROM python AS builder\nRUN {signed_step}\n\n"
+        "FROM python AS runtime\nRUN apt-get update\n\n"
+    )
+    monkeypatch.setitem(globals(), "ROOT", tmp_path)
+    with pytest.raises(AssertionError, match="signed Debian sources must gain"):
+        test_debian_component_edit_is_exact_and_preserves_signed_sources(
+            tmp_path, "main"
+        )

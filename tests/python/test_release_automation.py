@@ -118,11 +118,7 @@ def test_docker_context_is_allowlisted():
                 and parts[1] == "static"
                 and path.suffix in {".js", ".md"}
             )
-            or (
-                len(parts) == 3
-                and parts[1] == "templates"
-                and path.suffix == ".html"
-            )
+            or (len(parts) == 3 and parts[1] == "templates" and path.suffix == ".html")
             or (
                 len(parts) == 4
                 and parts[1:3] == ("templates", "partials")
@@ -164,8 +160,13 @@ def test_release_image_allows_tracked_runtime_files(path):
 
 def test_dockerfile_has_release_identity_labels():
     dockerfile = (REPO_ROOT / "Dockerfile").read_text()
-    first_line = dockerfile.splitlines()[0]
-    assert re.fullmatch(r"FROM python:3\.14-slim@sha256:[0-9a-f]{64}", first_line)
+    stages = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
+    assert len(stages) == 2
+    for stage, name in zip(stages, ("sqlite-builder", "runtime"), strict=True):
+        assert re.fullmatch(
+            r"FROM python:3\.14-slim@sha256:[0-9a-f]{64} AS " + name, stage
+        )
+    assert stages[0].split()[1] == stages[1].split()[1]
     for marker in (
         "ARG MANGARR_VERSION=dev",
         "COPY LICENSE /app/LICENSE",
@@ -210,21 +211,21 @@ def test_release_version_invalidates_os_package_layer() -> None:
         for index, instruction in enumerate(instructions)
         if instruction.startswith("RUN ") and "apt-get update" in instruction
     ]
-    assert len(apt_runs) == 1
-    apt_index = apt_runs[0]
-    apt_run = instructions[apt_index]
-    assert "apt-get upgrade -y" in apt_run
-    assert apt_run.index("apt-get update") < apt_run.index("apt-get upgrade")
-    stage_start = max(
-        index
-        for index, instruction in enumerate(instructions[:apt_index])
-        if instruction.startswith("FROM ")
-    )
-    assert instructions.count("ARG MANGARR_VERSION=dev") == 1
-    assert "ARG MANGARR_VERSION=dev" in instructions[stage_start + 1 : apt_index], (
-        "Declare MANGARR_VERSION inside the apt stage before RUN apt-get update "
-        "so a new release version invalidates cached OS upgrades"
-    )
+    assert len(apt_runs) == 2
+    assert instructions.count("ARG MANGARR_VERSION=dev") == 2
+    for apt_index in apt_runs:
+        apt_run = instructions[apt_index]
+        assert "apt-get upgrade -y" in apt_run
+        assert apt_run.index("apt-get update") < apt_run.index("apt-get upgrade")
+        stage_start = max(
+            index
+            for index, instruction in enumerate(instructions[:apt_index])
+            if instruction.startswith("FROM ")
+        )
+        assert "ARG MANGARR_VERSION=dev" in instructions[stage_start + 1 : apt_index], (
+            "Declare MANGARR_VERSION inside each apt stage before RUN apt-get update "
+            "so a new release version invalidates cached OS upgrades"
+        )
 
 
 @pytest.mark.parametrize("argument", ["VCS_REF=unknown", "BUILD_DATE=unknown"])
@@ -297,8 +298,7 @@ def test_local_test_harness_does_not_require_dev_scripts_in_release_image():
     makefile = (REPO_ROOT / "Makefile").read_text()
     assert "cd app && $(PYTHON) test_confirm_flow.py" in makefile
     assert (
-        "docker exec -i mangarr $(PYTHON) - /config/manga_arr.db "
-        "< app/verify_e2e.py"
+        "docker exec -i mangarr $(PYTHON) - /config/manga_arr.db < app/verify_e2e.py"
     ) in makefile
     assert "docker exec mangarr $(PYTHON) /app/test_confirm_flow.py" not in makefile
     assert "docker exec mangarr $(PYTHON) /app/verify_e2e.py" not in makefile
