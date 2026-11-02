@@ -141,7 +141,9 @@ def _text(value: object, *, empty: bool = False) -> str:
     if type(value) is not str or (not empty and not value):
         raise InvalidIdentity("identity text has an invalid type or is empty")
     result = cast(str, value)
-    if "\x00" in result or any(0xD800 <= ord(c) <= 0xDFFF for c in result):
+    if "\x00" in result or (
+        not result.isascii() and any(0xD800 <= ord(c) <= 0xDFFF for c in result)
+    ):
         raise InvalidIdentity("identity text contains invalid characters")
     return result
 
