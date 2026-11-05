@@ -27,6 +27,14 @@ compressed-RAR decoding. See the
 [qualification evidence and platform limits](docs/release-qualification.md#132-stable-qualification)
 before upgrading.
 
+**1.3.3 release scope:** full NAS/remount continuity and legacy recovery for
+[#474](https://github.com/Kha-kis/manga-arr/issues/474) are deferred to a later
+milestone. The issue remains open, the new continuity functionality remains
+disabled, and unfinished experimental work is excluded from the next candidate.
+This is not a remount-support claim or permission to clear recovery fences.
+SQLite/security and the remaining release gates still apply. See the
+[current scope and qualification requirements](docs/release-qualification.md#133-release-scope).
+
 **1.3.3-rc.10 is published, unqualified and held by
 [#475](https://github.com/Kha-kis/manga-arr/issues/475).** It adds verified
 merged-volume assembly evidence and opt-in loose-chapter quarantine/restore
