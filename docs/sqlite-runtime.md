@@ -164,7 +164,7 @@ This bounded public-API exercise is **not** a deterministic reproduction of the
 upstream WAL-reset race, power-loss simulation, NAS qualification or application
 test. Clean stress cannot prove absence of that race. Provenance includes the
 exact shipped `src/wal.c` source hash and the entire source/test file manifest
-for the separately reviewed upstream fix-ancestry/regression binding.
+for independently reviewed upstream fix-ancestry and source-to-runtime binding.
 An upstream debug Tcl testfixture can compile a different SQLite; its pass alone
 must never be labeled shipped-binary coverage. No test overlay, pytest install,
 generic launcher or native ARM workflow is added to the image.
@@ -172,8 +172,9 @@ generic launcher or native ARM workflow is added to the image.
 ## Required Release Gates
 
 - Fresh actual build, loader/ELF/import/export/package/provenance checks and
-  source-bound upstream WAL fix ancestry plus the actual regression. Distinguish
-  debug-instrumented source tests from actual shipped-library public-API stress.
+  independent review binding the upstream WAL-reset correction and its ancestry
+  to the exact canonical source, generated library and actual final per-platform
+  mapped runtime. A version string or an unreviewed hash alone is insufficient.
 - On native amd64 AND arm64, actual artifact writer/checkpoint/unclean-exit/
   recovery/integrity behavior and immutable per-platform image subjects. The
   retained amd64 base observation supplies no ARM inventory or runtime credit.
@@ -184,6 +185,18 @@ generic launcher or native ARM workflow is added to the image.
 - Full existing source/release gates, both-copy SBOM/scans, exact immutable image
   identity and independent review before publication. Old-image rollback also
   restores the old image's unresolved WAL-reset exposure.
+
+On November 6, 2026, the maintainer replaced only the bespoke local old-RED/
+new-GREEN corruption-reproducer prerequisite with the independently reviewed
+upstream-fix/source-to-runtime evidence above. Upstream documents the fix in
+[3.51.3](https://www.sqlite.org/releaselog/3_51_3.html) and later; the pinned
+3.54.1 source identity and final mapped artifact must still be verified.
+Mangarr retains upstream advisory-monitoring, source-pin review and rebuild
+responsibility. This policy does not assert that the race was independently
+reproduced or prove universal corruption safety, power-loss durability or NAS
+correctness. All other gates above remain required. The previously stopped
+reproducer stays stopped; this decision is neither a passing test nor permission
+to retry it through another agent, platform or workflow.
 
 No native build, fixed runtime, WAL protection, application, ARM or NAS pass is
 claimed by offline unit tests or source hash verification.
