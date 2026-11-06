@@ -2,6 +2,7 @@
 
 import hashlib
 import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -196,6 +197,67 @@ def test_dockerfile_removes_build_only_pip_after_dependency_installation() -> No
     assert dependency_install.end() < pip_removal.start(), (
         "Remove build-only pip only after installing runtime dependencies"
     )
+
+
+def _dockerfile_runs() -> list[str]:
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    return [
+        line.strip()[4:]
+        for line in dockerfile.replace("\\\n", " ").splitlines()
+        if line.strip().startswith("RUN ")
+    ]
+
+
+@pytest.mark.parametrize("operation", ["update", "upgrade", "install"])
+def test_apt_acquisition_explicitly_disables_retries(operation: str) -> None:
+    acquisitions = [
+        tokens
+        for run in _dockerfile_runs()
+        for command in run.split("&&")
+        if (tokens := shlex.split(command, comments=True))
+        and tokens[0] == "apt-get" and operation in tokens
+    ]
+    assert acquisitions, f"Expected an apt-get {operation} acquisition"
+    for tokens in acquisitions:
+        assert ("-o", "Acquire::Retries=0") in list(zip(tokens, tokens[1:])), (
+            f"Every apt-get {operation} acquisition must explicitly set -o Acquire::Retries=0"
+        )
+        assert all(
+            token == "Acquire::Retries=0"
+            for token in tokens if token.startswith("Acquire::Retries=")
+        ), f"apt-get {operation} must not override Acquire::Retries=0"
+
+
+@pytest.mark.parametrize("package", ["apt", "libapt-pkg7.0"])
+def test_apt_fixed_version_is_guarded_before_package_install(package: str) -> None:
+    install_runs = 0
+    for run in _dockerfile_runs():
+        commands = [shlex.split(command, comments=True) for command in run.split("&&")]
+        installs = [
+            index for index, tokens in enumerate(commands)
+            if tokens and tokens[0] == "apt-get" and "install" in tokens
+        ]
+        if not installs:
+            continue
+        install_runs += 1
+        upgrades = [
+            index for index, tokens in enumerate(commands)
+            if tokens and tokens[0] == "apt-get" and "upgrade" in tokens
+        ]
+        guards = [
+            index for index, tokens in enumerate(commands)
+            if len(tokens) == 5 and tokens[:2] == ["dpkg", "--compare-versions"]
+            and tokens[3:] == ["ge", "3.0.4"]
+            and tokens[2].startswith("$(") and tokens[2].endswith(")")
+            and shlex.split(tokens[2][2:-1]) == [
+                "dpkg-query", "-W", "-f=${Version}", package,
+            ]
+        ]
+        assert guards, f"Require an actual dpkg-query/dpkg version guard for {package} >=3.0.4"
+        assert upgrades and max(upgrades) < min(guards) <= max(guards) < min(installs), (
+            f"Guard {package} after upgrade and before any package installation"
+        )
+    assert install_runs, "Expected an apt-get install RUN with bootstrap version guards"
 
 
 def test_release_version_invalidates_os_package_layer() -> None:
