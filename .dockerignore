@@ -4,6 +4,13 @@
 !LICENSE
 !requirements.txt
 
+!scripts/
+scripts/*
+!scripts/sqlite_runtime.py
+!runtime/
+runtime/*
+!runtime/sqlite-baseline.json
+
 !bin/
 bin/*
 !bin/mangarr
