@@ -18,12 +18,15 @@ WORKDIR /app
 # A new release must refresh OS fixes even when the pinned base is unchanged.
 ARG MANGARR_VERSION=dev
 
+# Disable vulnerable APT retries during bootstrap; refuse unfixed mirror state.
 RUN test "$(sed -n '/^Components:/p' /etc/apt/sources.list.d/debian.sources | sort -u)" = 'Components: main' \
  && sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources \
  && test "$(sed -n '/^Components:/p' /etc/apt/sources.list.d/debian.sources | sort -u)" = 'Components: main non-free' \
- && apt-get update \
- && apt-get upgrade -y \
- && apt-get install -y --no-install-recommends 7zip 7zip-rar \
+ && apt-get update -o Acquire::Retries=0 \
+ && apt-get upgrade -y -o Acquire::Retries=0 \
+ && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' apt)" ge 3.0.4 \
+ && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libapt-pkg7.0)" ge 3.0.4 \
+ && apt-get install -y --no-install-recommends 7zip 7zip-rar -o Acquire::Retries=0 \
  && rm -rf /var/lib/apt/lists/*
 
 # Keep the Debian package intact. Only this image's loader cache selects the

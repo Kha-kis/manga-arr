@@ -15,6 +15,22 @@ Release commits must update `app/VERSION`, `CHANGELOG.md`, and the current
 release shown in `README.md` together. Automated tests enforce SemVer syntax and
 documentation consistency.
 
+## 1.3.3 Release Scope
+
+On 2026-11-05 the maintainer deferred full NAS/remount continuity and explicit
+legacy recovery for [#474](https://github.com/Kha-kis/manga-arr/issues/474) to a
+later milestone. The next 1.3.3 candidate will qualify the reviewed fixes rather
+than wait for that unfinished feature. The issue remains open; disabled
+ownership foundations do not provide remount support, and unmerged experimental
+implementation is not part of the release.
+
+This decision does not waive SQLite/security qualification, included-feature
+safety, supported-platform evidence, backup/rollback, a fresh immutable candidate
+or its runtime/soak gates. Experimental recovery, if offered later, needs its own
+scope, safety review and disposable-data procedure; it is not enabled by this
+release decision. See the [scope contract](release-qualification.md#133-release-scope).
+Historical candidate evidence and holds below remain unchanged.
+
 ## 1.3.3-rc.10 Candidate Status
 
 Preparation began on 2026-10-19 from reviewed

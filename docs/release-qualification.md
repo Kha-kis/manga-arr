@@ -3,6 +3,55 @@
 This document defines the evidence required before a Mangarr release candidate
 can become a stable release. Passing unit tests alone is not sufficient.
 
+## 1.3.3 Release Scope
+
+Status: **SCOPE NARROWED; NOT RELEASE-QUALIFIED** (2026-11-05).
+
+The maintainer has deferred full NAS/remount continuity and explicit legacy
+recovery for [#474](https://github.com/Kha-kis/manga-arr/issues/474) to a later
+milestone. Completing that feature and qualifying its reported Synology/NFS
+remount profile are no longer prerequisites for 1.3.3. This is an explicit
+feature deferral, not a passing platform result or a fix for affected operations.
+
+### Deferred Feature Boundary
+
+- Keep #474 open and the new continuity functionality disabled. Reviewed
+  disabled foundations may remain in source; unmerged experimental cleanup,
+  consumer and recovery implementation must not enter the candidate as a side
+  effect of release preparation.
+- Preserve exact legacy ownership checks, immutable proof history and recovery
+  fences. A changed device, storage incarnation or uncertain ownership still
+  refuses rather than adopting files or silently rewriting proof.
+- Do not offer a mutating experimental recovery switch in stable 1.3.3. A later
+  experimental track needs its own completed safety review and disposable-data
+  procedure; an experimental label cannot excuse a known deletion-safety gap.
+- Existing affected deployments remain affected. Preserve the original operation
+  and artifacts and request reviewed recovery guidance; do not clear database
+  rows, rewrite markers or remove retained directories to unfreeze a series.
+
+### Remaining Release Requirements
+
+- Resolve [#488](https://github.com/Kha-kis/manga-arr/issues/488)'s SQLite runtime
+  requirements and qualify the actual shipped library. Deferring #474 does not
+  approve draft [#512](https://github.com/Kha-kis/manga-arr/pull/512), waive
+  security evidence or authorize a stopped regression to be retried.
+- Qualify the included import, backup, dependency and other reviewed fixes on
+  the exact candidate. Disabled-feature deferral does not waive a demonstrated
+  defect in any enabled path, including ordinary filesystem cleanup or recovery.
+- Preserve required source/release-safe, current security, exact-image and
+  supported-platform gates. Missing evidence remains missing; do not claim
+  native ARM64 or NAS results from manifests, simulation or another platform.
+  Only #474-specific remount-profile acceptance is deferred by this decision.
+- Publish a new immutable candidate from reviewed source and obtain fresh
+  install, upgrade/matching rollback, backup/restore, download/import/rescan and
+  included recovery evidence. Complete its fresh natural full-day observation
+  with two daily metadata polls. Earlier RC elapsed time does not transfer.
+- Take a fresh matching recovery backup before any production cutover and
+  verify the exact deployed artifact. This scope decision alone authorizes no
+  release, feature enablement, reporter recovery or production change.
+
+The historical RC10 and earlier qualification records below remain unchanged.
+
 ## 1.3.3-rc.10 Qualification
 
 Status: **PUBLISHED; QUALIFICATION HELD; UNQUALIFIED; NO STABLE PROMOTION
