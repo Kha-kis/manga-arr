@@ -3,9 +3,12 @@ FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9
 # Canonical source generation (including Lemon), never a prebuilt amalgamation.
 # Build tools and the source tree stay in this stage. See docs/sqlite-runtime.md.
 ARG MANGARR_VERSION=dev
-RUN apt-get update \
- && apt-get upgrade -y \
- && apt-get install -y --no-install-recommends build-essential tcl-dev binutils ca-certificates \
+# Apply the same bootstrap safeguards in the source builder and runtime stages.
+RUN apt-get update -o Acquire::Retries=0 \
+ && apt-get upgrade -y -o Acquire::Retries=0 \
+ && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' apt)" ge 3.0.4 \
+ && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libapt-pkg7.0)" ge 3.0.4 \
+ && apt-get install -y --no-install-recommends build-essential tcl-dev binutils ca-certificates -o Acquire::Retries=0 \
  && rm -rf /var/lib/apt/lists/*
 COPY scripts/sqlite_runtime.py /build/scripts/sqlite_runtime.py
 COPY runtime/sqlite-baseline.json /build/runtime/sqlite-baseline.json
