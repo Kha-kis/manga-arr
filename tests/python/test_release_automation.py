@@ -364,3 +364,180 @@ def test_local_test_harness_does_not_require_dev_scripts_in_release_image():
     ) in makefile
     assert "docker exec mangarr $(PYTHON) /app/test_confirm_flow.py" not in makefile
     assert "docker exec mangarr $(PYTHON) /app/verify_e2e.py" not in makefile
+
+
+def _native_sqlite_workflow() -> str:
+    path = REPO_ROOT / ".github/workflows/native-sqlite-build.yml"
+    assert path.is_file(), "Missing manual native ARM64 build evidence workflow"
+    return path.read_text(encoding="utf-8")
+
+
+def test_native_sqlite_build_is_manual_and_least_privilege() -> None:
+    workflow = _native_sqlite_workflow()
+    triggers = workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+    assert re.findall(r"^  ([a-z_]+):", triggers, re.MULTILINE) == ["workflow_dispatch"]
+    assert "revision:\n" in triggers
+    assert "required: true" in triggers and "type: string" in triggers
+    permissions = workflow.split("\npermissions:\n", 1)[1].split("\njobs:", 1)[0]
+    assert permissions.strip() == "contents: read"
+    assert "if: github.repository == 'Kha-kis/manga-arr'" in workflow
+    assert "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0" in workflow
+    assert "persist-credentials: false" in workflow
+    assert "ref: ${{ inputs.revision }}" in workflow
+    assert not re.search(
+        r"secrets\.|docker\s+(?:login|push|save)|packages:|id-token:|--push|--secret",
+        workflow,
+    )
+
+
+def test_native_sqlite_build_checks_native_host_and_exact_revision_first() -> None:
+    workflow = _native_sqlite_workflow()
+    assert "runs-on: ubuntu-24.04-arm" in workflow
+    assert "timeout-minutes: 30" in workflow
+    assert "REVISION: ${{ inputs.revision }}" in workflow
+    assert "WORKFLOW_REVISION: ${{ github.sha }}" in workflow
+    validation = workflow.index('[[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]')
+    checkout = workflow.index("uses: actions/checkout@")
+    identity = workflow.index('test "$(git rev-parse HEAD)" = "$REVISION"')
+    build = workflow.index("docker build ")
+    assert validation < checkout < identity < build
+    for witness in ('test "$RUNNER_ARCH" = ARM64', 'test "$(uname -m)" = aarch64'):
+        assert workflow.index(witness) < build
+    assert not re.search(
+        r"(?i)qemu|buildx|--platform|DOCKER_DEFAULT_PLATFORM|retries:|retry|continue-on-error",
+        workflow,
+    )
+
+
+def test_native_sqlite_build_is_single_normal_build_with_bound_identity() -> None:
+    workflow = _native_sqlite_workflow()
+    assert len(re.findall(r"\bdocker build\s", workflow)) == 1
+    assert "OWNER: ${{ github.run_id }}-${{ github.run_attempt }}" in workflow
+    assert (
+        "IMAGE_TAG: mangarr-native-arm64:${{ github.run_id }}-${{ github.run_attempt }}"
+        in workflow
+    )
+    for marker in (
+        "set -euo pipefail",
+        '--progress=plain --iidfile "$EVIDENCE_DIR/image.id"',
+        '--tag "$IMAGE_TAG"',
+        '--label "io.mangarr.native-build=$OWNER"',
+        '--build-arg "MANGARR_VERSION=dev-native-arm64-$OWNER"',
+        '--build-arg "VCS_REF=$REVISION"',
+        '--label "io.mangarr.workflow-revision=$WORKFLOW_REVISION"',
+        '--build-arg "BUILD_DATE=$build_date"',
+        '2>&1 | tee "$EVIDENCE_DIR/build.log"',
+        '.os == "linux"',
+        '.architecture == "arm64"',
+        '.user == "mangarr"',
+        ".source_revision == $revision",
+        ".id == $image_id",
+        "source_revision: $revision",
+        "workflow_revision: $workflow_revision",
+        ".workflow_revision == $workflow_revision",
+    ):
+        assert marker in workflow
+    commands = "\n".join(
+        line for line in workflow.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert not re.search(
+        r"(?i)qualify-wal|repro|crash|recovery|\bSELECT\b|\bPRAGMA\b|docker\s+(?:run|start|exec)",
+        commands,
+    )
+
+
+def test_native_sqlite_evidence_uses_only_never_started_provenance_container() -> None:
+    workflow = _native_sqlite_workflow()
+    assert len(re.findall(r"\bdocker create\s", workflow)) == 1
+    assert len(re.findall(r"\bdocker cp\s", workflow)) == 1
+    for marker in (
+        "CONTAINER_NAME: mangarr-native-arm64-${{ github.run_id }}-${{ github.run_attempt }}",
+        '--cidfile "$EVIDENCE_DIR/container.id"',
+        '--name "$CONTAINER_NAME"',
+        "--network none --read-only --cap-drop ALL",
+        "--security-opt no-new-privileges",
+        '--entrypoint /bin/false "$image_id"',
+        '"$container_id:/opt/mangarr/sqlite/3.54.1/provenance.json"',
+        '.machine == "aarch64"',
+        '.version == "3.54.1"',
+        '.source_id | test("^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} [0-9a-f]{64}$")',
+        'test("^[0-9a-f]{64}$")',
+        ".source_sha3_256",
+        ".library_sha256",
+        ".extension_sha256",
+    ):
+        assert marker in workflow
+    assert not re.search(
+        r"--mount|--volume|(?:^|\s)-v\s|--privileged|\.Config.Env|\{\{json \.\}\}",
+        workflow,
+    )
+    for line in workflow.splitlines():
+        if re.search(r"docker (?:image|container) inspect", line):
+            assert "--format" in line
+
+
+def test_native_sqlite_cleanup_is_always_owned_exact_and_fail_closed() -> None:
+    workflow = _native_sqlite_workflow()
+    cleanup = workflow.split("- name: Clean up owned Docker objects\n", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    assert "if: always()" in cleanup
+    for marker in (
+        '[[ "$container_id" =~ ^[0-9a-f]{64}$ ]]',
+        '[[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]',
+        ".id == $container_id",
+        ".owner == $owner",
+        ".image == $image_id",
+        '.status == "created"',
+        ".running == false",
+        ".id == $image_id",
+        'docker container rm "$container_id"',
+        'docker image rm "$image_id"',
+        'exit "$status"',
+    ):
+        assert marker in cleanup
+    assert "|| return 1" in cleanup
+    assert not re.search(
+        r"--force|(?:^|\s)-f(?:\s|$)|\bprune\b|\|\| true|rm \"\$IMAGE_TAG\"", cleanup
+    )
+
+
+def test_native_sqlite_artifacts_are_fixed_compact_and_short_lived() -> None:
+    workflow = _native_sqlite_workflow()
+    assert (
+        "EVIDENCE_DIR: ${{ runner.temp }}/mangarr-native-arm64-${{ github.run_id }}-${{ github.run_attempt }}"
+        in workflow
+    )
+    upload = workflow.split("- name: Upload build evidence\n", 1)[1]
+    assert "if: always()" in upload
+    assert "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9" in upload
+    assert "retention-days: 7" in upload
+    assert "if-no-files-found: error" in upload
+    paths = re.findall(r"^            (\S.*)$", upload, re.MULTILINE)
+    assert paths == [
+        "${{ runner.temp }}/mangarr-native-arm64-${{ github.run_id }}-${{ github.run_attempt }}/*.json",
+        "${{ runner.temp }}/mangarr-native-arm64-${{ github.run_id }}-${{ github.run_attempt }}/*.log",
+        "${{ runner.temp }}/mangarr-native-arm64-${{ github.run_id }}-${{ github.run_attempt }}/*.id",
+    ]
+
+
+def test_native_sqlite_runner_context_is_scoped_to_steps() -> None:
+    workflow = _native_sqlite_workflow()
+    job_scope, steps = workflow.split("\n    steps:\n", 1)
+    assert not re.search(r"\$\{\{\s*runner\b", job_scope), (
+        "The runner context is unavailable in job-level env and other job scope"
+    )
+    evidence_path = "${{ runner.temp }}/mangarr-native-arm64-${{ github.run_id }}-${{ github.run_attempt }}"
+    run_steps = [
+        step for step in steps.split("      - name: ") if "\n        run: |\n" in step
+    ]
+    assert len(run_steps) == 4
+    for step in run_steps:
+        step_scope = step.split("\n        run: |\n", 1)[0]
+        assert (
+            f"\n        env:\n          EVIDENCE_DIR: {evidence_path}\n"
+            in step_scope + "\n"
+        )
+    upload = steps.split("- name: Upload build evidence\n", 1)[1]
+    assert "${{ env.EVIDENCE_DIR }}" not in upload
+    assert "GITHUB_ENV" not in workflow
