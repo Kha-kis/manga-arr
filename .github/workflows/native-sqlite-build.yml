@@ -1,0 +1,170 @@
+name: Native SQLite ARM64 build evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Exact reviewed lowercase 40-hex source revision
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  native-build:
+    if: github.repository == 'Kha-kis/manga-arr'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      REVISION: ${{ inputs.revision }}
+      WORKFLOW_REVISION: ${{ github.sha }}
+      OWNER: ${{ github.run_id }}-${{ github.run_attempt }}
+      IMAGE_TAG: mangarr-native-arm64:${{ github.run_id }}-${{ github.run_attempt }}
+      CONTAINER_NAME: mangarr-native-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Validate request and witness native host
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/mangarr-native-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -m 700 "$EVIDENCE_DIR"
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$RUNNER_ARCH" = ARM64
+          test "$(uname -m)" = aarch64
+          jq -n --arg revision "$REVISION" --arg owner "$OWNER" \
+            --arg workflow_revision "$WORKFLOW_REVISION" \
+            --arg runner_arch "$RUNNER_ARCH" --arg machine "$(uname -m)" \
+            '{source_revision: $revision, workflow_revision: $workflow_revision, owner: $owner, runner_arch: $runner_arch, machine: $machine}' \
+            > "$EVIDENCE_DIR/host.json"
+
+      - name: Check out exact requested source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.revision }}
+          persist-credentials: false
+
+      - name: Build ordinary source Dockerfile once
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/mangarr-native-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$REVISION"
+          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          jq -n --arg revision "$REVISION" --arg owner "$OWNER" \
+            --arg workflow_revision "$WORKFLOW_REVISION" \
+            --arg tag "$IMAGE_TAG" --arg date "$build_date" \
+            --arg version "dev-native-arm64-$OWNER" \
+            '{source_revision: $revision, workflow_revision: $workflow_revision, owner: $owner, tag: $tag, date: $date, version: $version}' \
+            > "$EVIDENCE_DIR/build.json"
+          docker build --progress=plain --iidfile "$EVIDENCE_DIR/image.id" \
+            --tag "$IMAGE_TAG" --label "io.mangarr.native-build=$OWNER" \
+            --label "io.mangarr.workflow-revision=$WORKFLOW_REVISION" \
+            --build-arg "MANGARR_VERSION=dev-native-arm64-$OWNER" \
+            --build-arg "VCS_REF=$REVISION" --build-arg "BUILD_DATE=$build_date" \
+            . 2>&1 | tee "$EVIDENCE_DIR/build.log"
+
+      - name: Record image identity and extract SQLite provenance
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/mangarr-native-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          image_id="$(cat "$EVIDENCE_DIR/image.id")"
+          [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          # Select fields explicitly: never archive image environment/configuration.
+          docker image inspect --format '{"id":{{json .Id}},"os":{{json .Os}},"architecture":{{json .Architecture}},"user":{{json .Config.User}},"source_revision":{{json (index .Config.Labels "org.opencontainers.image.revision")}},"workflow_revision":{{json (index .Config.Labels "io.mangarr.workflow-revision")}},"version":{{json (index .Config.Labels "org.opencontainers.image.version")}},"date":{{json (index .Config.Labels "org.opencontainers.image.created")}},"owner":{{json (index .Config.Labels "io.mangarr.native-build")}}}' "$image_id" \
+            > "$EVIDENCE_DIR/image.json"
+          jq -e --arg image_id "$image_id" --arg revision "$REVISION" \
+            --arg workflow_revision "$WORKFLOW_REVISION" \
+            --arg owner "$OWNER" --slurpfile build "$EVIDENCE_DIR/build.json" '
+            .id == $image_id and .os == "linux" and .architecture == "arm64" and
+            .user == "mangarr" and .source_revision == $revision and .owner == $owner and
+            .workflow_revision == $workflow_revision and
+            .version == $build[0].version and .date == $build[0].date
+            ' "$EVIDENCE_DIR/image.json" > /dev/null
+          # Metadata extraction only. This container is never started.
+          docker create --cidfile "$EVIDENCE_DIR/container.id" --name "$CONTAINER_NAME" \
+            --label "io.mangarr.native-build=$OWNER" \
+            --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --entrypoint /bin/false "$image_id"
+          container_id="$(cat "$EVIDENCE_DIR/container.id")"
+          [[ "$container_id" =~ ^[0-9a-f]{64}$ ]]
+          docker cp "$container_id:/opt/mangarr/sqlite/3.54.1/provenance.json" \
+            "$EVIDENCE_DIR/provenance.json"
+          jq -e '
+            def hash: type == "string" and test("^[0-9a-f]{64}$");
+            def hashes: type == "object" and length > 0 and all(.[]; hash);
+            .schema == 1 and .machine == "aarch64" and .version == "3.54.1" and
+            (.source_id | test("^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} [0-9a-f]{64}$")) and
+            (.source_sha3_256 | hash) and (.download_sha256 | hash) and
+            (.manifest_sha3_256 | hash) and (.library_sha256 | hash) and
+            (.extension_sha256 | hash) and (.build_script_sha256 | hash) and
+            (.baseline_sha256 | hash) and (.source_files | hashes) and
+            (.generated_sha256 | hashes) and
+            .manifest_sha3_256 == (.source_id | split(" ") | last)
+            ' "$EVIDENCE_DIR/provenance.json" > /dev/null
+
+      - name: Clean up owned Docker objects
+        if: always()
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/mangarr-native-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          # The ephemeral GitHub VM is the final boundary for incomplete builds.
+          # Refuse unknown objects or unexpected state; never broaden deletion.
+          cleanup_container() {
+            [[ -e "$EVIDENCE_DIR/container.id" ]] || return 0
+            container_id="$(cat "$EVIDENCE_DIR/container.id")" || return 1
+            [[ "$container_id" =~ ^[0-9a-f]{64}$ ]] || return 1
+            image_id="$(cat "$EVIDENCE_DIR/image.id")" || return 1
+            [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+            docker container inspect --format '{"id":{{json .Id}},"owner":{{json (index .Config.Labels "io.mangarr.native-build")}},"image":{{json .Image}},"name":{{json .Name}},"status":{{json .State.Status}},"running":{{json .State.Running}}}' "$container_id" \
+              > "$EVIDENCE_DIR/container-cleanup.json" || return 1
+            jq -e --arg container_id "$container_id" --arg image_id "$image_id" \
+              --arg owner "$OWNER" --arg name "/$CONTAINER_NAME" '
+              .id == $container_id and .owner == $owner and .image == $image_id and
+              .name == $name and .status == "created" and .running == false
+              ' "$EVIDENCE_DIR/container-cleanup.json" > /dev/null || return 1
+            docker container rm "$container_id" || return 1
+          }
+          cleanup_image() {
+            [[ -e "$EVIDENCE_DIR/image.id" ]] || return 0
+            image_id="$(cat "$EVIDENCE_DIR/image.id")" || return 1
+            [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+            docker image inspect --format '{"id":{{json .Id}},"owner":{{json (index .Config.Labels "io.mangarr.native-build")}}}' "$image_id" \
+              > "$EVIDENCE_DIR/image-cleanup.json" || return 1
+            jq -e --arg image_id "$image_id" --arg owner "$OWNER" '
+              .id == $image_id and .owner == $owner
+              ' "$EVIDENCE_DIR/image-cleanup.json" > /dev/null || return 1
+            docker image rm "$image_id" || return 1
+          }
+          status=0
+          {
+            if ! cleanup_container; then
+              echo 'Owned container cleanup refused or failed'
+              status=1
+            fi
+            if ! cleanup_image; then
+              echo 'Owned image cleanup refused or failed'
+              status=1
+            fi
+            echo "Cleanup status: $status"
+          } > "$EVIDENCE_DIR/cleanup.log" 2>&1
+          cat "$EVIDENCE_DIR/cleanup.log"
+          exit "$status"
+
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-sqlite-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mangarr-native-arm64-${{ github.run_id }}-${{ github.run_attempt }}/*.json
+            ${{ runner.temp }}/mangarr-native-arm64-${{ github.run_id }}-${{ github.run_attempt }}/*.log
+            ${{ runner.temp }}/mangarr-native-arm64-${{ github.run_id }}-${{ github.run_attempt }}/*.id
+          if-no-files-found: error
+          retention-days: 7
