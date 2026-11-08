@@ -2008,23 +2008,169 @@ def transferred_plan_conservation(
     from file_mutation_lock import FileMutationLockError
     from private_pack_claim import open_directory
 
+    def handle_state(descriptor: int) -> tuple[int, ...]:
+        info = os.fstat(descriptor)
+        # Reads may advance atime; retain every other field at full precision.
+        return (
+            info.st_mode,
+            info.st_ino,
+            info.st_dev,
+            info.st_nlink,
+            info.st_uid,
+            info.st_gid,
+            info.st_size,
+            info.st_mtime_ns,
+            info.st_ctime_ns,
+        )
+
     serialized = inventory.to_json()
     with (
         file_mutation_guard(str(env.db_path)) as guard,
         open_directory(str(env.scope)) as fd,
     ):
-        handles = (os.fstat(fd), os.fstat(guard.subprocess_fd))
+        handles = (handle_state(fd), handle_state(guard.subprocess_fd))
         with pytest.raises(FileMutationLockError):
             with file_mutation_guard(str(env.db_path)):
                 pytest.fail("independent guard acquired an already held lock")
         with transferred_claim_conservation(env, monkeypatch, pure=pure):
             yield
         guard.verify()
-        assert (os.fstat(fd), os.fstat(guard.subprocess_fd)) == handles
+        assert (handle_state(fd), handle_state(guard.subprocess_fd)) == handles
         with pytest.raises(FileMutationLockError):
             with file_mutation_guard(str(env.db_path)):
                 pytest.fail("planner released the held mutation lock")
     assert inventory.to_json() == serialized
+
+
+@pytest.mark.parametrize("target", ["directory", "lock"])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "unchanged",
+        "st_atime",
+        "st_dev",
+        "st_ino",
+        "st_mode",
+        "st_uid",
+        "st_gid",
+        "st_nlink",
+        "st_size",
+        "st_mtime",
+        "st_ctime",
+        "st_mtime_ns",
+        "st_ctime_ns",
+    ],
+)
+def test_transferred_plan_conservation_handle_metadata(
+    producer_media: ProducerMedia,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    field: str,
+) -> None:
+    import os
+    from file_mutation_lock import FileMutationLockError
+
+    env = producer_media
+    path = (
+        env.scope
+        if target == "directory"
+        else env.db_path.with_name(f".{env.db_path.name}.file-mutation.lock")
+    )
+    before = path.stat()
+    real_fstat = os.fstat
+
+    def changed_fstat(fd: int) -> os.stat_result:
+        current = real_fstat(fd)
+        if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
+            return current
+        fields = (
+            "st_mode",
+            "st_ino",
+            "st_dev",
+            "st_nlink",
+            "st_uid",
+            "st_gid",
+            "st_size",
+            "st_atime",
+            "st_mtime",
+            "st_ctime",
+        )
+        values = list(before)
+        attributes: dict[str, int | float] = {
+            "st_atime": before.st_atime,
+            "st_mtime": before.st_mtime,
+            "st_ctime": before.st_ctime,
+            "st_atime_ns": before.st_atime_ns,
+            "st_mtime_ns": before.st_mtime_ns,
+            "st_ctime_ns": before.st_ctime_ns,
+        }
+        if field in fields:
+            values[fields.index(field)] += 1
+        if field in {"st_atime", "st_mtime", "st_ctime"}:
+            attributes[field] += 1
+            attributes[f"{field}_ns"] += 1_000_000_000
+        elif field.endswith("_ns"):
+            attributes[field] += 1
+        return os.stat_result(values, attributes)
+
+    def exercise() -> None:
+        with transferred_plan_conservation(
+            env, monkeypatch, empty_inventory(), pure=False
+        ):
+            if target == "directory":
+                assert os.listdir(path)
+            else:
+                assert path.read_bytes() == b""
+            # Model the read's atime-only tick independently of mount policy.
+            monkeypatch.setattr(os, "fstat", changed_fstat)
+
+    if field in {"unchanged", "st_atime"}:
+        exercise()
+    else:
+        with pytest.raises((AssertionError, FileMutationLockError)):
+            exercise()
+
+
+@pytest.mark.parametrize("change", ["unlock", "media", "database", "descriptor"])
+def test_transferred_plan_conservation_rejects_state_changes(
+    producer_media: ProducerMedia,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    import fcntl
+    import os
+
+    env = producer_media
+    lock = env.db_path.with_name(f".{env.db_path.name}.file-mutation.lock").stat()
+    real_fstat = os.fstat
+    held_fds: list[int] = []
+    leaked_fd: int | None = None
+
+    def remember_lock(fd: int) -> os.stat_result:
+        info = real_fstat(fd)
+        if not held_fds and (info.st_dev, info.st_ino) == (lock.st_dev, lock.st_ino):
+            held_fds.append(fd)
+        return info
+
+    monkeypatch.setattr(os, "fstat", remember_lock)
+    try:
+        with pytest.raises((AssertionError, pytest.fail.Exception)):
+            with transferred_plan_conservation(
+                env, monkeypatch, empty_inventory(), pure=False
+            ):
+                if change == "unlock":
+                    assert held_fds
+                    fcntl.flock(held_fds[0], fcntl.LOCK_UN)
+                elif change == "media":
+                    _ = env.source.write_bytes(b"changed disposable media")
+                elif change == "database":
+                    with closing(sqlite3.connect(env.db_path)) as db, db:
+                        _ = db.execute("UPDATE series SET title='changed fixture'")
+                else:
+                    leaked_fd = os.open(env.source, os.O_RDONLY | os.O_CLOEXEC)
+    finally:
+        if leaked_fd is not None:
+            os.close(leaked_fd)
 
 
 def transferred_claim_effects(
