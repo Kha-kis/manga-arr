@@ -5,8 +5,42 @@ All notable changes to this project. Format roughly follows
 
 ## Unreleased
 
+## 1.3.3-rc.11 - 2026-11-08
+
+**Prepared, not published or release-qualified.** This replacement includes the
+reviewed fixes since RC10 and the private SQLite runtime candidate in
+[#512](https://github.com/Kha-kis/manga-arr/pull/512). It does not replace the
+immutable RC10 tag. Full remount continuity and legacy recovery for #474 remain
+deferred, disabled and unqualified; unfinished experimental work is excluded.
+See [RC11 qualification](docs/release-qualification.md#133-rc11-qualification).
+
+### Security
+
+- Update Pillow to 13.0.0 and the pinned build backend to setuptools 84.1.0
+  ([#499](https://github.com/Kha-kis/manga-arr/issues/499),
+  [#507](https://github.com/Kha-kis/manga-arr/issues/507)).
+- Require fixed APT/bootstrap packages in both image acquisition stages
+  ([#514](https://github.com/Kha-kis/manga-arr/issues/514)).
+- Build a private canonical SQLite 3.54.1 library without replacing Debian's
+  copy or CPython's adapter. Record source/generated/library provenance and
+  verify loader identity and capabilities at build time. Independent development
+  source-binding and native ARM64 build evidence do not qualify the final
+  candidate; current security and all remaining runtime gates still apply
+  ([#488](https://github.com/Kha-kis/manga-arr/issues/488)).
+
 ### Fixed
 
+- Close backup snapshot, archive-validation and staged-restore SQLite handles
+  explicitly before temporary-file cleanup or publication. Historical NAS
+  directories are not automatically removed
+  ([#484](https://github.com/Kha-kis/manga-arr/issues/484)).
+- Bound automatic complete-pack coverage by an explicit advertised volume range,
+  and preserve verified all-skipped/import refusal outcomes without treating
+  skipped files as downloaded
+  ([#482](https://github.com/Kha-kis/manga-arr/issues/482)).
+- Discover ordinary archives beside packed image chapters instead of omitting
+  those archives from the import queue
+  ([#502](https://github.com/Kha-kis/manga-arr/issues/502)).
 - Observed indexer releases remain blocklisted after download-URL rotation and
   seen cleanup, using captured source and GUID evidence. Legacy entries and
   manual submissions without that evidence retain URL-only matching
