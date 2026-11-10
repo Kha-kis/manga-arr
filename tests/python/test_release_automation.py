@@ -165,8 +165,13 @@ def test_release_image_allows_tracked_runtime_files(path):
 
 def test_dockerfile_has_release_identity_labels():
     dockerfile = (REPO_ROOT / "Dockerfile").read_text()
-    first_line = dockerfile.splitlines()[0]
-    assert re.fullmatch(r"FROM python:3\.14-slim@sha256:[0-9a-f]{64}", first_line)
+    stages = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
+    assert len(stages) == 2
+    for stage, suffix in zip(stages, (" AS archive-fetcher", ""), strict=True):
+        assert re.fullmatch(
+            r"FROM python:3\.14-slim@sha256:[0-9a-f]{64}" + suffix, stage
+        )
+    assert stages[0].split()[1] == stages[1].split()[1]
     for marker in (
         "ARG MANGARR_VERSION=dev",
         "COPY LICENSE /app/LICENSE",

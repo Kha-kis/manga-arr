@@ -81,5 +81,10 @@ def test_actual_cbr_conversion_keeps_original_and_page_bytes(
     assert decoded["conversion_preserves_original"] is True
 
 
-def test_packaged_rar_license_notices_are_retained(decoded: dict[str, Any]) -> None:
-    assert decoded["plugin_license_retained"] is True
+def test_complete_upstream_license_notices_are_retained(
+    decoded: dict[str, Any],
+) -> None:
+    assert decoded["upstream_license_retained"] is True
+    assert decoded["upstream_license_sha256"] == (
+        "1790374e5352329cedb46ee3808930a88e9ca2f08b82b10fcf5cf605d2c301b1"
+    )

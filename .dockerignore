@@ -4,6 +4,10 @@
 !LICENSE
 !requirements.txt
 
+!scripts/
+scripts/*
+!scripts/install_7zip.py
+
 !bin/
 bin/*
 !bin/mangarr
