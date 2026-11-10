@@ -38,6 +38,23 @@ def command(arguments: list[str]) -> dict[str, object]:
     }
 
 
+def archive_runtime_metadata() -> dict[str, object]:
+    binary = Path("/usr/bin/7zz")
+    banner = subprocess.run(
+        [str(binary)], capture_output=True, text=True, timeout=10, check=False
+    )
+    return {
+        "version_returncode": banner.returncode,
+        "version_banner": banner.stdout[:256],
+        "alias_matches": Path("/usr/bin/7z").is_symlink()
+        and Path("/usr/bin/7z").resolve() == binary.resolve(),
+        "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "provenance": json.loads(
+            Path("/usr/share/doc/7zip/provenance.json").read_text()
+        ),
+    }
+
+
 def probe() -> dict[str, object]:
     assert hashlib.sha256(RAR).hexdigest() == RAR_SHA256
     extractor = shutil.which("7z")
@@ -57,7 +74,7 @@ def probe() -> dict[str, object]:
                 "7zip-rar",
             ]
         ),
-        "rar_codec_present": Path("/usr/lib/7zip/Codecs/Rar.so").is_file(),
+        "archive_runtime": archive_runtime_metadata(),
         "expected_page_size": len(PAGE),
         "apt_components": [
             line
