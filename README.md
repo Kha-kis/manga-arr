@@ -327,6 +327,7 @@ Never publish API keys, passwords, private tracker URLs, or encryption keys.
 | Install, networking, backup, upgrade, and recovery | [Deployment and recovery](docs/deployment.md) |
 | Suwayomi source folders and ambiguous directory matches | [Directory selection](docs/suwayomi-directory-selection.md) |
 | Suwayomi chapter and volume filename matching | [File selection](docs/suwayomi-file-selection.md) |
+| Pinned archive decoder, RAR support, and license notices | [Archive runtime](docs/archive-runtime.md) |
 | Automatic metadata refresh strategies and retry deadlines | [Metadata retry policy](docs/metadata-retry-policy.md) |
 | Chapter-map coverage, provider failures, and cached maps | [Chapter-map outcomes](docs/chapter-map-outcomes.md) |
 | Supported Sonarr workflows and compatibility limits | [Sonarr parity](docs/sonarr-parity.md) |

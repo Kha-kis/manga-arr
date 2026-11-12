@@ -40,7 +40,7 @@ def test_docker_build_contract() -> None:
     base = "python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4"
     assert [
         line.split()[1] for line in docker.splitlines() if line.startswith("FROM ")
-    ] == [base, base]
+    ] == [base, base, base]
     assert "COPY --from=sqlite-builder /out/ /opt/mangarr/sqlite/3.54.1/" in docker
     assert "/etc/ld.so.conf.d/00-mangarr-sqlite.conf" in docker
     assert "ldconfig" in docker
@@ -52,6 +52,7 @@ def test_docker_build_contract() -> None:
     )
     assert "sqlite_runtime.py verify" in final
     assert "!scripts/sqlite_runtime.py" in (ROOT / ".dockerignore").read_text()
+    assert "!runtime/sqlite-baseline.json" in (ROOT / ".dockerignore").read_text()
 
 
 def test_source_pins_and_vendor_defaults() -> None:

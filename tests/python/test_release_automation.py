@@ -159,15 +159,62 @@ def test_release_image_allows_tracked_runtime_files(path):
     assert not forbidden_app_path(path)
 
 
-def test_dockerfile_has_release_identity_labels():
-    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+def _assert_build_stages(dockerfile: str) -> None:
     stages = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
-    assert len(stages) == 2
-    for stage, name in zip(stages, ("sqlite-builder", "runtime"), strict=True):
+    assert len(stages) == 3, "expected exactly three build stages"
+    for stage, name in zip(
+        stages, ("archive-fetcher", "sqlite-builder", "runtime"), strict=True
+    ):
         assert re.fullmatch(
             r"FROM python:3\.14-slim@sha256:[0-9a-f]{64} AS " + name, stage
         )
-    assert stages[0].split()[1] == stages[1].split()[1]
+    assert len({stage.split()[1] for stage in stages}) == 1, (
+        "all build stages must use the same pinned base"
+    )
+
+
+@pytest.mark.parametrize("stage_index", [0, 1, 2])
+def test_build_stages_refuse_missing_stage(stage_index: int) -> None:
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+    stages = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
+    del stages[stage_index]
+    with pytest.raises(AssertionError, match="exactly three build stages"):
+        _assert_build_stages("\n".join(stages))
+
+
+@pytest.mark.parametrize("stage_index", [0, 1, 2])
+def test_build_stages_refuse_mismatched_pin(stage_index: int) -> None:
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+    stages = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
+    prefix, separator, suffix = stages[stage_index].partition("@sha256:")
+    assert separator
+    stages[stage_index] = prefix + separator + "a" * 64 + suffix[64:]
+    with pytest.raises(AssertionError, match="same pinned base"):
+        _assert_build_stages("\n".join(stages))
+
+
+def test_fast_and_format_gates_preserve_both_runtime_build_helpers() -> None:
+    makefile = (REPO_ROOT / "Makefile").read_text()
+    lint = makefile.split("\nlint:\n", 1)[1].split("\ntest-fast:", 1)[0]
+    fast = makefile.split("\ntest-fast: lint\n", 1)[1].split("\ntest-python:", 1)[0]
+    for path in (
+        "scripts/install_7zip.py",
+        "scripts/sqlite_runtime.py",
+        "tests/python/test_7zip_runtime.py",
+        "tests/python/test_sqlite_runtime.py",
+    ):
+        assert path in lint
+    for path in (
+        "tests/python/test_7zip_runtime.py",
+        "tests/python/test_sqlite_runtime.py",
+        "tests/python/test_other_uid_actor_runtime.py",
+    ):
+        assert path in fast
+
+
+def test_dockerfile_has_release_identity_labels():
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+    _assert_build_stages(dockerfile)
     for marker in (
         "ARG MANGARR_VERSION=dev",
         "COPY LICENSE /app/LICENSE",

@@ -58,12 +58,14 @@ lint:
 	$(PYTHON) -m ruff check app tests/python scripts
 	$(PYTHON) -m ruff format --check \
 	  app/backups.py app/cli.py app/docker_entrypoint.py bin/mangarr \
-	  scripts/sqlite_runtime.py tests/python/test_sqlite_runtime.py
+	  scripts/sqlite_runtime.py tests/python/test_sqlite_runtime.py \
+	  scripts/install_7zip.py tests/python/test_7zip_runtime.py
 
 test-fast: lint
 	$(PYTEST) \
 	  tests/python/test_backup_service.py \
 	  tests/python/test_container_conventions.py \
+	  tests/python/test_7zip_runtime.py \
 	  tests/python/test_docs_consistency.py \
 	  tests/python/test_hard_invariants.py \
 	  tests/python/test_main_py_split_invariants.py \

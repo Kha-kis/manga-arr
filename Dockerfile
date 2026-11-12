@@ -1,3 +1,9 @@
+FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS archive-fetcher
+
+ARG TARGETARCH
+COPY scripts/install_7zip.py /install_7zip.py
+RUN python /install_7zip.py --arch "$TARGETARCH" --output /out
+
 FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS sqlite-builder
 
 # Canonical source generation (including Lemon), never a prebuilt amalgamation.
@@ -29,8 +35,10 @@ RUN test "$(sed -n '/^Components:/p' /etc/apt/sources.list.d/debian.sources | so
  && apt-get upgrade -y -o Acquire::Retries=0 \
  && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' apt)" ge 3.0.4 \
  && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libapt-pkg7.0)" ge 3.0.4 \
- && apt-get install -y --no-install-recommends 7zip 7zip-rar -o Acquire::Retries=0 \
+ && apt-get install -y --no-install-recommends ca-certificates -o Acquire::Retries=0 \
  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=archive-fetcher /out/ /
 
 # Keep the Debian package intact. Only this image's loader cache selects the
 # versioned Mangarr-owned library; no process environment injection is used.

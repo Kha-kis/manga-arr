@@ -106,14 +106,19 @@ def probe() -> dict[str, object]:
                     archive.namelist() == ["001.png"]
                     and archive.read("001.png") == PAGE
                 )
-        copyright_path = Path("/usr/share/doc/7zip-rar/copyright")
-        notice = copyright_path.read_text() if copyright_path.is_file() else ""
+        copyright_path = Path("/usr/share/doc/7zip/License.txt")
+        notice_bytes = copyright_path.read_bytes() if copyright_path.is_file() else b""
+        notice = notice_bytes.decode("utf-8")
         normalized = " ".join(notice.split())
-        result["plugin_license_retained"] = all(
+        result["upstream_license_sha256"] = hashlib.sha256(notice_bytes).hexdigest()
+        result["upstream_license_retained"] = all(
             text in normalized
             for text in (
-                "Copyright: Alexander L. Roshal",
-                "License: unRAR",
+                "All copyrights to original unRAR code are owned by Alexander Roshal.",
+                "unRAR license restriction",
+                "GNU LGPL",
+                "BSD 3-clause License",
+                "BSD 2-clause License",
                 "cannot be used to re-create the RAR compression algorithm",
             )
         )

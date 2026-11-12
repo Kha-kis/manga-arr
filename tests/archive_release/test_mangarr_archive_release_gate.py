@@ -82,8 +82,36 @@ def test_runtime_rarfile_uses_existing_7z_to_read_compressed_payload(
     assert runtime.get("rarfile_bytes_match") is True, runtime.get("rarfile_read_error")
 
 
-def test_runtime_keeps_the_rar_codec_plugin(runtime: dict[str, Any]) -> None:
-    assert runtime["rar_codec_present"] is True
+def test_runtime_uses_pinned_standalone_with_bound_provenance(
+    runtime: dict[str, Any],
+) -> None:
+    metadata = runtime["archive_runtime"]
+    provenance = metadata["provenance"]
+    pins = {
+        "amd64": (
+            "2b539cf067b2ad48e1baa5093dbaa8818b73542d1222a0ffde9dc5f2922ea62e",
+            "0b58a64e71ebdf53751cd954cad1cc552c6a11ef51336bee6acafbdc54c28c1f",
+            "7z2606-linux-x64.tar.xz",
+        ),
+        "arm64": (
+            "edcc408aacce77da5223728f2eceb5e9f6dc713b8a9df934ad21e2a7f7560627",
+            "265e45b5847392c0cd97a84acb6b3f9933c3e43d698fb5a2979f5e9a80c05758",
+            "7z2606-linux-arm64.tar.xz",
+        ),
+    }
+    archive_hash, binary_hash, filename = pins[provenance["architecture"]]
+    assert metadata["version_returncode"] == 0
+    assert "7-Zip (z) 26.06" in metadata["version_banner"]
+    assert metadata["alias_matches"] is True
+    assert metadata["binary_sha256"] == binary_hash == provenance["binary_sha256"]
+    assert provenance["archive_sha256"] == archive_hash
+    assert provenance["version"] == "26.06" and provenance["upstream_binary"] == "7zzs"
+    assert provenance["source_url"] == "https://github.com/ip7z/7zip/releases/tag/26.06"
+    assert provenance["download_url"] == (
+        f"https://github.com/ip7z/7zip/releases/download/26.06/{filename}"
+    )
+    assert runtime["packages"]["returncode"] != 0
+    assert "install ok installed" not in runtime["packages"]["stdout"]
 
 
 def test_runtime_installs_reviewed_rarfile_security_pin(

@@ -7,9 +7,9 @@ Run against the immutable ID of a candidate built from the reviewed Dockerfile:
 MANGARR_ARCHIVE_GATE_IMAGE=sha256:<candidate-id> python -m pytest -q tests/archive_release
 ```
 
-The original six checks and their probe are preserved verbatim from the approved
-RED checkpoint. Default IMAGE is that historical RED image; set the candidate
-explicitly. Hashes:
+The default IMAGE is the historical RED image; always set the candidate
+explicitly. These hashes identify the historical RED checkpoint, not current
+probe bytes after the standalone-decoder installation checks were updated:
 
 - `test_mangarr_archive_release_gate.py`: `f266942053f41b8b6030f45e9aaffb1c91e71cf3564dbeb848f5f5757e81b7b6`
 - `mangarr_archive_runtime_probe.py`: `5f3ca526d02842a4aa0fceeeb6c9958cc202bfba58f84d9a70dcd9032352bbc6`
@@ -24,11 +24,14 @@ forced rarfile 7z backend, not a successful listing or stored-RAR workaround.
 volumes generated with the official RAR 7.11 executable in an isolated container.
 Its source archive hash, command, deterministic payload recipe, full output hash,
 and every volume hash are recorded. The payload is synthetic; no user media or
-encoder executable is redistributed. No RAR encoder or new backend is added to
-Mangarr. The image retains Debian's packaged 7zip-rar copyright file, including
-the complete unRAR notice (the slim base filters the redundant separate text);
-the application's AGPL label is not a claim that every image dependency is AGPL
-or MIT, or that the RAR decompression codec may be used to implement an encoder.
+encoder executable is redistributed. The image now uses pinned upstream 7-Zip
+26.06 with built-in RAR decoding instead of Debian's separate plugin. No RAR
+encoder is added. Installation metadata checks identify the actual standalone
+binary and retained official license; all compressed payload, multipart,
+missing-volume, conversion and byte-preservation checks remain. See
+[`docs/archive-runtime.md`](../../docs/archive-runtime.md) for provenance,
+component inventory and the retained unRAR notice. The application's AGPL label
+does not relicense this dependency or permit implementing a RAR encoder.
 
 Parser regressions are in `tests/python/test_archive_release_security.py` and
 run as normal project tests with the pinned runtime requirements. A recording
