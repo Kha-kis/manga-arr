@@ -58,6 +58,7 @@ lint:
 	$(PYTHON) -m ruff check app tests/python scripts
 	$(PYTHON) -m ruff format --check \
 	  app/backups.py app/cli.py app/docker_entrypoint.py bin/mangarr \
+	  scripts/sqlite_runtime.py tests/python/test_sqlite_runtime.py \
 	  scripts/install_7zip.py tests/python/test_7zip_runtime.py
 
 test-fast: lint
@@ -69,6 +70,8 @@ test-fast: lint
 	  tests/python/test_hard_invariants.py \
 	  tests/python/test_main_py_split_invariants.py \
 	  tests/python/test_operator_cli.py \
+	  tests/python/test_other_uid_actor_runtime.py \
+	  tests/python/test_sqlite_runtime.py \
 	  tests/python/test_release_automation.py -q
 	cd app && $(PYTHON) test_confirm_flow.py
 	docker compose -f compose.yaml config --quiet

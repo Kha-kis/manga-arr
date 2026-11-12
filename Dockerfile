@@ -4,7 +4,23 @@ ARG TARGETARCH
 COPY scripts/install_7zip.py /install_7zip.py
 RUN python /install_7zip.py --arch "$TARGETARCH" --output /out
 
-FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4
+FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS sqlite-builder
+
+# Canonical source generation (including Lemon), never a prebuilt amalgamation.
+# Build tools and the source tree stay in this stage. See docs/sqlite-runtime.md.
+ARG MANGARR_VERSION=dev
+# Apply the same bootstrap safeguards in the source builder and runtime stages.
+RUN apt-get update -o Acquire::Retries=0 \
+ && apt-get upgrade -y -o Acquire::Retries=0 \
+ && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' apt)" ge 3.0.4 \
+ && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libapt-pkg7.0)" ge 3.0.4 \
+ && apt-get install -y --no-install-recommends build-essential tcl-dev binutils ca-certificates -o Acquire::Retries=0 \
+ && rm -rf /var/lib/apt/lists/*
+COPY scripts/sqlite_runtime.py /build/scripts/sqlite_runtime.py
+COPY runtime/sqlite-baseline.json /build/runtime/sqlite-baseline.json
+RUN python -B /build/scripts/sqlite_runtime.py build --output /out --work /build/sqlite
+
+FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS runtime
 
 WORKDIR /app
 
@@ -23,6 +39,13 @@ RUN test "$(sed -n '/^Components:/p' /etc/apt/sources.list.d/debian.sources | so
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=archive-fetcher /out/ /
+
+# Keep the Debian package intact. Only this image's loader cache selects the
+# versioned Mangarr-owned library; no process environment injection is used.
+COPY --from=sqlite-builder /out/ /opt/mangarr/sqlite/3.54.1/
+RUN printf '%s\n' '/opt/mangarr/sqlite/3.54.1/lib' > /etc/ld.so.conf.d/00-mangarr-sqlite.conf \
+ && ldconfig \
+ && python -B /opt/mangarr/sqlite/3.54.1/sqlite_runtime.py verify
 
 # Pinned Python deps. Copied before the app source so layer caching
 # only re-installs when requirements.txt actually changes — code-only
@@ -57,6 +80,10 @@ RUN useradd --uid 1000 --user-group \
  && chmod 0755 /usr/local/bin/mangarr \
  && chown -R mangarr:mangarr /app /config
 
+USER mangarr
+# Repeat after dependencies/application installation, as the final runtime UID.
+RUN python -B /opt/mangarr/sqlite/3.54.1/sqlite_runtime.py verify
+
 # Volatile metadata is declared after dependency and source layers so changing
 # build timestamps or commit identities does not invalidate those caches.
 ARG VCS_REF=unknown
@@ -70,8 +97,6 @@ LABEL org.opencontainers.image.title="Mangarr" \
       org.opencontainers.image.version="${MANGARR_VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.created="${BUILD_DATE}"
-
-USER mangarr
 
 ENV PYTHONPATH=/app \
     MANGARR_UMASK=0022

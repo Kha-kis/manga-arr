@@ -6,7 +6,11 @@
 
 !scripts/
 scripts/*
+!scripts/sqlite_runtime.py
 !scripts/install_7zip.py
+!runtime/
+runtime/*
+!runtime/sqlite-baseline.json
 
 !bin/
 bin/*

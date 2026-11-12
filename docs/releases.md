@@ -31,6 +31,35 @@ scope, safety review and disposable-data procedure; it is not enabled by this
 release decision. See the [scope contract](release-qualification.md#133-release-scope).
 Historical candidate evidence and holds below remain unchanged.
 
+## 1.3.3-rc.11 Candidate Status
+
+**Preparation only; not published or release-qualified** (2026-11-08).
+The existing SQLite draft [#512](https://github.com/Kha-kis/manga-arr/pull/512)
+combines source0e757681 with reviewed master11d7c94c, including the separate
+manual native ARM64 build workflow from [#516](https://github.com/Kha-kis/manga-arr/pull/516).
+The preparation delta updates VERSION and four release documents; it does not
+change the integrated application, schema, providers, API or Compose behavior.
+
+Included fixes since RC10 cover startup quarantine observations, explicit pack
+bounds and durable source-scoped blocklists, backup SQLite-handle lifetimes,
+mixed image/archive discovery, patched Pillow/setuptools and APT guards. The
+private canonical SQLite runtime remains subject to its
+[qualification contract](sqlite-runtime.md#required-release-gates).
+Schema8 and the existing matching-pristine-backup rollback requirement remain;
+disabled ownership foundations do not enable #474 remount continuity or legacy
+recovery. That unfinished implementation is excluded from this candidate.
+
+Independent development source-binding and native ARM64 build evidence are
+scoped observations, not qualification of the final candidate. Freeze and
+record the exact reviewed source before the final local gate. Only a subsequent
+reviewed merge may receive a new immutable v1.3.3-rc.11 tag; no tag or image is
+published by preparation. Do not reuse RC10 or transfer an older candidate's
+source/runtime/platform/soak results. Current security, final per-platform
+artifact identity, application/backup/upgrade/rollback/download-import and
+natural-repeat observation remain required. The stopped reproducer stays stopped.
+Stable aliases remain1.3.2 and production remains the RC5 owner trial. See
+[RC11 qualification](release-qualification.md#133-rc11-qualification).
+
 ## 1.3.3-rc.10 Candidate Status
 
 Preparation began on 2026-10-19 from reviewed
