@@ -410,8 +410,29 @@ async def qbit_grab(
                 add_data["urls"] = torrent_url
             else:
                 try:
-                    tf = await hc.get(torrent_url, follow_redirects=True, timeout=15)
-                    if tf.status_code == 200 and tf.content:
+                    tf = await hc.get(torrent_url, follow_redirects=False, timeout=15)
+                    redirects = 0
+                    while (
+                        tf.status_code in {301, 302, 303, 307, 308}
+                        and tf.next_request is not None
+                    ):
+                        if redirects >= hc.max_redirects:
+                            raise httpx.TooManyRedirects(
+                                "Exceeded maximum allowed redirects.", request=tf.request
+                            )
+                        redirects += 1
+                        # Keep the raw URI: HTTPX supplies the HTTP host when it
+                        # prepares a magnet redirect as an ordinary request URL.
+                        location = tf.headers["Location"]
+                        if location.startswith("magnet:"):
+                            torrent_url = location
+                            magnet_hash = extract_magnet_hash(location)
+                            expected_hashes = (magnet_hash,) if magnet_hash else ()
+                            break
+                        tf = await hc.send(tf.next_request, follow_redirects=False)
+                    if torrent_url.startswith("magnet:"):
+                        add_data["urls"] = torrent_url
+                    elif tf.status_code == 200 and tf.content:
                         identity = _torrent_info_identity(tf.content)
                         expected_hashes = identity.lookup_hashes if identity else ()
                         add_files = {
