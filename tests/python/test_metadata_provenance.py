@@ -6,8 +6,11 @@ import asyncio
 import sqlite3
 import threading
 from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 
@@ -1569,6 +1572,331 @@ def test_mangaupdates_refresh_preserves_cache_when_stored_identity_is_absent(
         "vol_count_source": "anilist",
     }
     assert candidate_count == 0
+
+
+def _mu_http_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    detail: httpx.Response | Exception,
+    records: list[dict[str, object]] | None = None,
+) -> list[tuple[str, str]]:
+    import metadata
+
+    requests: list[tuple[str, str]] = []
+    if records is None:
+        records = [
+            {"series_id": 999, "title": "Existing Title"},
+            {"series_id": 123, "title": "Existing Title"},
+        ]
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.method == "POST" and request.url.path == "/v1/series/search":
+            return httpx.Response(
+                200, json={"results": [{"record": record} for record in records]}
+            )
+        assert request.method == "GET"
+        assert request.url.path == "/v1/series/123"
+        if isinstance(detail, Exception):
+            raise detail
+        return detail
+
+    client = httpx.AsyncClient
+
+    def make_client(**kwargs: Any) -> httpx.AsyncClient:
+        return client(transport=httpx.MockTransport(respond), **kwargs)
+
+    monkeypatch.setattr(metadata.httpx, "AsyncClient", make_client)
+    return requests
+
+
+def _mu_cache_snapshot(db_path: Path) -> dict[str, list[tuple[Any, ...]]]:
+    with sqlite3.connect(db_path) as db:
+        return {
+            table: db.execute(
+                f"SELECT * FROM {table} WHERE series_id=7 ORDER BY rowid"
+            ).fetchall()
+            for table in (
+                "series_metadata_fields",
+                "series_metadata_candidates",
+                "volumes",
+            )
+        } | {"series": db.execute("SELECT * FROM series WHERE id=7").fetchall()}
+
+
+@pytest.mark.parametrize(
+    "stored_id", ["123", None], ids=["stored-id-decoy", "new-series"]
+)
+def test_mangaupdates_missing_search_count_uses_selected_detail(
+    provenance_db: Path, monkeypatch: pytest.MonkeyPatch, stored_id: str | None
+) -> None:
+    import metadata_enrichment
+
+    with sqlite3.connect(provenance_db) as db:
+        db.execute(
+            "UPDATE series SET mu_id=?,total_volumes=NULL,"
+            " vol_count_source='anilist' WHERE id=7",
+            (stored_id,),
+        )
+    requests = _mu_http_fixture(
+        monkeypatch,
+        httpx.Response(
+            200,
+            json={"series_id": 123, "status": "14 Volumes (Complete)"},
+        ),
+        records=None if stored_id else [{"series_id": 123, "title": "Existing Title"}],
+    )
+    result = asyncio.run(metadata_enrichment.fetch_mu_metadata(7, "Existing Title"))
+
+    with sqlite3.connect(provenance_db) as db:
+        series = db.execute(
+            "SELECT mu_id,total_volumes,vol_count_source,title FROM series WHERE id=7"
+        ).fetchone()
+        volumes = db.execute(
+            "SELECT volume_num FROM volumes WHERE series_id=7 ORDER BY volume_num"
+        ).fetchall()
+        candidates = db.execute(
+            "SELECT field_name,value_json FROM series_metadata_candidates"
+            " WHERE series_id=7 AND source='mangaupdates' ORDER BY field_name"
+        ).fetchall()
+    assert series == ("123", 14, "mangaupdates", "Existing Title")
+    assert volumes == [(number,) for number in range(1, 15)]
+    assert candidates == [("mu_id", '"123"'), ("total_volumes", "14")]
+    assert result == {"mu_id": "123", "volumes": 14, "updated_vols": True}
+    assert requests == [("POST", "/v1/series/search"), ("GET", "/v1/series/123")]
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        httpx.Response(200, json={"series_id": 999, "status": "20 Volumes"}),
+        httpx.Response(200, json={"status": "20 Volumes"}),
+        httpx.Response(200, json=[]),
+        httpx.Response(200, json={"series_id": 123, "status": {"volumes": 20}}),
+        httpx.Response(200, content=b"not json"),
+        httpx.Response(404),
+        httpx.Response(429),
+        httpx.Response(503),
+        httpx.ReadTimeout("synthetic timeout"),
+    ],
+    ids=[
+        "wrong-id",
+        "missing-id",
+        "nonobject",
+        "bad-status",
+        "bad-json",
+        "not-found",
+        "rate-limit",
+        "server-error",
+        "timeout",
+    ],
+)
+def test_mangaupdates_detail_failure_preserves_cached_rows(
+    provenance_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    detail: httpx.Response | Exception,
+) -> None:
+    import metadata
+    import metadata_enrichment
+    from metadata_provenance import record_metadata_selections
+
+    with sqlite3.connect(provenance_db) as db:
+        db.execute(
+            "UPDATE series SET mu_id='123',vol_count_source='anilist' WHERE id=7"
+        )
+        db.execute(
+            "INSERT INTO volumes(series_id,volume_num,status) VALUES(7,12,'downloaded')"
+        )
+    record_metadata_selections(
+        7,
+        {"mu_id": "123", "total_volumes": 12},
+        {"mu_id": "mangaupdates", "total_volumes": "anilist"},
+    )
+    before = _mu_cache_snapshot(provenance_db)
+    requests = _mu_http_fixture(monkeypatch, detail)
+
+    with pytest.raises(metadata.MetadataProviderError):
+        asyncio.run(metadata_enrichment.fetch_mu_metadata(7, "Existing Title"))
+
+    assert _mu_cache_snapshot(provenance_db) == before
+    assert requests == [("POST", "/v1/series/search"), ("GET", "/v1/series/123")]
+
+
+@pytest.mark.parametrize("status", [None, "", "Unknown", "Ongoing"])
+def test_mangaupdates_unknown_detail_count_does_not_invent_zero(
+    provenance_db: Path, monkeypatch: pytest.MonkeyPatch, status: str | None
+) -> None:
+    import metadata_enrichment
+
+    with sqlite3.connect(provenance_db) as db:
+        db.execute(
+            "UPDATE series SET mu_id='123',vol_count_source='anilist' WHERE id=7"
+        )
+    detail: dict[str, object] = {"series_id": 123}
+    if status is not None:
+        detail["status"] = status
+    _mu_http_fixture(monkeypatch, httpx.Response(200, json=detail))
+
+    result = asyncio.run(metadata_enrichment.fetch_mu_metadata(7, "Existing Title"))
+
+    assert result == {"mu_id": "123", "volumes": None, "updated_vols": False}
+    with sqlite3.connect(provenance_db) as db:
+        assert db.execute("SELECT total_volumes FROM series WHERE id=7").fetchone() == (
+            12,
+        )
+        assert db.execute(
+            "SELECT COUNT(*) FROM series_metadata_candidates"
+            " WHERE field_name='total_volumes' AND source='mangaupdates'"
+        ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize(
+    "source,edition,locked,apply_changes,count,expected_requests",
+    [
+        ("manual", "standard", False, True, 14, 0),
+        ("google_books", "standard", False, True, 14, 0),
+        ("wikipedia", "standard", False, True, 14, 0),
+        ("anilist", "standard", True, True, 14, 2),
+        ("anilist", "omnibus", False, True, 14, 2),
+        ("anilist", "standard", False, True, 10, 2),
+        ("anilist", "standard", False, False, 14, 2),
+    ],
+)
+def test_mangaupdates_detail_preserves_count_guards(
+    provenance_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    edition: str,
+    locked: bool,
+    apply_changes: bool,
+    count: int,
+    expected_requests: int,
+) -> None:
+    import metadata_enrichment
+    from metadata_provenance import record_metadata_selections
+
+    with sqlite3.connect(provenance_db) as db:
+        db.execute(
+            "UPDATE series SET mu_id='123',vol_count_source=?,edition_type=? WHERE id=7",
+            (source, edition),
+        )
+        db.execute(
+            "INSERT INTO volumes(series_id,volume_num,status) VALUES(7,12,'downloaded')"
+        )
+    record_metadata_selections(
+        7,
+        {"total_volumes": 12},
+        {"total_volumes": source},
+        locks={"total_volumes": locked},
+    )
+    before = _mu_cache_snapshot(provenance_db)
+    requests = _mu_http_fixture(
+        monkeypatch,
+        httpx.Response(200, json={"series_id": 123, "status": f"{count} Volumes"}),
+    )
+
+    result = asyncio.run(
+        metadata_enrichment.fetch_mu_metadata(
+            7, "Existing Title", apply_changes=apply_changes
+        )
+    )
+
+    after = _mu_cache_snapshot(provenance_db)
+    assert after["series"] == before["series"]
+    assert after["series_metadata_fields"] == before["series_metadata_fields"]
+    assert after["volumes"] == before["volumes"]
+    assert len(requests) == expected_requests
+    if expected_requests:
+        assert result == {"mu_id": "123", "volumes": count, "updated_vols": False}
+        with sqlite3.connect(provenance_db) as db:
+            assert db.execute(
+                "SELECT value_json FROM series_metadata_candidates WHERE series_id=7"
+                " AND field_name='total_volumes' AND source='mangaupdates'"
+            ).fetchone() == (str(count),)
+
+
+def test_mangaupdates_populated_search_count_needs_no_detail(
+    provenance_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import metadata_enrichment
+
+    with sqlite3.connect(provenance_db) as db:
+        db.execute(
+            "UPDATE series SET mu_id='123',vol_count_source='anilist' WHERE id=7"
+        )
+    requests = _mu_http_fixture(
+        monkeypatch,
+        AssertionError("unexpected detail lookup"),
+        [{"series_id": 123, "title": "Existing Title", "status": "14 Volumes"}],
+    )
+    result = asyncio.run(metadata_enrichment.fetch_mu_metadata(7, "Existing Title"))
+    assert result == {"mu_id": "123", "volumes": 14, "updated_vols": True}
+    assert requests == [("POST", "/v1/series/search")]
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        httpx.Response(200, json={"series_id": 999, "status": "20 Volumes"}),
+        httpx.Response(503),
+    ],
+    ids=["wrong-id", "http-error"],
+)
+def test_mangaupdates_detail_failure_reaches_service_retry_state(
+    provenance_db: Path, monkeypatch: pytest.MonkeyPatch, detail: httpx.Response
+) -> None:
+    import metadata_service as service
+
+    with sqlite3.connect(provenance_db) as db:
+        db.execute(
+            "UPDATE series SET mu_id='123',anilist_id=123,vol_count_source='anilist' WHERE id=7"
+        )
+        db.execute(
+            "INSERT INTO series_metadata_sources(series_id,source,status,last_success_at)"
+            " VALUES(7,'mangaupdates','healthy','2026-01-01T00:00:00+00:00')"
+        )
+    _mu_http_fixture(monkeypatch, detail)
+    monkeypatch.setattr(
+        service,
+        "fetch_anilist_by_id",
+        AsyncMock(
+            return_value={
+                "anilist_id": 123,
+                "title": "Existing Title",
+                "romaji_title": "Existing Title",
+                "volumes": 12,
+                "chapters": 90,
+                "aliases": [],
+                "genres": [],
+            }
+        ),
+    )
+    monkeypatch.setattr(service, "refresh_mangadex_map", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        service, "refresh_series_cover", AsyncMock(return_value=(True, None))
+    )
+
+    result = asyncio.run(
+        service.refresh_series_metadata(
+            7, force=True, include_manifest=False, reason="test"
+        )
+    )
+
+    assert result["sources"]["mangaupdates"] == "failed"
+    assert result["status"] == "degraded"
+    with sqlite3.connect(provenance_db) as db:
+        source = db.execute(
+            "SELECT status,failure_count,last_success_at,next_retry_at,error"
+            " FROM series_metadata_sources WHERE series_id=7 AND source='mangaupdates'"
+        ).fetchone()
+        assert source[:3] == ("degraded", 1, "2026-01-01T00:00:00+00:00")
+        assert source[3] and source[4]
+        assert db.execute(
+            "SELECT mu_id,total_volumes FROM series WHERE id=7"
+        ).fetchone() == ("123", 12)
+        assert db.execute(
+            "SELECT COUNT(*) FROM series_metadata_candidates"
+            " WHERE series_id=7 AND source='mangaupdates'"
+        ).fetchone() == (0,)
 
 
 def test_mangadex_records_but_does_not_apply_locked_map_or_id(provenance_db):

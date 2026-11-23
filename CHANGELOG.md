@@ -7,6 +7,10 @@ All notable changes to this project. Format roughly follows
 
 ### Fixed
 
+- MangaUpdates enrichment reads the selected series' details when search
+  results omit the volume count, allowing accepted increases to create wanted
+  volume rows. Identity, manual-count, lock and cached-metadata safeguards are
+  preserved ([#522](https://github.com/Kha-kis/manga-arr/issues/522)).
 - Observed indexer releases remain blocklisted after download-URL rotation and
   seen cleanup, using captured source and GUID evidence. Legacy entries and
   manual submissions without that evidence retain URL-only matching

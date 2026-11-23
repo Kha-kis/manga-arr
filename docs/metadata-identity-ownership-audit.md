@@ -112,6 +112,21 @@ results for another MangaUpdates work cannot supply counts or metadata. If the
 stored identity is absent from the response, enrichment fails closed and keeps
 the existing series row, provenance, and cached metadata unchanged.
 
+When the selected search result has no volume count, enrichment requests that
+one MangaUpdates series' details and verifies its returned identity before
+reading the status count. It does not fetch details for every search result or
+use a same-title work as a fallback. A search result with a count needs no
+additional request. Detail errors or identity mismatches fail before recording
+new candidates or applying values, preserving cached metadata and provenance;
+the normal refresh failure/retry policy still applies. Missing or unrecognized
+status remains an unknown count, not zero.
+
+This supplies missing count evidence, not new ownership or count precedence.
+Manual/protected sources, locks, edition restrictions and monotonic count
+updates are unchanged. Accepted increases create wanted volume stubs through
+the existing path; observed MangaDex map maxima are not canonical count
+fallbacks.
+
 ### Resolved: AniList title-only identity ambiguity
 
 AniList identity evidence now has explicit precedence: stored AniList ID,
