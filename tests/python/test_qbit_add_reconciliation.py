@@ -3,6 +3,9 @@
 import asyncio
 import hashlib
 import sys
+from collections.abc import Callable
+from contextlib import nullcontext
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -64,6 +67,226 @@ def _torrent_fixture(kind: str = "v1") -> tuple[bytes, str, tuple[str, ...]]:
 
 async def _no_sleep(_seconds: float) -> None:
     return None
+
+
+def _mock_qbit_transport(
+    monkeypatch: pytest.MonkeyPatch,
+    handler: Callable[[httpx.Request], httpx.Response],
+) -> list[tuple[str, int]]:
+    import clients
+    from routers import download_clients
+
+    client_factory = httpx.AsyncClient
+    monkeypatch.setattr(
+        clients.httpx,
+        "AsyncClient",
+        lambda **kwargs: client_factory(
+            transport=httpx.MockTransport(handler), trust_env=False, **kwargs
+        ),
+    )
+    monkeypatch.setattr(clients.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr(clients, "log_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(clients, "get_db", lambda: nullcontext(None))
+    monkeypatch.setattr(
+        download_clients,
+        "get_client_for_protocol",
+        lambda *args: {
+            "id": 521,
+            "name": "Synthetic qBit",
+            "type": "qbittorrent",
+            "host": "http://qbit.test",
+            "category": "manga",
+        },
+    )
+    monkeypatch.setattr(download_clients, "_cb_is_open", lambda _client_id: False)
+    health: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        download_clients,
+        "_cb_record_success",
+        lambda client_id: health.append(("success", client_id)),
+    )
+    monkeypatch.setattr(
+        download_clients,
+        "_cb_record_failure",
+        lambda client_id: health.append(("failure", client_id)),
+    )
+    return health
+
+
+@pytest.mark.parametrize(
+    "source", ["direct-magnet", "magnet-redirect", "http-redirect"]
+)
+def test_qbit_prefetch_redirect_preserves_identity_and_client_health(
+    monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    import clients
+
+    torrent_bytes, expected_hash, _ = _torrent_fixture()
+    magnet = f"magnet:?xt=urn:btih:{expected_hash.upper()}&dn=Provider%20Filename"
+    entry = "https://indexer.test/download/521"
+    add_urls: list[dict[str, list[str]]] = []
+    uploads: list[bytes] = []
+    lookups: list[dict[str, str]] = []
+    protocol_refusals: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # MockTransport accepts any scheme; mirror the real HTTP transport's
+        # refusal while retaining HTTPX's actual redirect construction.
+        if request.url.scheme not in {"http", "https"}:
+            protocol_refusals.append(str(request.url))
+            raise httpx.UnsupportedProtocol(
+                "unsupported redirect protocol", request=request
+            )
+        if request.url.path == "/api/v2/auth/login":
+            return httpx.Response(200, text="Ok.")
+        if str(request.url) == entry:
+            return httpx.Response(302, headers={"Location": "/forward"})
+        if str(request.url) == "https://indexer.test/forward":
+            target = (
+                magnet
+                if source == "magnet-redirect"
+                else "https://cdn.test/release.torrent"
+            )
+            return httpx.Response(
+                301 if source == "magnet-redirect" else 302,
+                headers={"Location": target},
+            )
+        if str(request.url) == "https://cdn.test/release.torrent":
+            return httpx.Response(200, content=torrent_bytes)
+        if request.url.path == "/api/v2/torrents/add":
+            if request.headers["content-type"].startswith("multipart/form-data"):
+                uploads.append(request.content)
+            else:
+                add_urls.append(parse_qs(request.content.decode()))
+            return httpx.Response(200, text="Ok.")
+        if request.url.path == "/api/v2/torrents/info":
+            lookups.append(dict(request.url.params))
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "hash": expected_hash,
+                        "name": "Provider-only filename [different]",
+                    }
+                ],
+            )
+        pytest.fail(f"unexpected synthetic request: {request.method} {request.url}")
+
+    health = _mock_qbit_transport(monkeypatch, handler)
+    result = asyncio.run(
+        clients.grab_url(
+            magnet if source == "direct-magnet" else entry,
+            "torrent",
+            torrent_name="Requested Manga Volume 01",
+        )
+    )
+
+    assert health == [("success", 521)]
+    assert tuple(result) == (True, "qbittorrent", expected_hash, True), {
+        "add_urls": add_urls,
+        "lookups": lookups,
+        "protocol_refusals": protocol_refusals,
+        "health": health,
+    }
+    if source == "http-redirect":
+        assert len(uploads) == 1 and torrent_bytes in uploads[0]
+        assert add_urls == []
+        assert lookups == [{"hashes": expected_hash}]
+    else:
+        assert add_urls == [{"category": ["manga"], "urls": [magnet]}]
+        assert uploads == [] and lookups == []
+    assert protocol_refusals == []
+
+
+@pytest.mark.parametrize("lookup", ["exact", "unrelated", "unavailable"])
+def test_qbit_magnet_redirect_timeout_keeps_exact_identity_and_lookup_health(
+    monkeypatch: pytest.MonkeyPatch, lookup: str
+) -> None:
+    import clients
+
+    _, expected_hash, _ = _torrent_fixture()
+    magnet = f"magnet:?xt=urn:btih:{expected_hash}"
+    queries: list[dict[str, str]] = []
+    submitted: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.scheme not in {"http", "https"}:
+            raise httpx.UnsupportedProtocol(
+                "unsupported redirect protocol", request=request
+            )
+        if request.url.path == "/api/v2/auth/login":
+            return httpx.Response(200, text="Ok.")
+        if request.url.host == "indexer.test":
+            return httpx.Response(307, headers={"Location": magnet})
+        if request.url.path == "/api/v2/torrents/add":
+            submitted.extend(parse_qs(request.content.decode())["urls"])
+            raise httpx.ReadTimeout("synthetic add timeout", request=request)
+        if request.url.path == "/api/v2/torrents/info":
+            queries.append(dict(request.url.params))
+            if lookup == "unavailable":
+                return httpx.Response(503)
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "hash": expected_hash if lookup == "exact" else "b" * 40,
+                        "name": "Provider filename"
+                        if lookup == "exact"
+                        else "Requested Manga Volume 01",
+                    }
+                ],
+            )
+        pytest.fail(f"unexpected synthetic request: {request.method} {request.url}")
+
+    health = _mock_qbit_transport(monkeypatch, handler)
+    result = asyncio.run(
+        clients.grab_url(
+            "https://indexer.test/download/521",
+            "torrent",
+            torrent_name="Requested Manga Volume 01",
+        )
+    )
+    expected_id = expected_hash if lookup == "exact" else None
+    assert tuple(result) == (
+        lookup == "exact",
+        "qbittorrent",
+        expected_id,
+        lookup != "unavailable",
+    )
+    assert submitted == [magnet]
+    assert queries == [{"hashes": expected_hash}] * (1 if lookup == "exact" else 2)
+    assert health == [("failure" if lookup == "unavailable" else "success", 521)]
+
+
+def test_qbit_http_redirect_limit_retains_url_fallback_without_client_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import clients
+
+    entry = "https://indexer.test/loop"
+    fetches: list[str] = []
+    submitted: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v2/auth/login":
+            return httpx.Response(200, text="Ok.")
+        if str(request.url) == entry:
+            fetches.append(str(request.url))
+            return httpx.Response(302, headers={"Location": entry})
+        if request.url.path == "/api/v2/torrents/add":
+            submitted.extend(parse_qs(request.content.decode())["urls"])
+            return httpx.Response(200, text="Ok.")
+        if request.url.path == "/api/v2/torrents/info":
+            return httpx.Response(200, json=[])
+        pytest.fail(f"unexpected synthetic request: {request.method} {request.url}")
+
+    health = _mock_qbit_transport(monkeypatch, handler)
+    result = asyncio.run(
+        clients.grab_url(entry, "torrent", torrent_name="Requested Manga Volume 01")
+    )
+    assert tuple(result) == (False, "qbittorrent", None, True)
+    assert len(fetches) == 21
+    assert submitted == [entry] and health == [("success", 521)]
 
 
 @pytest.mark.parametrize("case", ["malformed", "trailing"])
