@@ -41,6 +41,10 @@ See [RC11 qualification](docs/release-qualification.md#133-rc11-qualification).
 - Discover ordinary archives beside packed image chapters instead of omitting
   those archives from the import queue
   ([#502](https://github.com/Kha-kis/manga-arr/issues/502)).
+- MangaUpdates enrichment reads the selected series' details when search
+  results omit the volume count, allowing accepted increases to create wanted
+  volume rows. Identity, manual-count, lock and cached-metadata safeguards are
+  preserved ([#522](https://github.com/Kha-kis/manga-arr/issues/522)).
 - Observed indexer releases remain blocklisted after download-URL rotation and
   seen cleanup, using captured source and GUID evidence. Legacy entries and
   manual submissions without that evidence retain URL-only matching

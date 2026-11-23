@@ -311,6 +311,36 @@ async def anilist_search(query: str, *, strict: bool = False) -> list[dict]:
 # ── MangaUpdates ─────────────────────────────────────────────────────────────
 
 
+async def fetch_mu_volume_count(mu_id: str, *, strict: bool = False) -> int | None:
+    """Read the status count only from the requested MangaUpdates identity."""
+    try:
+        if not re.fullmatch(r"[0-9]+", mu_id):
+            raise MetadataProviderError("Invalid MangaUpdates series ID")
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(
+                f"https://api.mangaupdates.com/v1/series/{mu_id}"
+            )
+        response.raise_for_status()
+        record = response.json()
+        if not isinstance(record, dict) or str(record.get("series_id")) != mu_id:
+            raise MetadataProviderError("MangaUpdates detail identity mismatch")
+        status = record.get("status")
+        if status is not None and not isinstance(status, str):
+            raise MetadataProviderError("Invalid MangaUpdates detail status")
+        match = re.search(r"(\d+)\s+[Vv]olume", status or "")
+        return int(match.group(1)) if match else None
+    except Exception as exc:
+        log_event(
+            "metadata_fetch_failed",
+            f"[MangaUpdates] detail error: {type(exc).__name__}",
+        )
+        if strict:
+            raise MetadataProviderError(
+                f"MangaUpdates detail failed: {type(exc).__name__}"
+            ) from exc
+        return None
+
+
 async def mu_search(query: str, *, strict: bool = False) -> list[dict]:
     """Search MangaUpdates — used as fallback when AniList has no results."""
     try:
