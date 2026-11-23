@@ -8,12 +8,70 @@ what docs/deployment.md tells operators to do.
 import pathlib
 import re
 
+import pytest
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
-def _read(rel):
+def _read(rel: str) -> str:
     return (REPO_ROOT / rel).read_text()
+
+
+def _first_mangarr_service(text: str, heading: str | None) -> str:
+    if heading is not None:
+        _, separator, section = text.partition(heading + "\n")
+        assert separator, f"missing documentation section: {heading}"
+        section = section.split("\n## ", 1)[0]
+        example = re.search(r"(?ms)^```yaml[ \t]*\n(.*?)^```[ \t]*$", section)
+        assert example is not None, "missing first Compose example"
+        text = example.group(1)
+    service = re.search(
+        r"(?ms)^services:\n  mangarr:\n(.*?)(?=^ {0,2}\S|\Z)", text
+    )
+    assert service is not None, "first Compose service must be mangarr"
+    return service.group(1)
+
+
+PRIVILEGE_CONTROLS = [
+    ("cap_drop", r"(?m)^    cap_drop:[ \t]*\n      - ALL[ \t]*$"),
+    (
+        "security_opt",
+        r"(?m)^    security_opt:[ \t]*\n      - no-new-privileges=true[ \t]*$",
+    ),
+]
+
+
+@pytest.mark.parametrize("control,pattern", PRIVILEGE_CONTROLS)
+@pytest.mark.parametrize(
+    "path,heading",
+    [
+        ("README.md", "## Quick Start"),
+        ("docs/deployment.md", "## Docker Compose"),
+        ("compose.yaml", None),
+    ],
+)
+def test_first_compose_service_preserves_privilege_controls(
+    path: str, heading: str | None, control: str, pattern: str
+) -> None:
+    service = _first_mangarr_service(_read(path), heading)
+    assert re.search(pattern, service), f"{path}: mangarr service must set {control}"
+
+
+def test_privilege_controls_cannot_come_from_comments_or_unrelated_examples() -> None:
+    text = (
+        "## Quick Start\n\n```yaml\nservices:\n  mangarr:\n"
+        "    # cap_drop:\n    #   - ALL\n"
+        "    # security_opt:\n    #   - no-new-privileges=true\n"
+        "  unrelated:\n    cap_drop:\n      - ALL\n"
+        "    security_opt:\n      - no-new-privileges=true\n```\n"
+        "\n## Other Example\n```yaml\nservices:\n  mangarr:\n"
+        "    cap_drop:\n      - ALL\n"
+        "    security_opt:\n      - no-new-privileges=true\n```\n"
+    )
+    service = _first_mangarr_service(text, "## Quick Start")
+    for _control, pattern in PRIVILEGE_CONTROLS:
+        assert re.search(pattern, service) is None
 
 
 # ──────────────── invariants the deployment doc relies on ────────────────
