@@ -56,6 +56,7 @@ from metadata import (
     _fetch_chapter_volume_map_result,
     _fetch_kitsu_chapter_map_result,
     fetch_mangadex_id,
+    fetch_mu_volume_count,
     mu_search,
     mu_slug_to_id,
 )
@@ -1000,9 +1001,9 @@ async def fetch_mu_metadata(
             return None  # not confident enough for silent background enrichment
 
     matched_mu_id = best["mu_id"]
-    mu_vol_count = best[
-        "volumes"
-    ]  # already parsed from "N Volumes (Complete)" by mu_search()
+    mu_vol_count = best["volumes"]
+    if mu_vol_count is None:
+        mu_vol_count = await fetch_mu_volume_count(str(matched_mu_id), strict=True)
     edition = s_row["edition_type"] or "standard"
     current_vols = s_row["total_volumes"] or 0
 
