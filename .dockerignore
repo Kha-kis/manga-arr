@@ -8,6 +8,7 @@
 scripts/*
 !scripts/sqlite_runtime.py
 !scripts/install_7zip.py
+!scripts/crypto_runtime.py
 !runtime/
 runtime/*
 !runtime/sqlite-baseline.json

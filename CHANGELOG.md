@@ -67,6 +67,11 @@ See [RC11 qualification](docs/release-qualification.md#133-rc11-qualification).
 
 ### Changed
 
+- Images select cryptography 50.0.2 wheels and verify a maintainer-declared
+  inventory of embedded OpenSSL 4.0.3, the complete native carrier and the
+  distinct Python stdlib OpenSSL runtime. This is not full remediation for
+  November findings targeting OpenSSL 4.0.4; encryption and backup formats are
+  unchanged ([#526](https://github.com/Kha-kis/manga-arr/issues/526)).
 - Rescan ownership contexts verify complete enrolled role sets and committed
   phase revisions without rewriting legacy proof strings. Exact enrollment
   requires offline maintenance exclusion, and only a validated rescan

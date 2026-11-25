@@ -51,9 +51,15 @@ RUN printf '%s\n' '/opt/mangarr/sqlite/3.54.1/lib' > /etc/ld.so.conf.d/00-mangar
 # only re-installs when requirements.txt actually changes — code-only
 # diffs reuse the cached install layer.
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt \
+RUN pip install --no-cache-dir --only-binary=cryptography -r /tmp/requirements.txt \
  && python -m pip uninstall --yes pip \
  && rm /tmp/requirements.txt
+
+COPY scripts/crypto_runtime.py /usr/local/lib/mangarr/crypto_runtime.py
+RUN mkdir -p /usr/share/doc/mangarr \
+ && python -B /usr/local/lib/mangarr/crypto_runtime.py collect --record /usr/share/doc/mangarr/crypto-runtime.cdx.json \
+ && chmod 0444 /usr/share/doc/mangarr/crypto-runtime.cdx.json \
+ && chmod 0555 /usr/local/lib/mangarr/crypto_runtime.py
 
 # HTMX + Alpine are vendored under app/static (committed to the repo with
 # upstream SHA256 provenance recorded in app/static/PROVENANCE.md). No
@@ -83,6 +89,7 @@ RUN useradd --uid 1000 --user-group \
 USER mangarr
 # Repeat after dependencies/application installation, as the final runtime UID.
 RUN python -B /opt/mangarr/sqlite/3.54.1/sqlite_runtime.py verify
+RUN python -B /usr/local/lib/mangarr/crypto_runtime.py verify --record /usr/share/doc/mangarr/crypto-runtime.cdx.json
 
 # Volatile metadata is declared after dependency and source layers so changing
 # build timestamps or commit identities does not invalidate those caches.
