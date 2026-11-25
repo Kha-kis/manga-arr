@@ -10,17 +10,39 @@ from pathlib import Path
 
 def python_base_reference(dockerfile: Path) -> str:
     instructions: list[list[str]] = []
-    message = "Python actor requires one literal digest-pinned official Python FROM"
-    for line in dockerfile.read_text(encoding="utf-8").splitlines():
-        if not line.strip() or line.split(maxsplit=1)[0].upper() != "FROM":
+    aliases: set[str] = set()
+    message = "Python actor requires a literal digest-pinned official Python final FROM"
+    continued = ""
+    for physical in dockerfile.read_text(encoding="utf-8").splitlines():
+        line = physical.strip()
+        if re.match(r"#\s*escape\s*=", line, flags=re.IGNORECASE) or "<<" in line:
+            raise ValueError(message)
+        if not line or line.startswith("#"):
+            continue
+        line = continued + line
+        if line.endswith("\\"):
+            if line.split(maxsplit=1)[0].upper() == "FROM":
+                raise ValueError(message)
+            continued = line[:-1] + " "
+            continue
+        continued = ""
+        if line.split(maxsplit=1)[0].upper() != "FROM":
             continue
         try:
-            instructions.append(shlex.split(line, comments=True, posix=False))
+            tokens = shlex.split(line, comments=True, posix=False)
         except ValueError as exc:
             raise ValueError(message) from exc
-    if len(instructions) != 1 or len(instructions[0]) != 2:
+        if len(tokens) == 4 and tokens[2].upper() == "AS":
+            alias = tokens[3].lower()
+            if re.fullmatch(r"[a-z][a-z0-9_.-]*", alias) is None or alias in aliases:
+                raise ValueError(message)
+            aliases.add(alias)
+        elif len(tokens) != 2:
+            raise ValueError(message)
+        instructions.append(tokens)
+    if continued or not instructions:
         raise ValueError(message)
-    image = instructions[0][1]
+    image = instructions[-1][1]
     if (
         re.fullmatch(
             r"(?:docker\.io/library/)?python:[A-Za-z0-9][A-Za-z0-9_.-]*@sha256:[0-9a-f]{64}",

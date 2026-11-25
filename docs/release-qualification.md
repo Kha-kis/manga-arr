@@ -52,6 +52,44 @@ feature deferral, not a passing platform result or a fix for affected operations
 
 The historical RC10 and earlier qualification records below remain unchanged.
 
+## 1.3.3-rc.11 Qualification
+
+Status: **PREPARATION ONLY; NOT PUBLISHED OR RELEASE-QUALIFIED** (2026-11-08).
+
+This coherent replacement is prepared in existing draft
+[#512](https://github.com/Kha-kis/manga-arr/pull/512), integrating reviewed
+master11d7c94c with SQLite source0e757681 before version/documentation changes.
+Exact final source/merge and immutable per-platform image identities must be
+recorded after review. No RC11 tag, image, final source-gate pass or publication
+is claimed by this preparation. RC10 and all historical evidence below remain
+unchanged; their source/artifact/elapsed-time credit does not transfer.
+
+The accepted ca3019dd source run remains bound to that older head. Subsequent
+focused APT checks and independent amd64 source/component binding are also
+scoped development evidence. The single
+[native ARM64 build](https://github.com/Kha-kis/manga-arr/actions/runs/42331753706)
+passed on0e757681 using workflow11d7c94c. Independent review accepted its exact
+canonical source/native library and root/final-nonroot probe bindings; its owned
+Docker objects were removed. This is not final-candidate, application-server,
+checkpoint/crash/recovery, NAS or current security qualification.
+
+Before stable promotion, qualify the final coherent source with the repository
+release-safe/security/image gates; bind both SQLite inventories and actual
+per-platform mapped runtimes to immutable artifacts; complete required native
+application, committed-WAL backup/restore, upgrade/matching rollback,
+download/import/rescan and included recovery coverage. Existing checkpoint/
+crash/reopen/integrity and supported-platform gates remain required. The stopped
+corruption reproducer is neither retried nor rerouted under the approved
+[assurance policy](sqlite-runtime.md#required-release-gates).
+
+Only full #474 remount continuity/legacy recovery and its specific remount
+profile are deferred. Keep that feature disabled and its WIP out of this source;
+ordinary enabled functionality and other platform requirements are not waived.
+Complete a fresh natural full-day observation with two daily metadata polls,
+independent final evidence review and a matching recovery backup before stable
+publication/production cutover. Issue488/514 remain open, stable remains1.3.2
+and production remains the RC5 owner trial.
+
 ## 1.3.3-rc.10 Qualification
 
 Status: **PUBLISHED; QUALIFICATION HELD; UNQUALIFIED; NO STABLE PROMOTION

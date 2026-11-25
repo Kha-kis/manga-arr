@@ -82,7 +82,7 @@ def test_docker_replaces_affected_debian_archive_packages() -> None:
     assert "apt-get" not in source.split("\nFROM ", 1)[0]
     assert "COPY --from=archive-fetcher /out/ /" in source
     bases = re.findall(r"^FROM (python:[^\s]+)", source, re.MULTILINE)
-    assert len(bases) == 2 and bases[0] == bases[1]
+    assert len(bases) == 3 and len(set(bases)) == 1
     assert "@sha256:" in bases[0]
     context = (ROOT / ".dockerignore").read_text().splitlines()
     assert "!scripts/" in context and "scripts/*" in context

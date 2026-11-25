@@ -7,17 +7,77 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.python.other_uid_actor import python_base_reference
 
 
 PIN = "python:fixture-slim@sha256:" + "a" * 64
+
+
+@pytest.mark.parametrize("alias", ["", " AS runtime"])
+def test_multistage_selects_actual_final_literal_python(
+    tmp_path: Path, alias: str
+) -> None:
+    final = "python:final-slim@sha256:" + "b" * 64
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        "FROM " + PIN + " AS builder\nRUN true\nFROM " + final + alias + "\n"
+    )
+    assert python_base_reference(dockerfile) == final
+
+
+def test_continued_run_cannot_manufacture_a_from_instruction(tmp_path: Path) -> None:
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        "FROM "
+        + PIN
+        + "\nRUN printf '%s' "
+        + chr(92)
+        + "\nFROM attacker/python:latest\n"
+    )
+    assert python_base_reference(dockerfile) == PIN
+
+
+@pytest.mark.parametrize(
+    "final",
+    [
+        "FROM builder",
+        "FROM ${BASE}",
+        "FROM python:untrusted-slim",
+        "FROM private/python:fixture-slim@sha256:" + "a" * 64,
+        "FROM " + PIN + " AS ${NAME}",
+        "FROM --platform=linux/amd64 " + PIN,
+        "FROM " + PIN + " AS runtime extra",
+        "FROM " + PIN + " " + chr(92) + "\nAS runtime",
+    ],
+)
+def test_multistage_refuses_nonliteral_or_ambiguous_final(
+    tmp_path: Path, final: str
+) -> None:
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text("FROM " + PIN + " AS builder\nARG BASE\n" + final + "\n")
+    with pytest.raises(ValueError, match="pinned official Python"):
+        python_base_reference(dockerfile)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "# escape=`\nFROM " + PIN + "\n",
+        "FROM " + PIN + "\nRUN <<EOF\nFROM attacker\nEOF\n",
+        "FROM " + PIN + " AS same\nFROM " + PIN + " AS same\n",
+    ],
+)
+def test_refuses_unparsed_dockerfile_constructs(tmp_path: Path, content: str) -> None:
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(content)
+    with pytest.raises(ValueError, match="pinned official Python"):
+        python_base_reference(dockerfile)
 
 
 @pytest.mark.parametrize("prefix", ["python", "docker.io/library/python"])
 def test_selects_literal_pinned_official_python_base(
     tmp_path: Path, prefix: str
 ) -> None:
-    from other_uid_actor import python_base_reference
-
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text(
         "# actor follows the product base\nFROM "
@@ -48,8 +108,6 @@ def test_selects_literal_pinned_official_python_base(
 def test_refuses_unpinned_dynamic_or_ambiguous_bases(
     tmp_path: Path, content: str
 ) -> None:
-    from other_uid_actor import python_base_reference
-
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text(content)
     with pytest.raises(ValueError, match="pinned official Python"):
@@ -67,7 +125,7 @@ def dockerfile(tmp_path: Path) -> Path:
 def test_preflight_reuses_cache_or_pulls_exact_pin_once(
     dockerfile: Path, monkeypatch: pytest.MonkeyPatch, cached: bool
 ) -> None:
-    import other_uid_actor as runtime
+    from tests.python import other_uid_actor as runtime
 
     commands: list[list[str]] = []
     expected = [["docker", "image", "inspect", PIN]]
@@ -102,7 +160,7 @@ def test_preflight_reuses_cache_or_pulls_exact_pin_once(
 def test_preflight_fails_closed_without_running_actor(
     dockerfile: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
-    import other_uid_actor as runtime
+    from tests.python import other_uid_actor as runtime
 
     commands: list[list[str]] = []
 

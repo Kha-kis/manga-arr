@@ -35,6 +35,15 @@ This is not a remount-support claim or permission to clear recovery fences.
 SQLite/security and the remaining release gates still apply. See the
 [current scope and qualification requirements](docs/release-qualification.md#133-release-scope).
 
+**1.3.3-rc.11 is being prepared; it is not published or release-qualified.**
+The candidate combines the reviewed import, blocklist, backup and dependency
+fixes since RC10 with the private SQLite runtime candidate. Native development
+build evidence does not qualify the final image. Full #474 remount continuity
+and legacy recovery remain deferred and disabled. Fresh source, security,
+immutable-artifact, supported-platform, application and soak gates remain;
+stable aliases stay on 1.3.2 and the production trial stays on RC5. See
+[RC11 qualification](docs/release-qualification.md#133-rc11-qualification).
+
 **1.3.3-rc.10 is published, unqualified and held by
 [#475](https://github.com/Kha-kis/manga-arr/issues/475).** It adds verified
 merged-volume assembly evidence and opt-in loose-chapter quarantine/restore
