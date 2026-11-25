@@ -63,6 +63,10 @@ RUN useradd --uid 1000 --user-group \
  && chmod 0755 /usr/local/bin/mangarr \
  && chown -R mangarr:mangarr /app /config
 
+USER mangarr
+
+RUN python -B /usr/local/lib/mangarr/crypto_runtime.py verify --record /usr/share/doc/mangarr/crypto-runtime.cdx.json
+
 # Volatile metadata is declared after dependency and source layers so changing
 # build timestamps or commit identities does not invalidate those caches.
 ARG VCS_REF=unknown
@@ -76,10 +80,6 @@ LABEL org.opencontainers.image.title="Mangarr" \
       org.opencontainers.image.version="${MANGARR_VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.created="${BUILD_DATE}"
-
-USER mangarr
-
-RUN python -B /usr/local/lib/mangarr/crypto_runtime.py verify --record /usr/share/doc/mangarr/crypto-runtime.cdx.json
 
 ENV PYTHONPATH=/app \
     MANGARR_UMASK=0022
