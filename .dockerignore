@@ -7,6 +7,7 @@
 !scripts/
 scripts/*
 !scripts/install_7zip.py
+!scripts/crypto_runtime.py
 
 !bin/
 bin/*

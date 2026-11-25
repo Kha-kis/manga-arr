@@ -28,9 +28,15 @@ COPY --from=archive-fetcher /out/ /
 # only re-installs when requirements.txt actually changes — code-only
 # diffs reuse the cached install layer.
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt \
+RUN pip install --no-cache-dir --only-binary=cryptography -r /tmp/requirements.txt \
  && python -m pip uninstall --yes pip \
  && rm /tmp/requirements.txt
+
+COPY scripts/crypto_runtime.py /usr/local/lib/mangarr/crypto_runtime.py
+RUN mkdir -p /usr/share/doc/mangarr \
+ && python -B /usr/local/lib/mangarr/crypto_runtime.py collect --record /usr/share/doc/mangarr/crypto-runtime.cdx.json \
+ && chmod 0444 /usr/share/doc/mangarr/crypto-runtime.cdx.json \
+ && chmod 0555 /usr/local/lib/mangarr/crypto_runtime.py
 
 # HTMX + Alpine are vendored under app/static (committed to the repo with
 # upstream SHA256 provenance recorded in app/static/PROVENANCE.md). No
@@ -57,6 +63,10 @@ RUN useradd --uid 1000 --user-group \
  && chmod 0755 /usr/local/bin/mangarr \
  && chown -R mangarr:mangarr /app /config
 
+USER mangarr
+
+RUN python -B /usr/local/lib/mangarr/crypto_runtime.py verify --record /usr/share/doc/mangarr/crypto-runtime.cdx.json
+
 # Volatile metadata is declared after dependency and source layers so changing
 # build timestamps or commit identities does not invalidate those caches.
 ARG VCS_REF=unknown
@@ -70,8 +80,6 @@ LABEL org.opencontainers.image.title="Mangarr" \
       org.opencontainers.image.version="${MANGARR_VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.created="${BUILD_DATE}"
-
-USER mangarr
 
 ENV PYTHONPATH=/app \
     MANGARR_UMASK=0022
